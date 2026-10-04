@@ -15,6 +15,7 @@ import (
 )
 
 const clientTimeout = 5 * time.Second
+const loginCompressionThreshold = 256
 
 type Server struct {
 	config  config.Config
@@ -195,14 +196,14 @@ func (s *Server) handleLogin(conn net.Conn) {
 	if err := protocol.WritePacket(conn, protocol.EncodeSetCompression(256)); err != nil {
 		return
 	}
-	if err := protocol.WritePacket(conn, protocol.EncodeLoginSuccess(loginStart.Name)); err != nil {
+	if err := protocol.WritePacketWithCompression(conn, protocol.EncodeLoginSuccess(loginStart.Name), loginCompressionThreshold); err != nil {
 		return
 	}
 
 	chunk := world.NewChunk(0, 0)
 	chunk.SetBlock(0, 0, 0, 1)
 	chunk.SetBlock(0, 1, 0, 2)
-	if err := protocol.WritePacket(conn, world.EncodeChunkDataPacket(chunk)); err != nil {
+	if err := protocol.WritePacketWithCompression(conn, world.EncodeChunkDataPacket(chunk), loginCompressionThreshold); err != nil {
 		return
 	}
 }

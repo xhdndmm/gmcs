@@ -1,6 +1,8 @@
 package protocol
 
 import (
+	"bytes"
+	"compress/zlib"
 	"errors"
 	"fmt"
 	"io"
@@ -56,6 +58,50 @@ func DecodeVarInt(data []byte) (int32, int, error) {
 }
 
 func ReadPacket(reader io.Reader) ([]byte, error) {
+	return readFrame(reader)
+}
+
+func ReadPacketWithCompression(reader io.Reader, threshold int32) ([]byte, error) {
+	if threshold < 0 {
+		return nil, fmt.Errorf("compression threshold must not be negative")
+	}
+	frame, err := readFrame(reader)
+	if err != nil {
+		return nil, err
+	}
+	dataLength, offset, err := DecodeVarInt(frame)
+	if err != nil {
+		return nil, fmt.Errorf("read uncompressed packet length: %w", err)
+	}
+	if dataLength == 0 {
+		packet := frame[offset:]
+		if int64(len(packet)) >= int64(threshold) {
+			return nil, fmt.Errorf("uncompressed packet length %d meets compression threshold %d", len(packet), threshold)
+		}
+		return packet, nil
+	}
+	if dataLength < 0 || dataLength > MaxPacketSize || dataLength < threshold {
+		return nil, fmt.Errorf("invalid uncompressed packet length %d for threshold %d", dataLength, threshold)
+	}
+	decompressor, err := zlib.NewReader(bytes.NewReader(frame[offset:]))
+	if err != nil {
+		return nil, fmt.Errorf("create packet decompressor: %w", err)
+	}
+	packet, readErr := io.ReadAll(io.LimitReader(decompressor, MaxPacketSize+1))
+	closeErr := decompressor.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("decompress packet: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close packet decompressor: %w", closeErr)
+	}
+	if len(packet) > MaxPacketSize || int32(len(packet)) != dataLength {
+		return nil, fmt.Errorf("decompressed packet length %d does not match declared length %d", len(packet), dataLength)
+	}
+	return packet, nil
+}
+
+func readFrame(reader io.Reader) ([]byte, error) {
 	buffered, ok := reader.(io.ByteReader)
 	if !ok {
 		buffered = newByteReader(reader)
@@ -75,6 +121,38 @@ func ReadPacket(reader io.Reader) ([]byte, error) {
 }
 
 func WritePacket(writer io.Writer, packet []byte) error {
+	if len(packet) > MaxPacketSize {
+		return fmt.Errorf("packet length %d exceeds the maximum %d", len(packet), MaxPacketSize)
+	}
+	return writeFrame(writer, packet)
+}
+
+func WritePacketWithCompression(writer io.Writer, packet []byte, threshold int32) error {
+	if threshold < 0 {
+		return fmt.Errorf("compression threshold must not be negative")
+	}
+	if len(packet) > MaxPacketSize {
+		return fmt.Errorf("packet length %d exceeds the maximum %d", len(packet), MaxPacketSize)
+	}
+	if int64(len(packet)) < int64(threshold) {
+		payload := AppendVarInt(nil, 0)
+		payload = append(payload, packet...)
+		return writeFrame(writer, payload)
+	}
+	var compressed bytes.Buffer
+	compressor := zlib.NewWriter(&compressed)
+	if _, err := compressor.Write(packet); err != nil {
+		return fmt.Errorf("compress packet: %w", err)
+	}
+	if err := compressor.Close(); err != nil {
+		return fmt.Errorf("close packet compressor: %w", err)
+	}
+	payload := AppendVarInt(nil, int32(len(packet)))
+	payload = append(payload, compressed.Bytes()...)
+	return writeFrame(writer, payload)
+}
+
+func writeFrame(writer io.Writer, packet []byte) error {
 	if len(packet) > MaxPacketSize {
 		return fmt.Errorf("packet length %d exceeds the maximum %d", len(packet), MaxPacketSize)
 	}

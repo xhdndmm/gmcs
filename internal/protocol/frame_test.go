@@ -42,6 +42,41 @@ func TestPacketRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPacketCompressionRoundTrip(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		packet    []byte
+		threshold int32
+	}{
+		{name: "compressed", packet: []byte{1, 2, 3, 4}, threshold: 2},
+		{name: "below threshold", packet: []byte{1}, threshold: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var framed bytes.Buffer
+			if err := WritePacketWithCompression(&framed, test.packet, test.threshold); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadPacketWithCompression(&framed, test.threshold)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, test.packet) {
+				t.Fatalf("ReadPacketWithCompression() = %v, want %v", got, test.packet)
+			}
+		})
+	}
+}
+
+func TestReadPacketWithCompressionRejectsThresholdViolation(t *testing.T) {
+	var framed bytes.Buffer
+	if err := WritePacket(&framed, []byte{0, 1, 2, 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPacketWithCompression(&framed, 3); err == nil {
+		t.Fatal("expected uncompressed packet at threshold to be rejected")
+	}
+}
+
 func TestReadPacketRejectsOversizedFrame(t *testing.T) {
 	frame := AppendVarInt(nil, MaxPacketSize+1)
 	if _, err := ReadPacket(bytes.NewReader(frame)); err == nil {
