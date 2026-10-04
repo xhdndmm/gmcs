@@ -11,6 +11,7 @@ import (
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
+	"gmcs/internal/world"
 )
 
 const clientTimeout = 5 * time.Second
@@ -109,10 +110,21 @@ func (s *Server) serveClient(conn net.Conn) {
 		return
 	}
 	handshake, err := protocol.ParseHandshake(handshakePacket)
-	if err != nil || handshake.NextState != 1 {
+	if err != nil {
 		return
 	}
 
+	switch handshake.NextState {
+	case 1:
+		s.handleStatus(conn)
+	case 2:
+		s.handleLogin(conn)
+	default:
+		return
+	}
+}
+
+func (s *Server) handleStatus(conn net.Conn) {
 	request, err := protocol.ReadPacket(conn)
 	if err != nil {
 		return
@@ -168,6 +180,31 @@ func (s *Server) serveClient(conn net.Conn) {
 	pong := protocol.AppendVarInt(nil, 1)
 	pong = append(pong, ping[pingIDSize:]...)
 	_ = protocol.WritePacket(conn, pong)
+}
+
+func (s *Server) handleLogin(conn net.Conn) {
+	loginPacket, err := protocol.ReadPacket(conn)
+	if err != nil {
+		return
+	}
+	loginStart, err := protocol.ParseLoginStart(loginPacket)
+	if err != nil {
+		return
+	}
+
+	if err := protocol.WritePacket(conn, protocol.EncodeSetCompression(256)); err != nil {
+		return
+	}
+	if err := protocol.WritePacket(conn, protocol.EncodeLoginSuccess(loginStart.Name)); err != nil {
+		return
+	}
+
+	chunk := world.NewChunk(0, 0)
+	chunk.SetBlock(0, 0, 0, 1)
+	chunk.SetBlock(0, 1, 0, 2)
+	if err := protocol.WritePacket(conn, world.EncodeChunkDataPacket(chunk)); err != nil {
+		return
+	}
 }
 
 func DecodeStatusResponse(packet []byte) (string, error) {

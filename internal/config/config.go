@@ -14,9 +14,9 @@ type Config struct {
 func Default() Config {
 	return Config{
 		ListenAddress:   ":25565",
-		MOTD:            "A gmcs server",
-		VersionName:     "gmcs-dev",
-		ProtocolVersion: 0,
+		MOTD:            "A gmcs 1.21.11 development server",
+		VersionName:     "gmcs-1.21.11",
+		ProtocolVersion: 767,
 		MaxPlayers:      100,
 		MaxConnections:  256,
 	}
