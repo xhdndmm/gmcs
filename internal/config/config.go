@@ -16,7 +16,7 @@ func Default() Config {
 		ListenAddress:   ":25565",
 		MOTD:            "A gmcs 1.21.11 development server",
 		VersionName:     "gmcs-1.21.11",
-		ProtocolVersion: 767,
+		ProtocolVersion: 774, // Minecraft Java Edition 1.21.11
 		MaxPlayers:      100,
 		MaxConnections:  256,
 	}

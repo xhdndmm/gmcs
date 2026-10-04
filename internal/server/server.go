@@ -7,15 +7,14 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
-	"gmcs/internal/world"
 )
 
 const clientTimeout = 5 * time.Second
-const loginCompressionThreshold = 256
 
 type Server struct {
 	config  config.Config
@@ -25,6 +24,9 @@ type Server struct {
 	conns   map[net.Conn]struct{}
 	wg      sync.WaitGroup
 	closing bool
+
+	entityIDs         atomic.Int32
+	keepAliveInterval time.Duration
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -32,9 +34,10 @@ func New(cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 	return &Server{
-		config:  cfg,
-		clients: make(chan struct{}, cfg.MaxConnections),
-		conns:   make(map[net.Conn]struct{}),
+		config:            cfg,
+		clients:           make(chan struct{}, cfg.MaxConnections),
+		conns:             make(map[net.Conn]struct{}),
+		keepAliveInterval: defaultKeepAliveInterval,
 	}, nil
 }
 
@@ -105,7 +108,7 @@ func (s *Server) serveClient(conn net.Conn) {
 		<-s.clients
 	}()
 
-	_ = conn.SetDeadline(time.Now().Add(clientTimeout))
+	_ = conn.SetReadDeadline(time.Now().Add(clientTimeout))
 	handshakePacket, err := protocol.ReadPacket(conn)
 	if err != nil {
 		return
@@ -119,7 +122,7 @@ func (s *Server) serveClient(conn net.Conn) {
 	case 1:
 		s.handleStatus(conn)
 	case 2:
-		s.handleLogin(conn)
+		newSession(s, conn, handshake.ProtocolVersion).run()
 	default:
 		return
 	}
@@ -181,31 +184,6 @@ func (s *Server) handleStatus(conn net.Conn) {
 	pong := protocol.AppendVarInt(nil, 1)
 	pong = append(pong, ping[pingIDSize:]...)
 	_ = protocol.WritePacket(conn, pong)
-}
-
-func (s *Server) handleLogin(conn net.Conn) {
-	loginPacket, err := protocol.ReadPacket(conn)
-	if err != nil {
-		return
-	}
-	loginStart, err := protocol.ParseLoginStart(loginPacket)
-	if err != nil {
-		return
-	}
-
-	if err := protocol.WritePacket(conn, protocol.EncodeSetCompression(256)); err != nil {
-		return
-	}
-	if err := protocol.WritePacketWithCompression(conn, protocol.EncodeLoginSuccess(loginStart.Name), loginCompressionThreshold); err != nil {
-		return
-	}
-
-	chunk := world.NewChunk(0, 0)
-	chunk.SetBlock(0, 0, 0, 1)
-	chunk.SetBlock(0, 1, 0, 2)
-	if err := protocol.WritePacketWithCompression(conn, world.EncodeChunkDataPacket(chunk), loginCompressionThreshold); err != nil {
-		return
-	}
 }
 
 func DecodeStatusResponse(packet []byte) (string, error) {
