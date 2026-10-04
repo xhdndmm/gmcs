@@ -1,0 +1,3 @@
+# 统一换行符：仓库内文本以 LF 存储，避免 Windows 检出后脚本无法在 Unix 上执行。
+* text=auto
+*.sh text eol=lf
