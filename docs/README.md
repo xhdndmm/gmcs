@@ -38,8 +38,8 @@ go run ./cmd/gmcs -config /path/to/gmcs.json -listen :25565
 | `autosave_seconds` | 自动保存间隔（秒，0 表示禁用） | `300` |
 | `online_mode` | 启用正版验证（通过会话服务器确认账号） | `false` |
 | `session_server_url` | 会话验证服务基地址（在线模式使用） | `https://sessionserver.mojang.com` |
-| `starting_items` | 新玩家初始物品（命名空间 ID；`name` 或 `name*数量`，数量上限 64） | `["minecraft:stone"]` |
-| `ops` | 管理员玩家名列表（使用 `/say`、`/gamemode` 等管理命令） | `[]` |
+| `starting_items` | 新玩家初始物品（命名空间 ID；`name` 或 `name*数量`，数量上限 64；可写数组或单个字符串） | `["minecraft:stone"]` |
+| `ops` | 管理员玩家名列表（使用 `/say`、`/gamemode` 等管理命令；可写数组或单个字符串） | `[]` |
 
 ## 内置命令
 

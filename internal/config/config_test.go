@@ -14,6 +14,42 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	}
 }
 
+// TestStringListAcceptsSingleString 验证 ops/starting_items 允许写成单个字符串，
+// 避免用户把单值写成字符串导致服务器无法启动。
+func TestStringListAcceptsSingleString(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"ops": "Alice", "starting_items": "minecraft:stone*3"}`), &cfg); err != nil {
+		t.Fatalf("single string lists should be accepted: %v", err)
+	}
+	if len(cfg.Ops) != 1 || cfg.Ops[0] != "Alice" {
+		t.Fatalf("ops = %v, want [Alice]", cfg.Ops)
+	}
+	if len(cfg.StartingItems) != 1 || cfg.StartingItems[0] != "minecraft:stone*3" {
+		t.Fatalf("starting_items = %v", cfg.StartingItems)
+	}
+
+	// 数组写法保持可用。
+	var array Config
+	if err := json.Unmarshal([]byte(`{"ops": ["A", "B"], "starting_items": ["minecraft:dirt"]}`), &array); err != nil {
+		t.Fatalf("arrays should still be accepted: %v", err)
+	}
+	if len(array.Ops) != 2 || array.Ops[1] != "B" {
+		t.Fatalf("ops = %v, want [A B]", array.Ops)
+	}
+
+	// null 等价于清空列表。
+	var nullable Config
+	if err := json.Unmarshal([]byte(`{"ops": null}`), &nullable); err != nil || nullable.Ops != nil {
+		t.Fatalf("null should clear the list: %v (err=%v)", nullable.Ops, err)
+	}
+
+	// 其它类型仍然报错。
+	var bad Config
+	if err := json.Unmarshal([]byte(`{"ops": 42}`), &bad); err == nil {
+		t.Fatal("numeric ops should be rejected")
+	}
+}
+
 func TestGameModeID(t *testing.T) {
 	cases := map[string]GameMode{
 		"survival":  GameModeSurvival,

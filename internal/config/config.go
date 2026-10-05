@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -11,6 +12,34 @@ import (
 	"path/filepath"
 	"time"
 )
+
+// StringList 是一个字符串列表，允许在 JSON 中写成数组或单个字符串。
+// 例如 "ops": "Alice" 等价于 "ops": ["Alice"]，
+// 避免把单个值写成字符串导致服务器无法启动。
+type StringList []string
+
+// UnmarshalJSON 接受字符串数组、单个字符串或 null。
+func (l *StringList) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*l = nil
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var single string
+		if err := json.Unmarshal(trimmed, &single); err != nil {
+			return err
+		}
+		*l = StringList{single}
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(trimmed, &list); err != nil {
+		return err
+	}
+	*l = list
+	return nil
+}
 
 // Config 是服务器的全部配置。
 // 字段与 JSON 中的 snake_case 名称一一对应；加载时缺失字段保留默认值。
@@ -50,10 +79,11 @@ type Config struct {
 	// SessionServerURL 是会话验证服务基地址（在线模式使用）。
 	SessionServerURL string `json:"session_server_url"`
 	// StartingItems 是新玩家进入世界时获得的物品（命名空间 ID）。
-	StartingItems []string `json:"starting_items"`
+	// JSON 中可写数组或单个字符串。
+	StartingItems StringList `json:"starting_items"`
 	// Ops 是管理员玩家名列表：名单中的玩家可以使用 /say、/gamemode 等
-	// 管理命令，这些命令也只向名单中的玩家下发。
-	Ops []string `json:"ops"`
+	// 管理命令，这些命令也只向名单中的玩家下发。JSON 中可写数组或单个字符串。
+	Ops StringList `json:"ops"`
 }
 
 // Default 返回默认配置。
@@ -73,7 +103,7 @@ func Default() Config {
 		SpawnMonsters:   true,
 		MaxMobs:         8,
 		AutosaveSeconds: 300, OnlineMode: false,
-		SessionServerURL: "https://sessionserver.mojang.com", StartingItems: []string{"minecraft:stone"},
+		SessionServerURL: "https://sessionserver.mojang.com", StartingItems: StringList{"minecraft:stone"},
 	}
 }
 
