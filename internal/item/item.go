@@ -10,8 +10,9 @@ import (
 
 // Stack 是一个物品堆栈。
 //
-// 当前不携带物品组件覆盖（客户端使用物品默认组件，来自 Known Packs 的
-// 内置数据）；堆叠上限等组件派生属性暂不校验，由上层决定。
+// 不携带物品组件覆盖（客户端使用物品默认组件，来自 Known Packs 的内置数据）；
+// 堆叠上限按官方物品数据（registry.MaxStackSize）处理，其余组件派生属性
+// （如工具耐久）暂不校验。
 type Stack struct {
 	// ItemID 是物品的注册表 ID（客户端内置全局 ID）。
 	ItemID int32
