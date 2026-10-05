@@ -93,10 +93,22 @@ go run ./cmd/gmcs -config /path/to/gmcs.json -listen :25565
 entities.json（非原版实体格式）；无饥饿系统（回血为脱战定时恢复，非原版饥饿驱动）；
 无暴击、护甲与掉落物/经验；生物生成不区分昼夜与光照。
 
+## 玩家数据（players.json）
+
+玩家退出（或服务器关闭）时，位置/朝向、生命/饥饿/饱和、游戏模式与物品栏会保存到
+`world/players.json`；再次进入时恢复，且不会重复发放初始物品（`starting_items`
+只发给新玩家）。物品按命名空间 ID 存储，跨 Minecraft 版本仍可读。
+
+该文件是 gmcs 自定义格式（不是原版的 `playerdata/<uuid>.dat`）；服务器被强杀
+（SIGKILL）或崩溃时可能丢失自上次退出以来的进度。
+
 ## 正版验证（online_mode）
 
 `online_mode = true` 时启用正版登录：服务器与客户端完成 AES-128/CFB8 加密握手，
 并通过 `session_server_url` 的 `hasJoined` 接口验证账号，登录成功后透传玩家属性（如签名皮肤）。
+服务器列表与游戏内会标记为强制安全档案（`enforcesSecureChat=true`），玩家列表条目
+携带签名皮肤属性，客户端据此加载皮肤。注意：聊天消息仍未实现签名
+（无 chat_session_update），客户端会对聊天显示“未验证”标记。
 `online_mode = false`（默认）时按离线模式运行，UUID 由用户名按原版规则推导。
 
 ## 测试

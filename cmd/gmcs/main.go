@@ -53,7 +53,7 @@ func run() error {
 		return fmt.Errorf("listen on %s: %w", cfg.ListenAddress, err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
 	defer stop()
 
 	slog.Info("gmcs listening",

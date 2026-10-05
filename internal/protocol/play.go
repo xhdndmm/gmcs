@@ -165,8 +165,10 @@ func EncodeKeepAlivePlay(id int64) []byte {
 	return AppendInt64(packet, id)
 }
 
-// EncodePlayerInfoAddPlayer 编码 Player Info Update 包，仅包含 Add Player 与 Update Listed 动作。
-func EncodePlayerInfoAddPlayer(uuid [16]byte, username string) []byte {
+// EncodePlayerInfoAddPlayer 编码 Player Info Update 包，包含 Add Player 与
+// Update Listed 动作；properties 是玩家档案属性（正版模式下会话服务器返回的
+// 皮肤纹理等；签名一并携带，客户端据此校验并加载皮肤）。
+func EncodePlayerInfoAddPlayer(uuid [16]byte, username string, properties []GameProfileProperty) []byte {
 	const (
 		actionAddPlayer    = 0x01
 		actionUpdateListed = 0x08
@@ -176,8 +178,18 @@ func EncodePlayerInfoAddPlayer(uuid [16]byte, username string) []byte {
 	packet = AppendVarInt(packet, 1) // 玩家数量
 	packet = append(packet, uuid[:]...)
 	packet = appendString(packet, username)
-	packet = AppendVarInt(packet, 0) // 属性数量
-	return AppendBool(packet, true)  // Listed
+	packet = AppendVarInt(packet, int32(len(properties)))
+	for _, property := range properties {
+		packet = appendString(packet, property.Name)
+		packet = appendString(packet, property.Value)
+		if property.Signed {
+			packet = append(packet, 0x01)
+			packet = appendString(packet, property.Signature)
+		} else {
+			packet = append(packet, 0x00)
+		}
+	}
+	return AppendBool(packet, true) // Listed
 }
 
 // EncodeSystemChat 编码 System Chat Message 包；内容为只含文本的 NBT String Tag。

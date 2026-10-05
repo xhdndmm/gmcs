@@ -49,6 +49,21 @@ func Synchronized() []Registry {
 	return synchronized()
 }
 
+var itemNamesByID = sync.OnceValue(func() map[int32]string {
+	names := make(map[int32]string, len(ItemIDs))
+	for name, id := range ItemIDs {
+		names[id] = name
+	}
+	return names
+})
+
+// ItemName 返回物品注册表 ID 对应的命名空间 ID（ItemID 的反向映射）。
+// 用于需要与 Minecraft 版本无关标识的场景（如玩家数据持久化）。
+func ItemName(id int32) (string, bool) {
+	name, ok := itemNamesByID()[id]
+	return name, ok
+}
+
 var cachedTags = sync.OnceValue(func() []RegistryTags {
 	names := make([]string, 0, len(allTags))
 	for name := range allTags {

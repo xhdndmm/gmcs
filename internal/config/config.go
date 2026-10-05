@@ -190,6 +190,21 @@ func GameModeID(name string) (GameMode, bool) {
 	return 0, false
 }
 
+// GameModeName 返回游戏模式的配置名（GameModeID 的反向映射）。
+func GameModeName(mode GameMode) (string, bool) {
+	switch mode {
+	case GameModeSurvival:
+		return "survival", true
+	case GameModeCreative:
+		return "creative", true
+	case GameModeAdventure:
+		return "adventure", true
+	case GameModeSpectator:
+		return "spectator", true
+	}
+	return "", false
+}
+
 // randomSeed 生成非零随机世界种子（加密随机源；失败时回退到时间戳）。
 func randomSeed() int64 {
 	var buf [8]byte

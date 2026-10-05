@@ -44,7 +44,16 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 		}
 	})
 
-	conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	return instance, joinAt(t, cfg, listener.Addr().String(), name, len(cfg.StartingItems))
+}
+
+// joinAt 连接到地址 addr 上的测试服务器并完成完整进入世界流程
+// （握手 → 登录 → 配置 → 初始数据包），返回就绪的连接。
+// startingItemPackets 是预期在命令树之后收到的 Set Player Inventory 包数量
+// （恢复已保存数据的玩家不会重新获得初始物品，为 0）。
+func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPackets int) net.Conn {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,16 +141,20 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 	for i := 0; i < chunkCount; i++ {
 		expectPlayPacket(t, conn, protocol.PlayPacketIDChunkData)
 	}
-	for _, want := range []int32{0x46, 0x44, 0x77, 0x10, 0x6A, 0x66} {
+	for _, want := range []int32{0x46, 0x44, 0x77, 0x10} {
 		expectPlayPacket(t, conn, want)
 	}
+	for i := 0; i < startingItemPackets; i++ {
+		expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
+	}
+	expectPlayPacket(t, conn, protocol.PlayPacketIDUpdateHealth)
 	// 确认传送
 	confirm := protocol.AppendVarInt(nil, 0x00)
 	confirm = protocol.AppendVarInt(confirm, 1)
 	if err := protocol.WritePacketWithCompression(conn, confirm, compressionThreshold); err != nil {
 		t.Fatal(err)
 	}
-	return instance, conn
+	return conn
 }
 
 // findSession 返回指定名字的在线会话。

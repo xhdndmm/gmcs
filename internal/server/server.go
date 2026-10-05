@@ -70,6 +70,10 @@ type Server struct {
 	rsaKey *rsa.PrivateKey
 	// httpClient 用于访问会话服务器。
 	httpClient *http.Client
+
+	// 玩家数据（players.json）：受 playerDataMu 保护，按 UUID 索引。
+	playerDataMu sync.Mutex
+	playerData   map[[16]byte]playerRecord
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -115,6 +119,7 @@ func New(cfg config.Config) (*Server, error) {
 		defaultGameMode:   uint8(gameMode),
 		rsaKey:            rsaKey,
 		httpClient:        &http.Client{Timeout: 10 * time.Second},
+		playerData:        make(map[[16]byte]playerRecord),
 	}
 	server.resolveMobRegistryIDs()
 	if !server.mobsEnabled {
@@ -125,6 +130,10 @@ func New(cfg config.Config) (*Server, error) {
 		if err := server.loadMobs(); err != nil {
 			slog.Error("加载生物数据失败", "error", err)
 		}
+	}
+	// 恢复已保存的玩家数据（players.json；不存在时按新玩家处理）。
+	if err := server.loadPlayerData(); err != nil {
+		slog.Error("加载玩家数据失败", "error", err)
 	}
 	return server, nil
 }
@@ -254,9 +263,13 @@ func (s *Server) registerPlayer(player *session) []*session {
 }
 
 // unregisterPlayer 从在线列表移除玩家，并通知其他玩家。
+// 仅当列表中的会话仍是本会话时才删除（避免快速重连时旧会话
+// 误删新会话的在线记录）。
 func (s *Server) unregisterPlayer(player *session) {
 	s.mu.Lock()
-	delete(s.players, player.uuid)
+	if current, ok := s.players[player.uuid]; ok && current == player {
+		delete(s.players, player.uuid)
+	}
 	s.mu.Unlock()
 
 	s.broadcastPacketExcluding(protocol.EncodePlayerInfoRemove([][16]byte{player.uuid}), player)
@@ -338,6 +351,10 @@ func (s *Server) handleStatus(conn net.Conn) {
 		return
 	}
 
+	s.mu.Lock()
+	online := len(s.players)
+	s.mu.Unlock()
+
 	status, err := json.Marshal(struct {
 		Version struct {
 			Name     string `json:"name"`
@@ -350,6 +367,10 @@ func (s *Server) handleStatus(conn net.Conn) {
 		Description struct {
 			Text string `json:"text"`
 		} `json:"description"`
+		// EnforcesSecureChat = true 时客户端把服务器标记为“强制安全档案”
+		// （去掉服务器列表的“未验证”警告）；正版模式为 true。
+		EnforcesSecureChat bool `json:"enforcesSecureChat"`
+		PreviewsChat       bool `json:"previewsChat"`
 	}{
 		Version: struct {
 			Name     string `json:"name"`
@@ -358,10 +379,11 @@ func (s *Server) handleStatus(conn net.Conn) {
 		Players: struct {
 			Max    int `json:"max"`
 			Online int `json:"online"`
-		}{Max: s.config.MaxPlayers},
+		}{Max: s.config.MaxPlayers, Online: online},
 		Description: struct {
 			Text string `json:"text"`
 		}{Text: s.config.MOTD},
+		EnforcesSecureChat: s.config.OnlineMode,
 	})
 	if err != nil {
 		return

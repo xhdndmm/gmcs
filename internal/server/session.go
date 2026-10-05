@@ -535,7 +535,16 @@ func (s *session) awaitConfigurationFinished() bool {
 func (s *session) runPlay() {
 	s.teleportID = 1
 	spawnX, spawnY, spawnZ := s.server.spawnPosition()
-	s.setPlayerPosition(spawnX, spawnY, spawnZ, 0, 0)
+	// 恢复上次退出时的玩家数据（位置/生命/饥饿/游戏模式/物品栏）；
+	// 没有记录时按新玩家处理（出生点 + 初始物品）。
+	restored := false
+	if record, ok := s.server.playerDataSnapshot(s.uuid); ok {
+		s.applyPlayerRecord(record)
+		restored = true
+	} else {
+		s.setPlayerPosition(spawnX, spawnY, spawnZ, 0, 0)
+	}
+	x, y, z, yaw, pitch := s.playerPosition()
 
 	login := protocol.LoginPlayData{
 		EntityID:            s.entityID,
@@ -544,12 +553,14 @@ func (s *session) runPlay() {
 		ViewDistance:        int32(s.server.config.ViewDistance),
 		SimulationDistance:  int32(s.server.config.ViewDistance),
 		EnableRespawnScreen: true,
+		EnforcesSecureChat:  s.server.config.OnlineMode,
 		Spawn:               s.server.spawnInfo(s.gameMode),
 	}
 
-	// 注册到玩家列表；离开时（任何返回路径）注销并通知其他玩家。
+	// 注册到玩家列表；离开时（任何返回路径）保存玩家数据并注销。
 	others := s.server.registerPlayer(s)
 	defer s.server.unregisterPlayer(s)
+	defer s.server.savePlayerData(s)
 
 	// 进入世界的前置包。
 	packets := [][]byte{
@@ -562,30 +573,35 @@ func (s *session) runPlay() {
 		size := s.server.borderHalfSize * 2
 		packets = append(packets, protocol.EncodeInitializeWorldBorder(0, 0, size, size, 0, 29999984, 5, 15))
 	}
+	centerX := int(math.Floor(x)) >> 4
+	centerZ := int(math.Floor(z)) >> 4
 	packets = append(packets,
 		protocol.EncodeGameEvent(13, 0), // 开始等待区块
-		protocol.EncodeSetCenterChunk(0, 0),
+		protocol.EncodeSetCenterChunk(int32(centerX), int32(centerZ)),
 	)
 	if err := s.writePackets(packets...); err != nil {
 		return
 	}
-	// 出生点视距内的全部区块（由近到远；跨区块移动时由 updateChunks 增量维护）。
-	if err := s.syncChunks(0, 0); err != nil {
+	// 玩家周围视距内的全部区块（由近到远；跨区块移动时由 updateChunks 增量维护）。
+	if err := s.syncChunks(centerX, centerZ); err != nil {
 		slog.Error("failed to send spawn chunks", "name", s.name, "error", err)
 		return
 	}
 
 	packets = [][]byte{
-		protocol.EncodeSynchronizePlayerPosition(s.teleportID, spawnX, spawnY, spawnZ, 0, 0, 0, 0, 0),
-		protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name),
+		protocol.EncodeSynchronizePlayerPosition(s.teleportID, x, y, z, 0, 0, 0, yaw, pitch),
+		protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name, s.profileProperties),
 	}
 	for _, other := range others {
-		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name))
+		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name, other.profileProperties))
 	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
 	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
 	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands()))
-	packets = append(packets, s.giveStartingItems()...)
+	if !restored {
+		// 仅新玩家发放初始物品；恢复的玩家沿用其已保存的物品栏。
+		packets = append(packets, s.giveStartingItems()...)
+	}
 	health, food, saturation := s.healthStatus()
 	packets = append(packets, protocol.EncodeUpdateHealth(health, food, saturation))
 	if err := s.writePackets(packets...); err != nil {
@@ -596,8 +612,8 @@ func (s *session) runPlay() {
 		return
 	}
 	s.markJoined()
-	// 通知其他玩家：新玩家加入。
-	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name), s)
+	// 通知其他玩家：新玩家加入（携带档案属性，供客户端显示皮肤）。
+	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name, s.profileProperties), s)
 	s.server.broadcastPacketExcluding(protocol.EncodeSystemChat(s.name+" joined the game"), s)
 	slog.Info("player joined the world", "name", s.name, "entityId", s.entityID)
 

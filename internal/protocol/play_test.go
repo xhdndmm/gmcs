@@ -122,7 +122,11 @@ func TestEncodeSynchronizePlayerPosition(t *testing.T) {
 
 func TestEncodePlayerInfoAddPlayer(t *testing.T) {
 	uuid := OfflineUUID("Steve")
-	packet := EncodePlayerInfoAddPlayer(uuid, "Steve")
+	properties := []GameProfileProperty{
+		{Name: "textures", Value: "dGV4dHVyZXM=", Signature: "c2lnbmF0dXJl", Signed: true},
+		{Name: "unsigned", Value: "v"},
+	}
+	packet := EncodePlayerInfoAddPlayer(uuid, "Steve", properties)
 	packetID, offset, err := DecodeVarInt(packet)
 	if err != nil || packetID != PlayPacketIDPlayerInfoUpdate {
 		t.Fatalf("unexpected packet ID %#x (err=%v)", packetID, err)
@@ -144,10 +148,37 @@ func TestEncodePlayerInfoAddPlayer(t *testing.T) {
 	if err != nil || name != "Steve" {
 		t.Fatalf("unexpected player name %q (err=%v)", name, err)
 	}
-	properties, offset, err := decodeVarIntAt(packet, offset)
-	if err != nil || properties != 0 {
-		t.Fatalf("unexpected properties count %d (err=%v)", properties, err)
+	propertyCount, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || propertyCount != 2 {
+		t.Fatalf("unexpected properties count %d (err=%v)", propertyCount, err)
 	}
+	propertyName, offset, err := readStringAt(packet, offset)
+	if err != nil || propertyName != "textures" {
+		t.Fatalf("unexpected property name %q (err=%v)", propertyName, err)
+	}
+	propertyValue, offset, err := readStringAt(packet, offset)
+	if err != nil || propertyValue != "dGV4dHVyZXM=" {
+		t.Fatalf("unexpected property value %q (err=%v)", propertyValue, err)
+	}
+	if offset >= len(packet) || packet[offset] != 0x01 {
+		t.Fatal("expected signed property")
+	}
+	offset++
+	signature, offset, err := readStringAt(packet, offset)
+	if err != nil || signature != "c2lnbmF0dXJl" {
+		t.Fatalf("unexpected property signature %q (err=%v)", signature, err)
+	}
+	propertyName, offset, err = readStringAt(packet, offset)
+	if err != nil || propertyName != "unsigned" {
+		t.Fatalf("unexpected property name %q (err=%v)", propertyName, err)
+	}
+	if _, offset, err = readStringAt(packet, offset); err != nil {
+		t.Fatalf("unexpected unsigned property value error %v", err)
+	}
+	if offset >= len(packet) || packet[offset] != 0x00 {
+		t.Fatal("expected unsigned property flag")
+	}
+	offset++
 	if offset >= len(packet) || packet[offset] != 0x01 {
 		t.Fatal("expected listed=true")
 	}

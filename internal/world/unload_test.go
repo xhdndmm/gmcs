@@ -112,3 +112,25 @@ func TestUnloadFarWithoutCentersIsNoop(t *testing.T) {
 		t.Fatalf("ChunkCount() = %d, want 1", got)
 	}
 }
+
+// TestCloseSavesDirtyChunks 验证关闭世界会把已生成（待保存）的区块写入磁盘。
+func TestCloseSavesDirtyChunks(t *testing.T) {
+	dir := t.TempDir()
+	instance, err := Open(dir, SeededGenerator{Seed: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Chunk(2, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadChunk(dir, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil {
+		t.Fatal("Close 未保存已生成区块")
+	}
+}
