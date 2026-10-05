@@ -123,3 +123,36 @@ func TestDecodeVarInt(t *testing.T) {
 		}
 	}
 }
+
+// TestWritePacketWithCompressionRoundtrip 验证压缩路径（含对象池复用）的
+// 输出可被正确解压还原，且重复调用结果一致。
+func TestWritePacketWithCompressionRoundtrip(t *testing.T) {
+	packet := make([]byte, 4096)
+	for i := range packet {
+		packet[i] = byte(i * 31)
+	}
+	for round := 0; round < 3; round++ {
+		var buffer bytes.Buffer
+		if err := WritePacketWithCompression(&buffer, packet, 256); err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := ReadPacketWithCompression(&buffer, 256)
+		if err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		if !bytes.Equal(decoded, packet) {
+			t.Fatalf("round %d: 解码内容不一致", round)
+		}
+	}
+
+	// 小包（低于阈值）走未压缩路径。
+	small := []byte{1, 2, 3}
+	var buffer bytes.Buffer
+	if err := WritePacketWithCompression(&buffer, small, 256); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := ReadPacketWithCompression(&buffer, 256)
+	if err != nil || !bytes.Equal(decoded, small) {
+		t.Fatalf("small packet: %v %x", err, decoded)
+	}
+}

@@ -1,6 +1,9 @@
 package protocol
 
-import "testing"
+import (
+	"io"
+	"testing"
+)
 
 // BenchmarkEncodeEntityPositionSync 衡量实体位置同步包（高频生物移动）的编码成本。
 func BenchmarkEncodeEntityPositionSync(b *testing.B) {
@@ -16,5 +19,22 @@ func BenchmarkEncodeAddEntity(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_ = EncodeAddEntity(1, uuid, 150, 1.5, 64, 2.5, 0.01, 0, -0.02, 90, 0)
+	}
+}
+
+// BenchmarkWritePacketWithCompression 衡量大包（区块级，约 60 KB）的压缩
+// 发送路径：数据长度前缀 + zlib 压缩 + 帧写出。
+func BenchmarkWritePacketWithCompression(b *testing.B) {
+	packet := make([]byte, 60000)
+	for i := range packet {
+		packet[i] = byte(i % 7)
+	}
+	b.SetBytes(int64(len(packet)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := WritePacketWithCompression(io.Discard, packet, 256); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

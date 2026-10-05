@@ -27,10 +27,12 @@ go test -run=^$ -bench=. -benchmem ./...
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
 | `BenchmarkGenerateChunk` | world | ≈735 µs/op | 72,767 B/op | 18 allocs/op |
-| `BenchmarkEncodeChunkDataPacket` | world | ≈68.0 µs/op | 71,680 B/op | 4 allocs/op |
+| `BenchmarkEncodeChunkDataPacket` | world | ≈57.1 µs/op | 6,150 B/op | 3 allocs/op |
+| `BenchmarkAppendChunkDataPacketReuse` | world | ≈56.5 µs/op | 6,150 B/op | 3 allocs/op |
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.7 ns/op | 120 B/op | 4 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈104.0 ns/op | 176 B/op | 4 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈36.7 µs/op | 3,209 B/op | 64 allocs/op |
+| `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈75.7 µs/op | 50 B/op | 1 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈8.0 µs/op | 3,209 B/op | 64 allocs/op |
 
 各基准覆盖的内容：
 
@@ -38,6 +40,10 @@ go test -run=^$ -bench=. -benchmem ./...
   覆盖地形生成热路径。
 - `BenchmarkEncodeChunkDataPacket`：把已生成区块编码为 1.21.11 Chunk Data and Update
   Light 包（调色板容器 + 全亮天空光）。
+- `BenchmarkAppendChunkDataPacketReuse`：复用输出缓冲连续编码（进入世界/移动时
+  区块流式发送的实际路径）。
+- `BenchmarkWritePacketWithCompression`：60 KB 大包的压缩发送路径
+  （长度前缀 + zlib + 帧写出）。
 - `BenchmarkEncodeEntityPositionSync` / `BenchmarkEncodeAddEntity`：高频实体包的编码成本
   （含 LpVec3）。
 - `BenchmarkServerTick`：`Server.tick()` 一次，含 32 只僵尸的游荡移动、卡住判定与
@@ -45,7 +51,7 @@ go test -run=^$ -bench=. -benchmem ./...
   玩家会话与网络发送。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
-按编码 68.0 µs/区块计算约 30 ms 纯编码时间（不含地形生成与网络 IO）。
+按编码 57 µs/区块计算约 25 ms 纯编码时间（不含地形生成与网络 IO）。
 
 ## 区块编码优化（实测优化前后对比）
 
@@ -70,6 +76,44 @@ go test -run=^$ -bench=. -benchmem ./...
 
 正确性验证：`internal/world` 全部单元测试通过（含调色板/位流 round-trip 测试），
 `go test -race ./...` 通过。
+
+## 内存与热路径优化：压缩池化、发送缓冲复用、列高度缓存（实测）
+
+来自 CPU/分配 profile 的三处热点与对应处理（同机会话内对比，`-count=6` 中位数）：
+
+| 指标 | 优化前 | 优化后 | 变化 |
+| --- | --- | --- | --- |
+| 区块编码 `BenchmarkEncodeChunkDataPacket` | 67.5 µs/op；71,680 B/op（4 次） | 57.1 µs/op；6,150 B/op（3 次） | ≈ -15%；分配 ≈ -91% |
+| 大包压缩发送 `BenchmarkWritePacketWithCompression` | 200.4 µs/op；1,076,443 B/op（20 次） | 75.7 µs/op；50 B/op（1 次） | ≈ -62%；分配 ≈ -99.99% |
+| 服务器 Tick `BenchmarkServerTick`（32 生物） | 36.8 µs/op | 8.0 µs/op | ≈ -78% |
+
+优化内容：
+
+1. **协议压缩路径对象池**（internal/protocol/frame.go）：此前每个 ≥256 字节的包
+   都新建 `zlib.Writer`（窗口与哈希表合计约 1 MB 分配）与两个缓冲；现在复用
+   writer/buffer，并把帧分三次顺序写出，省去压缩数据的整段拷贝。
+2. **区块发送缓冲复用**（internal/world/chunk.go、internal/server/chunks.go）：
+   新增 `AppendChunkDataPacket`，会话流式发送区块时复用同一 64 KB 缓冲
+   （写出同步，可安全覆盖）；section 数据暂存改用 `sync.Pool`。
+3. **列高度缓存**（internal/world/chunk.go `Column`/`ColumnAt`、
+   internal/server/entity.go）：此前生物每步移动要做 2 次×约 380 格的整列
+   扫描（`TopBlock` + `TopSolidY`）；现在一次查询获得两者，结果按列缓存，
+   `SetBlockState` 自动失效（内存开销：仅在被查询过的区块上约 1 KB/区块）。
+4. **试过但回退**：直接追加的融合位流打包（`appendPackedIndirect`）实测比
+   `packIndirect` 慢约 25%（寄存器内累积的循环依赖），按“不为微小分配
+   牺牲 CPU”的原则保留原实现。
+
+推算（仅供规划参考）：进入世界（视距 10，441 区块）的编码+压缩耗时
+≈118 ms → ≈58 ms；每区块临时分配 ≈1.15 MB → ≈6 KB（整次进入
+≈507 MB → ≈2.7 MB，显著降低 GC 压力）。
+
+复现命令：
+
+```bash
+go test -count=6 -run '^$' -bench=BenchmarkEncodeChunkDataPacket ./internal/world -benchmem
+go test -count=6 -run '^$' -bench=BenchmarkServerTick ./internal/server -benchmem
+go test -count=3 -run '^$' -bench=BenchmarkWritePacketWithCompression -benchtime=2s ./internal/protocol -benchmem
+```
 
 ## 区块缓存内存行为（手工测量）
 
@@ -131,7 +175,8 @@ Go 1.27.1，i7-12700F）：
 `EncodeEntityPositionSync`（绝对量 <2 ns）出现约 2.7% 的轻微回退，实际影响
 可忽略。以上为单机 micro-benchmark，不等于真实服务器吞吐；真实负载验证仍在
 计划中（见“尚未覆盖”）。对比数据与顶部基准表的绝对值可能因工具链/系统状态
-不同而有差异，请以同次会话内对比为准。
+不同而有差异，请以同次会话内对比为准。注：PGO 数据测量于后续内存/热路径
+优化之前，两种优化叠加后的最新数字见上方基准一览与“内存与热路径优化”一节。
 
 ### 重新生成 PGO 配置
 

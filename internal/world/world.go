@@ -82,6 +82,17 @@ func (w *World) TopBlock(x, z int) (uint16, int, bool) {
 	return chunk.TopBlock(floorMod(x, SectionSize), floorMod(z, SectionSize))
 }
 
+// ColumnAt 返回世界坐标 (x, z) 对应列的高度信息（按列缓存，方块修改后失效）。
+// 一次调用即可获得 TopBlock 与 GroundY 两者所需的数据，供生物移动等
+// 频繁查询的路径使用。区块不可用时返回 false。
+func (w *World) ColumnAt(x, z int) (Column, bool) {
+	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	if err != nil {
+		return Column{}, false
+	}
+	return chunk.Column(floorMod(x, SectionSize), floorMod(z, SectionSize)), true
+}
+
 // BlockAt 返回世界坐标处方块的方块状态；超出世界高度或区块不可用时返回空气。
 func (w *World) BlockAt(x, y, z int) uint16 {
 	if _, ok := SectionIndex(y); !ok {

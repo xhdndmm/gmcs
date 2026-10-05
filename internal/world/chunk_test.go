@@ -421,3 +421,56 @@ func decodeTestVarInt(t *testing.T, data []byte, offset int) (int32, int) {
 	}
 	return value, offset + size
 }
+
+// TestColumnCache 验证列高度查询结果正确，并随方块修改自动失效。
+func TestColumnCache(t *testing.T) {
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
+	// 超平坦：基岩 + 两层泥土 + 草方块，最高固体为草方块。
+	column := chunk.Column(1, 1)
+	if !column.HasTop || column.TopState != GrassBlock || column.TopY != WorldMinY+3 {
+		t.Fatalf("column = %+v", column)
+	}
+	if !column.HasSolid || column.SolidY != WorldMinY+3 {
+		t.Fatalf("solid = %+v", column)
+	}
+
+	// 放置方块：缓存失效并反映新高度。
+	chunk.SetBlockState(1, WorldMinY+5, 1, StoneBlock)
+	column = chunk.Column(1, 1)
+	if !column.HasTop || column.TopY != WorldMinY+5 || column.TopState != StoneBlock {
+		t.Fatalf("after place: %+v", column)
+	}
+	if !column.HasSolid || column.SolidY != WorldMinY+5 {
+		t.Fatalf("after place solid: %+v", column)
+	}
+
+	// 挖掉新方块：回到草方块。
+	chunk.SetBlockState(1, WorldMinY+5, 1, AirBlock)
+	column = chunk.Column(1, 1)
+	if column.TopY != WorldMinY+3 || column.TopState != GrassBlock || column.SolidY != WorldMinY+3 {
+		t.Fatalf("after dig: %+v", column)
+	}
+}
+
+// TestColumnWaterSemantics 验证水对“最高方块”与“最高固体”的区分。
+func TestColumnWaterSemantics(t *testing.T) {
+	chunk := NewChunk(0, 0)
+	chunk.SetBlockState(3, 64, 3, StoneBlock)
+	chunk.SetBlockState(3, 65, 3, WaterBlock)
+	chunk.SetBlockState(3, 66, 3, WaterBlock)
+	column := chunk.Column(3, 3)
+	if !column.HasTop || column.TopY != 66 || column.TopState != WaterBlock {
+		t.Fatalf("top = %+v", column)
+	}
+	if !column.HasSolid || column.SolidY != 64 {
+		t.Fatalf("solid = %+v", column)
+	}
+
+	// 无水无方块的列与越界坐标都返回空列。
+	if empty := chunk.Column(4, 4); empty.HasTop || empty.HasSolid {
+		t.Fatalf("empty = %+v", empty)
+	}
+	if out := chunk.Column(-1, 0); out.HasTop || out.HasSolid {
+		t.Fatalf("out of range = %+v", out)
+	}
+}

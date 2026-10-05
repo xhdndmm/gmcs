@@ -72,6 +72,8 @@ type session struct {
 	inventory item.Inventory
 	// selectedSlot 是当前选中的快捷栏槽位（0–8），由会话串行访问。
 	selectedSlot int
+	// chunkSendBuf 是区块流式发送复用的编码缓冲，由会话 goroutine 串行访问。
+	chunkSendBuf []byte
 
 	keepAliveMu      sync.Mutex
 	pendingKeepAlive int64

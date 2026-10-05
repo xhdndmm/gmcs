@@ -23,3 +23,15 @@ func BenchmarkEncodeChunkDataPacket(b *testing.B) {
 		_ = EncodeChunkDataPacket(chunk)
 	}
 }
+
+// BenchmarkAppendChunkDataPacketReuse 衡量复用输出缓冲的流式编码成本
+// （对应进入世界/移动时连续发送多个区块的实际路径）。
+func BenchmarkAppendChunkDataPacketReuse(b *testing.B) {
+	chunk := SeededGenerator{Seed: 42}.GenerateChunk(0, 0)
+	buffer := make([]byte, 0, chunkDataPacketCapacity)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buffer = AppendChunkDataPacket(buffer[:0], chunk)
+	}
+}

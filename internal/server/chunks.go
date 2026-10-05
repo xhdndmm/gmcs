@@ -39,7 +39,9 @@ func (s *session) syncChunks(centerX, centerZ int) error {
 				if err != nil {
 					return err
 				}
-				if err := s.writePacket(world.EncodeChunkDataPacket(chunk)); err != nil {
+				// 复用编码缓冲：写出是同步的，下一区块可安全覆盖。
+				s.chunkSendBuf = world.AppendChunkDataPacket(s.chunkSendBuf[:0], chunk)
+				if err := s.writePacket(s.chunkSendBuf); err != nil {
 					return err
 				}
 				s.sentChunks[pos] = struct{}{}

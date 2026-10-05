@@ -60,6 +60,15 @@ type Chunk struct {
 	// 区块编码与保存等并发读取同时发生。
 	mu       sync.RWMutex
 	sections [SectionCount]*section
+	// heights 是列高度缓存（惰性分配；SetBlockState 失效对应列）。
+	heights *columnHeights
+}
+
+// columnHeights 是惰性计算的列高度缓存。
+// 值 = y - WorldMinY + 1；0 表示未计算，-1 表示该列没有对应方块。
+type columnHeights struct {
+	top   [SectionSize * SectionSize]int16
+	solid [SectionSize * SectionSize]int16
 }
 
 // section 是一个 16×16×16 的方块段。
@@ -138,31 +147,96 @@ func (c *Chunk) SetBlockState(x, y, z int, state uint16) {
 	}
 	localY := y - (WorldMinY + sectionIndex*SectionSize)
 	s.blocks[blockIndex(x, localY, z)] = state
+	if c.heights != nil {
+		column := (z << 4) | x
+		c.heights.top[column] = 0
+		c.heights.solid[column] = 0
+	}
+}
+
+// Column 描述一列方块的高度信息：一次查询即可获得原先 TopBlock 与
+// TopSolidY 各自需要的结果，且结果按列缓存。
+type Column struct {
+	// TopState/TopY 是最高非空气方块（包括水）；HasTop 为 false 时无。
+	TopState uint16
+	TopY     int
+	HasTop   bool
+	// SolidY 是最高固体（非空气、非水）方块 Y；HasSolid 为 false 时无。
+	SolidY   int
+	HasSolid bool
+}
+
+// Column 返回列 (x, z) 的高度信息；结果按列缓存，方块修改后自动失效。
+// 越界坐标返回空列。
+func (c *Chunk) Column(x, z int) Column {
+	if x < 0 || x >= SectionSize || z < 0 || z >= SectionSize {
+		return Column{}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.columnLocked(x, z)
+}
+
+// columnLocked 返回列信息，必要时计算并填充缓存。调用方必须持有写锁。
+func (c *Chunk) columnLocked(x, z int) Column {
+	if c.heights == nil {
+		c.heights = &columnHeights{}
+	}
+	index := (z << 4) | x
+	topValue := c.heights.top[index]
+	solidValue := c.heights.solid[index]
+	if topValue == 0 || solidValue == 0 {
+		topValue, solidValue = c.computeColumnLocked(x, z)
+		c.heights.top[index] = topValue
+		c.heights.solid[index] = solidValue
+	}
+	column := Column{}
+	if topValue > 0 {
+		y := WorldMinY + int(topValue) - 1
+		column.TopState = c.getBlockStateLocked(x, y, z)
+		column.TopY = y
+		column.HasTop = true
+	}
+	if solidValue > 0 {
+		column.SolidY = WorldMinY + int(solidValue) - 1
+		column.HasSolid = true
+	}
+	return column
+}
+
+// computeColumnLocked 从顶向下扫描一列，返回最高的非空气方块与最高的
+// 固体（非空气、非水）方块；没有时返回 -1。
+func (c *Chunk) computeColumnLocked(x, z int) (topValue, solidValue int16) {
+	topValue, solidValue = -1, -1
+	for y := WorldMinY + WorldHeight - 1; y >= WorldMinY; y-- {
+		state := c.getBlockStateLocked(x, y, z)
+		if state == AirBlock {
+			continue
+		}
+		if topValue < 0 {
+			topValue = int16(y - WorldMinY + 1)
+		}
+		if state != WaterBlock {
+			solidValue = int16(y - WorldMinY + 1)
+			break
+		}
+	}
+	return topValue, solidValue
 }
 
 // TopBlock 返回该列最高的非空气方块（包括水）的方块状态与 Y 坐标。
 func (c *Chunk) TopBlock(x, z int) (uint16, int, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for y := WorldMinY + WorldHeight - 1; y >= WorldMinY; y-- {
-		if state := c.getBlockStateLocked(x, y, z); state != AirBlock {
-			return state, y, true
-		}
+	column := c.Column(x, z)
+	if !column.HasTop {
+		return AirBlock, 0, false
 	}
-	return AirBlock, 0, false
+	return column.TopState, column.TopY, true
 }
 
 // TopSolidY 返回该列最高的固体（非空气、非水）方块的 Y 坐标。
 func (c *Chunk) TopSolidY(x, z int) (int, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for y := WorldMinY + WorldHeight - 1; y >= WorldMinY; y-- {
-		state := c.getBlockStateLocked(x, y, z)
-		if state != AirBlock && state != WaterBlock {
-			return y, true
-		}
-	}
-	return 0, false
+	column := c.Column(x, z)
+	return column.SolidY, column.HasSolid
 }
 
 // SectionBiome 返回指定 section 的生物群系 ID。
@@ -206,27 +280,46 @@ func (c *Chunk) SetSectionBiome(index int, biomeID uint16) {
 // 加上固定的全亮光照数据（约 53 KiB），避免 append 增长时的反复拷贝。
 const chunkDataPacketCapacity = 64 * 1024
 
+// EncodeChunkDataPacket 编码一个独立的 Chunk Data 包。
 func EncodeChunkDataPacket(chunk *Chunk) []byte {
+	return AppendChunkDataPacket(make([]byte, 0, chunkDataPacketCapacity), chunk)
+}
+
+// chunkDataScratchPool 复用 section 数据缓冲（约 16 KB/次），
+// 流式发送大量区块时避免每次分配。
+var chunkDataScratchPool = sync.Pool{
+	New: func() any {
+		buffer := make([]byte, 0, 16*1024)
+		return &buffer
+	},
+}
+
+// AppendChunkDataPacket 把 Chunk Data 包追加到 dst 并返回。
+// dst 容量足够（≥ chunkDataPacketCapacity）时无额外分配；
+// 供区块流式发送复用同一缓冲区。
+func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 	// 与运行时方块修改互斥：整个编码期间持有读锁。
 	chunk.mu.RLock()
 	defer chunk.mu.RUnlock()
 
-	packet := make([]byte, 0, chunkDataPacketCapacity)
-	packet = protocol.AppendVarInt(packet, protocol.PlayPacketIDChunkData)
-	packet = protocol.AppendInt32(packet, int32(chunk.X))
-	packet = protocol.AppendInt32(packet, int32(chunk.Z))
-	packet = protocol.AppendVarInt(packet, 0) // heightmaps 数量
+	dst = protocol.AppendVarInt(dst, protocol.PlayPacketIDChunkData)
+	dst = protocol.AppendInt32(dst, int32(chunk.X))
+	dst = protocol.AppendInt32(dst, int32(chunk.Z))
+	dst = protocol.AppendVarInt(dst, 0) // heightmaps 数量
 
-	data := make([]byte, 0, 16*1024)
+	scratch := chunkDataScratchPool.Get().(*[]byte)
+	data := (*scratch)[:0]
 	for index := range chunk.sections {
 		data = appendSection(data, chunk.sections[index])
 	}
-	packet = protocol.AppendVarInt(packet, int32(len(data)))
-	packet = append(packet, data...)
+	dst = protocol.AppendVarInt(dst, int32(len(data)))
+	dst = append(dst, data...)
+	*scratch = data
+	chunkDataScratchPool.Put(scratch)
 
-	packet = protocol.AppendVarInt(packet, 0) // 方块实体数量
+	dst = protocol.AppendVarInt(dst, 0) // 方块实体数量
 
-	return appendFullSkyLight(packet)
+	return appendFullSkyLight(dst)
 }
 
 // appendSection 按 1.21.11 的 Chunk Section 结构追加一个 section：

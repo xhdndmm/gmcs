@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 )
 
 const MaxPacketSize = 2 << 20
@@ -132,6 +133,14 @@ func WritePacket(writer io.Writer, packet []byte) error {
 	return writeFrame(writer, packet)
 }
 
+// 压缩路径的对象池。zlib.Writer 每次创建都会分配并清零窗口与哈希表
+// （数百 KB 级别），bytes.Buffer 也会随包增长反复分配；对区块流式发送
+// 这类大包复用两者可以显著降低分配与 GC 压力。
+var (
+	compressBufferPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	compressWriterPool = sync.Pool{New: func() any { return zlib.NewWriter(io.Discard) }}
+)
+
 func WritePacketWithCompression(writer io.Writer, packet []byte, threshold int32) error {
 	if threshold < 0 {
 		return fmt.Errorf("compression threshold must not be negative")
@@ -144,17 +153,52 @@ func WritePacketWithCompression(writer io.Writer, packet []byte, threshold int32
 		payload = append(payload, packet...)
 		return writeFrame(writer, payload)
 	}
-	var compressed bytes.Buffer
-	compressor := zlib.NewWriter(&compressed)
-	if _, err := compressor.Write(packet); err != nil {
+
+	buffer := compressBufferPool.Get().(*bytes.Buffer)
+	buffer.Reset()
+	compressor := compressWriterPool.Get().(*zlib.Writer)
+	compressor.Reset(buffer)
+	_, err := compressor.Write(packet)
+	if err == nil {
+		err = compressor.Close()
+	}
+	compressWriterPool.Put(compressor)
+	if err != nil {
+		compressBufferPool.Put(buffer)
 		return fmt.Errorf("compress packet: %w", err)
 	}
-	if err := compressor.Close(); err != nil {
-		return fmt.Errorf("close packet compressor: %w", err)
+
+	// 帧格式：帧长度 varint | 数据长度 varint | 压缩数据。
+	// 分三次顺序写出（调用方持有写锁），避免把压缩数据再整段拷贝一次。
+	var frameLenBuf, dataLenBuf [5]byte
+	dataLen := AppendVarInt(dataLenBuf[:0], int32(len(packet)))
+	frameLen := AppendVarInt(frameLenBuf[:0], int32(len(dataLen)+buffer.Len()))
+	if err = writeAll(writer, frameLen); err != nil {
+		compressBufferPool.Put(buffer)
+		return err
 	}
-	payload := AppendVarInt(nil, int32(len(packet)))
-	payload = append(payload, compressed.Bytes()...)
-	return writeFrame(writer, payload)
+	if err = writeAll(writer, dataLen); err != nil {
+		compressBufferPool.Put(buffer)
+		return err
+	}
+	err = writeAll(writer, buffer.Bytes())
+	compressBufferPool.Put(buffer)
+	return err
+}
+
+// writeAll 写出全部字节，处理短写。
+func writeAll(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		written, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	return nil
 }
 
 func writeFrame(writer io.Writer, packet []byte) error {

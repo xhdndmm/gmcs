@@ -54,6 +54,7 @@
 - [x] 命令权限系统（配置 `ops` 名单；管理命令按玩家过滤命令树并在执行时再次校验）
 - [x] 命令补全建议（Command Suggestion Request/Response；命令名与 `/gamemode` 参数，按权限过滤）
 - [x] 构建产物优化（PGO：`cmd/gmcs/default.pgo` + `scripts/genpgo.sh`；链接参数 `-buildid=`；实测与体积数据见 docs/PERFORMANCE.md）
+- [x] 内存与热路径优化（压缩对象池、区块发送缓冲复用、列高度缓存；实测见 docs/PERFORMANCE.md）
 
 ## 待完成
 

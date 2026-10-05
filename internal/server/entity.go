@@ -345,12 +345,12 @@ func (s *Server) tryMoveMob(m *mob, newX, newZ float64) bool {
 		return false
 	}
 	blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
-	state, _, ok := s.world.TopBlock(blockX, blockZ)
-	if !ok || state == world.WaterBlock {
+	column, ok := s.world.ColumnAt(blockX, blockZ)
+	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
 		return false
 	}
-	groundY, ok := s.world.GroundY(blockX, blockZ)
-	if !ok || math.Abs(groundY-m.Y) > 1.1 {
+	groundY := float64(column.SolidY + 1)
+	if math.Abs(groundY-m.Y) > 1.1 {
 		return false
 	}
 	m.X, m.Y, m.Z = newX, groundY, newZ
@@ -404,12 +404,12 @@ func (s *Server) knockbackMob(m *mob, fromX, fromZ float64) []byte {
 		return nil
 	}
 	blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
-	state, _, ok := s.world.TopBlock(blockX, blockZ)
-	if !ok || state == world.WaterBlock {
+	column, ok := s.world.ColumnAt(blockX, blockZ)
+	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
 		return nil
 	}
-	groundY, ok := s.world.GroundY(blockX, blockZ)
-	if !ok || math.Abs(groundY-m.Y) > 1.1 {
+	groundY := float64(column.SolidY + 1)
+	if math.Abs(groundY-m.Y) > 1.1 {
 		return nil
 	}
 	m.X, m.Y, m.Z = newX, groundY, newZ
@@ -438,15 +438,11 @@ func (s *Server) trySpawnMob(players []*session) {
 		return
 	}
 
-	state, _, ok := s.world.TopBlock(blockX, blockZ)
-	if !ok || state == world.WaterBlock {
+	column, ok := s.world.ColumnAt(blockX, blockZ)
+	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
 		return
 	}
-	groundY, ok := s.world.GroundY(blockX, blockZ)
-	if !ok {
-		return
-	}
-	s.addMob(float64(blockX)+0.5, groundY, float64(blockZ)+0.5)
+	s.addMob(float64(blockX)+0.5, float64(column.SolidY+1), float64(blockZ)+0.5)
 }
 
 // addMob 生成一只僵尸并把 Add Entity 广播给全部玩家。
