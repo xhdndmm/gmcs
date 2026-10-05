@@ -120,6 +120,47 @@ func (w *World) SetBlock(x, y, z int, state uint16) bool {
 	return true
 }
 
+// BlockEntityAt 返回世界坐标处的方块实体数据；不存在时返回空数据。
+func (w *World) BlockEntityAt(x, y, z int) (BlockEntity, error) {
+	if _, ok := SectionIndex(y); !ok {
+		return BlockEntity{}, nil
+	}
+	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	if err != nil {
+		return BlockEntity{}, err
+	}
+	entity, _ := chunk.BlockEntityAt(floorMod(x, SectionSize), y, floorMod(z, SectionSize))
+	return entity, nil
+}
+
+// SetBlockEntity 设置世界坐标处的方块实体数据并标记区块待保存。
+func (w *World) SetBlockEntity(x, y, z int, entity BlockEntity) error {
+	if _, ok := SectionIndex(y); !ok {
+		return nil
+	}
+	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	if err != nil {
+		return err
+	}
+	chunk.SetBlockEntity(floorMod(x, SectionSize), y, floorMod(z, SectionSize), entity)
+	w.MarkDirty(chunk)
+	return nil
+}
+
+// RemoveBlockEntity 清除世界坐标处的方块实体数据并标记区块待保存。
+func (w *World) RemoveBlockEntity(x, y, z int) error {
+	if _, ok := SectionIndex(y); !ok {
+		return nil
+	}
+	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	if err != nil {
+		return err
+	}
+	chunk.RemoveBlockEntity(floorMod(x, SectionSize), y, floorMod(z, SectionSize))
+	w.MarkDirty(chunk)
+	return nil
+}
+
 func floorDiv(a, b int) int {
 	q := a / b
 	if a%b != 0 && (a < 0) != (b < 0) {

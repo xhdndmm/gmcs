@@ -97,8 +97,8 @@ func TestFallDamageProtection(t *testing.T) {
 		}
 		setHealth(maxPlayerHealth)
 		player.resetFallState()
-		player.updateFallState(spawnX, spawnY+20, spawnZ, false)
-		player.updateFallState(spawnX, spawnY, spawnZ, true)
+		player.updateFallState(spawnX, spawnY+20, spawnZ)
+		player.updateFallState(spawnX, spawnY, spawnZ)
 		health, _, _ := player.healthStatus()
 		if math.Abs(float64(health-wantHealth)) > 1e-3 {
 			t.Fatalf("%s: health = %v, want %v", name, health, wantHealth)

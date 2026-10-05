@@ -15,10 +15,11 @@ func TestChunkBatchOnMove(t *testing.T) {
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "BatchMover")
 	player := findSession(t, instance, "BatchMover")
-	x, y, z, _, _ := player.playerPosition()
+	x, _, z, _, _ := player.playerPosition()
 
 	// 向东移动 16 格跨一个区块：视距 2 的网格新增一列 5 个区块。
-	sendPlayerPosition(t, conn, x+16, y, z, true)
+	// 逐 tick 速度上限为 10 格/包，这里按 8 格一步分步移动。
+	walkTo(t, conn, instance, x+16, z)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCenterChunk)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDChunkBatchStart)
 	for i := 0; i < 5; i++ {

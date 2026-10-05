@@ -84,6 +84,12 @@ type Server struct {
 	soundItemPickup int32
 	itemsEnabled    bool
 
+	// 容器系统：containerDefs 是方块名 → 容器定义（注册表数据缺失时为空）；
+	// containers 是已打开容器（按方块坐标索引），受 containerMu 保护。
+	containerDefs map[string]*containerDef
+	containerMu   sync.Mutex
+	containers    map[[3]int]*containerState
+
 	// fallDamageMultipliers 是落点方块的摔落伤害倍率（New 中解析）。
 	fallDamageMultipliers map[uint16]float32
 
@@ -148,12 +154,17 @@ func New(cfg config.Config) (*Server, error) {
 		rsaKey:                 rsaKey,
 		httpClient:             &http.Client{Timeout: 10 * time.Second},
 		playerData:             make(map[[16]byte]playerRecord),
+		containers:             make(map[[3]int]*containerState),
 	}
 	server.resolveMobRegistryIDs()
 	server.resolvePlayerEntityType()
 	server.resolveItemRegistryIDs()
 	server.resolveFallDamageBlocks()
+	server.resolveContainerDefs()
 	server.blockNames = resolveBlockNames()
+	if len(server.containerDefs) == 0 {
+		slog.Warn("容器交互已禁用：注册表数据缺失")
+	}
 	if !server.mobsEnabled {
 		slog.Warn("生物系统已禁用：注册表数据缺失")
 	}

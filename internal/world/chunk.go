@@ -62,6 +62,8 @@ type Chunk struct {
 	sections [SectionCount]*section
 	// heights 是列高度缓存（惰性分配；SetBlockState 失效对应列）。
 	heights *columnHeights
+	// blockEntities 是方块实体数据（索引见 blockEntityIndex）；零值为空。
+	blockEntities map[int]BlockEntity
 }
 
 // columnHeights 是惰性计算的列高度缓存。
@@ -307,6 +309,8 @@ func (c *Chunk) SetSectionBiome(index int, biomeID uint16) {
 const chunkDataPacketCapacity = 64 * 1024
 
 // EncodeChunkDataPacket 编码一个独立的 Chunk Data 包。
+// blockEntityTypeID 是方块实体类型 ID（chunk 中的方块实体共用；
+// 无方块实体时不会写入）。
 func EncodeChunkDataPacket(chunk *Chunk) []byte {
 	return AppendChunkDataPacket(make([]byte, 0, chunkDataPacketCapacity), chunk)
 }
@@ -355,7 +359,7 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 	*scratch = data
 	chunkDataScratchPool.Put(scratch)
 
-	dst = protocol.AppendVarInt(dst, 0) // 方块实体数量
+	dst = chunk.appendBlockEntityPacketData(dst)
 
 	return appendFullSkyLight(dst)
 }

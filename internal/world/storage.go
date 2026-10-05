@@ -21,14 +21,17 @@ import (
 //
 //	magic "GMCS" (4B) | version u16 | x i32 | z i32 | 24 × section
 //	section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
+//	(version 2+) blockEntityCount varint | 每项: packedXZ u8 | y i16 | type varint
+//	                                          | itemCount varint | (itemID varint | count varint)*
 //
+// version 1 的负载不含方块实体（读取时视为空），version 2 起追加。
 // 所有多字节整数均为大端；负载使用 zlib 压缩（区域文件压缩类型 2）。
 const (
 	regionShift   = 5
 	regionSize    = 1 << regionShift // 32 个区块
 	sectorSize    = 4096
 	headerSectors = 2
-	chunkVersion  = 1
+	chunkVersion  = 2
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 )
@@ -302,6 +305,12 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 			size += SectionVolume * 2
 		}
 	}
+	// 方块实体：数量前缀 + 每项 1 字节坐标 + type/槽位数的 varint 上限，
+	// 每个槽位按 itemID/count 两个 varint 的上限（10 字节）估算。
+	size += 5
+	for _, entity := range chunk.blockEntities {
+		size += 11 + len(entity.Items)*10
+	}
 	payload := make([]byte, size)
 	copy(payload, "GMCS")
 	binary.BigEndian.PutUint16(payload[4:6], chunkVersion)
@@ -324,7 +333,35 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 			offset = writeSectionPayload(payload, offset, &s.storage)
 		}
 	}
-	return payload
+	offset = writeBlockEntities(payload, offset, chunk)
+	return payload[:offset]
+}
+
+// writeBlockEntities 把方块实体写入 dst 的 offset 处，返回新偏移。
+// 按索引排序输出，保证同一区块的负载可复现。
+func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
+	offset += binary.PutUvarint(dst[offset:], uint64(len(chunk.blockEntities)))
+	if len(chunk.blockEntities) == 0 {
+		return offset
+	}
+	indices := make([]int, 0, len(chunk.blockEntities))
+	for index := range chunk.blockEntities {
+		indices = append(indices, index)
+	}
+	sortInts(indices)
+	for _, index := range indices {
+		entity := chunk.blockEntities[index]
+		dst[offset] = byte(index) // 低 8 位即 packed XZ（x<<4|z）
+		offset++
+		offset += binary.PutUvarint(dst[offset:], uint64(uint32(int64(entity.TypeID))))
+		// 槽位数量与内容。
+		offset += binary.PutUvarint(dst[offset:], uint64(len(entity.Items)))
+		for _, slot := range entity.Items {
+			offset += binary.PutUvarint(dst[offset:], uint64(uint32(slot.ItemID)))
+			offset += binary.PutUvarint(dst[offset:], uint64(slot.Count))
+		}
+	}
+	return offset
 }
 
 // writeSectionPayload 把 v1 存储格式的 section 方块数据
@@ -362,12 +399,13 @@ func writeSectionPayload(dst []byte, offset int, st *sectionStorage) int {
 	return offset
 }
 
-// decodeChunkPayload 解析存储负载。
+// decodeChunkPayload 解析存储负载（版本 1 与 2）。
 func decodeChunkPayload(payload []byte) (*Chunk, error) {
 	if len(payload) < 14 || string(payload[:4]) != "GMCS" {
 		return nil, fmt.Errorf("区块负载头无效")
 	}
-	if version := binary.BigEndian.Uint16(payload[4:6]); version != chunkVersion {
+	version := binary.BigEndian.Uint16(payload[4:6])
+	if version < 1 || version > chunkVersion {
 		return nil, fmt.Errorf("不支持的区块负载版本 %d", version)
 	}
 	chunkX := int(int32(binary.BigEndian.Uint32(payload[6:10])))
@@ -405,10 +443,73 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 			chunk.sections[index] = s
 		}
 	}
+	if version >= 2 {
+		var err error
+		offset, err = decodeBlockEntities(payload, offset, chunk)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if offset != len(payload) {
 		return nil, fmt.Errorf("区块负载尾部有 %d 字节多余数据", len(payload)-offset)
 	}
 	return chunk, nil
+}
+
+// decodeBlockEntities 解析版本 2 负载中的方块实体部分。
+func decodeBlockEntities(payload []byte, offset int, chunk *Chunk) (int, error) {
+	count, size := binary.Uvarint(payload[offset:])
+	if size <= 0 {
+		return 0, fmt.Errorf("方块实体数量前缀无效")
+	}
+	offset += size
+	if count > uint64(len(payload)) {
+		return 0, fmt.Errorf("方块实体数量 %d 越界", count)
+	}
+	for i := uint64(0); i < count; i++ {
+		if offset >= len(payload) {
+			return 0, fmt.Errorf("方块实体数据截断")
+		}
+		index := int(payload[offset])
+		offset++
+		typeID, size := binary.Uvarint(payload[offset:])
+		if size <= 0 {
+			return 0, fmt.Errorf("方块实体类型无效")
+		}
+		offset += size
+		slotCount, size := binary.Uvarint(payload[offset:])
+		if size <= 0 {
+			return 0, fmt.Errorf("方块实体槽位数量无效")
+		}
+		offset += size
+		if slotCount > SectionVolume {
+			return 0, fmt.Errorf("方块实体槽位数量 %d 越界", slotCount)
+		}
+		entity := BlockEntity{TypeID: int32(typeID)}
+		if slotCount > 0 {
+			entity.Items = make([]ContainerItem, slotCount)
+			for slot := range entity.Items {
+				itemID, size := binary.Uvarint(payload[offset:])
+				if size <= 0 {
+					return 0, fmt.Errorf("容器槽位物品 ID 无效")
+				}
+				offset += size
+				itemCount, size := binary.Uvarint(payload[offset:])
+				if size <= 0 {
+					return 0, fmt.Errorf("容器槽位数量无效")
+				}
+				offset += size
+				entity.Items[slot] = ContainerItem{ItemID: int32(itemID), Count: int32(itemCount)}
+			}
+		}
+		if chunk.blockEntities == nil {
+			chunk.blockEntities = make(map[int]BlockEntity)
+		}
+		if !entity.Empty() {
+			chunk.blockEntities[index] = entity
+		}
+	}
+	return offset, nil
 }
 
 // 存储压缩使用独立对象池：Flush/UnloadFar 会连续压缩大量区块，

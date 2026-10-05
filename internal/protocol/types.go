@@ -20,6 +20,13 @@ func AppendInt64(dst []byte, value int64) []byte {
 	return append(dst, buf[:]...)
 }
 
+// AppendInt16 追加一个大端 int16。
+func AppendInt16(dst []byte, value int16) []byte {
+	var buf [2]byte
+	binary.BigEndian.PutUint16(buf[:], uint16(value))
+	return append(dst, buf[:]...)
+}
+
 func AppendBool(dst []byte, value bool) []byte {
 	if value {
 		return append(dst, 0x01)

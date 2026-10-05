@@ -79,10 +79,15 @@ var staticTagRegistries = map[string]string{
 }
 
 // staticIDRegistries 是需要运行时查询条目 protocol_id 的静态注册表。
-// 实体类型与音效事件不是同步注册表，协议中的 ID 必须使用客户端内置编号。
+// 实体类型与音效事件不是同步注册表，协议中的 ID 必须使用客户端内置编号；
+// block 用于 Block Action 等需要方块 ID 的场景，menu 与 block_entity_type
+// 分别用于打开容器窗口与方块实体数据。
 var staticIDRegistries = []string{
 	"minecraft:entity_type",
 	"minecraft:sound_event",
+	"minecraft:block",
+	"minecraft:menu",
+	"minecraft:block_entity_type",
 }
 
 // skippedTagDirs 是数据包中存在 tags、但服务器不通过 Update Tags 发送的

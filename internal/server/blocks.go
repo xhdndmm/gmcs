@@ -86,6 +86,10 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	if current == world.AirBlock || current == world.WaterBlock || current == world.BedrockBlock {
 		return // 空气/水/基岩不可破坏
 	}
+	// 破坏容器方块：先关闭观察窗口，再把内容物掉落到世界中（与原版一致）。
+	if def, _, ok := s.containerForState(current); ok {
+		s.destroyContainer(action.X, action.Y, action.Z, player, def)
+	}
 	if !s.world.SetBlock(action.X, action.Y, action.Z, world.AirBlock) {
 		return
 	}
@@ -99,7 +103,7 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 // blockFaceOffsets 是 Use Item On 的六个朝向对应的放置偏移（-Y、+Y、-Z、+Z、-X、+X）。
 var blockFaceOffsets = [6][3]int{{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}}
 
-// handleUseItemOn 处理 Use Item On（block_place）包：放置方块。
+// handleUseItemOn 处理 Use Item On（block_place）包：打开容器或放置方块。
 func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if !player.canInteractBlocks() || player.isDead() || use.Hand != 0 {
 		return
@@ -109,6 +113,13 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	}
 	if !player.withinBlockReach(use.X, use.Y, use.Z) {
 		return
+	}
+	// 右键容器方块：打开窗口（潜行时改为放置，与原版一致）。
+	if !player.sneaking {
+		if def, blockName, ok := s.containerForState(s.world.BlockAt(use.X, use.Y, use.Z)); ok {
+			s.openContainer(player, use.X, use.Y, use.Z, def, blockName)
+			return
+		}
 	}
 	offset := blockFaceOffsets[use.Direction]
 	placeX := use.X + offset[0]

@@ -78,6 +78,19 @@ type session struct {
 	// chunkSendBuf 是区块流式发送复用的编码缓冲，由会话 goroutine 串行访问。
 	chunkSendBuf []byte
 
+	// 容器窗口状态（由会话串行访问）：openContainer 是当前打开的容器，
+	// windowID 是窗口编号（0 保留给玩家物品栏），windowState 是槽位状态号，
+	// cursor 是鼠标持有的物品，drag 是进行中的拖拽分发。
+	openContainer *containerState
+	windowID      int32
+	windowState   int32
+	cursor        item.Stack
+	drag          *dragState
+	// windowCounter 是窗口编号分配计数器。
+	windowCounter int32
+	// sneaking 记录客户端上报的潜行状态（潜行时交互不打开容器）。
+	sneaking bool
+
 	keepAliveMu      sync.Mutex
 	pendingKeepAlive int64
 
@@ -98,13 +111,23 @@ type session struct {
 	// regenTicks 是脱战回血的计数（每 playerRegenIntervalTicks 恢复 1 点）。
 	regenTicks int
 
-	// 下落跟踪（摔落伤害）：仅由会话读循环串行访问。
-	fallStartY  float64
-	airborne    bool
-	wasOnGround bool
+	// 下落跟踪（摔落伤害）：以服务器端地面检测驱动，仅由会话读循环访问。
+	fallStartY float64
+	airborne   bool
+	// lastMoveTime 是上一个被接受的移动包时间（逐 tick 速度上限用）。
+	lastMoveTime time.Time
 
 	// joined 在初始数据包全部发送后置位；在此之前生物不会索敌该玩家。
 	joined atomic.Bool
+}
+
+// nextWindowID 分配一个新的容器窗口编号（1–100 循环，0 保留给玩家物品栏）。
+func (s *session) nextWindowID() int32 {
+	s.windowCounter++
+	if s.windowCounter > 100 {
+		s.windowCounter = 1
+	}
+	return s.windowCounter
 }
 
 // markJoined 标记玩家已完成进入世界的初始化。
@@ -129,7 +152,6 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		saturation:      playerSaturation,
 		gameMode:        server.defaultGameMode,
 		sentChunks:      make(map[world.ChunkPos]struct{}),
-		wasOnGround:     true,
 	}
 }
 
@@ -174,14 +196,63 @@ func (s *session) canBeAttacked() bool {
 
 // maxMoveDistance 是单个移动数据包允许的最大位移（方块）。
 // 超出该值的位移（瞬移式作弊的典型特征）会被拒绝并回拉。
-// 这是一个保守阈值，未逐 tick 校验速度（见 docs/TODO.md 已知限制）。
+// 更细的速度限制见 maxMoveSpeedPerTick。
 const maxMoveDistance = 100.0
 
-// acceptMove 报告目标位置是否在允许的单包位移范围内。
-func (s *session) acceptMove(x, y, z float64) bool {
+// moveSpeedPerTick 是逐 tick 允许的位移基数（方块）。
+// 与原版（ServerGamePacketListenerImpl）一致：允许移动距离的平方不超过
+// 100 × 经过的 tick 数，即距离 ≤ 10 × √tick 数；tick 数按距上一个被接受
+// 的移动包的时间折算（至少 1 tick）。闲置超过 moveTicksReset（1 秒）时
+// 按 1 tick 计，避免“先挂机再瞬移”绕过限制。
+const (
+	moveSpeedPerTick = 10.0
+	moveTicksReset   = 20.0
+)
+
+// acceptMove 报告目标位置是否在允许的位移与速度范围内。
+func (s *session) acceptMove(x, y, z float64, now time.Time) bool {
 	px, py, pz, _, _ := s.playerPosition()
 	dx, dy, dz := x-px, y-py, z-pz
-	return dx*dx+dy*dy+dz*dz <= maxMoveDistance*maxMoveDistance
+	distanceSq := dx*dx + dy*dy + dz*dz
+	if distanceSq > maxMoveDistance*maxMoveDistance {
+		return false
+	}
+	elapsedTicks := 1.0
+	if !s.lastMoveTime.IsZero() {
+		elapsedTicks = math.Max(1, now.Sub(s.lastMoveTime).Seconds()*20)
+		if elapsedTicks > moveTicksReset {
+			elapsedTicks = 1
+		}
+	}
+	allowed := moveSpeedPerTick * math.Sqrt(elapsedTicks)
+	return math.Sqrt(distanceSq) <= allowed
+}
+
+// isSolidBlock 报告世界坐标处是否为固体方块（非空气、非水）。
+func (s *Server) isSolidBlock(x, y, z int) bool {
+	state := s.world.BlockAt(x, y, z)
+	return state != world.AirBlock && state != world.WaterBlock
+}
+
+// positionClear 报告玩家身体（脚部与头部采样点）是否未嵌入固体方块。
+// 用于检测穿墙（no-clip）式移动：客户端自身的碰撞不允许进入固体方块，
+// 因此“终点嵌在方块里”只可能来自作弊或状态错乱。
+func (s *Server) positionClear(x, y, z float64) bool {
+	blockX, blockZ := int(math.Floor(x)), int(math.Floor(z))
+	if s.isSolidBlock(blockX, int(math.Floor(y+0.1)), blockZ) {
+		return false
+	}
+	return !s.isSolidBlock(blockX, int(math.Floor(y+1.5)), blockZ)
+}
+
+// supportedAt 报告玩家脚下是否有可站立的固体表面（服务器端重力模拟）。
+func (s *Server) supportedAt(x, y, z float64) bool {
+	return s.isSolidBlock(int(math.Floor(x)), int(math.Floor(y-0.08)), int(math.Floor(z)))
+}
+
+// feetInWater 报告玩家脚部是否位于水中（落水重置下落高度）。
+func (s *Server) feetInWater(x, y, z float64) bool {
+	return s.world.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))) == world.WaterBlock
 }
 
 // resyncPosition 把客户端拉回服务器记录的位置（拒绝越界或无效移动）。
@@ -203,43 +274,45 @@ func (s *session) resyncPosition() {
 // 每多 1 格造成 1 点伤害）。
 const fallDamageThreshold = 3.0
 
-// updateFallState 根据移动包的着地标志跟踪下落并结算摔落伤害。
-// 落点是水时不受伤害；创造/旁观模式由 applyDamage 直接忽略。
-// 仅由会话读循环调用。
-func (s *session) updateFallState(x, y, z float64, onGround bool) {
-	switch {
-	case !onGround:
-		if s.wasOnGround {
+// updateFallState 以服务器端地面检测（脚下是否有固体方块）跟踪下落并结算
+// 摔落伤害，不依赖客户端上报的着地标志。落点是水时不受伤害；
+// 创造/旁观模式由 applyDamage 直接忽略。仅由会话读循环调用。
+func (s *session) updateFallState(x, y, z float64) {
+	if !s.server.supportedAt(x, y, z) {
+		if s.server.feetInWater(x, y, z) {
+			// 落水/游泳中断下落，避免把“高处落水再上岸”算成摔落。
+			s.airborne = false
+			s.fallStartY = y
+			return
+		}
+		if !s.airborne {
 			s.airborne = true
 			s.fallStartY = y
-		} else if s.airborne && y > s.fallStartY {
+		} else if y > s.fallStartY {
 			s.fallStartY = y
 		}
-	case s.airborne:
-		s.airborne = false
-		fall := s.fallStartY - y
-		if fall > fallDamageThreshold {
-			blockX, blockZ := int(math.Floor(x)), int(math.Floor(z))
-			landY := int(math.Floor(y))
-			feet := s.server.world.BlockAt(blockX, landY, blockZ)
-			if feet != world.WaterBlock {
-				// 落点表面取脚下第一格（受保护方块减伤：干草堆/床/粘液块/蜂蜜块/细雪）。
-				surface := s.server.world.BlockAt(blockX, landY-1, blockZ)
-				damage := float32(math.Ceil(fall - fallDamageThreshold))
-				damage *= s.server.fallDamageMultiplier(surface)
-				if damage > 0 {
-					s.server.damagePlayer(s, damage, "a fall", 0, s.server.fallDamageTypeID, nil)
-				}
-			}
-		}
+		return
 	}
-	s.wasOnGround = onGround
+	if !s.airborne {
+		return
+	}
+	s.airborne = false
+	fall := s.fallStartY - y
+	if fall <= fallDamageThreshold {
+		return
+	}
+	// 落点表面取脚下第一格（受保护方块减伤：干草堆/床/粘液块/蜂蜜块/细雪）。
+	surface := s.server.world.BlockAt(int(math.Floor(x)), int(math.Floor(y))-1, int(math.Floor(z)))
+	damage := float32(math.Ceil(fall - fallDamageThreshold))
+	damage *= s.server.fallDamageMultiplier(surface)
+	if damage > 0 {
+		s.server.damagePlayer(s, damage, "a fall", 0, s.server.fallDamageTypeID, nil)
+	}
 }
 
 // resetFallState 清除下落跟踪（传送/重生/拉回后调用，避免误判摔落伤害）。
 func (s *session) resetFallState() {
 	s.airborne = false
-	s.wasOnGround = true
 }
 
 // fallDamageMultiplier 返回落点方块对摔落伤害的倍率（默认 1；干草堆 0.2，
@@ -732,6 +805,8 @@ func (s *session) runPlay() {
 	s.playReadLoop()
 	close(stop)
 	keepAliveWG.Wait()
+	// 会话结束：保存并关闭可能仍打开的容器窗口。
+	s.server.closeContainer(s, false)
 	slog.Info("player disconnected", "name", s.name)
 }
 
@@ -861,30 +936,32 @@ func (s *session) playReadLoop() {
 				s.desiredChunksPerTick = rate
 			}
 		case protocol.PlayServerboundPacketIDPlayerPosition:
-			x, y, z, onGround, err := protocol.ParsePlayerPosition(packet)
+			x, y, z, _, err := protocol.ParsePlayerPosition(packet)
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
-			if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z) {
+			if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, time.Now()) || !s.server.positionClear(x, y, z) {
 				s.resyncPosition()
 				continue
 			}
+			s.lastMoveTime = time.Now()
 			_, _, _, yaw, pitch := s.playerPosition()
 			s.setPlayerPosition(x, y, z, yaw, pitch)
-			s.updateFallState(x, y, z, onGround)
+			s.updateFallState(x, y, z)
 			s.server.broadcastPlayerMove(s)
 			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
-			x, y, z, yaw, pitch, onGround, err := protocol.ParsePlayerPositionRotation(packet)
+			x, y, z, yaw, pitch, _, err := protocol.ParsePlayerPositionRotation(packet)
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
-			if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z) {
+			if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, time.Now()) || !s.server.positionClear(x, y, z) {
 				s.resyncPosition()
 				continue
 			}
+			s.lastMoveTime = time.Now()
 			s.setPlayerPosition(x, y, z, yaw, pitch)
-			s.updateFallState(x, y, z, onGround)
+			s.updateFallState(x, y, z)
 			s.server.broadcastPlayerMove(s)
 			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerRotation:
@@ -919,6 +996,22 @@ func (s *session) playReadLoop() {
 		case protocol.PlayServerboundPacketIDSwingArm:
 			if err := protocol.ParseSwingArm(packet); err == nil {
 				s.server.broadcastSwing(s)
+			}
+		case protocol.PlayServerboundPacketIDContainerClick:
+			click, err := protocol.ParseContainerClick(packet)
+			if err != nil {
+				slog.Debug("malformed container click", "name", s.name, "error", err)
+				continue
+			}
+			s.server.handleContainerClick(s, click)
+		case protocol.PlayServerboundPacketIDContainerClose:
+			windowID, err := protocol.ParseContainerClose(packet)
+			if err == nil && s.openContainer != nil && windowID == s.windowID {
+				s.server.closeContainer(s, false)
+			}
+		case protocol.PlayServerboundPacketIDPlayerInput:
+			if flags, err := protocol.ParsePlayerInput(packet); err == nil {
+				s.sneaking = flags&protocol.PlayerInputShift != 0
 			}
 		case protocol.PlayServerboundPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {

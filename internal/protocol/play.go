@@ -19,7 +19,9 @@ const (
 	PlayPacketIDPlayerInfoUpdate     = 0x44 // clientbound
 	PlayPacketIDSynchronizePlayerPos = 0x46 // clientbound
 	PlayPacketIDBlockUpdate          = 0x08 // clientbound
-	PlayPacketIDRemoveEntities       = 0x4B // clientbound
+	// PlayPacketIDBlockAction 是 Block Action（方块动画，如箱子开合）。
+	PlayPacketIDBlockAction    = 0x07 // clientbound
+	PlayPacketIDRemoveEntities = 0x4B // clientbound
 	// PlayPacketIDForgetLevelChunk 是 Forget Level Chunk（卸载客户端区块缓存）。
 	PlayPacketIDForgetLevelChunk   = 0x25 // clientbound
 	PlayPacketIDSetCenterChunk     = 0x5C // clientbound
@@ -366,6 +368,31 @@ func EncodeBlockUpdate(x, y, z int, state int32) []byte {
 	packet = AppendInt64(packet, PackPosition(x, y, z))
 	return AppendVarInt(packet, state)
 }
+
+// EncodeBlockAction 编码 Block Action 包（方块动画与事件，如箱子开合）。
+// blockID 是方块注册表 ID（不是方块状态 ID）。
+func EncodeBlockAction(x, y, z int, paramA, paramB uint8, blockID int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDBlockAction))
+	packet = AppendInt64(packet, PackPosition(x, y, z))
+	packet = append(packet, paramA, paramB)
+	return AppendVarInt(packet, blockID)
+}
+
+// ParsePlayerInput 解析 Player Input 包，返回原始输入位标志。
+// 位定义（低位在前）：0 前进、1 后退、2 左、3 右、4 跳跃、5 潜行、6 冲刺。
+func ParsePlayerInput(packet []byte) (uint8, error) {
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDPlayerInput {
+		return 0, fmt.Errorf("invalid player input packet")
+	}
+	if len(packet) <= offset {
+		return 0, fmt.Errorf("player input packet missing flags")
+	}
+	return packet[offset], nil
+}
+
+// PlayerInputShift 是 Player Input 位标志中的潜行位。
+const PlayerInputShift = 1 << 5
 
 // EncodeRemoveEntities 编码 Remove Entities 包（实体 ID 列表）。
 func EncodeRemoveEntities(ids []int32) []byte {
