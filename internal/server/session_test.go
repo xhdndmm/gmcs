@@ -97,6 +97,7 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	instance.keepAliveInterval = 50 * time.Millisecond
+	instance.playerAutosaveInterval = time.Hour // 避免周期保存干扰本测试的时序
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

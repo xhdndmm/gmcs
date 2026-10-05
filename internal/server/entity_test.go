@@ -28,6 +28,7 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 	// 后台区块卸载由测试显式调用 unloadFarChunks 驱动：避免周期卸载在
 	// “加载区块 → 断言数量”之间存在竞态（-race 或慢机器下必现）。
 	instance.chunkUnloadInterval = time.Hour
+	instance.playerAutosaveInterval = time.Hour // 玩家数据由测试显式保存/断言
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

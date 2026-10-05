@@ -205,20 +205,28 @@ func (c *Chunk) columnLocked(x, z int) Column {
 }
 
 // computeColumnLocked 从顶向下扫描一列，返回最高的非空气方块与最高的
-// 固体（非空气、非水）方块；没有时返回 -1。
+// （非空气、非水）方块的编码值（y - WorldMinY + 1）；没有时返回 -1。
+// 按 section 扫描并跳过未分配的 section（全空气）以减少遍历。
 func (c *Chunk) computeColumnLocked(x, z int) (topValue, solidValue int16) {
 	topValue, solidValue = -1, -1
-	for y := WorldMinY + WorldHeight - 1; y >= WorldMinY; y-- {
-		state := c.getBlockStateLocked(x, y, z)
-		if state == AirBlock {
+	for sectionIndex := SectionCount - 1; sectionIndex >= 0; sectionIndex-- {
+		s := c.sections[sectionIndex]
+		if s == nil || s.blocks == nil {
 			continue
 		}
-		if topValue < 0 {
-			topValue = int16(y - WorldMinY + 1)
-		}
-		if state != WaterBlock {
-			solidValue = int16(y - WorldMinY + 1)
-			break
+		base := sectionIndex * SectionSize
+		for localY := SectionSize - 1; localY >= 0; localY-- {
+			state := s.blocks[blockIndex(x, localY, z)]
+			if state == AirBlock {
+				continue
+			}
+			if topValue < 0 {
+				topValue = int16(base + localY + 1)
+			}
+			if state != WaterBlock {
+				solidValue = int16(base + localY + 1)
+				return topValue, solidValue
+			}
 		}
 	}
 	return topValue, solidValue
@@ -270,7 +278,8 @@ func (c *Chunk) SetSectionBiome(index int, biomeID uint16) {
 // Chunk Data and Update Light 包。
 //
 // 行为：
-//   - heightmaps 为空数组（wiki：客户端会以最小值初始化，不影响接受区块）；
+//   - heightmaps 发送 WORLD_SURFACE（1）与 MOTION_BLOCKING（4）：
+//     9 位/列、每 long 7 个值、共 37 个 long（1.21.5+ 格式）；
 //   - 方块状态使用调色板容器：单值（Bits Per Entry = 0）、间接调色板（4–8 位）
 //     或全局调色板（15 位），采用 1.16+ 的紧密位流打包；
 //   - 不包含方块实体；
@@ -305,7 +314,19 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 	dst = protocol.AppendVarInt(dst, protocol.PlayPacketIDChunkData)
 	dst = protocol.AppendInt32(dst, int32(chunk.X))
 	dst = protocol.AppendInt32(dst, int32(chunk.Z))
-	dst = protocol.AppendVarInt(dst, 0) // heightmaps 数量
+	// heightmaps：WORLD_SURFACE（1）与 MOTION_BLOCKING（4）。本世界的方块
+	// 非固体即流体，两者对“占用高度”的定义结果一致（列最高非空气方块），
+	// 因此共用同一份打包数据（37 个 long）。
+	var heights [SectionSize * SectionSize]uint16
+	for columnZ := 0; columnZ < SectionSize; columnZ++ {
+		for columnX := 0; columnX < SectionSize; columnX++ {
+			heights[(columnZ<<4)|columnX] = chunk.topHeightLocked(columnX, columnZ)
+		}
+	}
+	heightmapLongs := packBitsPadded(heights[:], heightmapBits)
+	dst = protocol.AppendVarInt(dst, 2)
+	dst = appendHeightmap(dst, heightmapTypeWorldSurface, heightmapLongs)
+	dst = appendHeightmap(dst, heightmapTypeMotionBlocking, heightmapLongs)
 
 	scratch := chunkDataScratchPool.Get().(*[]byte)
 	data := (*scratch)[:0]
@@ -320,6 +341,44 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 	dst = protocol.AppendVarInt(dst, 0) // 方块实体数量
 
 	return appendFullSkyLight(dst)
+}
+
+// heightmap 类型（1.21.11 的 mapper：0 world_surface_wg、1 world_surface、
+// 2 ocean_floor_wg、3 ocean_floor、4 motion_blocking、5 motion_blocking_no_leaves）。
+const (
+	heightmapTypeWorldSurface   = 1
+	heightmapTypeMotionBlocking = 4
+	// heightmapBits 是 heightmap 值的位宽：ceil(log2(WorldHeight+1)) = 9。
+	heightmapBits = 9
+)
+
+// appendHeightmap 追加一个 heightmap：类型 + 带长度前缀的 long 数组。
+// 数据需已按 heightmapBits 打包（每 long 7 个值、高位填充、不允许跨 long）。
+func appendHeightmap(dst []byte, kind int32, longs []int64) []byte {
+	dst = protocol.AppendVarInt(dst, kind)
+	dst = protocol.AppendVarInt(dst, int32(len(longs)))
+	for _, value := range longs {
+		dst = protocol.AppendInt64(dst, value)
+	}
+	return dst
+}
+
+// topHeightLocked 返回列 (x, z) 的 heightmap 编码值：最高非空气方块的
+// y - WorldMinY + 1；全空列为 0。按 section 自上而下扫描并跳过未分配的
+// section（全空气）。调用方必须持有 c.mu（读或写）。
+func (c *Chunk) topHeightLocked(x, z int) uint16 {
+	for sectionIndex := SectionCount - 1; sectionIndex >= 0; sectionIndex-- {
+		s := c.sections[sectionIndex]
+		if s == nil || s.blocks == nil {
+			continue
+		}
+		for localY := SectionSize - 1; localY >= 0; localY-- {
+			if s.blocks[blockIndex(x, localY, z)] != AirBlock {
+				return uint16(sectionIndex*SectionSize + localY + 1)
+			}
+		}
+	}
+	return 0
 }
 
 // appendSection 按 1.21.11 的 Chunk Section 结构追加一个 section：

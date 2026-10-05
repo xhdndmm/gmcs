@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"gmcs/internal/config"
 	"gmcs/internal/item"
@@ -22,18 +24,22 @@ import (
 // 保存位置/朝向、生命/饥饿/饱和、游戏模式与物品栏（物品按命名空间 ID 存储，
 // 跨 Minecraft 版本仍可读）。写入为“临时文件 + 重命名”的原子替换。
 //
-// 保存时机：玩家退出（会话结束时）与服务器关闭（会话关闭同样走退出路径）；
-// 服务器进程被强杀（SIGKILL）或崩溃时会丢失自上次退出以来的进度（见
-// docs/TODO.md 已知限制）。
+// 保存时机：玩家退出（会话结束时）、服务器关闭（会话关闭同样走退出路径）
+// 与周期自动保存（defaultPlayerAutosaveInterval）；死亡状态一并保存，
+// 重连后保持死亡（等待重生请求）。强杀（SIGKILL）最坏丢失一个保存周期的进度。
 
-const playerFileName = "players.json"
+const (
+	playerFileName = "players.json"
+	// defaultPlayerAutosaveInterval 是玩家数据的周期自动保存间隔。
+	defaultPlayerAutosaveInterval = 30 * time.Second
+)
 
 type playerFile struct {
 	Players []playerRecord `json:"players"`
 }
 
-// playerRecord 是一个玩家的持久化状态。死亡状态不保存：生命值 <= 0 的记录
-// 在进入世界时按满生命处理。
+// playerRecord 是一个玩家的持久化状态。死亡状态（Dead）会保存：
+// 重连后仍处于死亡状态，需要发送重生请求（与原版一致）。
 type playerRecord struct {
 	UUID       string       `json:"uuid"`
 	Name       string       `json:"name"`
@@ -43,6 +49,7 @@ type playerRecord struct {
 	Yaw        float32      `json:"yaw"`
 	Pitch      float32      `json:"pitch"`
 	Health     float32      `json:"health"`
+	Dead       bool         `json:"dead"`
 	Food       int32        `json:"food"`
 	Saturation float32      `json:"saturation"`
 	GameMode   string       `json:"game_mode"`
@@ -95,8 +102,51 @@ func (s *Server) playerDataSnapshot(uuid [16]byte) (playerRecord, bool) {
 	return record, ok
 }
 
-// savePlayerData 在会话结束时把玩家状态写入内存表并落盘。
-// 必须由会话 goroutine 调用（物品栏不是并发安全的）。
+// playerAutosaveLoop 周期性保存全部在线玩家；ctx 取消时退出。
+func (s *Server) playerAutosaveLoop(ctx context.Context) {
+	ticker := time.NewTicker(s.playerAutosaveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.saveAllPlayerData(); err != nil {
+				slog.Error("自动保存玩家数据失败", "error", err)
+			}
+		}
+	}
+}
+
+// saveAllPlayerData 保存全部已加入玩家的当前状态（周期自动保存）。
+// 先构造记录再取 playerDataMu，避免与退出路径的锁顺序产生依赖。
+func (s *Server) saveAllPlayerData() error {
+	s.mu.Lock()
+	players := make([]*session, 0, len(s.players))
+	for _, player := range s.players {
+		if player.isJoined() {
+			players = append(players, player)
+		}
+	}
+	s.mu.Unlock()
+	if len(players) == 0 {
+		return nil
+	}
+	records := make(map[[16]byte]playerRecord, len(players))
+	for _, player := range players {
+		records[player.uuid] = playerRecordFromSession(player)
+	}
+	s.playerDataMu.Lock()
+	for uuid, record := range records {
+		s.playerData[uuid] = record
+	}
+	err := s.writePlayerFileLocked()
+	s.playerDataMu.Unlock()
+	return err
+}
+
+// savePlayerData 把单个玩家的状态写入内存表并落盘（退出路径与测试使用）。
+// 可在任意 goroutine 调用：位置/生命等经 stateMu 读取，物品栏内部有锁。
 func (s *Server) savePlayerData(player *session) {
 	record := playerRecordFromSession(player)
 	s.playerDataMu.Lock()
@@ -137,6 +187,7 @@ func playerRecordFromSession(player *session) playerRecord {
 	x, y, z, yaw, pitch := player.playerPosition()
 	player.stateMu.Lock()
 	health := player.health
+	dead := player.dead
 	food := player.food
 	saturation := player.saturation
 	gameMode := player.gameMode
@@ -165,6 +216,7 @@ func playerRecordFromSession(player *session) playerRecord {
 		Yaw:        yaw,
 		Pitch:      pitch,
 		Health:     health,
+		Dead:       dead,
 		Food:       food,
 		Saturation: saturation,
 		GameMode:   modeName,
@@ -173,7 +225,8 @@ func playerRecordFromSession(player *session) playerRecord {
 }
 
 // applyPlayerRecord 把持久化的玩家状态应用到会话（进入世界前调用）。
-// 位置非法（NaN/Inf）时回退到出生点；生命值非法或死亡时按满生命处理；
+// 位置非法（NaN/Inf）时回退到出生点；死亡状态保持死亡（客户端显示死亡界面，
+// 等待重生请求）；非死亡记录的非法生命值按满生命处理；
 // 未知物品（例如来自其他版本的记录）会被跳过。
 func (s *session) applyPlayerRecord(record playerRecord) {
 	x, y, z := record.X, record.Y, record.Z
@@ -184,9 +237,14 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 	s.setPlayerPosition(x, y, z, record.Yaw, record.Pitch)
 
 	s.stateMu.Lock()
-	if record.Health > 0 && record.Health <= maxPlayerHealth {
+	switch {
+	case record.Dead:
+		// 上次退出时处于死亡状态：保持死亡（发送重生请求后才会复活）。
+		s.health = 0
+		s.dead = true
+	case record.Health > 0 && record.Health <= maxPlayerHealth:
 		s.health = record.Health
-	} else {
+	default:
 		s.health = maxPlayerHealth
 	}
 	food := record.Food

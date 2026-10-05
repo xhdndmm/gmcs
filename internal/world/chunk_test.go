@@ -97,11 +97,7 @@ func TestEncodeChunkDataPacketStructure(t *testing.T) {
 		t.Fatalf("unexpected chunk Z %d (err=%v)", z, err)
 	}
 
-	// heightmaps 为空数组。
-	heightmaps, offset := decodeTestVarInt(t, packet, offset)
-	if heightmaps != 0 {
-		t.Fatalf("expected empty heightmaps, got %d", heightmaps)
-	}
+	offset = skipHeightmaps(t, packet, offset)
 
 	// 区块数据主体：24 个全空气 section（单值调色板）。
 	dataLength, offset := decodeTestVarInt(t, packet, offset)
@@ -378,11 +374,8 @@ func chunkDataOf(t *testing.T, packet []byte) []byte {
 	if _, offset, err = protocol.DecodeInt32(packet, offset); err != nil {
 		t.Fatal(err)
 	}
-	heightmaps, next := decodeTestVarInt(t, packet, offset)
-	if heightmaps != 0 {
-		t.Fatalf("expected empty heightmaps, got %d", heightmaps)
-	}
-	length, offset := decodeTestVarInt(t, packet, next)
+	offset = skipHeightmaps(t, packet, offset)
+	length, offset := decodeTestVarInt(t, packet, offset)
 	if length <= 0 || offset+int(length) > len(packet) {
 		t.Fatalf("invalid chunk data length %d", length)
 	}
@@ -472,5 +465,135 @@ func TestColumnWaterSemantics(t *testing.T) {
 	}
 	if out := chunk.Column(-1, 0); out.HasTop || out.HasSolid {
 		t.Fatalf("out of range = %+v", out)
+	}
+}
+
+// skipHeightmaps 解析并跳过 Chunk Data 包中的 heightmaps 数组，返回数据体偏移。
+func skipHeightmaps(t *testing.T, packet []byte, offset int) int {
+	t.Helper()
+	count, next := decodeTestVarInt(t, packet, offset)
+	offset = next
+	var longCount int32
+	for i := int32(0); i < count; i++ {
+		_, next = decodeTestVarInt(t, packet, offset) // 类型（mapper）
+		offset = next
+		longCount, next = decodeTestVarInt(t, packet, offset)
+		offset = next
+		for j := int32(0); j < longCount; j++ {
+			var err error
+			if _, offset, err = protocol.DecodeInt64(packet, offset); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return offset
+}
+
+// heightmapEntry 是一个解析出的 heightmap。
+type heightmapEntry struct {
+	kind   int32
+	longs  []int64
+	values []uint16
+}
+
+// parseHeightmaps 解析 Chunk Data 包的 heightmaps 数组。
+func parseHeightmaps(t *testing.T, packet []byte) []heightmapEntry {
+	t.Helper()
+	_, offset, err := protocol.DecodeVarInt(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, offset, err = protocol.DecodeInt32(packet, offset); err != nil {
+		t.Fatal(err)
+	}
+	if _, offset, err = protocol.DecodeInt32(packet, offset); err != nil {
+		t.Fatal(err)
+	}
+	count, offset := decodeTestVarInt(t, packet, offset)
+	entries := make([]heightmapEntry, 0, count)
+	var (
+		kind int32
+		next int
+	)
+	for i := int32(0); i < count; i++ {
+		kind, next = decodeTestVarInt(t, packet, offset)
+		offset = next
+		var longCount int32
+		longCount, next = decodeTestVarInt(t, packet, offset)
+		offset = next
+		longs := make([]int64, longCount)
+		for j := range longs {
+			if longs[j], offset, err = protocol.DecodeInt64(packet, offset); err != nil {
+				t.Fatal(err)
+			}
+		}
+		entries = append(entries, heightmapEntry{
+			kind:   kind,
+			longs:  longs,
+			values: unpackPadded(t, longs, SectionSize*SectionSize, 9),
+		})
+	}
+	return entries
+}
+
+// unpackPadded 以“每 long 独立、高位填充”的方式解包（packBitsPadded 的逆操作）。
+func unpackPadded(t *testing.T, longs []int64, count, bits int) []uint16 {
+	t.Helper()
+	perLong := 64 / bits
+	mask := uint64(1)<<uint(bits) - 1
+	values := make([]uint16, count)
+	for i := range values {
+		values[i] = uint16((uint64(longs[i/perLong]) >> (uint(i%perLong) * uint(bits))) & mask)
+	}
+	return values
+}
+
+// TestChunkHeightmaps 验证 Chunk Data 包发送的 heightmaps：
+// WORLD_SURFACE（1）与 MOTION_BLOCKING（4）、9 位、每 261 列 37 个 long、
+// 逐列取值 = 最高非空气方块 y - WorldMinY + 1（空列为 0，水面计入）。
+func TestChunkHeightmaps(t *testing.T) {
+	check := func(name string, chunk *Chunk) {
+		t.Helper()
+		entries := parseHeightmaps(t, EncodeChunkDataPacket(chunk))
+		if len(entries) != 2 {
+			t.Fatalf("%s: heightmap count = %d, want 2", name, len(entries))
+		}
+		for index, wantKind := range []int32{1, 4} {
+			entry := entries[index]
+			if entry.kind != wantKind {
+				t.Fatalf("%s: heightmap[%d] type = %d, want %d", name, index, entry.kind, wantKind)
+			}
+			if len(entry.longs) != 37 {
+				t.Fatalf("%s: heightmap[%d] longs = %d, want 37", name, index, len(entry.longs))
+			}
+			for z := 0; z < SectionSize; z++ {
+				for x := 0; x < SectionSize; x++ {
+					want := uint16(0)
+					if _, y, ok := chunk.TopBlock(x, z); ok {
+						want = uint16(y - WorldMinY + 1)
+					}
+					if got := entry.values[(z<<4)|x]; got != want {
+						t.Fatalf("%s: heightmap[%d] (%d,%d) = %d, want %d", name, index, x, z, got, want)
+					}
+				}
+			}
+		}
+	}
+
+	// 超平坦：基岩 + 两层泥土 + 草方块，所有列高度一致。
+	check("flat", FlatGenerator{}.GenerateChunk(0, 0))
+	// 种子地形：起伏高度与树木。
+	check("seeded", SeededGenerator{Seed: 42}.GenerateChunk(0, 0))
+	// 手工构造：水柱取水面高度，空列为 0。
+	handmade := NewChunk(0, 0)
+	handmade.SetBlockState(1, 60, 2, StoneBlock)
+	handmade.SetBlockState(1, 61, 2, WaterBlock)
+	check("handmade", handmade)
+	values := parseHeightmaps(t, EncodeChunkDataPacket(handmade))[0].values
+	if got, want := values[(2<<4)|1], uint16(61-WorldMinY+1); got != want {
+		t.Fatalf("water column height = %d, want %d", got, want)
+	}
+	if got := values[(3<<4)|1]; got != 0 {
+		t.Fatalf("empty column height = %d, want 0", got)
 	}
 }

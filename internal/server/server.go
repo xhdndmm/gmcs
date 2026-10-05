@@ -54,6 +54,10 @@ type Server struct {
 	// （测试通过显式调用 unloadFarChunks 驱动，保证断言不被周期卸载干扰）。
 	chunkUnloadInterval time.Duration
 
+	// playerAutosaveInterval 是玩家数据的周期保存间隔；<= 0 时禁用
+	// （测试可显式调用 saveAllPlayerData 驱动）。
+	playerAutosaveInterval time.Duration
+
 	// 出生点（世界坐标，脚部位置）。
 	spawnX, spawnY, spawnZ float64
 	// borderHalfSize 是世界边界的半边长（方块）；0 表示未启用边界。
@@ -112,23 +116,24 @@ func New(cfg config.Config) (*Server, error) {
 		rsaKey = key
 	}
 	server := &Server{
-		config:              cfg,
-		world:               gameWorld,
-		clients:             make(chan struct{}, cfg.MaxConnections),
-		conns:               make(map[net.Conn]struct{}),
-		players:             make(map[[16]byte]*session),
-		keepAliveInterval:   defaultKeepAliveInterval,
-		mobs:                make(map[int32]*mob),
-		tickInterval:        defaultTickInterval,
-		chunkUnloadInterval: defaultChunkUnloadInterval,
-		spawnX:              0.5,
-		spawnY:              spawnY,
-		spawnZ:              0.5,
-		borderHalfSize:      float64(cfg.WorldBorderSize) / 2,
-		defaultGameMode:     uint8(gameMode),
-		rsaKey:              rsaKey,
-		httpClient:          &http.Client{Timeout: 10 * time.Second},
-		playerData:          make(map[[16]byte]playerRecord),
+		config:                 cfg,
+		world:                  gameWorld,
+		clients:                make(chan struct{}, cfg.MaxConnections),
+		conns:                  make(map[net.Conn]struct{}),
+		players:                make(map[[16]byte]*session),
+		keepAliveInterval:      defaultKeepAliveInterval,
+		mobs:                   make(map[int32]*mob),
+		tickInterval:           defaultTickInterval,
+		chunkUnloadInterval:    defaultChunkUnloadInterval,
+		playerAutosaveInterval: defaultPlayerAutosaveInterval,
+		spawnX:                 0.5,
+		spawnY:                 spawnY,
+		spawnZ:                 0.5,
+		borderHalfSize:         float64(cfg.WorldBorderSize) / 2,
+		defaultGameMode:        uint8(gameMode),
+		rsaKey:                 rsaKey,
+		httpClient:             &http.Client{Timeout: 10 * time.Second},
+		playerData:             make(map[[16]byte]playerRecord),
 	}
 	server.resolveMobRegistryIDs()
 	server.resolvePlayerEntityType()
@@ -201,6 +206,11 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	// 生物数据周期保存：ctx 取消（服务器关闭）时退出。
 	if s.mobsEnabled {
 		go s.mobAutosaveLoop(ctx)
+	}
+
+	// 玩家数据周期保存：ctx 取消（服务器关闭）时退出。
+	if s.playerAutosaveInterval > 0 {
+		go s.playerAutosaveLoop(ctx)
 	}
 
 	// 区块卸载循环：周期性把远离所有玩家的区块移出内存缓存，
