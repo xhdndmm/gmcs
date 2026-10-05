@@ -31,22 +31,22 @@ go test -run=^$ -bench=. -benchmem ./...
 
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | world | ≈741 µs/op | 72,761 B/op | 18 allocs/op |
-| `BenchmarkEncodeChunkDataPacket` | world | ≈57.4 µs/op | 6,150 B/op | 3 allocs/op |
-| `BenchmarkAppendChunkDataPacketReuse` | world | ≈56.1 µs/op | 6,151 B/op | 3 allocs/op |
-| `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.0 ns/op | 120 B/op | 4 allocs/op |
-| `BenchmarkEncodeAddEntity` | protocol | ≈103.0 ns/op | 176 B/op | 4 allocs/op |
-| `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈74.3 µs/op | 49 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈8.1 µs/op | 3,185 B/op | 64 allocs/op |
+| `BenchmarkGenerateChunk` | world | ≈732 µs/op | 72,766 B/op | 18 allocs/op |
+| `BenchmarkEncodeChunkDataPacket` | world | ≈63.0 µs/op | 6,473 B/op | 4 allocs/op |
+| `BenchmarkAppendChunkDataPacketReuse` | world | ≈62.4 µs/op | 6,474 B/op | 4 allocs/op |
+| `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.7 ns/op | 120 B/op | 4 allocs/op |
+| `BenchmarkEncodeAddEntity` | protocol | ≈104.3 ns/op | 176 B/op | 4 allocs/op |
+| `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈75.3 µs/op | 16–85 B/op | 1 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈8.0 µs/op | 3,182 B/op | 64 allocs/op |
 
 各基准覆盖的内容：
 
 - `BenchmarkGenerateChunk`：用固定种子生成一个区块（高度图 + 层次 + 水域/沙滩 + 植被），
   覆盖地形生成热路径。
 - `BenchmarkEncodeChunkDataPacket`：把已生成区块编码为 1.21.11 Chunk Data and Update
-  Light 包（调色板容器 + 全亮天空光）。
+  Light 包（调色板容器 + heightmap + 全亮天空光）。
 - `BenchmarkAppendChunkDataPacketReuse`：复用输出缓冲连续编码（进入世界/移动时
-  区块流式发送的实际路径）。
+  区块流式发送的实际路径，与上者相同，含 heightmap）。
 - `BenchmarkWritePacketWithCompression`：60 KB 大包的压缩发送路径
   （长度前缀 + zlib + 帧写出）。
 - `BenchmarkEncodeEntityPositionSync` / `BenchmarkEncodeAddEntity`：高频实体包的编码成本
@@ -56,7 +56,7 @@ go test -run=^$ -bench=. -benchmem ./...
   玩家会话与网络发送。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
-按编码 57 µs/区块计算约 25 ms 纯编码时间（不含地形生成与网络 IO）。
+按编码 63 µs/区块计算约 28 ms 纯编码时间（不含地形生成与网络 IO）。
 
 ## 3. 优化记录
 
@@ -156,17 +156,18 @@ Tick 的 benchmark 采样并合并生成（当前约 24 KB，随热路径变化�
 
 | Benchmark | `-pgo=off` | PGO | 变化 |
 | --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | ≈732 µs/op | ≈722 µs/op | ≈ -1.4% |
-| `BenchmarkEncodeChunkDataPacket` | ≈56.9 µs/op | ≈56.3 µs/op | ≈ -1.1% |
-| `BenchmarkEncodeEntityPositionSync` | ≈68.6 ns/op | ≈69.0 ns/op | ≈ +0.6%（噪声范围） |
-| `BenchmarkEncodeAddEntity` | ≈105.7 ns/op | ≈98.2 ns/op | ≈ -7.1% |
-| `BenchmarkServerTick`（32 生物） | ≈8.1 µs/op | ≈7.8 µs/op | ≈ -3.4% |
+| `BenchmarkGenerateChunk` | ≈732 µs/op | ≈729 µs/op | ≈ -0.4% |
+| `BenchmarkEncodeChunkDataPacket` | ≈63.0 µs/op | ≈61.1 µs/op | ≈ -3.1% |
+| `BenchmarkEncodeEntityPositionSync` | ≈68.7 ns/op | ≈68.6 ns/op | ≈ -0.2%（噪声范围） |
+| `BenchmarkEncodeAddEntity` | ≈104.3 ns/op | ≈99.0 ns/op | ≈ -5.1% |
+| `BenchmarkServerTick`（32 生物） | ≈8.0 µs/op | ≈7.5 µs/op | ≈ -5.7% |
 
-结论：收益约 1%–7%；`EncodeEntityPositionSync` 的 +0.6%（约 0.4 ns）在噪声
+结论：收益约 0.2%–5.7%；`EncodeEntityPositionSync` 的 -0.2%（约 0.1 ns）在噪声
 范围内。注：列高度缓存（3.2）消除了原先占 Tick 大半的整列扫描热点，Tick 的
 PGO 增益从首次引入时的 ≈ -20.5%（当时热点仍在，见提交 502ce61）缩小到
-≈ -3.4%。以上为单机 micro-benchmark，不代表真实服务器吞吐；真实负载验证
-仍在计划中（见第 4 节）。
+≈ -5.7%；本轮 heightmap（3.5）引入后已重新生成 `default.pgo` 并复测。
+以上为单机 micro-benchmark，不代表真实服务器吞吐；真实负载验证仍在计划中
+（见第 4 节）。
 
 #### 重新生成 PGO 配置
 
@@ -202,6 +203,26 @@ GMCS_MEM_DEMO=1 go test -count=1 -run TestChunkMemoryDemo -v ./internal/world/
 
 注意：这一数字是单次手工测量，仅作量级参考；Go 运行时不保证把已回收的堆立即
 归还操作系统，进程 RSS 可能下降较慢，但区块数据本身不再被引用。
+
+### 3.5 区块 heightmap（a59a859，实测）
+
+Chunk Data 包此前发送空 heightmaps；现在发送客户端渲染/光照所需的
+WORLD_SURFACE（1）与 MOTION_BLOCKING（4）：9 位/列、每 long 7 个值、
+37 个 long，两份共用同一份打包数据。本世界的方块非固体即流体，两者取值
+一致（列最高非空气方块 y - WorldMinY + 1）。
+
+编码开销（同一台机器交叉复测的 `-count=8` 中位数，Go 1.27.1，i7-12700F；
+对比对象为引入 heightmap 前的提交 6cef070）：
+
+| 指标 | 引入前 | 引入后 | 变化 |
+| --- | --- | --- | --- |
+| `BenchmarkEncodeChunkDataPacket` | ≈56.7 µs/op | ≈62.6 µs/op | ≈ +10.4% |
+| 每区块分配 | 6,150 B/op（3 次） | 6,473 B/op（4 次） | +323 B |
+
+说明：高度扫描逐列进行且不写列高度缓存（编码持读锁，写缓存需要写锁，保持
+无状态避免锁升级）；按视距 10（441 区块）推算，整次进入世界的纯编码增量
+约 +2.6 ms（≈25→28 ms），相对地形生成与网络 IO 可忽略。引入后已重新生成
+`default.pgo`（见 3.3）。
 
 ## 4. 尚未覆盖
 
