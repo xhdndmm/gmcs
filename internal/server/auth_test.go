@@ -333,17 +333,9 @@ func TestOnlineLoginFlow(t *testing.T) {
 	}
 }
 
-// TestOnlineLoginRejected 验证会话服务器拒绝时客户端收到登录断开包。
-func TestOnlineLoginRejected(t *testing.T) {
-	sessionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer sessionServer.Close()
-
-	cfg := config.Default()
-	cfg.WorldDir = t.TempDir()
-	cfg.OnlineMode = true
-	cfg.SessionServerURL = sessionServer.URL
+// dialOnlineTestClient 启动在线模式测试服务器并建立连接（尚未握手）。
+func dialOnlineTestClient(t *testing.T, cfg config.Config) net.Conn {
+	t.Helper()
 	instance, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -353,23 +345,37 @@ func TestOnlineLoginRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	serveResult := make(chan error, 1)
 	go func() { serveResult <- instance.Serve(ctx, listener) }()
-
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-serveResult:
+			if err != nil {
+				t.Errorf("Serve() after cancellation: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("Serve() did not stop after context cancellation")
+		}
+	})
 	conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	t.Cleanup(func() { _ = conn.Close() })
 	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		cancel()
 		t.Fatal(err)
 	}
+	return conn
+}
 
+// completeOnlineHandshake 完成登录开始 → 加密请求 → 加密响应的流程，
+// 返回加密后的客户端读取器（可继续读取服务器发送的加密数据包）。
+func completeOnlineHandshake(t *testing.T, conn net.Conn, name string, protocolVersion int32) *protocol.StreamReader {
+	t.Helper()
 	handshake := protocol.AppendVarInt(nil, 0)
-	handshake = protocol.AppendVarInt(handshake, cfg.ProtocolVersion)
+	handshake = protocol.AppendVarInt(handshake, protocolVersion)
 	handshake = appendTestString(handshake, "localhost")
 	handshake = append(handshake, 0x63, 0xdd)
 	handshake = protocol.AppendVarInt(handshake, 2)
@@ -377,7 +383,7 @@ func TestOnlineLoginRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	loginStart := protocol.AppendVarInt(nil, 0)
-	loginStart = appendTestString(loginStart, "OfflineGuy")
+	loginStart = appendTestString(loginStart, name)
 	loginStart = append(loginStart, make([]byte, 16)...)
 	if err := protocol.WritePacket(conn, loginStart); err != nil {
 		t.Fatal(err)
@@ -399,7 +405,10 @@ func TestOnlineLoginRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rsaPublicKey := publicKey.(*rsa.PublicKey)
+	rsaPublicKey, ok := publicKey.(*rsa.PublicKey)
+	if !ok {
+		t.Fatal("expected RSA public key")
+	}
 	sharedSecret := make([]byte, 16)
 	if _, err := rand.Read(sharedSecret); err != nil {
 		t.Fatal(err)
@@ -421,13 +430,17 @@ func TestOnlineLoginRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 服务器发送加密的 Login Disconnect（未压缩帧格式，包 ID 0x00 + NBT 字符串）。
 	block, err := aes.NewCipher(sharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	clientReader := protocol.NewStreamReader(conn, protocol.NewCFB8Decrypter(block, sharedSecret))
-	disconnect, err := protocol.ReadPacket(clientReader)
+	return protocol.NewStreamReader(conn, protocol.NewCFB8Decrypter(block, sharedSecret))
+}
+
+// expectEncryptedDisconnect 读取加密通道上的 Login Disconnect，返回文本原因。
+func expectEncryptedDisconnect(t *testing.T, reader *protocol.StreamReader) string {
+	t.Helper()
+	disconnect, err := protocol.ReadPacket(reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,18 +461,43 @@ func TestOnlineLoginRejected(t *testing.T) {
 	if length <= 0 || offset+length > len(disconnect) {
 		t.Fatalf("invalid NBT string length %d", length)
 	}
-	text := string(disconnect[offset : offset+length])
-	if text != "Failed to verify username!" {
+	return string(disconnect[offset : offset+length])
+}
+
+// TestOnlineLoginRejected 验证会话服务器拒绝（204）时客户端收到登录断开包。
+func TestOnlineLoginRejected(t *testing.T) {
+	sessionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer sessionServer.Close()
+
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.OnlineMode = true
+	cfg.SessionServerURL = sessionServer.URL
+	conn := dialOnlineTestClient(t, cfg)
+	reader := completeOnlineHandshake(t, conn, "OfflineGuy", cfg.ProtocolVersion)
+
+	if text := expectEncryptedDisconnect(t, reader); text != "Failed to verify username!" {
 		t.Fatalf("unexpected disconnect reason %q", text)
 	}
+}
 
-	cancel()
-	select {
-	case err := <-serveResult:
-		if err != nil {
-			t.Fatalf("Serve() after cancellation: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Serve() did not stop after context cancellation")
+// TestOnlineLoginVerificationServerError 验证会话服务器不可用时给出独立的断开提示。
+func TestOnlineLoginVerificationServerError(t *testing.T) {
+	sessionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer sessionServer.Close()
+
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.OnlineMode = true
+	cfg.SessionServerURL = sessionServer.URL
+	conn := dialOnlineTestClient(t, cfg)
+	reader := completeOnlineHandshake(t, conn, "OfflineGuy", cfg.ProtocolVersion)
+
+	if text := expectEncryptedDisconnect(t, reader); text != "无法连接会话服务器，请稍后重试" {
+		t.Fatalf("unexpected disconnect reason %q", text)
 	}
 }

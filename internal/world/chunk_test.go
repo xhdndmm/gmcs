@@ -308,6 +308,41 @@ func TestPackBitsRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPackIndirectMatchesPackBits 验证生产路径 packIndirect（线性查找调色板
+// 且不生成中间索引数组）与参考实现 packBits 的打包结果完全一致。
+func TestPackIndirectMatchesPackBits(t *testing.T) {
+	for _, bits := range []int{4, 5, 6, 8} {
+		paletteSize := 1 << uint(bits)
+		palette := make([]uint16, paletteSize)
+		for i := range palette {
+			palette[i] = uint16(100 + i*13)
+		}
+		blocks := make([]uint16, SectionVolume)
+		for i := range blocks {
+			blocks[i] = palette[(i*17+i/7)%paletteSize]
+		}
+		values := make([]uint16, len(blocks))
+		for i, state := range blocks {
+			for j, candidate := range palette {
+				if candidate == state {
+					values[i] = uint16(j)
+					break
+				}
+			}
+		}
+		want := packBits(values, bits)
+		got := packIndirect(blocks, palette, bits)
+		if len(got) != len(want) {
+			t.Fatalf("bits=%d: %d longs, want %d", bits, len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("bits=%d long %d: got %#x, want %#x", bits, i, got[i], want[i])
+			}
+		}
+	}
+}
+
 // TestPackBitsPaddedRoundTrip 验证全局调色板的“每 long 独立”打包。
 func TestPackBitsPaddedRoundTrip(t *testing.T) {
 	const bits = 15

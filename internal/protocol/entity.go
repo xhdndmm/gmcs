@@ -26,6 +26,8 @@ const (
 	PlayPacketIDEntityDestroy = 0x4B
 	// PlayPacketIDRespawn 是 Respawn（重生）。
 	PlayPacketIDRespawn = 0x50
+	// PlayPacketIDEntityHeadRotation 是 Rotate Head（头部朝向）。
+	PlayPacketIDEntityHeadRotation = 0x51
 	// PlayPacketIDUpdateHealth 是 Set Health（生命/饥饿/饱食度）。
 	PlayPacketIDUpdateHealth = 0x66
 	// PlayPacketIDEntitySoundEffect 是 Entity Sound Effect。
@@ -262,6 +264,13 @@ func ParseInteract(packet []byte) (targetID int32, action int32, err error) {
 		return 0, 0, err
 	}
 	return targetID, action, nil
+}
+
+// EncodeEntityHeadRotation 编码 Rotate Head 包（头部朝向，1/256 圈字节角度）。
+func EncodeEntityHeadRotation(id int32, yaw float32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDEntityHeadRotation))
+	packet = AppendVarInt(packet, id)
+	return append(packet, angleByte(yaw))
 }
 
 // EncodeInitializeWorldBorder 编码 Initialize World Border 包（正方形边界）。

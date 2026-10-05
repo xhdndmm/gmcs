@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -86,6 +88,8 @@ type session struct {
 	dead       bool
 	gameMode   uint8
 	lastHurt   time.Time
+	// regenTicks 是脱战回血的计数（每 playerRegenIntervalTicks 恢复 1 点）。
+	regenTicks int
 
 	// joined 在初始数据包全部发送后置位；在此之前生物不会索敌该玩家。
 	joined atomic.Bool
@@ -199,6 +203,7 @@ func (s *session) applyDamage(amount float32, now time.Time) (health float32, fo
 		return s.health, s.food, s.saturation, false, false
 	}
 	s.lastHurt = now
+	s.regenTicks = 0
 	s.health -= amount
 	if s.health <= 0 {
 		s.health = 0
@@ -206,6 +211,27 @@ func (s *session) applyDamage(amount float32, now time.Time) (health float32, fo
 		return s.health, s.food, s.saturation, true, true
 	}
 	return s.health, s.food, s.saturation, true, false
+}
+
+// applyRegen 推进脱战回血：距离上次受伤超过 playerRegenDelay 后，
+// 每 playerRegenIntervalTicks 恢复 1 点生命。返回是否发生恢复。
+func (s *session) applyRegen(now time.Time) (health float32, food int32, saturation float32, healed bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.dead || s.health <= 0 || s.health >= maxPlayerHealth {
+		return s.health, s.food, s.saturation, false
+	}
+	if !s.lastHurt.IsZero() && now.Sub(s.lastHurt) < playerRegenDelay {
+		s.regenTicks = 0
+		return s.health, s.food, s.saturation, false
+	}
+	s.regenTicks++
+	if s.regenTicks < playerRegenIntervalTicks {
+		return s.health, s.food, s.saturation, false
+	}
+	s.regenTicks = 0
+	s.health++
+	return s.health, s.food, s.saturation, true
 }
 
 // markRespawned 把死亡状态重置为满生命。返回 false 表示玩家未死亡。
@@ -220,6 +246,7 @@ func (s *session) markRespawned() bool {
 	s.food = maxPlayerFood
 	s.saturation = playerSaturation
 	s.lastHurt = time.Time{}
+	s.regenTicks = 0
 	return true
 }
 
@@ -383,6 +410,8 @@ func (s *session) runOnlineAuthentication() bool {
 			_ = s.writeRawPacket(protocol.EncodeLoginDisconnect("Failed to verify username!"))
 		} else {
 			slog.Error("session verification failed", "name", s.name, "remote", s.conn.RemoteAddr(), "error", err)
+			// 会话服务器不可用：给出与"账号验证失败"不同的提示，便于排查。
+			_ = s.writeRawPacket(protocol.EncodeLoginDisconnect("无法连接会话服务器，请稍后重试"))
 		}
 		return false
 	}
@@ -586,17 +615,18 @@ func (s *session) runPlay() {
 }
 
 // giveStartingItems 把配置中的初始物品发放到快捷栏，返回同步给客户端的数据包。
-// 每个物品发放 1 个（数量配置暂不支持）。
+// 支持 "minecraft:stone" 与 "minecraft:stone*64" 两种写法。
 func (s *session) giveStartingItems() [][]byte {
 	var packets [][]byte
 	slot := item.SlotHotbarStart
-	for _, name := range s.server.config.StartingItems {
+	for _, entry := range s.server.config.StartingItems {
 		if slot > item.SlotHotbarEnd {
 			break
 		}
-		stack, err := item.FromName(name, 1)
+		name, count := splitItemCount(entry)
+		stack, err := item.FromName(name, count)
 		if err != nil {
-			slog.Warn("unknown starting item", "name", s.name, "item", name, "error", err)
+			slog.Warn("unknown starting item", "name", s.name, "item", entry, "error", err)
 			continue
 		}
 		s.inventory.Set(slot, stack)
@@ -604,6 +634,24 @@ func (s *session) giveStartingItems() [][]byte {
 		slot++
 	}
 	return packets
+}
+
+// splitItemCount 解析初始物品配置："minecraft:stone"（默认 1 个）或
+// "minecraft:stone*64"（显式数量，上限一栈 64）。
+func splitItemCount(entry string) (string, int32) {
+	name := strings.TrimSpace(entry)
+	index := strings.LastIndex(name, "*")
+	if index < 0 {
+		return name, 1
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(name[index+1:]))
+	if err != nil || count < 1 {
+		return strings.TrimSpace(name[:index]), 1
+	}
+	if count > 64 {
+		count = 64
+	}
+	return strings.TrimSpace(name[:index]), int32(count)
 }
 
 // keepAliveLoop 周期发送 Keep Alive；写失败时关闭连接以唤醒读循环。

@@ -177,13 +177,19 @@ func (c *Chunk) SetSectionBiome(index int, biomeID uint16) {
 //     或全局调色板（15 位），采用 1.16+ 的紧密位流打包；
 //   - 不包含方块实体；
 //   - 天空光全亮（15）、方块光为空。
+//
+// chunkDataPacketCapacity 是 Chunk Data 包的预分配容量：区块数据数组
+// 加上固定的全亮光照数据（约 53 KiB），避免 append 增长时的反复拷贝。
+const chunkDataPacketCapacity = 64 * 1024
+
 func EncodeChunkDataPacket(chunk *Chunk) []byte {
-	packet := protocol.AppendVarInt(nil, protocol.PlayPacketIDChunkData)
+	packet := make([]byte, 0, chunkDataPacketCapacity)
+	packet = protocol.AppendVarInt(packet, protocol.PlayPacketIDChunkData)
 	packet = protocol.AppendInt32(packet, int32(chunk.X))
 	packet = protocol.AppendInt32(packet, int32(chunk.Z))
 	packet = protocol.AppendVarInt(packet, 0) // heightmaps 数量
 
-	data := make([]byte, 0, SectionCount*16)
+	data := make([]byte, 0, 16*1024)
 	for index := range chunk.sections {
 		data = appendSection(data, chunk.sections[index])
 	}
@@ -222,12 +228,18 @@ func appendSection(dst []byte, s *section) []byte {
 	return protocol.AppendVarInt(dst, int32(biome))
 }
 
+// maxIndirectPalette 是间接调色板的最大条目数；超过时使用全局调色板（15 位）。
+const maxIndirectPalette = 256
+
 // appendBlockStates 追加方块状态调色板容器。
 // blocks 为 nil 表示全空气 section。
 //
 // 1.21.5+ 的调色板格式：数据数组不带长度前缀（数量由位宽计算），
 // 单值调色板只跟随一个 VarInt（无空数据数组）。
 // 参考 ViaVersion PaletteType1_21_5。
+//
+// 性能：调色板用局部数组 + 线性查找（典型 ≤16 种方块），避免 map 与
+// 中间索引数组的分配；全局调色板路径直接使用方块状态 ID。
 func appendBlockStates(dst []byte, blocks []uint16) []byte {
 	if blocks == nil {
 		// 单值调色板：空气。
@@ -235,8 +247,34 @@ func appendBlockStates(dst []byte, blocks []uint16) []byte {
 		return protocol.AppendVarInt(dst, int32(AirBlock))
 	}
 
-	palette, index := buildPalette(blocks)
+	var paletteBuffer [maxIndirectPalette]uint16
+	palette := paletteBuffer[:0]
+	global := false
+	for _, state := range blocks {
+		found := false
+		for _, existing := range palette {
+			if existing == state {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		if len(palette) >= maxIndirectPalette {
+			global = true
+			break
+		}
+		palette = append(palette, state)
+	}
+
 	switch {
+	case global:
+		// 全局调色板：直接使用全局方块状态 ID（15 位、每 long 独立打包）。
+		// 当前全部方块状态 ID < 32768（29670），如需更多请扩展位宽。
+		const bits = 15
+		dst = append(dst, byte(bits))
+		return appendRawLongs(dst, packBitsPadded(blocks, bits))
 	case len(palette) <= 1:
 		// 单值调色板。
 		state := AirBlock
@@ -245,7 +283,7 @@ func appendBlockStates(dst []byte, blocks []uint16) []byte {
 		}
 		dst = append(dst, 0x00)
 		return protocol.AppendVarInt(dst, int32(state))
-	case len(palette) <= 256:
+	default:
 		// 间接调色板：位宽 4–8（方块调色板最小 4 位）。
 		bits := bitsFor(len(palette))
 		dst = append(dst, byte(bits))
@@ -253,17 +291,7 @@ func appendBlockStates(dst []byte, blocks []uint16) []byte {
 		for _, state := range palette {
 			dst = protocol.AppendVarInt(dst, int32(state))
 		}
-		values := make([]uint16, len(blocks))
-		for i, state := range blocks {
-			values[i] = uint16(index[state])
-		}
-		return appendRawLongs(dst, packBits(values, bits))
-	default:
-		// 全局调色板：直接使用全局方块状态 ID（15 位、每 long 独立打包）。
-		// 当前全部方块状态 ID < 32768（29670），如需更多请扩展位宽。
-		const bits = 15
-		dst = append(dst, byte(bits))
-		return appendRawLongs(dst, packBitsPadded(blocks, bits))
+		return appendRawLongs(dst, packIndirect(blocks, palette, bits))
 	}
 }
 
@@ -275,19 +303,6 @@ func appendRawLongs(dst []byte, longs []int64) []byte {
 	return dst
 }
 
-// buildPalette 收集 section 中出现的方块状态（按首次出现顺序）。
-func buildPalette(blocks []uint16) ([]uint16, map[uint16]int) {
-	palette := make([]uint16, 0, 16)
-	index := make(map[uint16]int, 16)
-	for _, state := range blocks {
-		if _, ok := index[state]; !ok {
-			index[state] = len(palette)
-			palette = append(palette, state)
-		}
-	}
-	return palette, index
-}
-
 // bitsFor 返回间接调色板的位宽：最小 4 位（与原版一致）、最大 8 位。
 func bitsFor(paletteSize int) int {
 	bits := 4
@@ -297,8 +312,33 @@ func bitsFor(paletteSize int) int {
 	return bits
 }
 
-// packBits 按 1.16+ 的紧密位流把值打包为 long 数组（允许跨 long 边界），
-// 用于间接调色板。
+// packIndirect 把方块按调色板索引打包为紧密位流（允许跨 long 边界）。
+// 索引通过调色板线性查找获得（典型 ≤16 种），避免生成中间索引数组。
+func packIndirect(blocks []uint16, palette []uint16, bits int) []int64 {
+	longs := make([]int64, (len(blocks)*bits+63)/64)
+	position := 0
+	for _, state := range blocks {
+		value := 0
+		for i, candidate := range palette {
+			if candidate == state {
+				value = i
+				break
+			}
+		}
+		v := uint64(value)
+		index := position >> 6
+		offset := uint(position & 63)
+		longs[index] |= int64(v << offset)
+		if offset+uint(bits) > 64 {
+			longs[index+1] |= int64(v >> (64 - offset))
+		}
+		position += bits
+	}
+	return longs
+}
+
+// packBits 按 1.16+ 的紧密位流把值打包为 long 数组（允许跨 long 边界）。
+// 生产路径使用 packIndirect；此实现作为格式参考用于测试校验。
 func packBits(values []uint16, bits int) []int64 {
 	longs := make([]int64, (len(values)*bits+63)/64)
 	position := 0

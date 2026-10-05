@@ -120,6 +120,12 @@ func New(cfg config.Config) (*Server, error) {
 	if !server.mobsEnabled {
 		slog.Warn("生物系统已禁用：注册表数据缺失")
 	}
+	// 恢复上次保存的生物（entities.json；不存在时不做任何事）。
+	if server.mobsEnabled {
+		if err := server.loadMobs(); err != nil {
+			slog.Error("加载生物数据失败", "error", err)
+		}
+	}
 	return server, nil
 }
 
@@ -173,6 +179,11 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	// 实体 Tick 循环：推进生物 AI 并提供确定性测试入口（tickInterval <= 0 时禁用）。
 	go s.tickLoop(ctx)
 
+	// 生物数据周期保存：ctx 取消（服务器关闭）时退出。
+	if s.mobsEnabled {
+		go s.mobAutosaveLoop(ctx)
+	}
+
 	var serveErr error
 	for {
 		conn, err := listener.Accept()
@@ -215,6 +226,12 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		slog.Error("failed to save the world", "error", err)
 		if serveErr == nil {
 			serveErr = err
+		}
+	}
+	// 保存生物数据（与世界的保存相互独立）。
+	if s.mobsEnabled {
+		if err := s.saveMobs(); err != nil {
+			slog.Error("failed to save mobs", "error", err)
 		}
 	}
 	return serveErr

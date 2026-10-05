@@ -17,10 +17,12 @@ import (
 // （原版僵尸为 20 生命、2/3/4 点难度伤害；此处固定 2 点）。
 const (
 	zombieMaxHealth = 20
+	// zombieTypeName 是本服务器支持的生物类型（静态注册表 minecraft:entity_type）。
+	zombieTypeName  = "minecraft:zombie"
 	zombieWalkSpeed = 0.055 // 方块/tick（约 1.1 格/秒）
 	mobWanderSpeed  = 0.03
 	mobFollowRange  = 32
-	mobDespawnRange = 64
+	mobDespawnRange = 64 // 存在玩家时，距离所有玩家都超过该距离的生物会被移除
 	mobAttackRange  = 1.9
 	// mobAttackVerticalRange 是攻击允许的高度差（超出则打不到）。
 	mobAttackVerticalRange = 2.0
@@ -48,8 +50,21 @@ const (
 
 	// spawnCheckInterval 是生成检查的间隔（tick，20 TPS 下为 5 秒）。
 	spawnCheckInterval = 100
-	// mobBroadcastRange 之外的生物移动不再广播（视野外更新留给后续区块跟踪）。
-	mobBroadcastRange = 48
+	// mobMoveBroadcastRange 是生物移动/头部朝向的广播半径（只发送给范围内的玩家）。
+	mobMoveBroadcastRange = 64
+	// mobStuckTicks 是追击/游荡被挡住多少次后触发随机侧移（简单避障）。
+	mobStuckTicks = 40
+	// mobSideStep 是避障侧移的步长（方块）。
+	mobSideStep = 0.4
+	// mobHeadYawThreshold 是发送 Rotate Head 的最小转角（度）。
+	mobHeadYawThreshold = 20
+
+	// 玩家生命恢复：脱战 8 秒后每 4 秒恢复 1 点（无饥饿系统）。
+	playerRegenDelay         = 8 * time.Second
+	playerRegenIntervalTicks = 80
+
+	// mobAutosaveInterval 是生物数据的自动保存间隔。
+	mobAutosaveInterval = 30 * time.Second
 )
 
 // mob 是一只服务器控制的生物。字段由 Server.entityMu 保护，
@@ -61,6 +76,8 @@ type mob struct {
 
 	X, Y, Z    float64
 	Yaw, Pitch float32
+	// HeadYaw 是最近一次发送给客户端的头部朝向（用于控制 Rotate Head 频率）。
+	HeadYaw float32
 
 	Health float32
 	// Dead 为 true 时播放死亡动画，DeadTicks 到达上限后移除。
@@ -72,9 +89,18 @@ type mob struct {
 	WasInRange bool
 	// HurtCooldown 是受击无敌帧剩余 tick。
 	HurtCooldown int
+	// StuckTicks 记录被挡住而无法移动的 tick 数（触发侧移避障）。
+	StuckTicks int
 	// WanderX/WanderZ 是游荡目标；WanderTicks 归零时重新选择。
 	WanderX, WanderZ float64
 	WanderTicks      int
+}
+
+// pendingAttack 是一次待结算的生物攻击（位置为判定时的快照）。
+type pendingAttack struct {
+	mobID   int32
+	player  *session
+	x, y, z float64
 }
 
 // playerSnapshot 返回在线玩家列表快照。
@@ -88,10 +114,11 @@ func (s *Server) playerSnapshot() []*session {
 	return players
 }
 
-// tick 推进一帧世界逻辑（生物 AI、生成与清理）。由 tickLoop 按 tickInterval 调用，
-// 测试中可直接调用以获得确定性。
+// tick 推进一帧世界逻辑（玩家生命恢复、生物 AI、生成与清理）。由 tickLoop
+// 按 tickInterval 调用，测试中可直接调用以获得确定性。
 func (s *Server) tick() {
 	players := s.playerSnapshot()
+	s.tickRegen(players)
 	s.tickMobs(players)
 	s.spawnTicks++
 	if s.spawnTicks >= spawnCheckInterval {
@@ -100,18 +127,33 @@ func (s *Server) tick() {
 	}
 }
 
+// tickRegen 推进玩家脱战回血并把新的生命值同步给客户端。
+func (s *Server) tickRegen(players []*session) {
+	now := time.Now()
+	for _, player := range players {
+		if !player.isJoined() {
+			continue
+		}
+		health, food, saturation, healed := player.applyRegen(now)
+		if healed {
+			player.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))
+		}
+	}
+}
+
 // tickMobs 更新全部生物：追击/游荡、攻击玩家、清理死亡与远离的生物。
 func (s *Server) tickMobs(players []*session) {
 	if !s.mobsEnabled {
 		return
 	}
-	type pendingAttack struct {
-		mob    *mob
-		player *session
+	type pendingMove struct {
+		packet []byte
+		x, z   float64
 	}
 	var (
 		attacks  []pendingAttack
-		moves    [][]byte
+		moves    []pendingMove
+		heads    []pendingMove
 		removals []int32
 	)
 
@@ -126,26 +168,34 @@ func (s *Server) tickMobs(players []*session) {
 			continue
 		}
 
-		// 寻找最近的可攻击玩家。
-		var nearest *session
-		nearestDistance := math.MaxFloat64
+		// 寻找最近的玩家（含旁观者，用于反弃用检查）与最近的可攻击玩家（AI 目标）。
+		var (
+			nearest         *session
+			nearestDistance = math.MaxFloat64
+			nearestPlayer   *session
+			playerDistance  = math.MaxFloat64
+		)
 		for _, player := range players {
-			if !player.canBeAttacked() {
-				continue
-			}
 			px, _, pz, _, _ := player.playerPosition()
 			distance := math.Hypot(px-m.X, pz-m.Z)
-			if distance < nearestDistance {
+			if distance < playerDistance {
+				playerDistance = distance
+				nearestPlayer = player
+			}
+			if player.canBeAttacked() && distance < nearestDistance {
 				nearestDistance = distance
 				nearest = player
 			}
 		}
-		if nearestDistance > mobDespawnRange {
+		// 反弃用（despawn）：与原版一致，只有在服务器存在玩家时才按距离删除生物；
+		// 完全没有玩家时保留生物，保证持久化的生物不会在空闲服务器上被清空。
+		if nearestPlayer != nil && playerDistance > mobDespawnRange {
 			delete(s.mobs, id)
 			removals = append(removals, id)
 			continue
 		}
 
+		attemptedMove := false
 		moved := false
 		if nearest != nil && nearestDistance <= mobFollowRange {
 			px, py, pz, _, _ := nearest.playerPosition()
@@ -159,8 +209,11 @@ func (s *Server) tickMobs(players []*session) {
 			m.WasInRange = clear
 			if clear && m.AttackCooldown <= 0 {
 				m.AttackCooldown = mobAttackCooldown
-				attacks = append(attacks, pendingAttack{mob: m, player: nearest})
+				attacks = append(attacks, pendingAttack{
+					mobID: m.ID, player: nearest, x: m.X, y: m.Y, z: m.Z,
+				})
 			} else if !clear {
+				attemptedMove = true
 				moved = s.moveMobToward(m, px, pz, zombieWalkSpeed)
 			}
 		} else {
@@ -171,7 +224,19 @@ func (s *Server) tickMobs(players []*session) {
 				m.WanderX = m.X + math.Cos(angle)*6
 				m.WanderZ = m.Z + math.Sin(angle)*6
 			}
+			attemptedMove = true
 			moved = s.moveMobToward(m, m.WanderX, m.WanderZ, mobWanderSpeed)
+		}
+
+		if moved {
+			m.StuckTicks = 0
+		} else if attemptedMove {
+			// 被挡住：积累一段时间后随机侧移一步（简单避障，无寻路）。
+			m.StuckTicks++
+			if m.StuckTicks >= mobStuckTicks {
+				m.StuckTicks = 0
+				moved = s.trySideStep(m)
+			}
 		}
 
 		if m.HurtCooldown > 0 {
@@ -180,32 +245,67 @@ func (s *Server) tickMobs(players []*session) {
 		if m.AttackCooldown > 0 {
 			m.AttackCooldown--
 		}
-		if moved && nearestDistance <= mobBroadcastRange {
-			moves = append(moves, protocol.EncodeEntityPositionSync(
-				m.ID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch, true))
+		if moved {
+			moves = append(moves, pendingMove{
+				packet: protocol.EncodeEntityPositionSync(m.ID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch, true),
+				x:      m.X,
+				z:      m.Z,
+			})
+			if absAngleDelta(m.Yaw, m.HeadYaw) >= mobHeadYawThreshold {
+				m.HeadYaw = m.Yaw
+				heads = append(heads, pendingMove{
+					packet: protocol.EncodeEntityHeadRotation(m.ID, m.Yaw),
+					x:      m.X,
+					z:      m.Z,
+				})
+			}
 		}
 	}
 	s.entityMu.Unlock()
 
-	for _, packet := range moves {
-		s.broadcastPacket(packet)
+	for _, move := range moves {
+		s.broadcastToNearby(move.packet, move.x, move.z, players)
+	}
+	for _, head := range heads {
+		s.broadcastToNearby(head.packet, head.x, head.z, players)
 	}
 	if len(removals) > 0 {
 		s.broadcastPacket(protocol.EncodeEntityDestroy(removals))
 	}
 	for _, attack := range attacks {
-		s.performMobAttack(attack.mob, attack.player)
+		s.performMobAttack(attack)
 	}
 }
 
-// performMobAttack 让生物攻击玩家：先广播挥手动画并面向玩家，再结算伤害，
-// 使玩家能看到攻击动作而不是“凭空掉血”。
-func (s *Server) performMobAttack(m *mob, player *session) {
-	px, _, pz, _, _ := player.playerPosition()
-	m.Yaw = float32(math.Atan2(-(px-m.X), pz-m.Z) * 180 / math.Pi)
-	s.broadcastPacket(protocol.EncodeAnimate(m.ID, 0))
-	position := [3]float64{m.X, m.Y + 1, m.Z}
-	s.damagePlayer(player, mobAttackDamage, "Zombie", m.ID, &position)
+// broadcastToNearby 把数据包发送给 (x, z) 半径 mobMoveBroadcastRange 内的玩家。
+func (s *Server) broadcastToNearby(packet []byte, x, z float64, players []*session) {
+	for _, player := range players {
+		px, _, pz, _, _ := player.playerPosition()
+		if math.Hypot(px-x, pz-z) <= mobMoveBroadcastRange {
+			player.tryWrite(packet)
+		}
+	}
+}
+
+// performMobAttack 让生物攻击玩家：先广播挥手动画，再结算伤害，
+// 使玩家能看到攻击动作而不是“凭空掉血”。位置取攻击判定时的快照，
+// 不在锁外修改生物状态（避免与读循环的攻击处理并发）。
+func (s *Server) performMobAttack(attack pendingAttack) {
+	s.broadcastPacket(protocol.EncodeAnimate(attack.mobID, 0))
+	position := [3]float64{attack.x, attack.y + 1, attack.z}
+	s.damagePlayer(attack.player, mobAttackDamage, "Zombie", attack.mobID, &position)
+}
+
+// absAngleDelta 返回两个角度（度）之间的最小差值（0–180）。
+func absAngleDelta(a, b float32) float32 {
+	difference := math.Mod(float64(a-b), 360)
+	if difference < 0 {
+		difference += 360
+	}
+	if difference > 180 {
+		difference = 360 - difference
+	}
+	return float32(difference)
 }
 
 // moveMobToward 让生物朝目标水平移动一步；路径被水或高低差挡住时返回 false。
@@ -225,20 +325,9 @@ func (s *Server) moveMobToward(m *mob, targetX, targetZ, speed float64) bool {
 		if offsetX == 0 && offsetZ == 0 {
 			return false
 		}
-		newX, newZ := m.X+offsetX, m.Z+offsetZ
-		if !s.insideBorder(newX, newZ) {
+		if !s.tryMoveMob(m, m.X+offsetX, m.Z+offsetZ) {
 			return false
 		}
-		blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
-		state, _, ok := s.world.TopBlock(blockX, blockZ)
-		if !ok || state == world.WaterBlock {
-			return false
-		}
-		groundY, ok := s.world.GroundY(blockX, blockZ)
-		if !ok || math.Abs(groundY-m.Y) > 1.1 {
-			return false
-		}
-		m.X, m.Y, m.Z = newX, groundY, newZ
 		m.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
 		return true
 	}
@@ -247,6 +336,42 @@ func (s *Server) moveMobToward(m *mob, targetX, targetZ, speed float64) bool {
 	}
 	// 被挡住时尝试沿单轴滑动。
 	return move(stepX, 0) || move(0, stepZ)
+}
+
+// tryMoveMob 尝试把生物移动到指定位置：校验边界、水面与地面高度差，
+// 成功时更新位置。调用方必须持有 entityMu。
+func (s *Server) tryMoveMob(m *mob, newX, newZ float64) bool {
+	if !s.insideBorder(newX, newZ) {
+		return false
+	}
+	blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
+	state, _, ok := s.world.TopBlock(blockX, blockZ)
+	if !ok || state == world.WaterBlock {
+		return false
+	}
+	groundY, ok := s.world.GroundY(blockX, blockZ)
+	if !ok || math.Abs(groundY-m.Y) > 1.1 {
+		return false
+	}
+	m.X, m.Y, m.Z = newX, groundY, newZ
+	return true
+}
+
+// trySideStep 让被挡住的生物随机侧移一步（简单避障，无寻路）。
+// 调用方必须持有 entityMu。
+func (s *Server) trySideStep(m *mob) bool {
+	offsets := [4][2]float64{
+		{mobSideStep, 0}, {-mobSideStep, 0}, {0, mobSideStep}, {0, -mobSideStep},
+	}
+	start := int(s.nextRandom() % 4)
+	for i := 0; i < len(offsets); i++ {
+		offset := offsets[(start+i)%len(offsets)]
+		if s.tryMoveMob(m, m.X+offset[0], m.Z+offset[1]) {
+			m.Yaw = float32(math.Atan2(-offset[0], offset[1]) * 180 / math.Pi)
+			return true
+		}
+	}
+	return false
 }
 
 // attackPathClear 粗略检查两点（眼睛高度）之间是否被方块挡住：
@@ -525,7 +650,7 @@ func (s *Server) resolveMobRegistryIDs() {
 		target   *int32
 	}
 	lookups := []lookup{
-		{"minecraft:entity_type", "minecraft:zombie", true, &s.zombieTypeID},
+		{"minecraft:entity_type", zombieTypeName, true, &s.zombieTypeID},
 		{"minecraft:damage_type", "minecraft:mob_attack", false, &s.mobAttackDamageTypeID},
 		{"minecraft:damage_type", "minecraft:player_attack", false, &s.playerAttackDamageTypeID},
 		{"minecraft:sound_event", "minecraft:entity.zombie.hurt", true, &s.soundMobHurt},
