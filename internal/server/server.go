@@ -41,9 +41,10 @@ type Server struct {
 	chatIndex         atomic.Int32
 	keepAliveInterval time.Duration
 
-	// 实体（生物）状态：mobs 与 mob 字段受 entityMu 保护。
+	// 实体状态：mobs、items 与各自的字段受 entityMu 保护。
 	entityMu   sync.Mutex
 	mobs       map[int32]*mob
+	items      map[int32]*itemEntity
 	spawnTicks int
 	randState  atomic.Uint64
 
@@ -77,6 +78,14 @@ type Server struct {
 	soundMobHurt             int32
 	soundMobDeath            int32
 	soundPlayerHurt          int32
+
+	// 掉落物系统（注册表缺少物品实体类型或拾取音效时禁用）。
+	itemTypeID      int32
+	soundItemPickup int32
+	itemsEnabled    bool
+
+	// fallDamageMultipliers 是落点方块的摔落伤害倍率（New 中解析）。
+	fallDamageMultipliers map[uint16]float32
 
 	// rsaKey 用于正版登录的加密握手（仅在线模式生成）。
 	rsaKey *rsa.PrivateKey
@@ -123,6 +132,7 @@ func New(cfg config.Config) (*Server, error) {
 		players:                make(map[[16]byte]*session),
 		keepAliveInterval:      defaultKeepAliveInterval,
 		mobs:                   make(map[int32]*mob),
+		items:                  make(map[int32]*itemEntity),
 		tickInterval:           defaultTickInterval,
 		chunkUnloadInterval:    defaultChunkUnloadInterval,
 		playerAutosaveInterval: defaultPlayerAutosaveInterval,
@@ -137,13 +147,18 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	server.resolveMobRegistryIDs()
 	server.resolvePlayerEntityType()
+	server.resolveItemRegistryIDs()
+	server.resolveFallDamageBlocks()
 	if !server.mobsEnabled {
 		slog.Warn("生物系统已禁用：注册表数据缺失")
 	}
-	// 恢复上次保存的生物（entities.json；不存在时不做任何事）。
-	if server.mobsEnabled {
-		if err := server.loadMobs(); err != nil {
-			slog.Error("加载生物数据失败", "error", err)
+	if !server.itemsEnabled {
+		slog.Warn("掉落物系统已禁用：注册表数据缺失")
+	}
+	// 恢复上次保存的生物与掉落物（entities.json；不存在时不做任何事）。
+	if server.mobsEnabled || server.itemsEnabled {
+		if err := server.loadEntities(); err != nil {
+			slog.Error("加载实体数据失败", "error", err)
 		}
 	}
 	// 恢复已保存的玩家数据（players.json；不存在时按新玩家处理）。
@@ -203,9 +218,9 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	// 实体 Tick 循环：推进生物 AI 并提供确定性测试入口（tickInterval <= 0 时禁用）。
 	go s.tickLoop(ctx)
 
-	// 生物数据周期保存：ctx 取消（服务器关闭）时退出。
-	if s.mobsEnabled {
-		go s.mobAutosaveLoop(ctx)
+	// 实体数据周期保存：ctx 取消（服务器关闭）时退出。
+	if s.mobsEnabled || s.itemsEnabled {
+		go s.entityAutosaveLoop(ctx)
 	}
 
 	// 玩家数据周期保存：ctx 取消（服务器关闭）时退出。
@@ -261,10 +276,10 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			serveErr = err
 		}
 	}
-	// 保存生物数据（与世界的保存相互独立）。
-	if s.mobsEnabled {
-		if err := s.saveMobs(); err != nil {
-			slog.Error("failed to save mobs", "error", err)
+	// 保存实体数据（生物与掉落物；与世界的保存相互独立）。
+	if s.mobsEnabled || s.itemsEnabled {
+		if err := s.saveEntities(); err != nil {
+			slog.Error("failed to save entities", "error", err)
 		}
 	}
 	return serveErr

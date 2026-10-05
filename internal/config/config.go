@@ -81,8 +81,10 @@ type Config struct {
 	// StartingItems 是新玩家进入世界时获得的物品（命名空间 ID）。
 	// JSON 中可写数组或单个字符串。
 	StartingItems StringList `json:"starting_items"`
-	// Ops 是管理员玩家名列表：名单中的玩家可以使用 /say、/gamemode 等
-	// 管理命令，这些命令也只向名单中的玩家下发。JSON 中可写数组或单个字符串。
+	// Ops 是管理员玩家名列表：名单中的玩家可以使用管理命令（按权限等级
+	// 过滤）。列表项支持 "name"（等价 name:4，与原版 /op 相同）与
+	// "name:level"（level 1–4，例如 "Alice:2"），命令要求等级见
+	// internal/server/commands.go。JSON 中可写数组或单个字符串。
 	Ops StringList `json:"ops"`
 }
 

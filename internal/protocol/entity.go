@@ -28,6 +28,8 @@ const (
 	PlayPacketIDRespawn = 0x50
 	// PlayPacketIDEntityHeadRotation 是 Rotate Head（头部朝向）。
 	PlayPacketIDEntityHeadRotation = 0x51
+	// PlayPacketIDEntityMetadata 是 Set Entity Data（实体元数据）。
+	PlayPacketIDEntityMetadata = 0x61
 	// PlayPacketIDUpdateHealth 是 Set Health（生命/饥饿/饱食度）。
 	PlayPacketIDUpdateHealth = 0x66
 	// PlayPacketIDEntitySoundEffect 是 Entity Sound Effect。
@@ -164,6 +166,21 @@ func EncodeEntityDestroy(ids []int32) []byte {
 		packet = AppendVarInt(packet, id)
 	}
 	return packet
+}
+
+// EntityMetadataItemStackIndex 是物品实体（minecraft:item）Item 字段的
+// 元数据索引（基类实体占用 0–7；见 wiki 的实体元数据表）。
+const EntityMetadataItemStackIndex = 8
+
+// EncodeEntityMetadataItem 编码 Set Entity Data 包，设置物品实体的
+// Item 字段（槽位数据由 item.Stack.AppendSlot 编码；元数据类型 7 = item_stack）。
+func EncodeEntityMetadataItem(id int32, slotData []byte) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDEntityMetadata))
+	packet = AppendVarInt(packet, id)
+	packet = append(packet, EntityMetadataItemStackIndex)
+	packet = AppendVarInt(packet, 7) // 元数据类型：item_stack
+	packet = append(packet, slotData...)
+	return append(packet, 0xFF) // 元数据数组结束标记
 }
 
 // EncodeEntityEvent 编码 Entity Event 包（entityId 为 int32）。

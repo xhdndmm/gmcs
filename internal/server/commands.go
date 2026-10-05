@@ -4,43 +4,66 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
 )
 
-// opCommands 记录需要管理员权限的命令名（对应配置 ops 名单）。
-var opCommands = map[string]bool{
-	"say":      true,
-	"gamemode": true,
+// commandLevels 记录需要权限等级的命令（等级参考原版：/say 与 /gamemode
+// 需要等级 2，/kick 需要等级 3）。未列出的命令（/help、/list、/spawn）所有玩家可用。
+var commandLevels = map[string]int{
+	"say":      2,
+	"gamemode": 2,
+	"kick":     3,
 }
 
-// serverCommands 返回服务器向客户端声明的命令。
-// 非管理员不下发管理命令（与原版一致：无权限的命令不出现在命令树中）。
-func serverCommands(isOp bool) []protocol.CommandDef {
+// serverCommands 返回服务器向客户端声明的命令（按玩家权限等级过滤；
+// 与原版一致：无权限的命令不出现在命令树中）。
+func serverCommands(level int) []protocol.CommandDef {
 	commands := []protocol.CommandDef{
 		{Name: "help"},
 		{Name: "list"},
 	}
-	if isOp {
-		commands = append(commands,
-			protocol.CommandDef{Name: "say", ArgName: "message"},
-			protocol.CommandDef{Name: "gamemode", ArgName: "mode", ArgParser: protocol.GameModeParser},
-		)
+	if level >= commandLevels["say"] {
+		commands = append(commands, protocol.CommandDef{Name: "say", ArgName: "message"})
 	}
-	commands = append(commands, protocol.CommandDef{Name: "spawn"})
-	return commands
+	if level >= commandLevels["gamemode"] {
+		commands = append(commands, protocol.CommandDef{Name: "gamemode", ArgName: "mode", ArgParser: protocol.GameModeParser})
+	}
+	if level >= commandLevels["kick"] {
+		commands = append(commands, protocol.CommandDef{Name: "kick", ArgName: "player"})
+	}
+	return append(commands, protocol.CommandDef{Name: "spawn"})
 }
 
-// isOp 判断玩家名是否在配置的管理员名单中（大小写不敏感）。
-func (s *Server) isOp(name string) bool {
-	for _, op := range s.config.Ops {
-		if strings.EqualFold(op, name) {
-			return true
+// opLevel 返回玩家在 ops 名单中的权限等级（0 = 非管理员）。
+// 名单项支持 "name"（等价 name:4，同原版 /op）与 "name:level"（1–4）。
+func (s *Server) opLevel(name string) int {
+	for _, entry := range s.config.Ops {
+		entryName, level := splitOpEntry(entry)
+		if entryName != "" && strings.EqualFold(entryName, name) {
+			return level
 		}
 	}
-	return false
+	return 0
+}
+
+// splitOpEntry 解析 ops 列表项：返回玩家名与权限等级（缺省/无效等级按 4，
+// 超出 1–4 时截断）。
+func splitOpEntry(entry string) (string, int) {
+	trimmed := strings.TrimSpace(entry)
+	if index := strings.LastIndex(trimmed, ":"); index >= 0 {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(trimmed[index+1:])); err == nil {
+			name := strings.TrimSpace(trimmed[:index])
+			if name == "" {
+				return "", 0
+			}
+			return name, min(max(parsed, 1), 4)
+		}
+	}
+	return trimmed, 4
 }
 
 // handleCommand 执行玩家发送的命令。客户端提交的命令字符串带前导 "/"
@@ -54,8 +77,8 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 	if name == "" {
 		return
 	}
-	if opCommands[name] && !s.isOp(player.name) {
-		player.tryWrite(protocol.EncodeSystemChat("你没有权限使用该命令（需要管理员）"))
+	if required := commandLevels[name]; required > 0 && s.opLevel(player.name) < required {
+		player.tryWrite(protocol.EncodeSystemChat(fmt.Sprintf("你没有权限使用该命令（需要权限等级 %d）", required)))
 		return
 	}
 	switch name {
@@ -64,9 +87,11 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 			"可用命令：",
 			"/help — 显示此帮助",
 			"/list — 列出在线玩家",
-			"/say <消息> — 向所有玩家广播消息（需要管理员）",
+			"/say <消息> — 向所有玩家广播消息（权限等级 ≥2）",
 			"/spawn — 传送到出生点",
-			"/gamemode <模式> — 切换游戏模式（需要管理员，survival/creative/adventure/spectator）",
+			"/gamemode <模式> — 切换游戏模式（权限等级 ≥2，survival/creative/adventure/spectator）",
+			"/kick <玩家> — 踢出玩家（权限等级 ≥3）",
+			"管理员在 gmcs.json 的 ops 中配置，支持 name 或 name:等级（1–4）",
 		}, "\n")))
 	case "list":
 		names := s.onlineNames()
@@ -98,15 +123,41 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 		player.tryWrite(protocol.EncodeGameEvent(3, float32(mode)))
 		player.tryWrite(protocol.EncodeSystemChat("已将你的游戏模式设为 " + argument))
 		slog.Info("game mode changed", "name", player.name, "mode", argument)
+	case "kick":
+		targetName := strings.TrimSpace(strings.TrimPrefix(commandLine, fields[0]))
+		if targetName == "" {
+			player.tryWrite(protocol.EncodeSystemChat("用法：/kick <玩家名>"))
+			return
+		}
+		victim := s.findJoinedPlayer(targetName)
+		if victim == nil {
+			player.tryWrite(protocol.EncodeSystemChat("玩家不在线：" + targetName))
+			return
+		}
+		// 发送断开提示后关闭连接（读循环随即退出并走正常的退出清理）。
+		_ = victim.writePacket(protocol.EncodePlayDisconnect("Kicked by an operator"))
+		_ = victim.conn.Close()
+		s.broadcastPacket(protocol.EncodeSystemChat(victim.name + " was kicked by " + player.name))
+		slog.Info("player kicked", "name", victim.name, "by", player.name)
 	default:
 		player.tryWrite(protocol.EncodeSystemChat("未知命令：" + name + "（输入 /help 查看可用命令）"))
 	}
 }
 
+// findJoinedPlayer 按玩家名查找已进入世界的会话（大小写不敏感）。
+func (s *Server) findJoinedPlayer(name string) *session {
+	for _, candidate := range s.playerSnapshot() {
+		if candidate.isJoined() && strings.EqualFold(candidate.name, name) {
+			return candidate
+		}
+	}
+	return nil
+}
+
 // handleTabComplete 处理命令补全请求（Tab 键），返回候选列表。
-// 非管理员只能看到自己可用的命令。
+// 玩家只能看到自己权限等级内的命令与参数候选。
 func (s *Server) handleTabComplete(player *session, transactionID int32, text string) {
-	matches, start, length := s.commandSuggestions(text, s.isOp(player.name))
+	matches, start, length := s.commandSuggestions(text, s.opLevel(player.name))
 	player.tryWrite(protocol.EncodeTabCompleteResponse(transactionID, int32(start), int32(length), matches))
 }
 
@@ -115,8 +166,8 @@ var gameModeNames = []string{"survival", "creative", "adventure", "spectator"}
 
 // commandSuggestions 为补全请求生成候选，并返回替换区间 [start, start+length)。
 // 仅处理以 "/" 开头的命令文本；首个词补全命令名（候选带斜杠），
-// /gamemode 补全模式参数。
-func (s *Server) commandSuggestions(text string, isOp bool) (matches []string, start, length int) {
+// /gamemode 补全模式参数，/kick 补全在线玩家名。
+func (s *Server) commandSuggestions(text string, level int) (matches []string, start, length int) {
 	if !strings.HasPrefix(text, "/") {
 		return nil, 0, 0
 	}
@@ -125,7 +176,7 @@ func (s *Server) commandSuggestions(text string, isOp bool) (matches []string, s
 	if space < 0 {
 		// 补全命令名：替换整段文本（含斜杠），候选也带斜杠。
 		prefix := strings.ToLower(body)
-		for _, command := range serverCommands(isOp) {
+		for _, command := range serverCommands(level) {
 			if strings.HasPrefix(command.Name, prefix) {
 				matches = append(matches, "/"+command.Name)
 			}
@@ -134,11 +185,20 @@ func (s *Server) commandSuggestions(text string, isOp bool) (matches []string, s
 	}
 	commandName := strings.ToLower(body[:space])
 	argument := body[space+1:]
-	if commandName == "gamemode" && isOp && !strings.Contains(argument, " ") {
+	if commandName == "gamemode" && level >= commandLevels["gamemode"] && !strings.Contains(argument, " ") {
 		prefix := strings.ToLower(argument)
 		for _, mode := range gameModeNames {
 			if strings.HasPrefix(mode, prefix) {
 				matches = append(matches, mode)
+			}
+		}
+		return matches, space + 2, len(argument)
+	}
+	if commandName == "kick" && level >= commandLevels["kick"] && !strings.Contains(argument, " ") {
+		prefix := strings.ToLower(argument)
+		for _, name := range s.onlineNames() {
+			if strings.HasPrefix(strings.ToLower(name), prefix) {
+				matches = append(matches, name)
 			}
 		}
 		return matches, space + 2, len(argument)

@@ -22,9 +22,15 @@ func (s *session) viewDistance() int {
 }
 
 // syncChunks 确保以 (centerX, centerZ) 为中心、半径为视距的区块均已发送，
-// 区块按由近到远的顺序发送（环序），然后卸载超出 视距+2 的区块。
+// 区块按由近到远的顺序发送（环序）；新发送的区块用 Chunk Batch Start/Finished
+// 标注为一批（客户端据此估算加载速度并回报期望速率，见
+// ServerboundChunkBatchReceived）。最后卸载超出 视距+2 的区块。
+//
+// 注意：与速度节流不同，当前实现仍在一批内立即发送全部区块（不按客户端
+// 回报的 chunksPerTick 暂停），重连/重生后的大量区块会一次性写出。
 func (s *session) syncChunks(centerX, centerZ int) error {
 	radius := s.viewDistance()
+	batch := 0
 	for ring := 0; ring <= radius; ring++ {
 		for dx := -ring; dx <= ring; dx++ {
 			for dz := -ring; dz <= ring; dz++ {
@@ -39,13 +45,24 @@ func (s *session) syncChunks(centerX, centerZ int) error {
 				if err != nil {
 					return err
 				}
+				if batch == 0 {
+					if err := s.writePacket(protocol.EncodeChunkBatchStart()); err != nil {
+						return err
+					}
+				}
 				// 复用编码缓冲：写出是同步的，下一区块可安全覆盖。
 				s.chunkSendBuf = world.AppendChunkDataPacket(s.chunkSendBuf[:0], chunk)
 				if err := s.writePacket(s.chunkSendBuf); err != nil {
 					return err
 				}
 				s.sentChunks[pos] = struct{}{}
+				batch++
 			}
+		}
+	}
+	if batch > 0 {
+		if err := s.writePacket(protocol.EncodeChunkBatchFinished(int32(batch))); err != nil {
+			return err
 		}
 	}
 	limit := radius + 2

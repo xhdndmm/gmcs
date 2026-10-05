@@ -114,12 +114,13 @@ func (s *Server) playerSnapshot() []*session {
 	return players
 }
 
-// tick 推进一帧世界逻辑（玩家生命恢复、生物 AI、生成与清理）。由 tickLoop
+// tick 推进一帧世界逻辑（玩家生命恢复、生物 AI、生成与清理、掉落物）。由 tickLoop
 // 按 tickInterval 调用，测试中可直接调用以获得确定性。
 func (s *Server) tick() {
 	players := s.playerSnapshot()
 	s.tickRegen(players)
 	s.tickMobs(players)
+	s.tickItems(players)
 	s.spawnTicks++
 	if s.spawnTicks >= spawnCheckInterval {
 		s.spawnTicks = 0
@@ -464,16 +465,22 @@ func (s *Server) addMob(x, y, z float64) *mob {
 	return m
 }
 
-// sendExistingMobs 把世界中已有的生物发送给新加入的玩家。
-func (s *Server) sendExistingMobs(player *session) error {
+// sendExistingEntities 把世界中已有的生物与掉落物发送给新加入的玩家。
+func (s *Server) sendExistingEntities(player *session) error {
 	s.entityMu.Lock()
-	packets := make([][]byte, 0, len(s.mobs))
+	packets := make([][]byte, 0, len(s.mobs)+2*len(s.items))
 	for _, m := range s.mobs {
 		if m.Dead {
 			continue
 		}
 		packets = append(packets, protocol.EncodeAddEntity(
 			m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch))
+	}
+	for _, e := range s.items {
+		packets = append(packets,
+			protocol.EncodeAddEntity(e.ID, e.UUID, s.itemTypeID, e.X, e.Y, e.Z, e.VelX, e.VelY, e.VelZ, 0, 0),
+			protocol.EncodeEntityMetadataItem(e.ID, e.Stack.AppendSlot(nil)),
+		)
 	}
 	s.entityMu.Unlock()
 	for _, packet := range packets {
@@ -567,6 +574,8 @@ func (s *Server) damagePlayer(player *session, amount float32, sourceName string
 	if died {
 		s.broadcastPacket(protocol.EncodeSystemChat(player.name + " was slain by " + sourceName))
 		slog.Info("player died", "name", player.name, "source", sourceName)
+		// 与原版一致：死亡时掉落全部物品。
+		s.dropPlayerInventory(player)
 	}
 	return true
 }

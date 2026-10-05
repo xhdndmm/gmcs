@@ -10,19 +10,34 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"gmcs/internal/item"
+	"gmcs/internal/registry"
 )
 
-// 生物持久化：世界目录下的 entities.json。
+// 实体持久化：世界目录下的 entities.json（生物 + 掉落物）。
 //
-// 说明：gmcs 的区块存储是自定义格式（不含实体），因此生物单独保存在
+// 说明：gmcs 的区块存储是自定义格式（不含实体），因此实体单独保存在
 // 世界目录的 entities.json 中；文件采用“临时文件 + 重命名”的原子写入。
-// 恢复时保留类型、位置、朝向、生命与 UUID，重新分配实体 ID。
+// 恢复时保留类型、位置、朝向、生命、物品堆叠与 UUID（实体 ID 重新分配）；
+// 掉落物的速度不保存（重启后停在保存位置）。
 
-// mobFileName 是世界目录中生物数据的文件名。
-const mobFileName = "entities.json"
+// entityFileName 是世界目录中实体数据的文件名。
+const entityFileName = "entities.json"
 
-type mobFile struct {
-	Mobs []mobRecord `json:"mobs"`
+type entityFile struct {
+	Mobs  []mobRecord  `json:"mobs"`
+	Items []itemRecord `json:"items,omitempty"`
+}
+
+// itemRecord 是一条持久化的掉落物（速度不保存）。
+type itemRecord struct {
+	Item  string  `json:"item"`
+	Count int32   `json:"count"`
+	UUID  string  `json:"uuid"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Z     float64 `json:"z"`
 }
 
 type mobRecord struct {
@@ -36,8 +51,8 @@ type mobRecord struct {
 	Health float32 `json:"health"`
 }
 
-// saveMobs 把世界中的生物写入世界目录（原子写入）。
-func (s *Server) saveMobs() error {
+// saveEntities 把世界中的生物与掉落物写入世界目录（原子写入）。
+func (s *Server) saveEntities() error {
 	s.entityMu.Lock()
 	records := make([]mobRecord, 0, len(s.mobs))
 	for _, m := range s.mobs {
@@ -55,14 +70,29 @@ func (s *Server) saveMobs() error {
 			Health: m.Health,
 		})
 	}
+	items := make([]itemRecord, 0, len(s.items))
+	for _, e := range s.items {
+		name, ok := registry.ItemName(e.Stack.ItemID)
+		if !ok {
+			continue
+		}
+		items = append(items, itemRecord{
+			Item:  name,
+			Count: e.Stack.Count,
+			UUID:  hex.EncodeToString(e.UUID[:]),
+			X:     e.X,
+			Y:     e.Y,
+			Z:     e.Z,
+		})
+	}
 	s.entityMu.Unlock()
 
-	content, err := json.MarshalIndent(mobFile{Mobs: records}, "", "  ")
+	content, err := json.MarshalIndent(entityFile{Mobs: records, Items: items}, "", "  ")
 	if err != nil {
 		return err
 	}
 	content = append(content, '\n')
-	path := filepath.Join(s.config.WorldDir, mobFileName)
+	path := filepath.Join(s.config.WorldDir, entityFileName)
 	temp := path + ".tmp"
 	if err := os.WriteFile(temp, content, 0o644); err != nil {
 		return fmt.Errorf("写入 %s：%w", temp, err)
@@ -74,10 +104,10 @@ func (s *Server) saveMobs() error {
 	return nil
 }
 
-// loadMobs 从世界目录恢复生物。文件不存在时不做任何事；
+// loadEntities 从世界目录恢复生物与掉落物。文件不存在时不做任何事；
 // 未知类型与损坏的条目会被跳过（只记录警告）。
-func (s *Server) loadMobs() error {
-	path := filepath.Join(s.config.WorldDir, mobFileName)
+func (s *Server) loadEntities() error {
+	path := filepath.Join(s.config.WorldDir, entityFileName)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -85,12 +115,13 @@ func (s *Server) loadMobs() error {
 		}
 		return fmt.Errorf("读取 %s：%w", path, err)
 	}
-	var file mobFile
+	var file entityFile
 	if err := json.Unmarshal(content, &file); err != nil {
 		return fmt.Errorf("解析 %s：%w", path, err)
 	}
 
 	restored := 0
+	restoredItems := 0
 	s.entityMu.Lock()
 	for _, record := range file.Mobs {
 		if record.Type != zombieTypeName {
@@ -121,9 +152,36 @@ func (s *Server) loadMobs() error {
 		s.mobs[m.ID] = m
 		restored++
 	}
+	for _, record := range file.Items {
+		stack, itemErr := item.FromName(record.Item, record.Count)
+		if itemErr != nil {
+			slog.Warn("跳过无效的掉落物记录", "item", record.Item, "error", itemErr)
+			continue
+		}
+		stack.Count = min(stack.Count, int32(item.StackLimit))
+		uuid, uuidErr := parseMobUUID(record.UUID)
+		if uuidErr != nil {
+			slog.Warn("掉落物的 UUID 无效，重新生成", "uuid", record.UUID, "error", uuidErr)
+			uuid = newEntityUUID()
+		}
+		e := &itemEntity{
+			ID:               s.entityIDs.Add(1),
+			UUID:             uuid,
+			Stack:            stack,
+			X:                record.X,
+			Y:                record.Y,
+			Z:                record.Z,
+			PickupDelayTicks: itemPickupDelayTicks,
+		}
+		s.items[e.ID] = e
+		restoredItems++
+	}
 	s.entityMu.Unlock()
 	if restored > 0 {
 		slog.Info("restored mobs from disk", "count", restored)
+	}
+	if restoredItems > 0 {
+		slog.Info("restored items from disk", "count", restoredItems)
 	}
 	return nil
 }
@@ -140,8 +198,8 @@ func parseMobUUID(value string) ([16]byte, error) {
 	return uuid, nil
 }
 
-// mobAutosaveLoop 周期保存生物数据；ctx 取消时退出。
-func (s *Server) mobAutosaveLoop(ctx context.Context) {
+// entityAutosaveLoop 周期保存生物与掉落物数据；ctx 取消时退出。
+func (s *Server) entityAutosaveLoop(ctx context.Context) {
 	ticker := time.NewTicker(mobAutosaveInterval)
 	defer ticker.Stop()
 	for {
@@ -149,8 +207,8 @@ func (s *Server) mobAutosaveLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.saveMobs(); err != nil {
-				slog.Error("mob autosave failed", "error", err)
+			if err := s.saveEntities(); err != nil {
+				slog.Error("entity autosave failed", "error", err)
 			}
 		}
 	}

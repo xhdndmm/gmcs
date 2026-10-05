@@ -43,7 +43,7 @@ scripts/build.sh --all      # 交叉编译全部常用平台
 scripts/genpgo.sh           # 重新生成 PGO 配置（热路径变更后）
 ```
 
-热路径代码（区块生成/编码、实体包、服务器 Tick）明显变化后，运行
+热路径代码（区块生成/编码、实体包、服务器 Tick 与掉落物）明显变化后，运行
 `scripts/genpgo.sh` 更新 `cmd/gmcs/default.pgo`（PGO 配置，随仓库提交，
 构建时自动应用）。
 

@@ -53,12 +53,18 @@ func (s *session) withinBlockReach(x, y, z int) bool {
 	return math.Sqrt(dx*dx+dy*dy+dz*dz) <= s.interactReach()
 }
 
-// handlePlayerAction 处理 Player Action（block_dig）包：破坏方块。
+// handlePlayerAction 处理 Player Action（block_dig）包：破坏方块与丢弃物品。
 func (s *Server) handlePlayerAction(player *session, action protocol.PlayerAction) {
 	const (
 		statusStartDestroy = 0
 		statusStopDestroy  = 2
+		statusDropStack    = 3 // Ctrl+Q：丢弃整组。
+		statusDropItem     = 4 // Q：丢弃 1 个。
 	)
+	if action.Status == statusDropStack || action.Status == statusDropItem {
+		s.dropItemFromPlayer(player, action.Status == statusDropStack)
+		return
+	}
 	if !player.canInteractBlocks() || player.isDead() {
 		return
 	}

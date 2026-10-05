@@ -37,7 +37,8 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.7 ns/op | 120 B/op | 4 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈104.3 ns/op | 176 B/op | 4 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈75.3 µs/op | 16–85 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈8.0 µs/op | 3,182 B/op | 64 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈8.1 µs/op | 3,190 B/op | 64 allocs/op |
+| `BenchmarkItemTick`（128 掉落物） | server | ≈9.5 µs/op | 1 B/op | 0 allocs/op |
 
 各基准覆盖的内容：
 
@@ -54,6 +55,8 @@ go test -run=^$ -bench=. -benchmem ./...
 - `BenchmarkServerTick`：`Server.tick()` 一次，含 32 只僵尸的游荡移动、卡住判定与
   广播筛选；场景中无玩家（走游荡分支）。**不覆盖**追击/攻击分支、区块加载/保存、
   玩家会话与网络发送。
+- `BenchmarkItemTick`：`Server.tick()` 一次，含 128 个掉落物的年龄/拾取延迟、
+  重力与摩擦、合并扫描与拾取判定；场景中无玩家（走不拾取分支）。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
 按编码 63 µs/区块计算约 28 ms 纯编码时间（不含地形生成与网络 IO）。
@@ -165,7 +168,8 @@ Tick 的 benchmark 采样并合并生成（当前约 24 KB，随热路径变化�
 结论：收益约 0.2%–5.7%；`EncodeEntityPositionSync` 的 -0.2%（约 0.1 ns）在噪声
 范围内。注：列高度缓存（3.2）消除了原先占 Tick 大半的整列扫描热点，Tick 的
 PGO 增益从首次引入时的 ≈ -20.5%（当时热点仍在，见提交 502ce61）缩小到
-≈ -5.7%；本轮 heightmap（3.5）引入后已重新生成 `default.pgo` 并复测。
+≈ -5.7%；本轮 heightmap（3.5）引入后已重新生成 `default.pgo` 并复测；掉落物批次（3.6）
+后再次重新采样（对照表数字仍为上一轮实测）。
 以上为单机 micro-benchmark，不代表真实服务器吞吐；真实负载验证仍在计划中
 （见第 4 节）。
 
@@ -224,6 +228,19 @@ WORLD_SURFACE（1）与 MOTION_BLOCKING（4）：9 位/列、每 long 7 个值�
 约 +2.6 ms（≈25→28 ms），相对地形生成与网络 IO 可忽略。引入后已重新生成
 `default.pgo`（见 3.3）。
 
+### 3.6 掉落物实体与区块批量（本批）
+
+本批新增掉落物系统（丢弃/拾取/物理/持久化）与区块批量协议，Tick 路径新增
+`tickItems`（遍历掉落物：年龄与拾取延迟、重力与摩擦、合并扫描、拾取判定）。
+
+- 新增 `BenchmarkItemTick`（128 个掉落物、无玩家）：≈9.5 µs/op、≈1 B/op、0 allocs/op
+  （`-count=5` 中位数，含 `Server.tick()` 固定开销）。
+- 批次后复测 `BenchmarkServerTick`（32 生物、无掉落物）：≈8.1 µs/op、
+  ≈3,190 B/op、64 allocs/op，与 3.2 记录的 ≈8.0 µs/op、64 allocs/op 一致
+  （单次运行波动约 ±3%，差异在噪声范围内）。
+- 掉落物列表为空时 `tickItems` 仅一次 map 遍历，不产生分配。
+- `cmd/gmcs/default.pgo` 已在本批后重新采样生成（采样包含新基准）。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
@@ -231,3 +248,4 @@ WORLD_SURFACE（1）与 MOTION_BLOCKING（4）：9 位/列、每 long 7 个值�
 - 区块保存/加载（区域文件读写）路径的 benchmark
 - 端到端连接压测（真实 socket + 加密 + 多包交织；当前仅覆盖编解码与压缩）
 - 内存随在线时长/跑图的持续观测（当前仅区块卸载演示与快照测量）
+- 掉落物高密度场景（数百掉落物的物理与广播）与长时间运行的内存增长观测

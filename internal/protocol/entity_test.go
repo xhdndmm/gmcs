@@ -470,3 +470,48 @@ func TestParsePlayerMovement(t *testing.T) {
 		t.Fatal("expected error for NaN coordinate")
 	}
 }
+
+// TestEncodeEntityMetadataItem 验证物品实体 Item 元数据包
+// （索引 8、类型 7 item_stack、以 0xFF 结束）。
+func TestEncodeEntityMetadataItem(t *testing.T) {
+	slot := AppendVarInt(nil, 5) // count
+	slot = AppendVarInt(slot, 1) // item id
+	slot = AppendVarInt(slot, 0) // added components
+	slot = AppendVarInt(slot, 0) // removed components
+	packet := EncodeEntityMetadataItem(9, slot)
+	id, offset, err := DecodeVarInt(packet)
+	if err != nil || id != PlayPacketIDEntityMetadata {
+		t.Fatalf("metadata id = %#x (err=%v)", id, err)
+	}
+	entityID, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || entityID != 9 {
+		t.Fatalf("entity id = %d (err=%v)", entityID, err)
+	}
+	if packet[offset] != EntityMetadataItemStackIndex {
+		t.Fatalf("metadata index = %d, want %d", packet[offset], EntityMetadataItemStackIndex)
+	}
+	offset++
+	metaType, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || metaType != 7 {
+		t.Fatalf("metadata type = %d (err=%v)", metaType, err)
+	}
+	count, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || count != 5 {
+		t.Fatalf("slot count = %d (err=%v)", count, err)
+	}
+	if _, offset, err = decodeVarIntAt(packet, offset); err != nil { // item id
+		t.Fatal(err)
+	}
+	if _, offset, err = decodeVarIntAt(packet, offset); err != nil { // added components
+		t.Fatal(err)
+	}
+	if _, offset, err = decodeVarIntAt(packet, offset); err != nil { // removed components
+		t.Fatal(err)
+	}
+	if offset >= len(packet) || packet[offset] != 0xFF {
+		t.Fatalf("metadata terminator missing at %d", offset)
+	}
+	if offset+1 != len(packet) {
+		t.Fatalf("metadata trailing bytes: %d", len(packet)-offset-1)
+	}
+}

@@ -387,3 +387,54 @@ func TestEncodePlayerInfoRemove(t *testing.T) {
 		t.Fatalf("uuid mismatch: % x", packet[offset:])
 	}
 }
+
+// TestChunkBatchPackets 验证 Chunk Batch Start/Finished 编码与回执解析。
+func TestChunkBatchPackets(t *testing.T) {
+	start := EncodeChunkBatchStart()
+	if id, _, err := DecodeVarInt(start); err != nil || id != PlayPacketIDChunkBatchStart {
+		t.Fatalf("chunk batch start id = %#x (err=%v)", id, err)
+	}
+	finished := EncodeChunkBatchFinished(49)
+	id, offset, err := DecodeVarInt(finished)
+	if err != nil || id != PlayPacketIDChunkBatchFinished {
+		t.Fatalf("chunk batch finished id = %#x (err=%v)", id, err)
+	}
+	count, _, err := DecodeVarInt(finished[offset:])
+	if err != nil || count != 49 {
+		t.Fatalf("batch size = %d (err=%v)", count, err)
+	}
+
+	received := AppendVarInt(nil, PlayServerboundPacketIDChunkBatchReceived)
+	received = AppendFloat32(received, 8.5)
+	rate, err := ParseChunkBatchReceived(received)
+	if err != nil || rate != 8.5 {
+		t.Fatalf("chunk batch received = %v (err=%v)", rate, err)
+	}
+	if _, err := ParseChunkBatchReceived(AppendVarInt(nil, 0x7F)); err == nil {
+		t.Fatal("wrong packet id should fail")
+	}
+	negative := AppendVarInt(nil, PlayServerboundPacketIDChunkBatchReceived)
+	negative = AppendFloat32(negative, -1)
+	if _, err := ParseChunkBatchReceived(negative); err == nil {
+		t.Fatal("negative rate should fail")
+	}
+}
+
+// TestEncodeCollect 验证拾取物品包的三个字段。
+func TestEncodeCollect(t *testing.T) {
+	packet := EncodeCollect(7, 42, 3)
+	id, offset, err := DecodeVarInt(packet)
+	if err != nil || id != PlayPacketIDCollect {
+		t.Fatalf("collect id = %#x (err=%v)", id, err)
+	}
+	for _, want := range []int32{7, 42, 3} {
+		got, next, err := decodeVarIntAt(packet, offset)
+		if err != nil || got != want {
+			t.Fatalf("collect field = %d, want %d (err=%v)", got, want, err)
+		}
+		offset = next
+	}
+	if offset != len(packet) {
+		t.Fatalf("collect trailing bytes: %d", len(packet)-offset)
+	}
+}

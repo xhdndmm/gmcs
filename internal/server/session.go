@@ -67,6 +67,9 @@ type session struct {
 	// 区块流式加载状态（由会话 goroutine 串行访问）。
 	sentChunks  map[world.ChunkPos]struct{}
 	centerChunk world.ChunkPos
+	// desiredChunksPerTick 是客户端通过 Chunk Batch Received 回报的期望
+	// 每 tick 区块数（仅记录，当前不做节流）。
+	desiredChunksPerTick float32
 
 	// inventory 是玩家物品栏，由会话串行访问。
 	inventory item.Inventory
@@ -204,11 +207,17 @@ func (s *session) updateFallState(x, y, z float64, onGround bool) {
 		s.airborne = false
 		fall := s.fallStartY - y
 		if fall > fallDamageThreshold {
+			blockX, blockZ := int(math.Floor(x)), int(math.Floor(z))
 			landY := int(math.Floor(y))
-			landed := s.server.world.BlockAt(int(math.Floor(x)), landY, int(math.Floor(z)))
-			if landed != world.WaterBlock {
+			feet := s.server.world.BlockAt(blockX, landY, blockZ)
+			if feet != world.WaterBlock {
+				// 落点表面取脚下第一格（受保护方块减伤：干草堆/床/粘液块/蜂蜜块/细雪）。
+				surface := s.server.world.BlockAt(blockX, landY-1, blockZ)
 				damage := float32(math.Ceil(fall - fallDamageThreshold))
-				s.server.damagePlayer(s, damage, "a fall", 0, s.server.fallDamageTypeID, nil)
+				damage *= s.server.fallDamageMultiplier(surface)
+				if damage > 0 {
+					s.server.damagePlayer(s, damage, "a fall", 0, s.server.fallDamageTypeID, nil)
+				}
 			}
 		}
 	}
@@ -219,6 +228,34 @@ func (s *session) updateFallState(x, y, z float64, onGround bool) {
 func (s *session) resetFallState() {
 	s.airborne = false
 	s.wasOnGround = true
+}
+
+// fallDamageMultiplier 返回落点方块对摔落伤害的倍率（默认 1；干草堆 0.2，
+// 床 0.5，粘液块/蜂蜜块/细雪完全免疫）。
+func (s *Server) fallDamageMultiplier(landed uint16) float32 {
+	if factor, ok := s.fallDamageMultipliers[landed]; ok {
+		return factor
+	}
+	return 1
+}
+
+// resolveFallDamageBlocks 解析摔落伤害减免方块的状态 ID。
+// 按默认状态匹配：这些方块在当前实现中都只能以默认状态放置
+// （旋转过的干草堆等状态的减免效果暂未覆盖，见 docs/TODO.md）。
+func (s *Server) resolveFallDamageBlocks() {
+	multipliers := make(map[uint16]float32)
+	for name, factor := range map[string]float32{
+		"minecraft:hay_block":   0.2,
+		"minecraft:red_bed":     0.5,
+		"minecraft:slime_block": 0,
+		"minecraft:honey_block": 0,
+		"minecraft:powder_snow": 0,
+	} {
+		if state, ok := registry.BlockStateIDs[name]; ok {
+			multipliers[state] = factor
+		}
+	}
+	s.fallDamageMultipliers = multipliers
 }
 
 // gameModeID 返回当前游戏模式。
@@ -652,7 +689,7 @@ func (s *session) runPlay() {
 	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
 	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
-	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands(s.server.isOp(s.name))))
+	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands(s.server.opLevel(s.name))))
 	if !restored {
 		// 仅新玩家发放初始物品；恢复的玩家沿用其已保存的物品栏。
 		packets = append(packets, s.giveStartingItems()...)
@@ -662,8 +699,8 @@ func (s *session) runPlay() {
 	if err := s.writePackets(packets...); err != nil {
 		return
 	}
-	// 世界中已有的生物（僵尸等）也要发送给新玩家。
-	if err := s.server.sendExistingMobs(s); err != nil {
+	// 世界中已有的生物与掉落物也要发送给新玩家。
+	if err := s.server.sendExistingEntities(s); err != nil {
 		return
 	}
 	s.markJoined()
@@ -804,6 +841,12 @@ func (s *session) playReadLoop() {
 			if action, err := protocol.ParsePlayClientCommand(packet); err == nil && action == 0 {
 				// 0 = 重生请求。
 				s.server.respawnPlayer(s)
+			}
+		case protocol.PlayServerboundPacketIDChunkBatchReceived:
+			// 客户端回报期望的每 tick 区块数。当前仅记录：区块仍按批立即发送
+			// （与原版的按回报节流不同，见 docs/TODO.md 已知限制）。
+			if rate, err := protocol.ParseChunkBatchReceived(packet); err == nil {
+				s.desiredChunksPerTick = rate
 			}
 		case protocol.PlayServerboundPacketIDPlayerPosition:
 			x, y, z, onGround, err := protocol.ParsePlayerPosition(packet)

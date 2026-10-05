@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
@@ -111,33 +112,130 @@ func TestCommandSuggestions(t *testing.T) {
 	instance := &Server{config: config.Default()}
 
 	// 管理员补全命令名：替换整段文本，候选带斜杠。
-	matches, start, length := instance.commandSuggestions("/ga", true)
+	matches, start, length := instance.commandSuggestions("/ga", 4)
 	if len(matches) != 1 || matches[0] != "/gamemode" || start != 0 || length != 3 {
 		t.Fatalf("op /ga = %v [%d,%d)", matches, start, length)
 	}
 	// 非管理员看不到 /gamemode。
-	if matches, _, _ = instance.commandSuggestions("/ga", false); len(matches) != 0 {
+	if matches, _, _ = instance.commandSuggestions("/ga", 0); len(matches) != 0 {
 		t.Fatalf("non-op /ga = %v, want no matches", matches)
 	}
 	// 非管理员可以看到公共命令。
-	if matches, _, _ = instance.commandSuggestions("/h", false); len(matches) != 1 || matches[0] != "/help" {
+	if matches, _, _ = instance.commandSuggestions("/h", 0); len(matches) != 1 || matches[0] != "/help" {
 		t.Fatalf("non-op /h = %v", matches)
 	}
 	// 参数补全：/gamemode 的模式名。
-	matches, start, length = instance.commandSuggestions("/gamemode c", true)
+	matches, start, length = instance.commandSuggestions("/gamemode c", 4)
 	if len(matches) != 1 || matches[0] != "creative" || start != 10 || length != 1 {
 		t.Fatalf("gamemode c = %v [%d,%d)", matches, start, length)
 	}
-	matches, start, length = instance.commandSuggestions("/gamemode ", true)
+	matches, start, length = instance.commandSuggestions("/gamemode ", 4)
 	if len(matches) != 4 || start != 10 || length != 0 {
 		t.Fatalf("gamemode all = %v [%d,%d)", matches, start, length)
 	}
 	// 非管理员没有参数补全；聊天文本不补全。
-	if matches, _, _ = instance.commandSuggestions("/gamemode c", false); len(matches) != 0 {
+	if matches, _, _ = instance.commandSuggestions("/gamemode c", 0); len(matches) != 0 {
 		t.Fatalf("non-op gamemode arg = %v", matches)
 	}
-	if matches, _, _ = instance.commandSuggestions("hello", true); len(matches) != 0 {
+	if matches, _, _ = instance.commandSuggestions("hello", 4); len(matches) != 0 {
 		t.Fatalf("chat text = %v, want no matches", matches)
+	}
+	// 参数补全：/kick 的在线玩家名（需要等级 3）。
+	instance.players = make(map[[16]byte]*session)
+	instance.players[[16]byte{1}] = &session{name: "Alice"}
+	if matches, _, _ = instance.commandSuggestions("/kick Al", 3); len(matches) != 1 || matches[0] != "Alice" {
+		t.Fatalf("kick Al = %v", matches)
+	}
+	if matches, _, _ = instance.commandSuggestions("/kick Al", 2); len(matches) != 0 {
+		t.Fatalf("level 2 kick arg = %v", matches)
+	}
+}
+
+// TestOpLevels 验证 ops 名单的权限等级解析与命令树过滤（离线）。
+func TestOpLevels(t *testing.T) {
+	cfg := config.Default()
+	cfg.Ops = []string{"Alice", "Bob:2", "Carol:3", "Dave:9", "Eve:0", "  Frank : 1 "}
+	instance := &Server{config: cfg}
+
+	cases := []struct {
+		name string
+		want int
+	}{
+		{"Alice", 4}, // 无等级后缀：与原版 /op 一致（4）。
+		{"alice", 4}, // 大小写不敏感。
+		{"Bob", 2},
+		{"Carol", 3},
+		{"Dave", 4},  // 超出 4：截断为 4。
+		{"Eve", 1},   // 低于 1：截断为 1。
+		{"Frank", 1}, // 允许空白。
+		{"Guest", 0},
+	}
+	for _, c := range cases {
+		if got := instance.opLevel(c.name); got != c.want {
+			t.Fatalf("opLevel(%q) = %d, want %d", c.name, got, c.want)
+		}
+	}
+
+	commandNames := func(level int) []string {
+		names := make([]string, 0, 6)
+		for _, command := range serverCommands(level) {
+			names = append(names, command.Name)
+		}
+		return names
+	}
+	join := strings.Join
+	if got := join(commandNames(0), ","); got != "help,list,spawn" {
+		t.Fatalf("level 0 commands = %q", got)
+	}
+	if got := join(commandNames(1), ","); got != "help,list,spawn" {
+		t.Fatalf("level 1 commands = %q", got)
+	}
+	if got := join(commandNames(2), ","); got != "help,list,say,gamemode,spawn" {
+		t.Fatalf("level 2 commands = %q", got)
+	}
+	if got := join(commandNames(3), ","); got != "help,list,say,gamemode,kick,spawn" {
+		t.Fatalf("level 3 commands = %q", got)
+	}
+}
+
+// TestKickPlayer 验证 /kick：权限校验、断开提示与其他玩家收到的广播（经网络）。
+func TestKickPlayer(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.ViewDistance = 2
+	cfg.Ops = []string{"Admin"}
+	instance, adminConn := joinServer(t, cfg, "Admin")
+	addr := adminConn.RemoteAddr().String()
+	guestConn := joinAt(t, cfg, addr, "Guest", 1)
+
+	// 无权限的玩家不能用 /kick。
+	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDChatCommand)
+	packet = appendTestString(packet, "/kick Admin")
+	if err := protocol.WritePacketWithCompression(guestConn, packet, compressionThreshold); err != nil {
+		t.Fatal(err)
+	}
+	expectSystemChat(t, guestConn, "需要权限等级 3")
+	if instance.findJoinedPlayer("Guest") == nil {
+		t.Fatal("Guest 不应被踢出")
+	}
+
+	// 管理员踢出 Guest：Guest 收到断开提示，Admin 收到广播。
+	packet = protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDChatCommand)
+	packet = appendTestString(packet, "/kick Guest")
+	if err := protocol.WritePacketWithCompression(adminConn, packet, compressionThreshold); err != nil {
+		t.Fatal(err)
+	}
+	expectSystemChat(t, adminConn, "was kicked by Admin")
+	expectPlayPacket(t, guestConn, protocol.PlayPacketIDDisconnect)
+
+	// 踢出后 Guest 会话应被注销。
+	deadline := time.Now().Add(5 * time.Second)
+	for instance.findJoinedPlayer("Guest") != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("Guest 未被踢出")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

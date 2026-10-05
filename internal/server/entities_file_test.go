@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"gmcs/internal/config"
+	"gmcs/internal/item"
 )
 
 // TestMobPersistence 验证生物保存到 entities.json 并在重启后恢复。
@@ -21,11 +22,11 @@ func TestMobPersistence(t *testing.T) {
 	savedMob := first.addMob(spawnX+1, spawnY, spawnZ+1)
 	savedMob.Health = 7
 
-	if err := first.saveMobs(); err != nil {
+	if err := first.saveEntities(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(cfg.WorldDir, mobFileName)); err != nil {
-		t.Fatalf("expected %s to be written: %v", mobFileName, err)
+	if _, err := os.Stat(filepath.Join(cfg.WorldDir, entityFileName)); err != nil {
+		t.Fatalf("expected %s to be written: %v", entityFileName, err)
 	}
 	if err := first.world.Close(); err != nil {
 		t.Fatal(err)
@@ -70,7 +71,7 @@ func TestMobPersistenceSkipsUnknownType(t *testing.T) {
 		{"type":"minecraft:creeper","x":1,"y":64,"z":1,"health":20},
 		{"type":"minecraft:zombie","x":2,"y":64,"z":2,"yaw":90,"pitch":0,"health":5}
 	]}`)
-	if err := os.WriteFile(filepath.Join(cfg.WorldDir, mobFileName), content, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cfg.WorldDir, entityFileName), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	instance, err := New(cfg)
@@ -83,5 +84,53 @@ func TestMobPersistenceSkipsUnknownType(t *testing.T) {
 	instance.entityMu.Unlock()
 	if count != 1 {
 		t.Fatalf("expected only the zombie to load, got %d mobs", count)
+	}
+}
+
+// TestItemPersistence 验证掉落物保存到 entities.json 并在重启后恢复
+// （位置与物品保留，速度不保存）。
+func TestItemPersistence(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawnX, spawnY, spawnZ := first.spawnPosition()
+	stack, err := item.FromName("minecraft:stone", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.spawnItem(stack, spawnX+1, spawnY, spawnZ+1, 0.1, 0, 0, 0) == nil {
+		t.Fatal("spawnItem returned nil")
+	}
+	if err := first.saveEntities(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.world.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟重启：用同一世界目录新建服务器。
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.world.Close()
+	second.entityMu.Lock()
+	restored := make([]*itemEntity, 0, len(second.items))
+	for _, e := range second.items {
+		restored = append(restored, e)
+	}
+	second.entityMu.Unlock()
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored item, got %d", len(restored))
+	}
+	got := restored[0]
+	if got.Stack.ItemID != stack.ItemID || got.Stack.Count != 7 {
+		t.Fatalf("restored stack = %+v, want stone x7", got.Stack)
+	}
+	if math.Abs(got.X-(spawnX+1)) > 1e-6 || math.Abs(got.Y-spawnY) > 1e-6 || math.Abs(got.Z-(spawnZ+1)) > 1e-6 {
+		t.Fatalf("restored position = (%v, %v, %v)", got.X, got.Y, got.Z)
 	}
 }

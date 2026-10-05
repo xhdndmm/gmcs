@@ -26,9 +26,16 @@ const (
 	PlayPacketIDSetDefaultSpawn    = 0x5F // clientbound
 	PlayPacketIDSetPlayerInventory = 0x6A // clientbound
 	PlayPacketIDSystemChat         = 0x77 // clientbound
+	// PlayPacketIDChunkBatchFinished 是 Chunk Batch Finished（批次结束）。
+	PlayPacketIDChunkBatchFinished = 0x0B // clientbound
+	// PlayPacketIDChunkBatchStart 是 Chunk Batch Start（批次开始）。
+	PlayPacketIDChunkBatchStart = 0x0C // clientbound
+	// PlayPacketIDCollect 是 Pickup Item（拾取物品动画）。
+	PlayPacketIDCollect = 0x7A // clientbound
 
 	PlayServerboundPacketIDConfirmTeleportation   = 0x00
 	PlayServerboundPacketIDChatMessage            = 0x08
+	PlayServerboundPacketIDChunkBatchReceived     = 0x0A
 	PlayServerboundPacketIDClientCommand          = 0x0B
 	PlayServerboundPacketIDClientTickEnd          = 0x0C
 	PlayServerboundPacketIDClientInformation      = 0x0D
@@ -211,6 +218,44 @@ func EncodeSystemChat(text string) []byte {
 func EncodePlayDisconnect(reason string) []byte {
 	packet := AppendVarInt(nil, int32(PlayPacketIDDisconnect))
 	return AppendNBTString(packet, reason)
+}
+
+// EncodeChunkBatchStart 编码 Chunk Batch Start 包（空负载）。
+// 客户端用它测量批次耗时，并向服务器回报期望的每 tick 区块数。
+func EncodeChunkBatchStart() []byte {
+	return AppendVarInt(nil, int32(PlayPacketIDChunkBatchStart))
+}
+
+// EncodeChunkBatchFinished 编码 Chunk Batch Finished 包（批次中的区块数量）。
+func EncodeChunkBatchFinished(batchSize int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDChunkBatchFinished))
+	return AppendVarInt(packet, batchSize)
+}
+
+// EncodeCollect 编码 Pickup Item 包（拾取动画）：collectedID 为被拾取的
+// 掉落物实体，collectorID 为拾取者，count 为拾取数量。
+func EncodeCollect(collectedID, collectorID, count int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDCollect))
+	packet = AppendVarInt(packet, collectedID)
+	packet = AppendVarInt(packet, collectorID)
+	return AppendVarInt(packet, count)
+}
+
+// ParseChunkBatchReceived 解析 Chunk Batch Received 包，返回客户端期望的
+// 每 tick 区块数（f32）。非法值（负数/NaN）返回错误。
+func ParseChunkBatchReceived(packet []byte) (float32, error) {
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDChunkBatchReceived {
+		return 0, fmt.Errorf("invalid chunk batch received packet")
+	}
+	value, _, err := DecodeFloat32(packet, offset)
+	if err != nil {
+		return 0, err
+	}
+	if value < 0 || value != value {
+		return 0, fmt.Errorf("invalid chunks per tick %v", value)
+	}
+	return value, nil
 }
 
 // ParsePlayKeepAlive 解析 Keep Alive（serverbound）包。
