@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
+	"gmcs/internal/world"
 )
 
 // joinServer 启动一台测试服务器并完成一名玩家的完整登录流程
@@ -115,8 +117,13 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 		t.Fatal(err)
 	}
 
-	// Play 阶段初始包
-	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77, 0x10, 0x6A, 0x66} {
+	// Play 阶段初始包（启用世界边界时会先收到初始化边界包）
+	initial := []int32{0x30, 0x5F}
+	if cfg.WorldBorderSize > 0 {
+		initial = append(initial, 0x2A)
+	}
+	initial = append(initial, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77, 0x10, 0x6A, 0x66)
+	for _, want := range initial {
 		expectPlayPacket(t, conn, want)
 	}
 	// 确认传送
@@ -164,8 +171,8 @@ func sendAttack(t *testing.T, conn net.Conn, targetID int32) {
 	}
 }
 
-// TestMobCombatFlow 验证：生成生物 → 生物攻击玩家（伤害事件/生命/音效）→
-// 玩家攻击并击杀生物（痛动画 → 死亡事件 → 移除）。
+// TestMobCombatFlow 验证：生成生物 → 抬手后才攻击（挥手动动画/受伤动画/伤害/
+// 生命/音效）→ 玩家攻击（受击无敌帧）并击杀生物（痛动画 → 死亡事件 → 移除）。
 func TestMobCombatFlow(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
@@ -187,8 +194,18 @@ func TestMobCombatFlow(t *testing.T) {
 		t.Fatalf("add entity ID = %d, want %d (err=%v)", entityID, mob.ID, err)
 	}
 
-	// 推进一帧：僵尸应立即攻击玩家。
+	// 推进一帧：刚进入攻击距离只会抬手，不应立即造成伤害。
 	instance.tick()
+	if health, _, _ := player.healthStatus(); health != maxPlayerHealth {
+		t.Fatalf("player was damaged during windup: %v", health)
+	}
+
+	// 抬手（0.5 秒）结束后的那一击：先挥手、再玩家受伤动画与伤害结算。
+	for i := 0; i < mobAttackWindupTicks+2; i++ {
+		instance.tick()
+	}
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAnimate)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDHurtAnimation)
 	damagePacket := expectPlayPacket(t, conn, protocol.PlayPacketIDDamageEvent)
 	_, offset, err = protocol.DecodeVarInt(damagePacket)
 	if err != nil {
@@ -215,10 +232,13 @@ func TestMobCombatFlow(t *testing.T) {
 		t.Fatalf("player health = %v, want %v", health, want)
 	}
 
-	// 攻击 5 次（每次 4 点）击杀僵尸；前 4 次各应收到痛动画。
-	for i := 0; i < 4; i++ {
+	// 攻击 5 次（每次 4 点）击杀僵尸；生物有 0.5 秒受击无敌帧，两次攻击之间推进 tick。
+	for hit := 0; hit < 4; hit++ {
 		sendAttack(t, conn, mob.ID)
 		expectPlayPacket(t, conn, protocol.PlayPacketIDHurtAnimation)
+		for i := 0; i < mobHurtCooldownTicks; i++ {
+			instance.tick()
+		}
 	}
 	sendAttack(t, conn, mob.ID)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityEvent)
@@ -233,6 +253,78 @@ func TestMobCombatFlow(t *testing.T) {
 	instance.entityMu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("expected no mobs left, got %d", remaining)
+	}
+}
+
+// TestMobAttackBlockedByWall 验证隔墙（视线被方块遮挡）时生物无法攻击玩家，
+// 移除遮挡后抬手结束即可攻击。
+func TestMobAttackBlockedByWall(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Walled")
+	player := findSession(t, instance, "Walled")
+
+	spawnX, spawnY, spawnZ := instance.spawnPosition()
+	instance.addMob(spawnX, spawnY, spawnZ+2.4)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
+
+	// 在生物与玩家之间（z=1 列）的眼睛高度放置石头。
+	chunk, err := instance.world.Chunk(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eyeY := int(math.Floor(spawnY + mobEyeHeight))
+	blockX, blockZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))+1
+	chunk.SetBlockState(blockX, eyeY, blockZ, world.StoneBlock)
+
+	// 20 tick 后玩家仍不应受伤。
+	for i := 0; i < 20; i++ {
+		instance.tick()
+	}
+	if health, _, _ := player.healthStatus(); health != maxPlayerHealth {
+		t.Fatalf("player was hit through a wall: %v", health)
+	}
+
+	// 移除遮挡后，抬手结束即可攻击。
+	chunk.SetBlockState(blockX, eyeY, blockZ, world.AirBlock)
+	for i := 0; i < mobAttackWindupTicks+4; i++ {
+		instance.tick()
+	}
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAnimate)
+	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-mobAttackDamage {
+		t.Fatalf("player health = %v after removing the wall", health)
+	}
+}
+
+// TestWorldBorderLimitsMobSpawn 验证启用世界边界后生物只会生成在边界内。
+func TestWorldBorderLimitsMobSpawn(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.WorldBorderSize = 32 // 半边长 16 格，小于生成距离 12–24
+	cfg.SpawnMonsters = true
+	cfg.MaxMobs = 8
+	instance, conn := joinServer(t, cfg, "Borderer")
+	_ = conn
+	players := instance.playerSnapshot()
+
+	spawned := 0
+	for attempt := 0; attempt < 200 && spawned == 0; attempt++ {
+		instance.trySpawnMob(players)
+		instance.entityMu.Lock()
+		spawned = len(instance.mobs)
+		instance.entityMu.Unlock()
+	}
+	if spawned == 0 {
+		t.Fatal("expected at least one mob to spawn inside the border")
+	}
+	half := float64(cfg.WorldBorderSize) / 2
+	instance.entityMu.Lock()
+	defer instance.entityMu.Unlock()
+	for _, m := range instance.mobs {
+		if math.Abs(m.X) > half+1 || math.Abs(m.Z) > half+1 {
+			t.Fatalf("mob spawned outside the world border: (%v, %v)", m.X, m.Z)
+		}
 	}
 }
 

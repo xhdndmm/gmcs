@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"sync"
@@ -51,6 +52,8 @@ type Server struct {
 
 	// 出生点（世界坐标，脚部位置）。
 	spawnX, spawnY, spawnZ float64
+	// borderHalfSize 是世界边界的半边长（方块）；0 表示未启用边界。
+	borderHalfSize float64
 	// defaultGameMode 是新玩家的游戏模式。
 	defaultGameMode uint8
 	// mobsEnabled 为 false 时禁用全部生物逻辑（注册表数据缺失时）。
@@ -108,6 +111,7 @@ func New(cfg config.Config) (*Server, error) {
 		spawnX:            0.5,
 		spawnY:            spawnY,
 		spawnZ:            0.5,
+		borderHalfSize:    float64(cfg.WorldBorderSize) / 2,
 		defaultGameMode:   uint8(gameMode),
 		rsaKey:            rsaKey,
 		httpClient:        &http.Client{Timeout: 10 * time.Second},
@@ -134,6 +138,14 @@ func (s *Server) spawnInfo(gameMode uint8) protocol.SpawnInfo {
 // spawnPosition 返回出生点（脚部）的世界坐标。
 func (s *Server) spawnPosition() (x, y, z float64) {
 	return s.spawnX, s.spawnY, s.spawnZ
+}
+
+// insideBorder 报告坐标是否位于世界边界内（未启用边界时恒为 true）。
+func (s *Server) insideBorder(x, z float64) bool {
+	if s.borderHalfSize <= 0 {
+		return true
+	}
+	return math.Abs(x) <= s.borderHalfSize && math.Abs(z) <= s.borderHalfSize
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {

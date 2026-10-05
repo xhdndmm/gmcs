@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"gmcs/internal/config"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 	"gmcs/internal/world"
@@ -15,15 +16,26 @@ import (
 // 生物与战斗参数。数值以“简单、可验证”为先，不追求与原版数值完全一致
 // （原版僵尸为 20 生命、2/3/4 点难度伤害；此处固定 2 点）。
 const (
-	zombieMaxHealth   = 20
-	zombieWalkSpeed   = 0.055 // 方块/tick（约 1.1 格/秒）
-	mobWanderSpeed    = 0.03
-	mobFollowRange    = 32
-	mobDespawnRange   = 64
-	mobAttackRange    = 1.9
-	mobAttackCooldown = 20
-	mobAttackDamage   = 2
-	mobDeathTicks     = 20
+	zombieMaxHealth = 20
+	zombieWalkSpeed = 0.055 // 方块/tick（约 1.1 格/秒）
+	mobWanderSpeed  = 0.03
+	mobFollowRange  = 32
+	mobDespawnRange = 64
+	mobAttackRange  = 1.9
+	// mobAttackVerticalRange 是攻击允许的高度差（超出则打不到）。
+	mobAttackVerticalRange = 2.0
+	// mobAttackWindupTicks 是进入攻击距离后的抬手时间（0.5 秒），
+	// 避免“贴脸瞬间受伤”。
+	mobAttackWindupTicks = 10
+	mobAttackCooldown    = 20
+	mobAttackDamage      = 2
+	// mobHurtCooldownTicks 是生物受击后的无敌帧（0.5 秒）。
+	mobHurtCooldownTicks = 10
+	// mobKnockback 是生物被击中时沿攻击者反方向推开的距离（方块）。
+	mobKnockback  = 0.4
+	mobDeathTicks = 20
+	// mobEyeHeight 是近似眼睛高度（视线检查用）。
+	mobEyeHeight = 1.5
 
 	playerAttackDamage = 4
 	playerAttackRange  = 3.5
@@ -56,6 +68,10 @@ type mob struct {
 	DeadTicks int
 
 	AttackCooldown int
+	// WasInRange 记录上一帧是否处于可攻击状态（用于进入攻击距离时的抬手）。
+	WasInRange bool
+	// HurtCooldown 是受击无敌帧剩余 tick。
+	HurtCooldown int
 	// WanderX/WanderZ 是游荡目标；WanderTicks 归零时重新选择。
 	WanderX, WanderZ float64
 	WanderTicks      int
@@ -110,11 +126,11 @@ func (s *Server) tickMobs(players []*session) {
 			continue
 		}
 
-		// 寻找最近的存活玩家。
+		// 寻找最近的可攻击玩家。
 		var nearest *session
 		nearestDistance := math.MaxFloat64
 		for _, player := range players {
-			if !player.isJoined() || player.isDead() {
+			if !player.canBeAttacked() {
 				continue
 			}
 			px, _, pz, _, _ := player.playerPosition()
@@ -133,12 +149,18 @@ func (s *Server) tickMobs(players []*session) {
 		moved := false
 		if nearest != nil && nearestDistance <= mobFollowRange {
 			px, py, pz, _, _ := nearest.playerPosition()
-			if nearestDistance <= mobAttackRange && math.Abs(py-m.Y) < 2.5 {
-				if m.AttackCooldown <= 0 {
-					m.AttackCooldown = mobAttackCooldown
-					attacks = append(attacks, pendingAttack{mob: m, player: nearest})
-				}
-			} else {
+			// 只有距离、高度差与视线都满足时才攻击；被方块挡住则继续尝试靠近。
+			inAttack := nearestDistance <= mobAttackRange && math.Abs(py-m.Y) < mobAttackVerticalRange
+			clear := inAttack && s.attackPathClear(m.X, m.Y+mobEyeHeight, m.Z, px, py+mobEyeHeight, pz)
+			if clear && !m.WasInRange && m.AttackCooldown < mobAttackWindupTicks {
+				// 刚进入攻击距离：先抬手 0.5 秒再出手。
+				m.AttackCooldown = mobAttackWindupTicks
+			}
+			m.WasInRange = clear
+			if clear && m.AttackCooldown <= 0 {
+				m.AttackCooldown = mobAttackCooldown
+				attacks = append(attacks, pendingAttack{mob: m, player: nearest})
+			} else if !clear {
 				moved = s.moveMobToward(m, px, pz, zombieWalkSpeed)
 			}
 		} else {
@@ -152,6 +174,9 @@ func (s *Server) tickMobs(players []*session) {
 			moved = s.moveMobToward(m, m.WanderX, m.WanderZ, mobWanderSpeed)
 		}
 
+		if m.HurtCooldown > 0 {
+			m.HurtCooldown--
+		}
 		if m.AttackCooldown > 0 {
 			m.AttackCooldown--
 		}
@@ -169,9 +194,18 @@ func (s *Server) tickMobs(players []*session) {
 		s.broadcastPacket(protocol.EncodeEntityDestroy(removals))
 	}
 	for _, attack := range attacks {
-		position := [3]float64{attack.mob.X, attack.mob.Y + 1, attack.mob.Z}
-		s.damagePlayer(attack.player, mobAttackDamage, "Zombie", attack.mob.ID, &position)
+		s.performMobAttack(attack.mob, attack.player)
 	}
+}
+
+// performMobAttack 让生物攻击玩家：先广播挥手动画并面向玩家，再结算伤害，
+// 使玩家能看到攻击动作而不是“凭空掉血”。
+func (s *Server) performMobAttack(m *mob, player *session) {
+	px, _, pz, _, _ := player.playerPosition()
+	m.Yaw = float32(math.Atan2(-(px-m.X), pz-m.Z) * 180 / math.Pi)
+	s.broadcastPacket(protocol.EncodeAnimate(m.ID, 0))
+	position := [3]float64{m.X, m.Y + 1, m.Z}
+	s.damagePlayer(player, mobAttackDamage, "Zombie", m.ID, &position)
 }
 
 // moveMobToward 让生物朝目标水平移动一步；路径被水或高低差挡住时返回 false。
@@ -188,7 +222,13 @@ func (s *Server) moveMobToward(m *mob, targetX, targetZ, speed float64) bool {
 		return false
 	}
 	move := func(offsetX, offsetZ float64) bool {
+		if offsetX == 0 && offsetZ == 0 {
+			return false
+		}
 		newX, newZ := m.X+offsetX, m.Z+offsetZ
+		if !s.insideBorder(newX, newZ) {
+			return false
+		}
 		blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
 		state, _, ok := s.world.TopBlock(blockX, blockZ)
 		if !ok || state == world.WaterBlock {
@@ -209,6 +249,48 @@ func (s *Server) moveMobToward(m *mob, targetX, targetZ, speed float64) bool {
 	return move(stepX, 0) || move(0, stepZ)
 }
 
+// attackPathClear 粗略检查两点（眼睛高度）之间是否被方块挡住：
+// 采样 35% 与 70% 处的方块，空气与水视为可穿过。
+// 用于避免隔墙攻击（生物打玩家与玩家打生物共用）。
+func (s *Server) attackPathClear(fromX, fromY, fromZ, toX, toY, toZ float64) bool {
+	for _, t := range []float64{0.35, 0.7} {
+		x := int(math.Floor(fromX + (toX-fromX)*t))
+		y := int(math.Floor(fromY + (toY-fromY)*t))
+		z := int(math.Floor(fromZ + (toZ-fromZ)*t))
+		state := s.world.BlockAt(x, y, z)
+		if state != world.AirBlock && state != world.WaterBlock {
+			return false
+		}
+	}
+	return true
+}
+
+// knockbackMob 把生物沿远离攻击者的方向推开一小段距离（简单击退）。
+// 调用方必须持有 entityMu；返回位置同步包（无法移动时为 nil）。
+func (s *Server) knockbackMob(m *mob, fromX, fromZ float64) []byte {
+	dx, dz := m.X-fromX, m.Z-fromZ
+	distance := math.Hypot(dx, dz)
+	if distance < 1e-6 {
+		return nil
+	}
+	newX := m.X + dx/distance*mobKnockback
+	newZ := m.Z + dz/distance*mobKnockback
+	if !s.insideBorder(newX, newZ) {
+		return nil
+	}
+	blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
+	state, _, ok := s.world.TopBlock(blockX, blockZ)
+	if !ok || state == world.WaterBlock {
+		return nil
+	}
+	groundY, ok := s.world.GroundY(blockX, blockZ)
+	if !ok || math.Abs(groundY-m.Y) > 1.1 {
+		return nil
+	}
+	m.X, m.Y, m.Z = newX, groundY, newZ
+	return protocol.EncodeEntityPositionSync(m.ID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch, true)
+}
+
 // trySpawnMob 在随机玩家附近尝试生成一只生物。
 func (s *Server) trySpawnMob(players []*session) {
 	if !s.mobsEnabled || !s.config.SpawnMonsters || s.config.MaxMobs <= 0 || len(players) == 0 {
@@ -227,6 +309,9 @@ func (s *Server) trySpawnMob(players []*session) {
 	distance := 12 + float64(s.nextRandom()%1200)/100
 	blockX := int(math.Floor(px + math.Cos(angle)*distance))
 	blockZ := int(math.Floor(pz + math.Sin(angle)*distance))
+	if !s.insideBorder(float64(blockX)+0.5, float64(blockZ)+0.5) {
+		return
+	}
 
 	state, _, ok := s.world.TopBlock(blockX, blockZ)
 	if !ok || state == world.WaterBlock {
@@ -283,6 +368,9 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 	if !s.mobsEnabled || player.isDead() {
 		return
 	}
+	if player.gameModeID() == uint8(config.GameModeSpectator) {
+		return // 旁观模式不能攻击。
+	}
 	px, py, pz, _, _ := player.playerPosition()
 
 	s.entityMu.Lock()
@@ -295,6 +383,15 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 		s.entityMu.Unlock()
 		return // 超出攻击距离：忽略（简单的服务端校验）。
 	}
+	if !s.attackPathClear(px, py+mobEyeHeight, pz, m.X, m.Y+mobEyeHeight, m.Z) {
+		s.entityMu.Unlock()
+		return // 隔墙攻击：忽略。
+	}
+	if m.HurtCooldown > 0 {
+		s.entityMu.Unlock()
+		return // 受击无敌帧内：忽略。
+	}
+	m.HurtCooldown = mobHurtCooldownTicks
 	m.Health -= playerAttackDamage
 	m.Yaw = float32(math.Atan2(-(px-m.X), pz-m.Z) * 180 / math.Pi)
 	position := [3]float64{m.X, m.Y + 1, m.Z}
@@ -311,6 +408,9 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 			protocol.EncodeEntityEvent(m.ID, protocol.EntityEventDeath),
 			protocol.EncodeEntitySoundEffect(s.soundMobDeath, protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
 		)
+	} else if packet := s.knockbackMob(m, px, pz); packet != nil {
+		// 未死亡：沿攻击者反方向击退一小段。
+		packets = append(packets, packet)
 	}
 	s.entityMu.Unlock()
 
@@ -329,9 +429,14 @@ func (s *Server) damagePlayer(player *session, amount float32, sourceName string
 	if !applied {
 		return false
 	}
+	px, py, pz, _, _ := player.playerPosition()
+	if sourcePosition != nil {
+		// 受伤动画的方向：攻击者相对玩家的方向。
+		hurtYaw := float32(math.Atan2(-(sourcePosition[0]-px), sourcePosition[2]-pz) * 180 / math.Pi)
+		player.tryWrite(protocol.EncodeHurtAnimation(player.entityID, hurtYaw))
+	}
 	player.tryWrite(protocol.EncodeDamageEvent(player.entityID, s.mobAttackDamageTypeID, sourceMobID, sourceMobID, sourcePosition))
 	player.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))
-	px, py, pz, _, _ := player.playerPosition()
 	player.tryWrite(protocol.EncodeSoundEffect(s.soundPlayerHurt, protocol.SoundCategoryPlayer, px, py, pz, 1, 1, 0))
 	if died {
 		s.broadcastPacket(protocol.EncodeSystemChat(player.name + " was slain by " + sourceName))

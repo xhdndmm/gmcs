@@ -79,6 +79,18 @@ func (w *World) TopBlock(x, z int) (uint16, int, bool) {
 	return chunk.TopBlock(floorMod(x, SectionSize), floorMod(z, SectionSize))
 }
 
+// BlockAt 返回世界坐标处方块的方块状态；超出世界高度或区块不可用时返回空气。
+func (w *World) BlockAt(x, y, z int) uint16 {
+	if _, ok := SectionIndex(y); !ok {
+		return AirBlock
+	}
+	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	if err != nil {
+		return AirBlock
+	}
+	return chunk.GetBlockState(floorMod(x, SectionSize), y, floorMod(z, SectionSize))
+}
+
 func floorDiv(a, b int) int {
 	q := a / b
 	if a%b != 0 && (a < 0) != (b < 0) {

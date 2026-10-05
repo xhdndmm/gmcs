@@ -359,6 +359,32 @@ func TestEncodeSoundPackets(t *testing.T) {
 	}
 }
 
+// TestEncodeInitializeWorldBorder 验证世界边界包的字段编码。
+func TestEncodeInitializeWorldBorder(t *testing.T) {
+	packet := EncodeInitializeWorldBorder(0, 0, 128, 128, 0, 29999984, 5, 15)
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayPacketIDInitializeWorldBorder {
+		t.Fatalf("unexpected packet ID %#x (err=%v)", packetID, err)
+	}
+	for i, want := range []float64{0, 0, 128, 128} {
+		value, next, err := DecodeFloat64(packet, offset)
+		if err != nil || value != want {
+			t.Fatalf("field %d = %v, want %v (err=%v)", i, value, want, err)
+		}
+		offset = next
+	}
+	for i, want := range []int32{0, 29999984, 5, 15} {
+		value, tail, err := DecodeVarInt(packet[offset:])
+		if err != nil || value != want {
+			t.Fatalf("varint %d = %d, want %d (err=%v)", i, value, want, err)
+		}
+		offset += tail
+	}
+	if offset != len(packet) {
+		t.Fatalf("trailing bytes: %d", len(packet)-offset)
+	}
+}
+
 // TestAppendLpVec3 验证低精度向量的零值、常规值与 continuation 编码。
 func TestAppendLpVec3(t *testing.T) {
 	if packet := appendLpVec3(nil, 0, 0, 0); len(packet) != 1 || packet[0] != 0 {

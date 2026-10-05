@@ -20,6 +20,8 @@ const (
 	PlayPacketIDEntityPositionSync = 0x23
 	// PlayPacketIDHurtAnimation 是 Hurt Animation（受伤闪红）。
 	PlayPacketIDHurtAnimation = 0x29
+	// PlayPacketIDInitializeWorldBorder 是 Initialize World Border（初始化世界边界）。
+	PlayPacketIDInitializeWorldBorder = 0x2A
 	// PlayPacketIDEntityDestroy 是 Remove Entities（移除实体）。
 	PlayPacketIDEntityDestroy = 0x4B
 	// PlayPacketIDRespawn 是 Respawn（重生）。
@@ -260,4 +262,18 @@ func ParseInteract(packet []byte) (targetID int32, action int32, err error) {
 		return 0, 0, err
 	}
 	return targetID, action, nil
+}
+
+// EncodeInitializeWorldBorder 编码 Initialize World Border 包（正方形边界）。
+// portalBoundary 是传送门生效距离（未使用时传 29999984）。
+func EncodeInitializeWorldBorder(x, z, oldDiameter, newDiameter float64, speed, portalBoundary, warningBlocks, warningTime int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDInitializeWorldBorder))
+	packet = AppendFloat64(packet, x)
+	packet = AppendFloat64(packet, z)
+	packet = AppendFloat64(packet, oldDiameter)
+	packet = AppendFloat64(packet, newDiameter)
+	packet = AppendVarInt(packet, speed)
+	packet = AppendVarInt(packet, portalBoundary)
+	packet = AppendVarInt(packet, warningBlocks)
+	return AppendVarInt(packet, warningTime)
 }

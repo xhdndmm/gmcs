@@ -48,6 +48,8 @@ func TestValidateRejectsInvalidValues(t *testing.T) {
 		{name: "negative autosave", mutate: func(c *Config) { c.AutosaveSeconds = -1 }},
 		{name: "unknown game mode", mutate: func(c *Config) { c.GameMode = "hardcore" }},
 		{name: "negative max mobs", mutate: func(c *Config) { c.MaxMobs = -1 }},
+		{name: "negative world border", mutate: func(c *Config) { c.WorldBorderSize = -1 }},
+		{name: "world border too small", mutate: func(c *Config) { c.WorldBorderSize = 8 }},
 	}
 
 	for _, test := range tests {
@@ -67,11 +69,39 @@ func TestLoadCreatesDefaultFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !equalConfigs(cfg, Default()) {
-		t.Fatalf("expected default config, got %+v", cfg)
+	// 首次运行会分配随机种子，其余字段与默认值一致。
+	if cfg.WorldSeed == 0 {
+		t.Fatal("expected a random non-zero world seed on first run")
+	}
+	want := Default()
+	want.WorldSeed = cfg.WorldSeed
+	if !equalConfigs(cfg, want) {
+		t.Fatalf("expected default config with a random seed, got %+v", cfg)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected config file to be created: %v", err)
+	}
+	// 种子必须写入文件：重启服务器后地形保持一致。
+	saved, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.WorldSeed != cfg.WorldSeed {
+		t.Fatalf("world seed not persisted: %d != %d", saved.WorldSeed, cfg.WorldSeed)
+	}
+}
+
+func TestLoadKeepsWorldSeedFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gmcs.json")
+	if err := os.WriteFile(path, []byte(`{"world_seed": 12345}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorldSeed != 12345 {
+		t.Fatalf("explicit world seed was overwritten: %d", cfg.WorldSeed)
 	}
 }
 

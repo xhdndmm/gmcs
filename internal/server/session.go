@@ -139,6 +139,28 @@ func (s *session) isDead() bool {
 	return s.dead
 }
 
+// canBeAttacked 报告玩家能否成为生物的攻击目标：已完成进入世界的初始化、
+// 未死亡，且不是创造/旁观模式。
+func (s *session) canBeAttacked() bool {
+	if !s.isJoined() {
+		return false
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return !s.dead && s.gameMode != uint8(config.GameModeCreative) && s.gameMode != uint8(config.GameModeSpectator)
+}
+
+// resyncPosition 把客户端拉回服务器记录的位置（拒绝越界或无效移动）。
+// 仅在会话读循环中调用。
+func (s *session) resyncPosition() {
+	x, y, z, yaw, pitch := s.playerPosition()
+	s.teleportID++
+	packet := protocol.EncodeSynchronizePlayerPosition(s.teleportID, x, y, z, 0, 0, 0, yaw, pitch)
+	if err := s.writePacket(packet); err != nil {
+		_ = s.conn.Close()
+	}
+}
+
 // gameModeID 返回当前游戏模式。
 func (s *session) gameModeID() uint8 {
 	s.stateMu.Lock()
@@ -504,12 +526,19 @@ func (s *session) runPlay() {
 		protocol.EncodeLoginPlay(login),
 		protocol.EncodeSetDefaultSpawnPosition("minecraft:overworld",
 			int(math.Floor(spawnX)), int(math.Floor(spawnY)), int(math.Floor(spawnZ)), 0, 0),
+	}
+	if s.server.borderHalfSize > 0 {
+		// 世界边界（正方形，以 0,0 为中心；警告距离 5 格、警告时间 15 秒）。
+		size := s.server.borderHalfSize * 2
+		packets = append(packets, protocol.EncodeInitializeWorldBorder(0, 0, size, size, 0, 29999984, 5, 15))
+	}
+	packets = append(packets,
 		protocol.EncodeGameEvent(13, 0), // 开始等待区块
 		protocol.EncodeSetCenterChunk(0, 0),
 		world.EncodeChunkDataPacket(spawnChunk),
 		protocol.EncodeSynchronizePlayerPosition(s.teleportID, spawnX, spawnY, spawnZ, 0, 0, 0, 0, 0),
 		protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name),
-	}
+	)
 	for _, other := range others {
 		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name))
 	}
@@ -644,11 +673,19 @@ func (s *session) playReadLoop() {
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
+			if !s.server.insideBorder(x, z) {
+				s.resyncPosition()
+				continue
+			}
 			_, _, _, yaw, pitch := s.playerPosition()
 			s.setPlayerPosition(x, y, z, yaw, pitch)
 		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
 			x, y, z, yaw, pitch, err := protocol.ParsePlayerPositionRotation(packet)
 			if err != nil || !validPlayerY(y) {
+				continue
+			}
+			if !s.server.insideBorder(x, z) {
+				s.resyncPosition()
 				continue
 			}
 			s.setPlayerPosition(x, y, z, yaw, pitch)

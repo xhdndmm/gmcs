@@ -2,11 +2,14 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Config 是服务器的全部配置。
@@ -29,7 +32,11 @@ type Config struct {
 	// WorldDir 是地图数据目录。
 	WorldDir string `json:"world_dir"`
 	// WorldSeed 是地形生成种子：相同种子生成相同地形。
+	// 首次运行（生成配置文件）时会写入一个随机值。
 	WorldSeed int64 `json:"world_seed"`
+	// WorldBorderSize 是世界边界的边长（方块，正方形，以 0,0 为中心）；
+	// 0 表示不限制。启用后客户端显示边界，且生物不会生成/移动出边界。
+	WorldBorderSize int `json:"world_border_size"`
 	// GameMode 是新玩家的游戏模式（survival、creative、adventure、spectator）。
 	GameMode string `json:"game_mode"`
 	// SpawnMonsters 控制是否在玩家附近生成敌对生物。
@@ -58,6 +65,7 @@ func Default() Config {
 		ViewDistance:    10,
 		WorldDir:        "world",
 		WorldSeed:       0,
+		WorldBorderSize: 0,
 		GameMode:        "survival",
 		SpawnMonsters:   true,
 		MaxMobs:         8,
@@ -67,6 +75,7 @@ func Default() Config {
 }
 
 // Load 从 path 读取配置。文件不存在时写入默认配置并返回默认值；
+// 首次生成配置文件时会分配随机世界种子（写入文件后固定）。
 // 文件中的缺失字段保留默认值（以 Default 为基准合并）。
 func Load(path string) (Config, error) {
 	content, err := os.ReadFile(path)
@@ -75,6 +84,7 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("读取 %s：%w", path, err)
 		}
 		cfg := Default()
+		cfg.WorldSeed = randomSeed()
 		if err := Save(path, cfg); err != nil {
 			return Config{}, err
 		}
@@ -139,6 +149,12 @@ func (c Config) Validate() error {
 	if c.MaxMobs < 0 {
 		return fmt.Errorf("max mobs must not be negative")
 	}
+	if c.WorldBorderSize < 0 {
+		return fmt.Errorf("world border size must not be negative")
+	}
+	if c.WorldBorderSize > 0 && c.WorldBorderSize < 16 {
+		return fmt.Errorf("world border size must be at least 16 blocks")
+	}
 	if _, ok := GameModeID(c.GameMode); !ok {
 		return fmt.Errorf("unknown game mode %q", c.GameMode)
 	}
@@ -172,4 +188,21 @@ func GameModeID(name string) (GameMode, bool) {
 		return GameModeSpectator, true
 	}
 	return 0, false
+}
+
+// randomSeed 生成非零随机世界种子（加密随机源；失败时回退到时间戳）。
+func randomSeed() int64 {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		seed := time.Now().UnixNano()
+		if seed == 0 {
+			return 1
+		}
+		return seed
+	}
+	seed := int64(binary.LittleEndian.Uint64(buf[:]))
+	if seed == 0 {
+		return 1
+	}
+	return seed
 }
