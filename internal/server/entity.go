@@ -581,6 +581,12 @@ func (s *Server) respawnPlayer(player *session) {
 	if err := player.writePacket(protocol.EncodeRespawn(spawn, 0)); err != nil {
 		return
 	}
+	// 1.20.2+ 协议要求：每次 Respawn 后都必须重发“开始等待区块”（Game Event 13），
+	// 即使重生到同一维度；否则客户端会一直停在“正在加载地形”界面。
+	// 与原版一致：该事件必须在区块数据之前发送。
+	if err := player.writePacket(protocol.EncodeGameEvent(13, 0)); err != nil {
+		return
+	}
 	// 重生后客户端会清空世界：重置区块记录并重发出生点视距内的区块。
 	player.sentChunks = make(map[world.ChunkPos]struct{})
 	if err := player.writePacket(protocol.EncodeSetCenterChunk(0, 0)); err != nil {

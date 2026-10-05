@@ -388,6 +388,15 @@ func TestPlayerDeathAndRespawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectPlayPacket(t, conn, protocol.PlayPacketIDRespawn)
+	// 重生后必须重发“开始等待区块”（Game Event 13），否则客户端会卡在加载地形界面。
+	event := expectPlayPacket(t, conn, protocol.PlayPacketIDGameEvent)
+	_, offset, err = protocol.DecodeVarInt(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason := event[offset]; reason != 13 {
+		t.Fatalf("respawn game event = %d, want 13", reason)
+	}
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCenterChunk)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDChunkData)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSynchronizePlayerPos)
