@@ -16,7 +16,7 @@ import (
 //
 // 说明：gmcs 的区块存储是自定义格式（不含实体），因此生物单独保存在
 // 世界目录的 entities.json 中；文件采用“临时文件 + 重命名”的原子写入。
-// 恢复时保留类型、位置、朝向与生命值，重新分配实体 ID 与 UUID。
+// 恢复时保留类型、位置、朝向、生命与 UUID，重新分配实体 ID。
 
 // mobFileName 是世界目录中生物数据的文件名。
 const mobFileName = "entities.json"

@@ -43,6 +43,7 @@
 - [x] 初始物品数量（`starting_items` 支持 `name*count`，上限 64）
 - [x] 关键路径 benchmark（区块生成/编码、实体包、服务器 Tick；见 docs/PERFORMANCE.md）
 - [x] 区块编码热路径优化（调色板线性查找、消除中间数组与缓冲区重复增长；实测约 12.8× 提速）
+- [x] 贡献指南与迁移指南（docs/CONTRIBUTING.md、docs/MIGRATION.md）
 - [x] CI/CD（GitHub Actions：gofmt/vet/测试/race/交叉编译矩阵；tag 推送构建并发布多平台产物）
 
 ## 待完成
