@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"errors"
 	"fmt"
 
 	"gmcs/internal/registry"
@@ -17,6 +18,8 @@ const (
 	PlayPacketIDPlayerInfoRemove     = 0x43 // clientbound
 	PlayPacketIDPlayerInfoUpdate     = 0x44 // clientbound
 	PlayPacketIDSynchronizePlayerPos = 0x46 // clientbound
+	PlayPacketIDBlockUpdate          = 0x08 // clientbound
+	PlayPacketIDRemoveEntities       = 0x4B // clientbound
 	// PlayPacketIDForgetLevelChunk 是 Forget Level Chunk（卸载客户端区块缓存）。
 	PlayPacketIDForgetLevelChunk   = 0x25 // clientbound
 	PlayPacketIDSetCenterChunk     = 0x5C // clientbound
@@ -34,8 +37,13 @@ const (
 	PlayServerboundPacketIDPlayerPositionRotation = 0x1E
 	PlayServerboundPacketIDPlayerRotation         = 0x1F
 	PlayServerboundPacketIDPlayerMovementFlags    = 0x20
+	PlayServerboundPacketIDPlayerAction           = 0x28
 	PlayServerboundPacketIDPlayerInput            = 0x2A
 	PlayServerboundPacketIDPlayerLoaded           = 0x2B
+	PlayServerboundPacketIDSetCarriedItem         = 0x34
+	PlayServerboundPacketIDSetCreativeSlot        = 0x37
+	PlayServerboundPacketIDSwingArm               = 0x3C
+	PlayServerboundPacketIDUseItemOn              = 0x3F
 )
 
 // LoginPlayData 是 Login (play) 数据包的内容。
@@ -300,6 +308,173 @@ func EncodeSetPlayerInventory(slot int32, slotData []byte) []byte {
 	packet := AppendVarInt(nil, int32(PlayPacketIDSetPlayerInventory))
 	packet = AppendVarInt(packet, slot)
 	return append(packet, slotData...)
+}
+
+// UnpackPosition 解包协议的 Position 类型（与 PackPosition 互逆）。
+func UnpackPosition(value int64) (x, y, z int) {
+	return int(value >> 38), int(value << 52 >> 52), int(value << 26 >> 38)
+}
+
+// EncodeBlockUpdate 编码 Block Update 包（单个方块状态变更）。
+func EncodeBlockUpdate(x, y, z int, state int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDBlockUpdate))
+	packet = AppendInt64(packet, PackPosition(x, y, z))
+	return AppendVarInt(packet, state)
+}
+
+// EncodeRemoveEntities 编码 Remove Entities 包（实体 ID 列表）。
+func EncodeRemoveEntities(ids []int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDRemoveEntities))
+	packet = AppendVarInt(packet, int32(len(ids)))
+	for _, id := range ids {
+		packet = AppendVarInt(packet, id)
+	}
+	return packet
+}
+
+// PlayerAction 是 Player Action（block_dig）包的解析结果。
+type PlayerAction struct {
+	Status   int32
+	X, Y, Z  int
+	Face     int8
+	Sequence int32
+}
+
+// ParsePlayerAction 解析 Player Action（block_dig）包。
+func ParsePlayerAction(packet []byte) (PlayerAction, error) {
+	var action PlayerAction
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDPlayerAction {
+		return action, fmt.Errorf("invalid player action packet")
+	}
+	if action.Status, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return action, err
+	}
+	position, offset, err := DecodeInt64(packet, offset)
+	if err != nil {
+		return action, err
+	}
+	action.X, action.Y, action.Z = UnpackPosition(position)
+	if len(packet) <= offset {
+		return action, fmt.Errorf("player action packet missing face")
+	}
+	action.Face = int8(packet[offset])
+	offset++
+	action.Sequence, _, err = decodeVarIntAt(packet, offset)
+	return action, err
+}
+
+// UseItemOn 是 Use Item On（block_place）包的解析结果。
+type UseItemOn struct {
+	Hand                      int32
+	X, Y, Z                   int
+	Direction                 int32
+	CursorX, CursorY, CursorZ float32
+	InsideBlock               bool
+}
+
+// ParseUseItemOn 解析 Use Item On（block_place）包。
+func ParseUseItemOn(packet []byte) (UseItemOn, error) {
+	var use UseItemOn
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDUseItemOn {
+		return use, fmt.Errorf("invalid use item on packet")
+	}
+	if use.Hand, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return use, err
+	}
+	position, offset, err := DecodeInt64(packet, offset)
+	if err != nil {
+		return use, err
+	}
+	use.X, use.Y, use.Z = UnpackPosition(position)
+	if use.Direction, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return use, err
+	}
+	if use.CursorX, offset, err = DecodeFloat32(packet, offset); err != nil {
+		return use, err
+	}
+	if use.CursorY, offset, err = DecodeFloat32(packet, offset); err != nil {
+		return use, err
+	}
+	if use.CursorZ, offset, err = DecodeFloat32(packet, offset); err != nil {
+		return use, err
+	}
+	if use.InsideBlock, offset, err = DecodeBool(packet, offset); err != nil {
+		return use, err
+	}
+	if _, _, err = DecodeBool(packet, offset); err != nil { // worldBorderHit
+		return use, err
+	}
+	return use, nil
+}
+
+// ParseSetCarriedItem 解析 Set Carried Item（切换快捷栏槽位）包。
+// 槽位越界时返回错误。
+func ParseSetCarriedItem(packet []byte) (int32, error) {
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDSetCarriedItem {
+		return 0, fmt.Errorf("invalid set carried item packet")
+	}
+	slot, _, err := decodeVarIntAt(packet, offset)
+	if err != nil {
+		return 0, err
+	}
+	if slot < 0 || slot > 8 {
+		return 0, fmt.Errorf("carried slot %d out of range", slot)
+	}
+	return slot, nil
+}
+
+// errUnsupportedComponents 表示物品携带数据组件（附魔等），当前不支持解析。
+var errUnsupportedComponents = errors.New("item with data components is not supported")
+
+// ParseSetCreativeSlot 解析 Set Creative Mode Slot 包。
+// 返回槽位、物品 ID 与数量；数量为 0 表示清空槽位。
+// 带数据组件的物品返回 errUnsupportedComponents。
+func ParseSetCreativeSlot(packet []byte) (slot int, itemID int32, count int32, err error) {
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDSetCreativeSlot {
+		return 0, 0, 0, fmt.Errorf("invalid set creative slot packet")
+	}
+	rawSlot, offset, err := DecodeInt16(packet, offset)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if count, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return 0, 0, 0, err
+	}
+	slot = int(rawSlot)
+	if count <= 0 {
+		return slot, 0, 0, nil
+	}
+	if itemID, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return 0, 0, 0, err
+	}
+	added, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	removed, _, err := decodeVarIntAt(packet, offset)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if added != 0 || removed != 0 {
+		return 0, 0, 0, errUnsupportedComponents
+	}
+	return slot, itemID, count, nil
+}
+
+// ParseSwingArm 解析 Swing Arm（挥手）包，校验包 ID 与长度。
+func ParseSwingArm(packet []byte) error {
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDSwingArm {
+		return fmt.Errorf("invalid swing arm packet")
+	}
+	if _, _, err := decodeVarIntAt(packet, offset); err != nil { // hand
+		return err
+	}
+	return nil
 }
 
 // MaxChatMessageLength 是聊天消息的最大字符数（与 1.21.11 一致）。

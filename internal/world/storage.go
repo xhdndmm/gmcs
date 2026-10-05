@@ -218,6 +218,10 @@ func SavePayloads(dir string, payloads map[ChunkPos][]byte) error {
 
 // encodeChunkPayload 把区块编码为存储负载。
 func encodeChunkPayload(chunk *Chunk) []byte {
+	// 与运行时方块修改互斥（调用方可能持有 world.mu，但不会持有 chunk 锁）。
+	chunk.mu.RLock()
+	defer chunk.mu.RUnlock()
+
 	payload := make([]byte, 0, 14+SectionCount*3+SectionVolume*2)
 	payload = append(payload, "GMCS"...)
 	payload = binary.BigEndian.AppendUint16(payload, chunkVersion)

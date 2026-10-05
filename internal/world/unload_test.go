@@ -134,3 +134,33 @@ func TestCloseSavesDirtyChunks(t *testing.T) {
 		t.Fatal("Close 未保存已生成区块")
 	}
 }
+
+// TestChunkConcurrentEditAndRead 验证运行时方块修改与区块读取/编码并发安全
+// （在 -race 下运行才有意义）。
+func TestChunkConcurrentEditAndRead(t *testing.T) {
+	dir := t.TempDir()
+	instance, err := Open(dir, SeededGenerator{Seed: 21})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+	chunk, err := instance.Chunk(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 300; i++ {
+			instance.SetBlock(i%16, 64, i%16, StoneBlock)
+			instance.SetBlock(i%16, 64, i%16, AirBlock)
+			_ = instance.BlockAt(i%16, 64, i%16)
+		}
+	}()
+	for i := 0; i < 300; i++ {
+		_ = EncodeChunkDataPacket(chunk)
+		_ = encodeChunkPayload(chunk)
+	}
+	<-done
+}

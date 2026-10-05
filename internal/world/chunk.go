@@ -3,6 +3,7 @@ package world
 
 import (
 	"fmt"
+	"sync"
 
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
@@ -55,6 +56,9 @@ const BiomePlains = registry.BiomePlainsID
 type Chunk struct {
 	X, Z int
 
+	// mu 保护 sections：运行时方块修改（SetBlockState）会与方块查询、
+	// 区块编码与保存等并发读取同时发生。
+	mu       sync.RWMutex
 	sections [SectionCount]*section
 }
 
@@ -88,6 +92,13 @@ func blockIndex(x, y, z int) int {
 
 // GetBlockState 返回世界坐标处的方块状态；越界或未分配返回空气。
 func (c *Chunk) GetBlockState(x, y, z int) uint16 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.getBlockStateLocked(x, y, z)
+}
+
+// getBlockStateLocked 是 GetBlockState 的无锁实现；调用方必须持有 c.mu。
+func (c *Chunk) getBlockStateLocked(x, y, z int) uint16 {
 	if x < 0 || x >= SectionSize || z < 0 || z >= SectionSize {
 		return AirBlock
 	}
@@ -112,6 +123,8 @@ func (c *Chunk) SetBlockState(x, y, z int, state uint16) {
 	if !ok {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	s := c.sections[sectionIndex]
 	if s == nil {
 		s = &section{biome: BiomePlains}
@@ -129,8 +142,10 @@ func (c *Chunk) SetBlockState(x, y, z int, state uint16) {
 
 // TopBlock 返回该列最高的非空气方块（包括水）的方块状态与 Y 坐标。
 func (c *Chunk) TopBlock(x, z int) (uint16, int, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	for y := WorldMinY + WorldHeight - 1; y >= WorldMinY; y-- {
-		if state := c.GetBlockState(x, y, z); state != AirBlock {
+		if state := c.getBlockStateLocked(x, y, z); state != AirBlock {
 			return state, y, true
 		}
 	}
@@ -139,8 +154,10 @@ func (c *Chunk) TopBlock(x, z int) (uint16, int, bool) {
 
 // TopSolidY 返回该列最高的固体（非空气、非水）方块的 Y 坐标。
 func (c *Chunk) TopSolidY(x, z int) (int, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	for y := WorldMinY + WorldHeight - 1; y >= WorldMinY; y-- {
-		state := c.GetBlockState(x, y, z)
+		state := c.getBlockStateLocked(x, y, z)
 		if state != AirBlock && state != WaterBlock {
 			return y, true
 		}
@@ -150,7 +167,12 @@ func (c *Chunk) TopSolidY(x, z int) (int, bool) {
 
 // SectionBiome 返回指定 section 的生物群系 ID。
 func (c *Chunk) SectionBiome(index int) uint16 {
-	if index < 0 || index >= SectionCount || c.sections[index] == nil {
+	if index < 0 || index >= SectionCount {
+		return BiomePlains
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.sections[index] == nil {
 		return BiomePlains
 	}
 	return c.sections[index].biome
@@ -161,6 +183,8 @@ func (c *Chunk) SetSectionBiome(index int, biomeID uint16) {
 	if index < 0 || index >= SectionCount {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.sections[index] == nil {
 		c.sections[index] = &section{biome: biomeID}
 		return
@@ -183,6 +207,10 @@ func (c *Chunk) SetSectionBiome(index int, biomeID uint16) {
 const chunkDataPacketCapacity = 64 * 1024
 
 func EncodeChunkDataPacket(chunk *Chunk) []byte {
+	// 与运行时方块修改互斥：整个编码期间持有读锁。
+	chunk.mu.RLock()
+	defer chunk.mu.RUnlock()
+
 	packet := make([]byte, 0, chunkDataPacketCapacity)
 	packet = protocol.AppendVarInt(packet, protocol.PlayPacketIDChunkData)
 	packet = protocol.AppendInt32(packet, int32(chunk.X))

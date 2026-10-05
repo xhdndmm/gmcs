@@ -42,6 +42,14 @@ func DecodeInt32(data []byte, offset int) (int32, int, error) {
 	return int32(binary.BigEndian.Uint32(data[offset:])), offset + 4, nil
 }
 
+// DecodeInt16 解码一个大端 int16。
+func DecodeInt16(data []byte, offset int) (int16, int, error) {
+	if len(data)-offset < 2 {
+		return 0, offset, fmt.Errorf("expected 2 bytes for int16")
+	}
+	return int16(binary.BigEndian.Uint16(data[offset:])), offset + 2, nil
+}
+
 func DecodeInt64(data []byte, offset int) (int64, int, error) {
 	if len(data)-offset < 8 {
 		return 0, offset, fmt.Errorf("expected 8 bytes for int64")

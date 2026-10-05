@@ -58,6 +58,9 @@ type Server struct {
 	defaultGameMode uint8
 	// mobsEnabled 为 false 时禁用全部生物逻辑（注册表数据缺失时）。
 	mobsEnabled bool
+	// 玩家实体同步（注册表缺少玩家实体类型时禁用）。
+	playerTypeID          int32
+	playerEntitiesEnabled bool
 	// 生物/伤害系统使用的注册表 ID。
 	zombieTypeID             int32
 	mobAttackDamageTypeID    int32
@@ -122,6 +125,7 @@ func New(cfg config.Config) (*Server, error) {
 		playerData:        make(map[[16]byte]playerRecord),
 	}
 	server.resolveMobRegistryIDs()
+	server.resolvePlayerEntityType()
 	if !server.mobsEnabled {
 		slog.Warn("生物系统已禁用：注册表数据缺失")
 	}
@@ -272,6 +276,7 @@ func (s *Server) unregisterPlayer(player *session) {
 	}
 	s.mu.Unlock()
 
+	s.broadcastPlayerRemove(player)
 	s.broadcastPacketExcluding(protocol.EncodePlayerInfoRemove([][16]byte{player.uuid}), player)
 	s.broadcastPacketExcluding(protocol.EncodeSystemChat(player.name+" left the game"), player)
 }

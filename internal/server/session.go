@@ -70,6 +70,8 @@ type session struct {
 
 	// inventory 是玩家物品栏，由会话串行访问。
 	inventory item.Inventory
+	// selectedSlot 是当前选中的快捷栏槽位（0–8），由会话串行访问。
+	selectedSlot int
 
 	keepAliveMu      sync.Mutex
 	pendingKeepAlive int64
@@ -167,7 +169,10 @@ func (s *session) resyncPosition() {
 	packet := protocol.EncodeSynchronizePlayerPosition(s.teleportID, x, y, z, 0, 0, 0, yaw, pitch)
 	if err := s.writePacket(packet); err != nil {
 		_ = s.conn.Close()
+		return
 	}
+	// 其他玩家看到的实体也要拉回同一位置。
+	s.server.broadcastPlayerMove(s)
 }
 
 // gameModeID 返回当前游戏模式。
@@ -595,6 +600,10 @@ func (s *session) runPlay() {
 	for _, other := range others {
 		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name, other.profileProperties))
 	}
+	for _, other := range others {
+		// 其他玩家已在世界中的实体（皮肤来自上面的玩家列表档案属性）。
+		packets = append(packets, s.server.playerSpawnPacket(other))
+	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
 	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
 	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands()))
@@ -612,8 +621,9 @@ func (s *session) runPlay() {
 		return
 	}
 	s.markJoined()
-	// 通知其他玩家：新玩家加入（携带档案属性，供客户端显示皮肤）。
+	// 通知其他玩家：新玩家加入（档案属性 + 实体）。
 	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name, s.profileProperties), s)
+	s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), x, z, s)
 	s.server.broadcastPacketExcluding(protocol.EncodeSystemChat(s.name+" joined the game"), s)
 	slog.Info("player joined the world", "name", s.name, "entityId", s.entityID)
 
@@ -754,6 +764,7 @@ func (s *session) playReadLoop() {
 			}
 			_, _, _, yaw, pitch := s.playerPosition()
 			s.setPlayerPosition(x, y, z, yaw, pitch)
+			s.server.broadcastPlayerMove(s)
 			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
 			x, y, z, yaw, pitch, err := protocol.ParsePlayerPositionRotation(packet)
@@ -765,6 +776,7 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.setPlayerPosition(x, y, z, yaw, pitch)
+			s.server.broadcastPlayerMove(s)
 			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerRotation:
 			yaw, pitch, err := protocol.ParsePlayerRotation(packet)
@@ -772,6 +784,33 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.setPlayerRotation(yaw, pitch)
+			s.server.broadcastPlayerMove(s)
+		case protocol.PlayServerboundPacketIDPlayerAction:
+			action, err := protocol.ParsePlayerAction(packet)
+			if err != nil {
+				continue
+			}
+			s.server.handlePlayerAction(s, action)
+		case protocol.PlayServerboundPacketIDUseItemOn:
+			use, err := protocol.ParseUseItemOn(packet)
+			if err != nil {
+				continue
+			}
+			s.server.handleUseItemOn(s, use)
+		case protocol.PlayServerboundPacketIDSetCarriedItem:
+			if slot, err := protocol.ParseSetCarriedItem(packet); err == nil {
+				s.server.handleSetCarriedItem(s, slot)
+			}
+		case protocol.PlayServerboundPacketIDSetCreativeSlot:
+			slot, itemID, count, err := protocol.ParseSetCreativeSlot(packet)
+			if err != nil {
+				continue
+			}
+			s.server.handleSetCreativeSlot(s, slot, itemID, count)
+		case protocol.PlayServerboundPacketIDSwingArm:
+			if err := protocol.ParseSwingArm(packet); err == nil {
+				s.server.broadcastSwing(s)
+			}
 		case protocol.PlayServerboundPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
 				s.clientInfo = info

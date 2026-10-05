@@ -490,7 +490,7 @@ func (s *Server) sendExistingMobs(player *session) error {
 
 // handleAttack 处理玩家攻击实体（Interact 包的 attack 动作）。
 func (s *Server) handleAttack(player *session, targetID int32) {
-	if !s.mobsEnabled || player.isDead() {
+	if player.isDead() {
 		return
 	}
 	if player.gameModeID() == uint8(config.GameModeSpectator) {
@@ -502,6 +502,8 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 	m := s.mobs[targetID]
 	if m == nil || m.Dead {
 		s.entityMu.Unlock()
+		// 目标不是生物：可能是其他玩家实体（玩家间战斗）。
+		s.handlePlayerAttack(player, targetID, px, py, pz)
 		return
 	}
 	if math.Hypot(px-m.X, pz-m.Z) > playerAttackRange || math.Abs(py-m.Y) > 3 {
@@ -590,6 +592,7 @@ func (s *Server) respawnPlayer(player *session) {
 		return
 	}
 	player.teleportToSpawn()
+	s.broadcastPlayerMove(player)
 	health, food, saturation := player.healthStatus()
 	player.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))
 	slog.Info("player respawned", "name", player.name)

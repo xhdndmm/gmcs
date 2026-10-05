@@ -94,6 +94,21 @@ func (w *World) BlockAt(x, y, z int) uint16 {
 	return chunk.GetBlockState(floorMod(x, SectionSize), y, floorMod(z, SectionSize))
 }
 
+// SetBlock 设置世界坐标处方块的状态并标记区块待保存（下一次 Flush/卸载时落盘）。
+// 超出世界高度或区块不可用时返回 false。
+func (w *World) SetBlock(x, y, z int, state uint16) bool {
+	if _, ok := SectionIndex(y); !ok {
+		return false
+	}
+	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	if err != nil {
+		return false
+	}
+	chunk.SetBlockState(floorMod(x, SectionSize), y, floorMod(z, SectionSize), state)
+	w.MarkDirty(chunk)
+	return true
+}
+
 func floorDiv(a, b int) int {
 	q := a / b
 	if a%b != 0 && (a < 0) != (b < 0) {
