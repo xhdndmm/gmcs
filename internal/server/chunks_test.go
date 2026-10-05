@@ -46,3 +46,44 @@ func TestChunkStreamingOnMovement(t *testing.T) {
 		t.Fatalf("unloaded chunk (%d,%d) is still within the view limit", x, z)
 	}
 }
+
+// TestChunkUnloadFarFromPlayers 验证远离所有玩家的区块会从世界内存缓存中卸载
+// （长时间跑图后内存占用保持有界），玩家附近的区块保留，
+// 且被卸载的区块可以正常重新加载。
+func TestChunkUnloadFarFromPlayers(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "Explorer")
+
+	nearCount := instance.world.ChunkCount()
+	if nearCount == 0 {
+		t.Fatal("玩家附近应已加载区块")
+	}
+
+	// 模拟跑图：加载一组远离出生点的区块（如玩家绕了一圈后离开）。
+	for i := 0; i < 500; i++ {
+		if _, err := instance.world.Chunk(100+i%50, 100+i/50); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := instance.world.ChunkCount(); got != nearCount+500 {
+		t.Fatalf("加载跑图区块后 ChunkCount() = %d, want %d", got, nearCount+500)
+	}
+
+	if err := instance.unloadFarChunks(); err != nil {
+		t.Fatal(err)
+	}
+	if got := instance.world.ChunkCount(); got != nearCount {
+		t.Fatalf("卸载后 ChunkCount() = %d, want %d（跑图区块应被移出内存）", got, nearCount)
+	}
+
+	// 被卸载的区块在再次访问时应能从磁盘恢复。
+	chunk, err := instance.world.Chunk(100, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunk == nil {
+		t.Fatal("重新加载被卸载的区块返回 nil")
+	}
+}

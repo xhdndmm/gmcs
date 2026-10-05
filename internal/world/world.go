@@ -30,6 +30,9 @@ type World struct {
 
 	// saveMu 串行化磁盘写入，防止并发 Flush 互相覆盖区域文件。
 	saveMu sync.Mutex
+
+	// unloadMu 串行化区块卸载与关闭，避免卸载与最终保存交错造成数据丢失。
+	unloadMu sync.Mutex
 }
 
 // Open 打开（或创建）世界目录。
@@ -148,6 +151,13 @@ func (w *World) DirtyCount() int {
 	return len(w.dirty)
 }
 
+// ChunkCount 返回内存缓存中的区块数量（观测与测试用）。
+func (w *World) ChunkCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.chunks)
+}
+
 // Flush 把所有待保存的区块写入磁盘。
 // 编码在锁内完成（快），磁盘 IO 在锁外执行（慢）；保存失败的区块会被
 // 重新标记为待保存以便重试。可被多个 goroutine 并发调用。
@@ -182,6 +192,80 @@ func (w *World) Flush() error {
 	return nil
 }
 
+// UnloadFar 把距所有中心点都超过 radius 的区块移出内存缓存
+// （切比雪夫距离，单位：区块），返回卸载数量。
+//
+// 待保存的区块会被先编码并在锁外写盘；保存失败时保留内存中的区块并重新
+// 标记为待保存（返回错误）。与 Chunk 并发调用是安全的：已由调用方持有的
+// *Chunk 指针仍然有效，后续访问同一位置会从磁盘或生成器重新加载。
+func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
+	if len(centers) == 0 {
+		return 0, nil
+	}
+	w.unloadMu.Lock()
+	defer w.unloadMu.Unlock()
+
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return 0, fmt.Errorf("世界已关闭")
+	}
+	var (
+		candidates []ChunkPos
+		payloads   = make(map[ChunkPos][]byte)
+	)
+	for pos, chunk := range w.chunks {
+		if withinAny(pos, centers, radius) {
+			continue
+		}
+		candidates = append(candidates, pos)
+		if _, dirty := w.dirty[pos]; dirty {
+			payloads[pos] = encodeChunkPayload(chunk)
+			delete(w.dirty, pos)
+		}
+	}
+	w.mu.Unlock()
+
+	if len(payloads) > 0 {
+		w.saveMu.Lock()
+		err := SavePayloads(w.dir, payloads)
+		w.saveMu.Unlock()
+		if err != nil {
+			w.mu.Lock()
+			for pos := range payloads {
+				w.dirty[pos] = struct{}{}
+			}
+			w.mu.Unlock()
+			return 0, err
+		}
+	}
+
+	w.mu.Lock()
+	unloaded := 0
+	for _, pos := range candidates {
+		if _, dirty := w.dirty[pos]; dirty {
+			// 编码后又发生修改：保留在内存中，等待下一次卸载/保存。
+			continue
+		}
+		if _, ok := w.chunks[pos]; ok {
+			delete(w.chunks, pos)
+			unloaded++
+		}
+	}
+	w.mu.Unlock()
+	return unloaded, nil
+}
+
+// withinAny 报告 pos 是否位于任一中心点的 radius 半径内（切比雪夫距离）。
+func withinAny(pos ChunkPos, centers []ChunkPos, radius int) bool {
+	for _, center := range centers {
+		if abs(pos.X-center.X) <= radius && abs(pos.Z-center.Z) <= radius {
+			return true
+		}
+	}
+	return false
+}
+
 // Autosave 周期保存待保存的区块，直到 ctx 取消。
 // 应该在单独的 goroutine 中运行。
 func (w *World) Autosave(ctx context.Context, interval time.Duration) {
@@ -200,7 +284,10 @@ func (w *World) Autosave(ctx context.Context, interval time.Duration) {
 }
 
 // Close 保存全部待保存区块并停止接受新的区块加载。
+// 与 UnloadFar 互斥，保证卸载不会在最终保存之后残留未保存数据。
 func (w *World) Close() error {
+	w.unloadMu.Lock()
+	defer w.unloadMu.Unlock()
 	err := w.Flush()
 	w.mu.Lock()
 	w.closed = true

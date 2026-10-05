@@ -184,6 +184,10 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		go s.mobAutosaveLoop(ctx)
 	}
 
+	// 区块卸载循环：周期性把远离所有玩家的区块移出内存缓存，
+	// 避免长时间跑图导致内存占用持续增长。
+	go s.chunkUnloadLoop(ctx)
+
 	var serveErr error
 	for {
 		conn, err := listener.Accept()

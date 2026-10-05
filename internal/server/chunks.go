@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"math"
+	"time"
 
 	"gmcs/internal/protocol"
 	"gmcs/internal/world"
@@ -79,4 +81,59 @@ func absInt(value int) int {
 		return -value
 	}
 	return value
+}
+
+// 区块内存卸载：长时间跑图会让世界内存缓存不断增长，服务器周期性地把
+// 距所有玩家都超过 视距+chunkUnloadMargin 的区块移出内存缓存；
+// 其中未保存的区块会先写入磁盘，玩家再次接近时重新读取或重新生成。
+const (
+	// chunkUnloadInterval 是卸载扫描的周期。
+	chunkUnloadInterval = 5 * time.Second
+	// chunkUnloadMargin 是卸载半径相对视距的余量（区块）。
+	// 大于会话侧的卸载余量（视距+2），避免刚发出的区块立刻被移出缓存。
+	chunkUnloadMargin = 4
+)
+
+// chunkUnloadLoop 周期性卸载远离玩家的区块，直到 ctx 取消。
+func (s *Server) chunkUnloadLoop(ctx context.Context) {
+	ticker := time.NewTicker(chunkUnloadInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.unloadFarChunks(); err != nil {
+				slog.Error("区块卸载失败", "error", err)
+			}
+		}
+	}
+}
+
+// unloadFarChunks 卸载距所有已加入玩家都超出 视距+chunkUnloadMargin 的区块。
+// 服务器上没有玩家时不卸载（避免反复生成/读取刚探索过的区域）。
+func (s *Server) unloadFarChunks() error {
+	players := s.playerSnapshot()
+	centers := make([]world.ChunkPos, 0, len(players))
+	for _, player := range players {
+		if !player.isJoined() {
+			continue
+		}
+		x, _, z, _, _ := player.playerPosition()
+		centers = append(centers, world.ChunkPos{
+			X: int(math.Floor(x)) >> 4,
+			Z: int(math.Floor(z)) >> 4,
+		})
+	}
+	if len(centers) == 0 {
+		return nil
+	}
+	unloaded, err := s.world.UnloadFar(centers, s.config.ViewDistance+chunkUnloadMargin)
+	if err != nil {
+		return err
+	}
+	if unloaded > 0 {
+		slog.Debug("chunks unloaded", "count", unloaded)
+	}
+	return nil
 }
