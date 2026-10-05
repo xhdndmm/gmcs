@@ -16,6 +16,12 @@ go run ./cmd/gmcs
 go run ./cmd/gmcs -config /path/to/gmcs.json -listen :25565
 ```
 
+构建产物默认经过发布级优化：`CGO_ENABLED=0`（纯 Go 静态二进制）、`-trimpath`、
+`-ldflags "-s -w -buildid="`（剥离符号与 DWARF、去除构建 ID）以及 **PGO**——
+`cmd/gmcs/default.pgo` 由 `scripts/genpgo.sh` 从基准采样生成并随仓库提交，
+构建时自动应用（实测服务器 Tick 热路径提升约 20%，体积 +0.7%；见
+[docs/PERFORMANCE.md](PERFORMANCE.md)）。`PGO=off scripts/build.sh` 可关闭 PGO。
+
 ## 配置（gmcs.json）
 
 首次运行自动生成；缺失字段回退默认值；命令行 `-listen` 可覆盖监听地址。

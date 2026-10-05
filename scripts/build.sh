@@ -18,6 +18,8 @@
 #   OUTPUT_DIR  输出目录（默认 <仓库>/dist）
 #   VERSION     产物文件名中的版本标识（默认取 git describe，无 git 时为 dev）
 #   STRIP       设为 0 保留调试符号（默认 1，剥离符号与 DWARF）
+#   PGO         PGO 配置：auto（默认，使用 cmd/gmcs/default.pgo，缺失时自动忽略）、
+#               off 或 profile 文件路径（scripts/genpgo.sh 可重新生成）
 #   GOFLAGS     Go 工具链原生识别的附加构建参数（如 -mod=vendor）
 #
 # 产物命名：gmcs-<version>-<os>-<arch>[.exe]
@@ -39,7 +41,7 @@ usage() {
   scripts/build.sh linux/amd64      构建指定平台
   scripts/build.sh --all            交叉编译全部常用平台
 
-环境变量：OUTPUT_DIR、VERSION、STRIP、GOFLAGS，详见脚本头部注释。
+环境变量：OUTPUT_DIR、VERSION、STRIP、PGO、GOFLAGS，详见脚本头部注释。
 EOF
 }
 
@@ -138,13 +140,13 @@ for target in $targets; do
 	output="$output_dir/gmcs-$version-$goos-$goarch$suffix"
 
 	printf '==> 编译 %s -> %s\n' "$target" "$output"
+	# -buildid= 让构建可复现；-s -w 剥离符号与 DWARF（减小体积）。
+	ldflags="-buildid="
 	if [ "${STRIP:-1}" = 1 ]; then
-		CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-			go build -trimpath -ldflags "-s -w" -o "$output" ./cmd/gmcs
-	else
-		CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-			go build -trimpath -o "$output" ./cmd/gmcs
+		ldflags="-s -w -buildid="
 	fi
+	CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+		go build -trimpath -pgo="${PGO:-auto}" -ldflags "$ldflags" -o "$output" ./cmd/gmcs
 	count=$((count + 1))
 done
 

@@ -40,7 +40,12 @@ go build ./...              # 构建全部包
 go run ./cmd/gmcs           # 本地运行（首次生成 gmcs.json 与 world/）
 scripts/build.sh            # 构建当前平台产物（dist/）
 scripts/build.sh --all      # 交叉编译全部常用平台
+scripts/genpgo.sh           # 重新生成 PGO 配置（热路径变更后）
 ```
+
+热路径代码（区块生成/编码、实体包、服务器 Tick）明显变化后，运行
+`scripts/genpgo.sh` 更新 `cmd/gmcs/default.pgo`（PGO 配置，随仓库提交，
+构建时自动应用）。
 
 格式、静态检查与测试：
 

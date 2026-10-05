@@ -17,6 +17,8 @@ scripts/test.sh --bench
 go test -run=^$ -bench=. -benchmem ./...
 ```
 
+- **更新于 2026-10-05**（Go 1.27.1）；表内为 `-pgo=off` 基线中位数，绝对值
+  随工具链/硬件/负载变化，仅用于同机对比。
 - 所有 benchmark 均为单进程、单线程逻辑（`-cpu` 未指定），数字随硬件与
   系统负载波动，同机对比时请保证条件一致。
 
@@ -24,11 +26,11 @@ go test -run=^$ -bench=. -benchmem ./...
 
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | world | ≈112.5 µs/op | 72,556 B/op | 18 allocs/op |
-| `BenchmarkEncodeChunkDataPacket` | world | ≈69.5 µs/op | 71,680 B/op | 4 allocs/op |
-| `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.3 ns/op | 120 B/op | 4 allocs/op |
+| `BenchmarkGenerateChunk` | world | ≈735 µs/op | 72,767 B/op | 18 allocs/op |
+| `BenchmarkEncodeChunkDataPacket` | world | ≈68.0 µs/op | 71,680 B/op | 4 allocs/op |
+| `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.7 ns/op | 120 B/op | 4 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈104.0 ns/op | 176 B/op | 4 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈35.2 µs/op | 3,226 B/op | 64 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈36.7 µs/op | 3,209 B/op | 64 allocs/op |
 
 各基准覆盖的内容：
 
@@ -43,7 +45,7 @@ go test -run=^$ -bench=. -benchmem ./...
   玩家会话与网络发送。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
-按编码 69.5 µs/区块计算约 31 ms 纯编码时间（不含地形生成与网络 IO）。
+按编码 68.0 µs/区块计算约 30 ms 纯编码时间（不含地形生成与网络 IO）。
 
 ## 区块编码优化（实测优化前后对比）
 
@@ -87,6 +89,65 @@ GMCS_MEM_DEMO=1 go test -count=1 -run TestChunkMemoryDemo -v ./internal/world/
 
 注意：这一数字是单次手工测量，仅作量级参考；Go 运行时不保证把已回收的堆立即
 归还操作系统，进程 RSS 可能下降较慢，但区块数据本身不再被引用。
+
+## 构建优化：PGO 与产物体积（实测）
+
+构建脚本（`scripts/build.sh`）的发布参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `CGO_ENABLED=0` | 纯 Go 静态二进制，无系统库依赖 |
+| `-trimpath` | 去除本机构建路径（可复现构建，略减小体积） |
+| `-ldflags "-s -w -buildid="` | 剥离符号表与 DWARF、去除构建 ID |
+| `-pgo=auto` | 自动使用 `cmd/gmcs/default.pgo`（随仓库提交的 PGO 配置） |
+
+### 产物体积（linux/amd64）
+
+| 参数组合 | 体积 |
+| --- | --- |
+| `-trimpath -ldflags "-s -w"`（旧参数） | 7,786,656 B（7.43 MiB） |
+| `-trimpath -ldflags "-s -w -buildid="`、`PGO=off` | 7,786,620 B |
+| 新参数（含 PGO） | 7,835,772 B（7.47 MiB，+0.63%） |
+
+说明：剥离符号（`-s -w`）与 `-trimpath` 之前已在使用；`-buildid=` 对体积影响可忽略
+（主要用于可复现构建），PGO 因内联/去虚拟化会小幅增加体积。需要最小体积时用
+`PGO=off scripts/build.sh`。
+
+### PGO 前后 benchmark 对比
+
+`cmd/gmcs/default.pgo` 由 `scripts/genpgo.sh` 从世界生成/编码、实体包、服务器
+Tick 的 benchmark 采样并合并生成（约 21 KB）。同机会话内对比（`-count=6` 取中位数，
+Go 1.27.1，i7-12700F）：
+
+| Benchmark | `-pgo=off` | PGO | 变化 |
+| --- | --- | --- | --- |
+| `BenchmarkGenerateChunk` | ≈735.0 µs/op | ≈720.9 µs/op | ≈ -1.9% |
+| `BenchmarkEncodeChunkDataPacket` | ≈68.0 µs/op | ≈66.6 µs/op | ≈ -2.1% |
+| `BenchmarkEncodeEntityPositionSync` | ≈68.7 ns/op | ≈70.6 ns/op | ≈ +2.7%（轻微回退） |
+| `BenchmarkEncodeAddEntity` | ≈104.0 ns/op | ≈98.5 ns/op | ≈ -5.2% |
+| `BenchmarkServerTick`（32 生物） | ≈36.7 µs/op | ≈29.1 µs/op | ≈ -20.5% |
+
+结论：主要工作负载（服务器 Tick、区块生成/编码、实体包）收益约 2%–20%；
+`EncodeEntityPositionSync`（绝对量 <2 ns）出现约 2.7% 的轻微回退，实际影响
+可忽略。以上为单机 micro-benchmark，不等于真实服务器吞吐；真实负载验证仍在
+计划中（见“尚未覆盖”）。对比数据与顶部基准表的绝对值可能因工具链/系统状态
+不同而有差异，请以同次会话内对比为准。
+
+### 重新生成 PGO 配置
+
+```bash
+scripts/genpgo.sh                 # 默认 benchtime 1s
+scripts/genpgo.sh --benchtime=3s  # 更长采样，数值更稳
+```
+
+建议在热路径代码明显变化或升级 Minecraft/协议版本后重新生成并提交。
+
+### 复现对比
+
+```bash
+go test -count=6 -run '^$' -bench=. -pgo=off ./internal/world ./internal/protocol ./internal/server
+go test -count=6 -run '^$' -bench=. -pgo=cmd/gmcs/default.pgo ./internal/world ./internal/protocol ./internal/server
+```
 
 ## 尚未覆盖
 
