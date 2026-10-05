@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -36,6 +38,7 @@ func readCompressedPacket(t *testing.T, conn net.Conn) (int32, []byte) {
 // 登录 → 配置 → 进入世界 的完整流程。
 func TestOfflineLoginAndPlayFlow(t *testing.T) {
 	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
 	instance, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -145,9 +148,9 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 	}
 
 	// Play 阶段初始包：
-	// Login → Set Default Spawn → Game Event → Set Center Chunk →
-	// Chunk Data → Synchronize Player Position → Player Info → System Chat
-	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77} {
+	// Login → Set Default Spawn → Game Event → Set Center Chunk → Chunk Data →
+	// Synchronize Player Position → Player Info → System Chat → Set Player Inventory
+	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77, 0x6A} {
 		id, _ := readCompressedPacket(t, conn)
 		if id != want {
 			t.Fatalf("expected play packet %#x, got %#x", want, id)
@@ -172,6 +175,41 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 	clientInfo = protocol.AppendVarInt(clientInfo, 0)
 	if err := protocol.WritePacketWithCompression(conn, clientInfo, compressionThreshold); err != nil {
 		t.Fatal(err)
+	}
+
+	// 聊天消息：服务器应广播回 Player Chat 包（0x3F），内容包含消息文本。
+	chat := protocol.AppendVarInt(nil, 0x08)
+	chat = appendTestString(chat, "hello world")
+	chat = protocol.AppendInt64(chat, 0)
+	if err := protocol.WritePacketWithCompression(conn, chat, compressionThreshold); err != nil {
+		t.Fatal(err)
+	}
+	chatDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if time.Now().After(chatDeadline) {
+			t.Fatal("did not receive player chat broadcast")
+		}
+		id, payload := readCompressedPacket(t, conn)
+		if id == 0x2B {
+			// Keep Alive 可能穿插其中，先回复再继续等待。
+			_, offset, err := protocol.DecodeVarInt(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reply := protocol.AppendVarInt(nil, 0x1B)
+			reply = protocol.AppendInt64(reply, int64(binary.BigEndian.Uint64(payload[offset:])))
+			if err := protocol.WritePacketWithCompression(conn, reply, compressionThreshold); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if id != 0x3F {
+			t.Fatalf("expected player chat broadcast, got %#x", id)
+		}
+		if !bytes.Contains(payload, []byte("hello world")) {
+			t.Fatalf("chat payload missing message: % x", payload)
+		}
+		break
 	}
 
 	// 等待并响应一个 Keep Alive，确认会话保持活跃。
@@ -206,5 +244,14 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve() did not stop after context cancellation")
+	}
+
+	// 关闭时应把世界（出生区块）保存到磁盘。
+	entries, err := os.ReadDir(cfg.WorldDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected world files to be saved on shutdown")
 	}
 }

@@ -34,3 +34,10 @@ go.work.sum
 
 # Build output
 dist/
+
+# Server runtime data
+/world/
+/gmcs.json
+
+# 本地构建的生成器二进制
+/genregistries

@@ -4,8 +4,10 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 	"gmcs/internal/world"
@@ -44,8 +46,14 @@ type session struct {
 	teleportID int32
 	clientInfo protocol.ClientInformation
 
+	// inventory 是玩家物品栏，由会话串行访问。
+	inventory item.Inventory
+
 	keepAliveMu      sync.Mutex
 	pendingKeepAlive int64
+
+	// chatIndex 是该玩家的聊天消息序号（从 0 递增）。
+	chatIndex atomic.Int32
 }
 
 func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
@@ -83,6 +91,13 @@ func (s *session) writePackets(packets ...[]byte) error {
 		}
 	}
 	return nil
+}
+
+// tryWrite 尽力发送一个数据包；失败时关闭连接（读循环会随之退出）。
+func (s *session) tryWrite(packet []byte) {
+	if err := s.writePacket(packet); err != nil {
+		_ = s.conn.Close()
+	}
 }
 
 // readRawPacket 读取未压缩数据包（仅登录起始包使用）。
@@ -255,36 +270,53 @@ func (s *session) awaitConfigurationFinished() bool {
 	}
 }
 
-// runPlay 发送进入世界所需的初始数据包，并进入游戏主循环。
+// runPlay 发送进入世界所需的初始数据包，注册到玩家列表，并进入游戏主循环。
 func (s *session) runPlay() {
 	s.teleportID = 1
-	chunk := world.NewFlatChunk(0, 0)
-	spawnY := float64(world.PlatformTopY)
+	spawnChunk, err := s.server.world.Chunk(0, 0)
+	if err != nil {
+		slog.Error("failed to load spawn chunk", "name", s.name, "error", err)
+		return
+	}
+	spawnY := float64(world.FlatSpawnY)
 
 	login := protocol.LoginPlayData{
 		EntityID:            s.entityID,
 		DimensionNames:      []string{"minecraft:overworld"},
 		MaxPlayers:          int32(s.server.config.MaxPlayers),
-		ViewDistance:        10,
-		SimulationDistance:  10,
+		ViewDistance:        int32(s.server.config.ViewDistance),
+		SimulationDistance:  int32(s.server.config.ViewDistance),
 		EnableRespawnScreen: true,
 		DimensionTypeID:     registry.DimensionTypeOverworldID, // 同步注册表中 minecraft:overworld 的 ID
 		DimensionName:       "minecraft:overworld",
 		GameMode:            1, // 创造模式
 		SeaLevel:            63,
 	}
-	if err := s.writePackets(
+
+	// 注册到玩家列表；离开时（任何返回路径）注销并通知其他玩家。
+	others := s.server.registerPlayer(s)
+	defer s.server.unregisterPlayer(s)
+
+	packets := [][]byte{
 		protocol.EncodeLoginPlay(login),
-		protocol.EncodeSetDefaultSpawnPosition("minecraft:overworld", 0, world.PlatformTopY, 0, 0, 0),
+		protocol.EncodeSetDefaultSpawnPosition("minecraft:overworld", 0, world.FlatSpawnY, 0, 0, 0),
 		protocol.EncodeGameEvent(13, 0), // 开始等待区块
 		protocol.EncodeSetCenterChunk(0, 0),
-		world.EncodeChunkDataPacket(chunk),
+		world.EncodeChunkDataPacket(spawnChunk),
 		protocol.EncodeSynchronizePlayerPosition(s.teleportID, 0.5, spawnY, 0.5, 0, 0, 0, 0, 0),
 		protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name),
-		protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"),
-	); err != nil {
+	}
+	for _, other := range others {
+		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name))
+	}
+	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
+	packets = append(packets, s.giveStartingItems()...)
+	if err := s.writePackets(packets...); err != nil {
 		return
 	}
+	// 通知其他玩家：新玩家加入。
+	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name), s)
+	s.server.broadcastPacketExcluding(protocol.EncodeSystemChat(s.name+" joined the game"), s)
 	slog.Info("player joined the world", "name", s.name, "entityId", s.entityID)
 
 	stop := make(chan struct{})
@@ -298,6 +330,27 @@ func (s *session) runPlay() {
 	close(stop)
 	keepAliveWG.Wait()
 	slog.Info("player disconnected", "name", s.name)
+}
+
+// giveStartingItems 把配置中的初始物品发放到快捷栏，返回同步给客户端的数据包。
+// 每个物品发放 1 个（数量配置暂不支持）。
+func (s *session) giveStartingItems() [][]byte {
+	var packets [][]byte
+	slot := item.SlotHotbarStart
+	for _, name := range s.server.config.StartingItems {
+		if slot > item.SlotHotbarEnd {
+			break
+		}
+		stack, err := item.FromName(name, 1)
+		if err != nil {
+			slog.Warn("unknown starting item", "name", s.name, "item", name, "error", err)
+			continue
+		}
+		s.inventory.Set(slot, stack)
+		packets = append(packets, protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
+		slot++
+	}
+	return packets
 }
 
 // keepAliveLoop 周期发送 Keep Alive；写失败时关闭连接以唤醒读循环。
@@ -341,6 +394,13 @@ func (s *session) playReadLoop() {
 				}
 				s.keepAliveMu.Unlock()
 			}
+		case protocol.PlayServerboundPacketIDChatMessage:
+			message, err := protocol.ParseChatMessage(packet)
+			if err != nil {
+				slog.Debug("malformed chat message", "name", s.name, "error", err)
+				continue
+			}
+			s.server.broadcastChat(s, message)
 		case protocol.PlayServerboundPacketIDConfirmTeleportation:
 			if id, err := protocol.ParseConfirmTeleportation(packet); err == nil && id == s.teleportID {
 				slog.Debug("player confirmed teleport", "name", s.name, "teleportId", id)

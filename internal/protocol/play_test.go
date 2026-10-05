@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"math"
 	"testing"
+
+	"gmcs/internal/registry"
 )
 
 func TestPackPositionRoundTrip(t *testing.T) {
@@ -202,5 +204,152 @@ func TestParsePlayClientCommand(t *testing.T) {
 	action, err := ParsePlayClientCommand(packet)
 	if err != nil || action != 0 {
 		t.Fatalf("unexpected client command action %d (err=%v)", action, err)
+	}
+}
+
+func TestEncodePlayerChatMessage(t *testing.T) {
+	uuid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	packet := EncodePlayerChatMessage(PlayerChatData{
+		GlobalIndex: 7,
+		SenderUUID:  uuid,
+		SenderIndex: 3,
+		Message:     "hello world",
+		Timestamp:   1700000000000,
+		DisplayName: "TestPlayer",
+	})
+
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayPacketIDPlayerChat {
+		t.Fatalf("packet id %#x (err=%v)", packetID, err)
+	}
+	globalIndex, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || globalIndex != 7 {
+		t.Fatalf("global index %d (err=%v)", globalIndex, err)
+	}
+	if string(packet[offset:offset+16]) != string(uuid[:]) {
+		t.Fatalf("uuid mismatch: % x", packet[offset:offset+16])
+	}
+	offset += 16
+	senderIndex, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || senderIndex != 3 {
+		t.Fatalf("sender index %d (err=%v)", senderIndex, err)
+	}
+	if packet[offset] != 0x00 {
+		t.Fatalf("signature flag = %#x, want 0", packet[offset])
+	}
+	offset++
+	message, offset, err := readStringAt(packet, offset)
+	if err != nil || message != "hello world" {
+		t.Fatalf("message %q (err=%v)", message, err)
+	}
+	timestamp, offset, err := DecodeInt64(packet, offset)
+	if err != nil || timestamp != 1700000000000 {
+		t.Fatalf("timestamp %d (err=%v)", timestamp, err)
+	}
+	salt, offset, err := DecodeInt64(packet, offset)
+	if err != nil || salt != 0 {
+		t.Fatalf("salt %d (err=%v)", salt, err)
+	}
+	previous, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || previous != 0 {
+		t.Fatalf("previous messages %d (err=%v)", previous, err)
+	}
+	// unsignedChatContent：Some(文本组件)。
+	if packet[offset] != 0x01 {
+		t.Fatalf("unsigned content flag = %#x, want 1", packet[offset])
+	}
+	offset++
+	unsigned, offset, err := readNBTStringForTest(t, packet, offset)
+	if err != nil || unsigned != "hello world" {
+		t.Fatalf("unsigned content %q (err=%v)", unsigned, err)
+	}
+	filterType, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || filterType != 0 {
+		t.Fatalf("filter type %d (err=%v)", filterType, err)
+	}
+	chatType, offset, err := decodeVarIntAt(packet, offset)
+	if err != nil || chatType != registry.ChatTypeChatID+1 {
+		t.Fatalf("chat type %d (err=%v), want %d", chatType, err, registry.ChatTypeChatID+1)
+	}
+	name, offset, err := readNBTStringForTest(t, packet, offset)
+	if err != nil || name != "TestPlayer" {
+		t.Fatalf("network name %q (err=%v)", name, err)
+	}
+	// networkTargetName：None。
+	if packet[offset] != 0x00 {
+		t.Fatalf("network target name flag = %#x, want 0", packet[offset])
+	}
+	offset++
+	if offset != len(packet) {
+		t.Fatalf("%d trailing bytes", len(packet)-offset)
+	}
+}
+
+// readNBTStringForTest 读取 AppendNBTString 写入的文本组件。
+func readNBTStringForTest(t *testing.T, data []byte, offset int) (string, int, error) {
+	t.Helper()
+	if offset >= len(data) || data[offset] != 0x08 {
+		t.Fatalf("expected string NBT tag at %d, got % x", offset, data[offset:])
+	}
+	offset++
+	if offset+2 > len(data) {
+		t.Fatalf("truncated NBT string length")
+	}
+	length := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+	offset += 2
+	if offset+length > len(data) {
+		t.Fatalf("truncated NBT string payload")
+	}
+	return string(data[offset : offset+length]), offset + length, nil
+}
+
+func TestParseChatMessage(t *testing.T) {
+	packet := AppendVarInt(nil, PlayServerboundPacketIDChatMessage)
+	packet = appendTestString(t, packet, "hello")
+	packet = AppendInt64(packet, 123) // 其余字段未解析
+	message, err := ParseChatMessage(packet)
+	if err != nil || message != "hello" {
+		t.Fatalf("message %q (err=%v)", message, err)
+	}
+	if _, err := ParseChatMessage(AppendVarInt(nil, 0x00)); err == nil {
+		t.Fatal("expected wrong packet ID to be rejected")
+	}
+}
+
+func TestEncodeSetPlayerInventory(t *testing.T) {
+	slotData := AppendVarInt(nil, 64)    // count
+	slotData = AppendVarInt(slotData, 1) // item id
+	slotData = AppendVarInt(slotData, 0) // added components
+	slotData = AppendVarInt(slotData, 0) // removed components
+	packet := EncodeSetPlayerInventory(0, slotData)
+
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayPacketIDSetPlayerInventory {
+		t.Fatalf("packet id %#x (err=%v)", packetID, err)
+	}
+	slot, offset, err := DecodeVarInt(packet[offset:])
+	if err != nil || slot != 0 {
+		t.Fatalf("slot %d (err=%v)", slot, err)
+	}
+	offset = len(packet) - len(slotData)
+	if string(packet[offset:]) != string(slotData) {
+		t.Fatalf("slot data mismatch: % x", packet[offset:])
+	}
+}
+
+func TestEncodePlayerInfoRemove(t *testing.T) {
+	uuid := [16]byte{9, 8, 7}
+	packet := EncodePlayerInfoRemove([][16]byte{uuid})
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayPacketIDPlayerInfoRemove {
+		t.Fatalf("packet id %#x (err=%v)", packetID, err)
+	}
+	count, size, err := DecodeVarInt(packet[offset:])
+	if err != nil || count != 1 {
+		t.Fatalf("count %d (err=%v)", count, err)
+	}
+	offset += size
+	if len(packet)-offset != 16 || string(packet[offset:]) != string(uuid[:]) {
+		t.Fatalf("uuid mismatch: % x", packet[offset:])
 	}
 }

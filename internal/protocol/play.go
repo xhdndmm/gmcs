@@ -1,6 +1,10 @@
 package protocol
 
-import "fmt"
+import (
+	"fmt"
+
+	"gmcs/internal/registry"
+)
 
 // 1.21.11（协议 774）Play 阶段的包 ID（仅列出当前实现使用的部分）。
 const (
@@ -9,13 +13,17 @@ const (
 	PlayPacketIDKeepAlive            = 0x2B // clientbound
 	PlayPacketIDChunkData            = 0x2C // clientbound
 	PlayPacketIDLogin                = 0x30 // clientbound
+	PlayPacketIDPlayerChat           = 0x3F // clientbound
+	PlayPacketIDPlayerInfoRemove     = 0x43 // clientbound
 	PlayPacketIDPlayerInfoUpdate     = 0x44 // clientbound
 	PlayPacketIDSynchronizePlayerPos = 0x46 // clientbound
 	PlayPacketIDSetCenterChunk       = 0x5C // clientbound
 	PlayPacketIDSetDefaultSpawn      = 0x5F // clientbound
+	PlayPacketIDSetPlayerInventory   = 0x6A // clientbound
 	PlayPacketIDSystemChat           = 0x77 // clientbound
 
 	PlayServerboundPacketIDConfirmTeleportation   = 0x00
+	PlayServerboundPacketIDChatMessage            = 0x08
 	PlayServerboundPacketIDClientCommand          = 0x0B
 	PlayServerboundPacketIDClientTickEnd          = 0x0C
 	PlayServerboundPacketIDClientInformation      = 0x0D
@@ -199,4 +207,82 @@ func ParsePlayClientCommand(packet []byte) (int32, error) {
 		return 0, err
 	}
 	return action, nil
+}
+
+// PlayerChatData 是 Player Chat 包（未签名消息）的内容。
+// 服务器在离线模式下无法为消息签名，因此签名与消息链为空，
+// 客户端会将其显示为“不安全”消息（与原版离线服务器一致）。
+type PlayerChatData struct {
+	// GlobalIndex 是服务器范围内递增的消息序号。
+	GlobalIndex int32
+	// SenderUUID 是发送者 UUID。
+	SenderUUID [16]byte
+	// SenderIndex 是发送者个人的消息序号（从 0 递增）。
+	SenderIndex int32
+	// Message 是消息纯文本内容。
+	Message string
+	// Timestamp 是 Unix 毫秒时间戳。
+	Timestamp int64
+	// DisplayName 是发送者显示名（聊天栏中 <名字> 部分）。
+	DisplayName string
+}
+
+// EncodePlayerChatMessage 编码未签名的 Player Chat 包。
+func EncodePlayerChatMessage(chat PlayerChatData) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDPlayerChat))
+	packet = AppendVarInt(packet, chat.GlobalIndex)
+	packet = append(packet, chat.SenderUUID[:]...)
+	packet = AppendVarInt(packet, chat.SenderIndex)
+	packet = append(packet, 0x00) // 无消息签名
+	packet = appendString(packet, chat.Message)
+	packet = AppendInt64(packet, chat.Timestamp)
+	packet = AppendInt64(packet, 0)  // salt
+	packet = AppendVarInt(packet, 0) // previousMessages 为空
+	// unsignedChatContent：Some(消息文本组件)。
+	packet = append(packet, 0x01)
+	packet = AppendNBTString(packet, chat.Message)
+	packet = AppendVarInt(packet, 0) // filterType = 0（原样通过，无 mask）
+	// type：chat_type 注册表引用（Holder 编码为 id + 1）。
+	packet = AppendVarInt(packet, registry.ChatTypeChatID+1)
+	packet = AppendNBTString(packet, chat.DisplayName) // networkName
+	return append(packet, 0x00)                        // networkTargetName：无
+}
+
+// EncodePlayerInfoRemove 编码 Player Info Remove 包（从玩家列表移除条目）。
+func EncodePlayerInfoRemove(uuids [][16]byte) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDPlayerInfoRemove))
+	packet = AppendVarInt(packet, int32(len(uuids)))
+	for _, uuid := range uuids {
+		packet = append(packet, uuid[:]...)
+	}
+	return packet
+}
+
+// EncodeSetPlayerInventory 编码 Set Player Inventory 包（更新玩家物品栏单个槽位）。
+// slot 编号：0–8 快捷栏、9–35 主背包、36–39 盔甲、40 副手。
+// slotData 是已编码的 Slot 数据（见 item.Stack.AppendSlot）。
+func EncodeSetPlayerInventory(slot int32, slotData []byte) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDSetPlayerInventory))
+	packet = AppendVarInt(packet, slot)
+	return append(packet, slotData...)
+}
+
+// MaxChatMessageLength 是聊天消息的最大字符数（与 1.21.11 一致）。
+const MaxChatMessageLength = 256
+
+// ParseChatMessage 解析 Serverbound Chat Message 包中的消息文本。
+// 时间戳、签名、消息确认等字段当前不需要，不予解析。
+func ParseChatMessage(packet []byte) (string, error) {
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDChatMessage {
+		return "", fmt.Errorf("invalid chat message packet")
+	}
+	message, _, err := readStringAt(packet, offset)
+	if err != nil {
+		return "", err
+	}
+	if len(message) > MaxChatMessageLength {
+		return "", fmt.Errorf("chat message too long: %d", len(message))
+	}
+	return message, nil
 }

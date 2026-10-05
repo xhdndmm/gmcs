@@ -7,42 +7,81 @@ import (
 	"gmcs/internal/protocol"
 )
 
-func TestChunkSectionAccess(t *testing.T) {
+func TestChunkBlockAccess(t *testing.T) {
 	chunk := NewChunk(0, 0)
-	if got := chunk.SectionBlock(0); got != AirBlock {
-		t.Fatalf("expected air in empty section, got %d", got)
+	if got := chunk.GetBlockState(0, WorldMinY, 0); got != AirBlock {
+		t.Fatalf("expected air in new chunk, got %d", got)
 	}
-	chunk.SetSection(0, StoneBlock)
-	if got := chunk.SectionBlock(0); got != StoneBlock {
+	chunk.SetBlockState(3, WorldMinY+5, 7, StoneBlock)
+	if got := chunk.GetBlockState(3, WorldMinY+5, 7); got != StoneBlock {
 		t.Fatalf("expected stone, got %d", got)
 	}
-	chunk.SetSection(SectionCount, StoneBlock)
-	if got := chunk.SectionBlock(SectionCount); got != AirBlock {
-		t.Fatalf("expected out-of-range section to stay air, got %d", got)
+	if got := chunk.GetBlockState(3, WorldMinY+5, 8); got != AirBlock {
+		t.Fatalf("expected neighboring cell to stay air, got %d", got)
 	}
-	if got := chunk.SectionBlock(-1); got != AirBlock {
-		t.Fatalf("expected negative section index to be air, got %d", got)
+	// 越界写入被忽略，越界读取返回空气。
+	chunk.SetBlockState(16, WorldMinY, 0, StoneBlock)
+	chunk.SetBlockState(0, WorldMinY-1, 0, StoneBlock)
+	chunk.SetBlockState(0, WorldMinY+WorldHeight, 0, StoneBlock)
+	if got := chunk.GetBlockState(16, WorldMinY, 0); got != AirBlock {
+		t.Fatalf("expected out-of-range write to be ignored, got %d", got)
+	}
+	if got := chunk.GetBlockState(0, WorldMinY-1, 0); got != AirBlock {
+		t.Fatalf("expected below-world read to be air, got %d", got)
+	}
+	// 跨 section：顶部的方块。
+	topY := WorldMinY + WorldHeight - 1
+	chunk.SetBlockState(0, topY, 15, GrassBlock)
+	if got := chunk.GetBlockState(0, topY, 15); got != GrassBlock {
+		t.Fatalf("expected grass at top section, got %d", got)
+	}
+	if index, ok := SectionIndex(topY); !ok || index != SectionCount-1 {
+		t.Fatalf("SectionIndex(%d) = %d,%v", topY, index, ok)
+	}
+	if _, ok := SectionIndex(WorldMinY - 1); ok {
+		t.Fatal("expected below-world SectionIndex to be invalid")
 	}
 }
 
-func TestNewFlatChunk(t *testing.T) {
-	chunk := NewFlatChunk(2, -3)
+func TestSectionBiome(t *testing.T) {
+	chunk := NewChunk(0, 0)
+	if got := chunk.SectionBiome(0); got != BiomePlains {
+		t.Fatalf("expected default biome plains, got %d", got)
+	}
+	chunk.SetSectionBiome(2, 7)
+	if got := chunk.SectionBiome(2); got != 7 {
+		t.Fatalf("expected biome 7, got %d", got)
+	}
+	chunk.SetSectionBiome(SectionCount, 7) // 越界被忽略
+	if got := chunk.SectionBiome(1); got != BiomePlains {
+		t.Fatalf("expected untouched biome to stay plains, got %d", got)
+	}
+}
+
+func TestFlatGenerator(t *testing.T) {
+	chunk := FlatGenerator{}.GenerateChunk(2, -3)
 	if chunk.X != 2 || chunk.Z != -3 {
 		t.Fatalf("unexpected chunk position: %d,%d", chunk.X, chunk.Z)
 	}
-	if got := chunk.SectionBlock(0); got != StoneBlock {
-		t.Fatalf("expected stone platform at section 0, got %d", got)
+	if got := chunk.GetBlockState(0, WorldMinY, 0); got != BedrockBlock {
+		t.Fatalf("expected bedrock at bottom, got %d", got)
 	}
-	if got := chunk.SectionBlock(1); got != AirBlock {
-		t.Fatalf("expected air above platform, got %d", got)
+	if got := chunk.GetBlockState(5, WorldMinY+1, 9); got != DirtBlock {
+		t.Fatalf("expected dirt layer, got %d", got)
 	}
-	if SectionIndex(PlatformTopY-1) != 0 {
-		t.Fatalf("expected platform top to be inside section 0")
+	if got := chunk.GetBlockState(15, FlatGroundLevel, 15); got != GrassBlock {
+		t.Fatalf("expected grass surface, got %d", got)
+	}
+	if got := chunk.GetBlockState(0, FlatSpawnY, 0); got != AirBlock {
+		t.Fatalf("expected air at spawn level, got %d", got)
+	}
+	if FlatGroundLevel != WorldMinY+3 || FlatSpawnY != FlatGroundLevel+1 {
+		t.Fatalf("unexpected flat levels: ground=%d spawn=%d", FlatGroundLevel, FlatSpawnY)
 	}
 }
 
 func TestEncodeChunkDataPacketStructure(t *testing.T) {
-	chunk := NewFlatChunk(1, -2)
+	chunk := NewChunk(1, -2)
 	packet := EncodeChunkDataPacket(chunk)
 
 	packetID, offset, err := protocol.DecodeVarInt(packet)
@@ -64,7 +103,7 @@ func TestEncodeChunkDataPacketStructure(t *testing.T) {
 		t.Fatalf("expected empty heightmaps, got %d", heightmaps)
 	}
 
-	// 区块数据主体：24 个 section，最底部为石头、其余为空气。
+	// 区块数据主体：24 个全空气 section（单值调色板）。
 	dataLength, offset := decodeTestVarInt(t, packet, offset)
 	if dataLength <= 0 || offset+int(dataLength) > len(packet) {
 		t.Fatalf("invalid chunk data length %d", dataLength)
@@ -72,42 +111,7 @@ func TestEncodeChunkDataPacketStructure(t *testing.T) {
 	data := packet[offset : offset+int(dataLength)]
 	offset += int(dataLength)
 	for i := 0; i < SectionCount; i++ {
-		if len(data) < 6 {
-			t.Fatalf("section %d: truncated section data", i)
-		}
-		blockCount := int16(binary.BigEndian.Uint16(data[0:2]))
-		fluidCount := int16(binary.BigEndian.Uint16(data[2:4]))
-		data = data[4:]
-		if data[0] != 0x00 {
-			t.Fatalf("section %d: expected single-valued block palette, got BPE %d", i, data[0])
-		}
-		data = data[1:]
-		blockState, size, err := protocol.DecodeVarInt(data)
-		if err != nil {
-			t.Fatalf("section %d: decode block state: %v", i, err)
-		}
-		data = data[size:]
-		if data[0] != 0x00 {
-			t.Fatalf("section %d: expected single-valued biome palette, got BPE %d", i, data[0])
-		}
-		data = data[1:]
-		biome, size, err := protocol.DecodeVarInt(data)
-		if err != nil {
-			t.Fatalf("section %d: decode biome: %v", i, err)
-		}
-		data = data[size:]
-
-		wantBlock, wantCount := int32(AirBlock), int16(0)
-		if i == 0 {
-			wantBlock, wantCount = StoneBlock, 4096
-		}
-		if blockState != wantBlock || blockCount != wantCount || fluidCount != 0 {
-			t.Fatalf("section %d: got block %d count %d fluid %d, want block %d count %d",
-				i, blockState, blockCount, fluidCount, wantBlock, wantCount)
-		}
-		if biome != BiomePlains {
-			t.Fatalf("section %d: unexpected biome %d", i, biome)
-		}
+		data = checkEmptySection(t, i, data)
 	}
 	if len(data) != 0 {
 		t.Fatalf("%d trailing bytes in chunk data", len(data))
@@ -159,6 +163,219 @@ func TestEncodeChunkDataPacketStructure(t *testing.T) {
 	if offset != len(packet) {
 		t.Fatalf("%d trailing bytes in chunk packet", len(packet)-offset)
 	}
+}
+
+// checkEmptySection 校验一个全空气、单值调色板的 section（6 字节），返回剩余数据。
+func checkEmptySection(t *testing.T, index int, data []byte) []byte {
+	t.Helper()
+	if len(data) < 6 {
+		t.Fatalf("section %d: truncated section data", index)
+	}
+	blockCount := int16(binary.BigEndian.Uint16(data[0:2]))
+	if blockCount != 0 {
+		t.Fatalf("section %d: block count = %d, want 0", index, blockCount)
+	}
+	data = data[2:]
+	if data[0] != 0x00 {
+		t.Fatalf("section %d: expected single-valued block palette, got BPE %d", index, data[0])
+	}
+	state, size, err := protocol.DecodeVarInt(data[1:])
+	if err != nil || state != int32(AirBlock) {
+		t.Fatalf("section %d: block state %d (err=%v)", index, state, err)
+	}
+	data = data[1+size:]
+	if data[0] != 0x00 {
+		t.Fatalf("section %d: expected single-valued biome palette, got BPE %d", index, data[0])
+	}
+	biome, size, err := protocol.DecodeVarInt(data[1:])
+	if err != nil || biome != int32(BiomePlains) {
+		t.Fatalf("section %d: biome %d (err=%v)", index, biome, err)
+	}
+	return data[1+size:]
+}
+
+// TestEncodeChunkDataPacketPalette 校验超平坦地形的 4 种方块走 4 位间接调色板，
+// 并解包校验每个方块位置。
+func TestEncodeChunkDataPacketPalette(t *testing.T) {
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
+	packet := EncodeChunkDataPacket(chunk)
+	data := chunkDataOf(t, packet)
+
+	// section 0：基岩/泥土/草/空气 共 4 种状态。
+	if len(data) < 4 {
+		t.Fatal("section 0: truncated")
+	}
+	blockCount := int(binary.BigEndian.Uint16(data[0:2]))
+	if want := SectionSize * SectionSize * 4; blockCount != want {
+		t.Fatalf("section 0 block count = %d, want %d", blockCount, want)
+	}
+	if data[2] != 4 {
+		t.Fatalf("section 0 bits per block = %d, want 4", data[2])
+	}
+	offset := 3
+	paletteSize, size, err := protocol.DecodeVarInt(data[offset:])
+	if err != nil || paletteSize != 4 {
+		t.Fatalf("section 0 palette size = %d (err=%v)", paletteSize, err)
+	}
+	offset += size
+	palette := make([]int32, paletteSize)
+	for i := range palette {
+		value, size, err := protocol.DecodeVarInt(data[offset:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		palette[i] = value
+		offset += size
+	}
+	// 调色板按首次出现顺序：y=-64 的基岩、泥土、草方块、空气。
+	wantPalette := []int32{int32(BedrockBlock), int32(DirtBlock), int32(GrassBlock), int32(AirBlock)}
+	for i, want := range wantPalette {
+		if palette[i] != want {
+			t.Fatalf("palette[%d] = %d, want %d", i, palette[i], want)
+		}
+	}
+	// 数据数组无长度前缀：直接是 256 个 long。
+	const longCount = SectionVolume * 4 / 64
+	longs := make([]int64, longCount)
+	for i := range longs {
+		value, next, err := protocol.DecodeInt64(data, offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		longs[i] = value
+		offset = next
+	}
+	values := unpackBits(t, longs, SectionVolume, 4)
+
+	blockStateAt := func(x, y, z int) uint16 {
+		return uint16(palette[values[blockIndex(x, y-WorldMinY, z)]])
+	}
+	for x := 0; x < SectionSize; x++ {
+		for z := 0; z < SectionSize; z++ {
+			if got := blockStateAt(x, WorldMinY, z); got != BedrockBlock {
+				t.Fatalf("(%d,%d): expected bedrock, got %d", x, z, got)
+			}
+			if got := blockStateAt(x, WorldMinY+1, z); got != DirtBlock {
+				t.Fatalf("(%d,%d): expected dirt, got %d", x, z, got)
+			}
+			if got := blockStateAt(x, FlatGroundLevel, z); got != GrassBlock {
+				t.Fatalf("(%d,%d): expected grass, got %d", x, z, got)
+			}
+			if got := blockStateAt(x, FlatSpawnY, z); got != AirBlock {
+				t.Fatalf("(%d,%d): expected air, got %d", x, z, got)
+			}
+		}
+	}
+
+	// 生物群系：单值调色板。
+	if data[offset] != 0x00 {
+		t.Fatalf("section 0 biome palette BPE = %d, want 0", data[offset])
+	}
+	biome, size, err := protocol.DecodeVarInt(data[offset+1:])
+	if err != nil || biome != int32(BiomePlains) {
+		t.Fatalf("section 0 biome = %d (err=%v)", biome, err)
+	}
+	offset += 1 + size
+
+	// 其余 section 必须是空 section。
+	rest := data[offset:]
+	for i := 1; i < SectionCount; i++ {
+		rest = checkEmptySection(t, i, rest)
+	}
+	if len(rest) != 0 {
+		t.Fatalf("%d trailing bytes after sections", len(rest))
+	}
+}
+
+// TestPackBitsRoundTrip 验证紧密位流打包与解包互为逆操作。
+func TestPackBitsRoundTrip(t *testing.T) {
+	for _, bits := range []int{4, 5, 8, 15} {
+		values := make([]uint16, SectionVolume)
+		mask := uint16(1)<<uint(bits) - 1
+		for i := range values {
+			values[i] = uint16(i*7) & mask
+		}
+		longs := packBits(values, bits)
+		if want := (len(values)*bits + 63) / 64; len(longs) != want {
+			t.Fatalf("bits=%d: %d longs, want %d", bits, len(longs), want)
+		}
+		got := unpackBits(t, longs, len(values), bits)
+		for i := range values {
+			if got[i] != values[i] {
+				t.Fatalf("bits=%d index %d: got %d, want %d", bits, i, got[i], values[i])
+			}
+		}
+	}
+}
+
+// TestPackBitsPaddedRoundTrip 验证全局调色板的“每 long 独立”打包。
+func TestPackBitsPaddedRoundTrip(t *testing.T) {
+	const bits = 15
+	values := make([]uint16, SectionVolume)
+	for i := range values {
+		values[i] = uint16(i * 3 & 0x7FFF)
+	}
+	longs := packBitsPadded(values, bits)
+	perLong := 64 / bits
+	if want := (len(values) + perLong - 1) / perLong; len(longs) != want {
+		t.Fatalf("%d longs, want %d", len(longs), want)
+	}
+	for i, value := range values {
+		index := i / perLong
+		offset := uint(i%perLong) * uint(bits)
+		got := uint16(uint64(longs[index])>>offset) & (1<<bits - 1)
+		if got != value {
+			t.Fatalf("index %d: got %d, want %d", i, got, value)
+		}
+	}
+}
+
+// chunkDataOf 跳过包头与 heightmaps，返回区块数据主体。
+func chunkDataOf(t *testing.T, packet []byte) []byte {
+	t.Helper()
+	_, offset, err := protocol.DecodeVarInt(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, offset, err = protocol.DecodeInt32(packet, offset); err != nil {
+		t.Fatal(err)
+	}
+	if _, offset, err = protocol.DecodeInt32(packet, offset); err != nil {
+		t.Fatal(err)
+	}
+	heightmaps, next := decodeTestVarInt(t, packet, offset)
+	if heightmaps != 0 {
+		t.Fatalf("expected empty heightmaps, got %d", heightmaps)
+	}
+	length, offset := decodeTestVarInt(t, packet, next)
+	if length <= 0 || offset+int(length) > len(packet) {
+		t.Fatalf("invalid chunk data length %d", length)
+	}
+	return packet[offset : offset+int(length)]
+}
+
+// unpackBits 以紧密位流解包（与 packBits 互为逆操作）。
+func unpackBits(t *testing.T, longs []int64, count, bits int) []uint16 {
+	t.Helper()
+	values := make([]uint16, count)
+	position := 0
+	for i := range values {
+		index := position >> 6
+		shift := uint(position & 63)
+		if index >= len(longs) {
+			t.Fatalf("unpack overflow at index %d", i)
+		}
+		value := uint64(longs[index]) >> shift
+		if shift+uint(bits) > 64 {
+			if index+1 >= len(longs) {
+				t.Fatalf("unpack cross-boundary overflow at index %d", i)
+			}
+			value |= uint64(longs[index+1]) << (64 - shift)
+		}
+		values[i] = uint16(value & (1<<uint(bits) - 1))
+		position += bits
+	}
+	return values
 }
 
 func decodeTestVarInt(t *testing.T, data []byte, offset int) (int32, int) {

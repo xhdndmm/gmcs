@@ -1073,6 +1073,8 @@ const (
 	DimensionTypeOverworldID = 0
 	// BiomePlainsID 是 minecraft:plains 生物群系的注册表 ID。
 	BiomePlainsID = 40
+	// ChatTypeChatID 是 minecraft:chat 聊天类型的注册表 ID（Player Chat 包用 id+1 引用）。
+	ChatTypeChatID = 0
 )
 
 // staticRegistrySizes 是静态注册表（条目 ID 由客户端内置注册表决定）的条目数，

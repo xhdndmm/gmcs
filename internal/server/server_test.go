@@ -14,6 +14,7 @@ import (
 
 func TestServerListPingAndGracefulShutdown(t *testing.T) {
 	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
 	cfg.MOTD = "test server"
 	cfg.VersionName = "test-version"
 	cfg.ProtocolVersion = 765
@@ -109,7 +110,9 @@ func TestServerListPingAndGracefulShutdown(t *testing.T) {
 }
 
 func TestServerClosesActiveConnectionOnCancellation(t *testing.T) {
-	server, err := New(config.Default())
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	server, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
