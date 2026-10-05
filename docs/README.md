@@ -1,26 +1,31 @@
+<div align="center">
+
 # gmcs
 
-一个用 Go 语言编写的高性能 Minecraft Java Edition 服务器实现（当前适配 1.21.11，协议 774）。
+一个用 Go 语言编写的**高性能** Minecraft Java Edition 服务器实现（当前适配 1.21.11，协议 774）。
 
-## 构建与运行
+<p>
+  <a href="https://github.com/xhdndmm/gmcs/stargazers"><img src="https://img.shields.io/github/stars/xhdndmm/gmcs" alt="GitHub Stars"></a>
+  <a href="https://github.com/xhdndmm/gmcs/issues"><img src="https://img.shields.io/github/issues/xhdndmm/gmcs" alt="GitHub Issues"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
+  <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/Go-1.26%2B-blue" alt="Go 1.26+"></a>
+  <a href="https://github.com/xhdndmm/gmcs/releases"><img src="https://img.shields.io/github/v/tag/xhdndmm/gmcs?label=release" alt="Latest Release"></a>
+  <a href="https://github.com/xhdndmm/gmcs/releases"><img src="https://img.shields.io/github/downloads/xhdndmm/gmcs/total" alt="Downloads"></a>
+</p>
+
+</div>
+
+## 快速开始
 
 ```bash
-# 构建当前平台（产物在 dist/）
-scripts/build.sh
-
-# 交叉编译全部常用平台
-scripts/build.sh --all
-
-# 运行：首次运行会在工作目录生成 gmcs.json 与 world/
-go run ./cmd/gmcs
-go run ./cmd/gmcs -config /path/to/gmcs.json -listen :25565
+scripts/build.sh            # 构建当前平台（产物在 dist/）
+scripts/build.sh --all      # 交叉编译全部常用平台
+go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 ```
 
-构建产物默认经过发布级优化：`CGO_ENABLED=0`（纯 Go 静态二进制）、`-trimpath`、
-`-ldflags "-s -w -buildid="`（剥离符号与 DWARF、去除构建 ID）以及 **PGO**——
-`cmd/gmcs/default.pgo` 由 `scripts/genpgo.sh` 从基准采样生成并随仓库提交，
-构建时自动应用（实测服务器 Tick 热路径提升约 20%，体积 +0.7%；见
-[docs/PERFORMANCE.md](PERFORMANCE.md)）。`PGO=off scripts/build.sh` 可关闭 PGO。
+构建产物为纯 Go 静态二进制（`CGO_ENABLED=0`、`-trimpath`、剥离符号）并默认启用
+**PGO**（配置随仓库提交，`scripts/genpgo.sh` 可重新生成；`PGO=off` 可关闭）。
+性能与产物体积数据见 [PERFORMANCE.md](PERFORMANCE.md)。
 
 ## 配置（gmcs.json）
 
@@ -59,88 +64,59 @@ go run ./cmd/gmcs -config /path/to/gmcs.json -listen :25565
 | `/spawn` | 传送回出生点 |
 | `/gamemode <模式>` | 切换游戏模式（需要管理员；survival/creative/adventure/spectator） |
 
-命令补全（Tab）：支持命令名与 `/gamemode` 模式参数的候选；配置 `ops`
-名单中的玩家可以补全并执行管理命令，其他玩家看不到这些命令
+命令补全（Tab）覆盖命令名与 `/gamemode` 参数；`ops` 名单内玩家可见/可用管理命令
 （命令树按玩家过滤，执行时再次校验权限）。
 
-## 世界生成
+## 功能一览
 
-地形由 **种子** 决定（`world_seed`）：多层值噪声的高度图（高度约 57–70）、
-石头/泥土/草方块层次、低洼处的水（海平面 Y=62，近似值）、沙滩与稀疏的橡树。
-相同种子、相同坐标总是生成相同方块，且不依赖区块生成顺序；出生点高度取实际地形。
+### 世界与地形
 
-服务器按 `view_distance` 持续维护玩家周围的区块：进入世界时由近到远发送视距内的
-全部区块，跨越区块边界时增量发送新区块并卸载超出 视距+2 的旧区块，因此玩家在视距内
-移动不会再看到虚空。
+- **种子地形**（`world_seed`）：噪声高度图、层次方块、水（海平面约 Y=62）、沙滩与稀疏橡树；
+  同种子同坐标结果恒定，出生点取实际地形。非原版算法（无洞穴/矿物/结构/群系差异）。
+- **区块流式加载**：进入世界按由近到远发送视距内的区块；跨区块移动时增量发送、
+  超出 视距+2 卸载；每 5 秒把距所有玩家超过 视距+4 的区块移出内存（未保存先落盘），
+  跑图不会让内存持续增长。
+- **世界边界**（`world_border_size`）：正方形、以 (0,0) 为中心；下发官方边界包，
+  越界位置被拉回，生物不会生成或移动出边界。
+- 更换 `world_seed` 不会重建已有区块，交界处可能出现地形突变；需要全新地形时
+  换用新的 `world_dir`。
 
-服务器同时控制内存占用：每 5 秒把距离所有玩家都超过 视距+4 的区块移出内存缓存
-（未保存的区块会先写入磁盘），玩家再次接近时重新读取或重新生成，长时间跑图
-不会让内存持续增长。
+### 生物与战斗
 
-注意：这不是原版算法，不含洞穴、矿物、结构、生物群系差异。已保存的区块不会因更换
-`world_seed` 而重新生成：升级自旧版本（超平坦地形）或修改种子后，旧区块与新区块的
-交界处可能出现地形突变；需要全新地形时请换用新的 `world_dir` 或清空旧存档。
+- 玩家附近（12–24 格）生成僵尸直至 `max_mobs`；距所有玩家超过 64 格清理
+  （服务器无玩家时不清理）。僵尸追踪 32 格内最近玩家，进入 1.9 格且视线无遮挡时
+  先抬手 0.5 秒再造成 2 点伤害；无目标时游荡，被挡久后随机侧移；创造/旁观不参与索敌。
+- 数值：玩家/僵尸各 20 点生命；玩家攻击 4 点；受击无敌帧 0.5 秒与击退；
+  受伤后 8 秒未再受伤则每 4 秒恢复 1 点。
+- 反馈完整：挥手/受伤闪红/死亡动画、Damage Event、音效、生命同步、头部朝向广播。
+- 生物持久化到 `world/entities.json`（位置/生命/朝向），重启后恢复。
+- 限制：直线 AI（无寻路）、无饥饿/暴击/护甲/掉落物经验、生成不分昼夜光照；
+  完整列表见 [TODO.md](TODO.md)。
 
-## 世界边界（world_border_size）
+### 方块交互与玩家物理
 
-`world_border_size` 大于 0 时，服务器在玩家进入世界时下发官方世界边界包：
-客户端显示淡蓝色边界线并阻止玩家走出；服务器也会拒绝越界的位置更新并把
-玩家拉回最后合法位置，生物不会生成或移动出边界。边界为正方形，恒以 (0,0) 为中心。
+- 生存/创造可破坏与放置方块：修改广播附近玩家并随区块保存；生存挖掘完成后生效、
+  放置消耗物品；创造即时且不消耗；支持创造物品栏取放；冒险/旁观不可交互；无掉落物与挖掘时间。
+- 摔落伤害：下落超过 3 格落地受伤，每多 1 格 1 点（`ceil(下落−3)`）；落水免疫，
+  传送/重生/回拉后重置；未实现服务器端重力、其它摔落保护与速度/穿墙校验。
 
-## 生物与战斗
+### 多人
 
-- 服务器会在玩家附近（12–24 格，且在边界内）生成僵尸，直至 `max_mobs` 上限；距离所有玩家超过 64 格时清理，服务器上没有玩家时不清理（与原版一致）。
-- 僵尸会追踪 32 格内的最近玩家（约 1.1 格/秒）；进入 1.9 格且视线无遮挡时先抬手 0.5 秒，
-  然后广播挥手动画并造成 2 点伤害；没有目标时随机游荡，被方块挡住一段时间后会随机侧移。
-- 视线遮挡（隔墙）时生物不会造成伤害；创造/旁观模式玩家不会被索敌，旁观者也无法攻击。
-- 生命值：玩家 20 点、僵尸 20 点；玩家攻击 4 点，生物被击中后有 0.5 秒受击无敌帧并被击退 0.4 格；
-  玩家受伤后有 0.5 秒无敌帧；受伤后 8 秒未再受伤则开始每 4 秒恢复 1 点生命。
-- 伤害反馈：受伤闪红（Hurt Animation）、Damage Event、挥手动画、实体音效与 Set Health 均已发送；
-  生物转向时会广播头部朝向（Head Rotation）；生物死亡播放死亡动画后移除；玩家死亡显示死亡消息，重生后回到出生点并恢复满生命。
-- 生物会随世界保存到 `world/entities.json`（位置、生命、朝向，周期自动保存与关闭保存），重启服务器后恢复。
-- 服务端会跟踪玩家移动数据包（含坐标合法性、世界边界校验），并用于生物追击与攻击判定。
+- 玩家以实体互相可见：加入/退出、移动与朝向在 64 格内同步；皮肤来自正版档案属性。
+- 可攻击其他玩家：伤害/受伤动画/生命同步与生物战斗一致；挥空也播放挥手动画。
 
-当前限制：AI 为简化的直线追击/游荡（无寻路；被挡住时仅随机侧移）；生物持久化为 gmcs 自定义
-entities.json（非原版实体格式）；无饥饿系统（回血为脱战定时恢复，非原版饥饿驱动）；
-无暴击、护甲与掉落物/经验；生物生成不区分昼夜与光照。
+### 玩家数据（players.json）
 
-## 方块交互（破坏/放置）
+- 退出/关服时保存位置、生命/饥饿/饱和、游戏模式与物品栏，重连恢复且不重复发放
+  `starting_items`；物品按命名空间 ID 存储，跨版本可读。
+- gmcs 自定义格式（非原版 `playerdata`）；强杀或崩溃会丢失自上次退出以来的进度。
 
-- 生存与创造模式可以破坏与放置方块；修改会广播给附近玩家并随区块保存持久化
-- 生存模式：客户端完成挖掘后生效，放置消耗物品；创造模式：破坏即时生效，放置不消耗
-- 支持创造模式物品栏取放物品；冒险/旁观模式不支持方块交互
-- 当前为简化实现：没有掉落物与挖掘时间（见 docs/TODO.md 已知限制）
+### 正版验证（online_mode）
 
-## 玩家物理（摔落伤害）
-
-- 根据移动包的着地标志跟踪下落：下落超过 3 格后落地受到伤害，每多 1 格 1 点
-  （与原版公式一致：`ceil(下落格数 - 3)`）
-- 落点为水时免疫；创造/旁观模式免伤；传送/重生/回拉后重置下落状态
-- 未验证/已知限制：未实现服务器端重力模拟与其它摔落保护（干草堆、床、滑翔等），
-  也无移动速度/穿墙校验（见 docs/TODO.md 已知限制）
-
-## 多人
-
-- 其他玩家会以实体出现：加入/退出、移动与朝向实时同步（64 格范围内），皮肤来自正版档案属性
-- 可以攻击其他玩家：伤害、受伤动画与生命同步与生物战斗一致；挥空也有挥手动画
-
-## 玩家数据（players.json）
-
-玩家退出（或服务器关闭）时，位置/朝向、生命/饥饿/饱和、游戏模式与物品栏会保存到
-`world/players.json`；再次进入时恢复，且不会重复发放初始物品（`starting_items`
-只发给新玩家）。物品按命名空间 ID 存储，跨 Minecraft 版本仍可读。
-
-该文件是 gmcs 自定义格式（不是原版的 `playerdata/<uuid>.dat`）；服务器被强杀
-（SIGKILL）或崩溃时可能丢失自上次退出以来的进度。
-
-## 正版验证（online_mode）
-
-`online_mode = true` 时启用正版登录：服务器与客户端完成 AES-128/CFB8 加密握手，
-并通过 `session_server_url` 的 `hasJoined` 接口验证账号，登录成功后透传玩家属性（如签名皮肤）。
-服务器列表与游戏内会标记为强制安全档案（`enforcesSecureChat=true`），玩家列表条目
-携带签名皮肤属性，客户端据此加载皮肤。注意：聊天消息仍未实现签名
-（无 chat_session_update），客户端会对聊天显示“未验证”标记。
-`online_mode = false`（默认）时按离线模式运行，UUID 由用户名按原版规则推导。
+- 启用后完成 AES-128/CFB8 加密握手并通过 `hasJoined` 验证账号，透传签名属性；
+  服务器列表与游戏内标记 `enforcesSecureChat=true`，玩家列表携带皮肤。
+- 聊天消息未签名（无 chat_session_update），客户端显示“未验证”标记。
+- 默认离线模式：UUID 按原版离线规则由用户名推导。
 
 ## 测试
 
