@@ -12,7 +12,7 @@
 | 资产 | 格式 | 升级行为 |
 | --- | --- | --- |
 | `gmcs.json` | JSON（snake_case 字段） | 缺失字段回退默认值；仅在文件不存在时写回磁盘，运行期间不会重写配置 |
-| `world/r.x.z.mca` | 区域文件框架（头部/扇区/zlib）与原版一致；区块负载为 gmcs 自定义格式（magic `GMCS`，version=1） | 负载严格校验魔数与版本；未知格式会拒绝加载 |
+| `world/r.x.z.mca` | 区域文件框架（头部/扇区/zlib）与原版一致；区块负载为 gmcs 自定义格式（magic `GMCS`，version=2，兼容读取 version=1） | 负载严格校验魔数与版本；version=1 的旧负载会按“无方块实体”读取，下次保存写入 version=2 |
 | `world/entities.json` | gmcs 自定义 JSON（生物：位置/生命/朝向；掉落物：物品/数量/位置） | 增量引入（`c58bd09`，`items` 字段为后续批次）；文件不存在时视为无实体 |
 | `world/players.json` | gmcs 自定义 JSON（位置/生命/死亡状态/游戏模式/物品栏，物品按命名空间 ID） | 增量引入；文件不存在时按新玩家处理（发放初始物品） |
 | 游戏协议 | 单一目标版本（当前 1.21.11，协议 774） | 无跨版本兼容层 |
@@ -42,6 +42,9 @@
 | `a59a859` | 无新字段；区块 heightmap 与玩家数据周期保存/死亡状态持久化（行为变化见 2.4） |
 | `3c3913a` | 无新字段；`ops` 项支持 `name:level`（1–4，省略按 4）（行为变化见 2.4） |
 | `c503ac2` | 新增 `pprof_address`（默认空 = 关闭）；挖掘掉落、移动位移校验与压测工具（行为变化见 2.4） |
+| `28e7e0d` | 新增 `permissions`（命令权限节点，默认空）；容器交互（方块实体）、逐 tick 速度上限与穿墙检测、服务器端地面检测的摔落伤害（行为变化见 2.4） |
+| `ce5d3ae` | 无新字段；`permissions` 生效于命令树/补全/执行，聊天补全玩家名，聊天会话公钥分发（行为变化见 2.4） |
+| `03d3caf` | 无新字段；饥饿系统、昼夜循环与夜晚刷怪、生物掉落与经验、按物品堆叠上限（行为变化见 2.4） |
 
 两个容易踩的点：
 
@@ -71,13 +74,17 @@
 区块负载格式：
 
 ```text
-magic "GMCS" (4B) | version u16（当前为 1） | x i32 | z i32 | 24 × section
+magic "GMCS" (4B) | version u16（当前为 2） | x i32 | z i32 | 24 × section
 section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
+(version 2+) 方块实体：数量 varint | 每项: packedXZ u8 | type varint | 槽位数 varint
+                                    |（槽位: itemID varint | count varint）*
 ```
 
 - 所有多字节整数为大端
 - 解码时严格校验魔数与版本；版本不匹配会报错（形如 `不支持的区块负载版本 N`）
-- 当前只有 version 1；未来若提升负载版本，会在本指南补充转换步骤
+- **version 1 → 2**：仅追加方块实体（容器槽位）字段。旧负载可直接读取（无方块实体），
+  下一次保存自动升级为 version 2；需要回退到旧版 gmcs 时，请先备份存档
+- 方块实体类型为容器（箱子/木桶/漏斗等）时保存槽位；类型 ID 来自官方注册表数据
 
 地形生成器变更与"地形接缝"：
 
@@ -130,6 +137,9 @@ section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u1
 | `a59a859` | 区块包开始携带 heightmap（WORLD_SURFACE/MOTION_BLOCKING）；玩家数据每 30 秒自动保存；死亡状态持久化 | 死亡状态下线的玩家重连后保持死亡（需发送重生请求），不再自动满血 |
 | `3c3913a` | 掉落物（丢弃/拾取/死亡掉落/entities.json 持久化）；区块突发携带 Chunk Batch Start/Finished；命令权限等级与 `/kick`；摔落保护方块（干草堆/床/粘液/蜂蜜/细雪） | 丢弃与拾取仅生存/创意；破坏方块仍无掉落物；`ops` 可写 `name:level`，`/say`、`/gamemode` 需 2 级，`/kick` 需 3 级 |
 | `c503ac2` | 生存破坏方块掉落物品（简化掉落表）；单包位移 >100 格被拒绝并回拉；新增 `pprof_address` 诊断监听与 `cmd/gmcsload` 压测客户端 | 新增掉落实体（`entities.json` 的 `items` 会随之增加）；旧配置无 `pprof_address` 即保持关闭 |
+| `28e7e0d` | 容器交互（右键箱子等打开窗口、内容随区块保存、破坏时内容掉落）；移动新增逐 tick 速度上限与穿墙检测；摔落伤害改由服务器端地面检测（不再依赖客户端着地标志）；区块负载升级为 version 2（方块实体） | 旧负载可直接读取并在下次保存升级；`permissions` 为空时行为与仅用 `ops` 一致；快速移动/瞬移被拒绝时会收到回拉包 |
+| `ce5d3ae` | 命令权限支持 `permissions` 节点（等级或节点任一满足）；Tab 补全支持聊天中的在线玩家名；聊天会话公钥分发（Player Info Initialize Chat） | 聊天消息仍未签名，正版客户端仍显示“未验证”标记 |
+| `03d3caf` | 饥饿系统（疲劳度、自然恢复、饥饿伤害与进食）；昼夜循环（20 分钟/天，进入与每 20 tick 同步时间）与夜晚刷怪；僵尸掉落与击杀经验（经验随 players.json 持久化，死亡清空）；跳跃暴击；按物品堆叠上限（如雪球 16、工具 1） | 生物只在夜晚生成（默认配置下白天不再刷怪）；自然回血改为饥饿驱动（饥饿 <18 不回血）；旧 players.json 无经验字段按 0 处理 |
 
 ## 3. 更换 / 升级 Minecraft 版本（开发向）
 
@@ -148,11 +158,13 @@ section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u1
    go run ./tools/genregistries \
      -jar <client.jar> \
      -reports generated/reports/registries.json \
-     -blocks generated/reports/blocks.json
+     -blocks generated/reports/blocks.json \
+     -items generated/reports/items.json
    ```
 
    会更新 `internal/registry/` 下的 `data_generated.go`、`blocks_generated.go`、
-   `items_generated.go`、`static_ids_generated.go`。**不要手改生成文件**，
+   `items_generated.go`、`static_ids_generated.go` 与 `item_components_generated.go`
+   （后者含食物数值与按物品的堆叠上限；省略 `-items` 时不更新）。**不要手改生成文件**，
    需要调整时修改 `tools/genregistries`。
 
 4. **更新协议常量与版本信息**：
@@ -208,6 +220,10 @@ section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u1
   才会按距离清理（>64 格）；更早版本会把所有生物清空。
 - **可以用 MCEdit 等地图工具打开 gmcs 存档吗？** 工具通常能识别区域文件框架，
   但方块数据不是 NBT，无法读取。
+- **升级后白天不刷怪了？** 预期行为：怪物只在夜晚（世界时间 13000–23000）生成，
+  且无光照引擎（不看亮度）。24 小时 = 20 分钟，可用客户端自带的“时间”显示观察。
+- **饥饿值一直下降、不再自动回血？** 饥饿系统按原版规则：疲劳度累计消耗饥饿值，
+  饥饿值 ≥18 才会自然恢复；使用食物（如苹果）可恢复。旧版本的“脱战回血”已移除。
 - **启动日志出现"生物系统已禁用：注册表数据缺失"？** `internal/registry`
   生成数据缺失或损坏，重新执行第 3 节的生成步骤。
 

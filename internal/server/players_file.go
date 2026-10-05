@@ -41,17 +41,19 @@ type playerFile struct {
 // playerRecord 是一个玩家的持久化状态。死亡状态（Dead）会保存：
 // 重连后仍处于死亡状态，需要发送重生请求（与原版一致）。
 type playerRecord struct {
-	UUID       string       `json:"uuid"`
-	Name       string       `json:"name"`
-	X          float64      `json:"x"`
-	Y          float64      `json:"y"`
-	Z          float64      `json:"z"`
-	Yaw        float32      `json:"yaw"`
-	Pitch      float32      `json:"pitch"`
-	Health     float32      `json:"health"`
-	Dead       bool         `json:"dead"`
-	Food       int32        `json:"food"`
-	Saturation float32      `json:"saturation"`
+	UUID       string  `json:"uuid"`
+	Name       string  `json:"name"`
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
+	Z          float64 `json:"z"`
+	Yaw        float32 `json:"yaw"`
+	Pitch      float32 `json:"pitch"`
+	Health     float32 `json:"health"`
+	Dead       bool    `json:"dead"`
+	Food       int32   `json:"food"`
+	Saturation float32 `json:"saturation"`
+	// Experience 是总经验值（0 表示无经验；死亡后清空）。
+	Experience int32        `json:"experience"`
 	GameMode   string       `json:"game_mode"`
 	Inventory  []playerItem `json:"inventory"`
 }
@@ -190,6 +192,7 @@ func playerRecordFromSession(player *session) playerRecord {
 	dead := player.dead
 	food := player.food
 	saturation := player.saturation
+	experience := player.experience
 	gameMode := player.gameMode
 	player.stateMu.Unlock()
 	modeName, ok := config.GameModeName(config.GameMode(gameMode))
@@ -219,6 +222,7 @@ func playerRecordFromSession(player *session) playerRecord {
 		Dead:       dead,
 		Food:       food,
 		Saturation: saturation,
+		Experience: experience,
 		GameMode:   modeName,
 		Inventory:  items,
 	}
@@ -261,6 +265,9 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		saturation = float32(maxPlayerFood)
 	}
 	s.saturation = saturation
+	if record.Experience > 0 {
+		s.experience = record.Experience
+	}
 	if mode, ok := config.GameModeID(record.GameMode); ok {
 		s.gameMode = uint8(mode)
 	}
