@@ -55,3 +55,21 @@ func DecodeBool(data []byte, offset int) (bool, int, error) {
 	}
 	return data[offset] != 0, offset + 1, nil
 }
+
+// DecodeFloat32 解码一个 float32。
+func DecodeFloat32(data []byte, offset int) (float32, int, error) {
+	value, offset, err := DecodeInt32(data, offset)
+	if err != nil {
+		return 0, offset, err
+	}
+	return math.Float32frombits(uint32(value)), offset, nil
+}
+
+// DecodeFloat64 解码一个 float64。
+func DecodeFloat64(data []byte, offset int) (float64, int, error) {
+	value, offset, err := DecodeInt64(data, offset)
+	if err != nil {
+		return 0, offset, err
+	}
+	return math.Float64frombits(uint64(value)), offset, nil
+}

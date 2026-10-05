@@ -9,11 +9,13 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"gmcs/internal/config"
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
@@ -68,6 +70,31 @@ type session struct {
 
 	// chatIndex 是该玩家的聊天消息序号（从 0 递增）。
 	chatIndex atomic.Int32
+
+	// 玩家战斗与位置状态：由读循环与实体 Tick 共同访问，受 stateMu 保护。
+	stateMu    sync.Mutex
+	posX, posY float64
+	posZ       float64
+	yaw, pitch float32
+	health     float32
+	food       int32
+	saturation float32
+	dead       bool
+	gameMode   uint8
+	lastHurt   time.Time
+
+	// joined 在初始数据包全部发送后置位；在此之前生物不会索敌该玩家。
+	joined atomic.Bool
+}
+
+// markJoined 标记玩家已完成进入世界的初始化。
+func (s *session) markJoined() {
+	s.joined.Store(true)
+}
+
+// isJoined 报告玩家的初始数据包是否已发送完毕。
+func (s *session) isJoined() bool {
+	return s.joined.Load()
 }
 
 func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
@@ -77,7 +104,96 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		protocolVersion: protocolVersion,
 		reader:          conn,
 		writer:          conn,
+		health:          maxPlayerHealth,
+		food:            maxPlayerFood,
+		saturation:      playerSaturation,
+		gameMode:        server.defaultGameMode,
 	}
+}
+
+// playerPosition 返回玩家的最新位置与朝向。
+func (s *session) playerPosition() (x, y, z float64, yaw, pitch float32) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.posX, s.posY, s.posZ, s.yaw, s.pitch
+}
+
+// setPlayerPosition 更新位置与朝向（由移动数据包与传送路径调用）。
+func (s *session) setPlayerPosition(x, y, z float64, yaw, pitch float32) {
+	s.stateMu.Lock()
+	s.posX, s.posY, s.posZ, s.yaw, s.pitch = x, y, z, yaw, pitch
+	s.stateMu.Unlock()
+}
+
+// setPlayerRotation 更新朝向。
+func (s *session) setPlayerRotation(yaw, pitch float32) {
+	s.stateMu.Lock()
+	s.yaw, s.pitch = yaw, pitch
+	s.stateMu.Unlock()
+}
+
+// isDead 报告玩家是否处于死亡状态。
+func (s *session) isDead() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.dead
+}
+
+// gameModeID 返回当前游戏模式。
+func (s *session) gameModeID() uint8 {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.gameMode
+}
+
+// setGameMode 设置游戏模式。
+func (s *session) setGameMode(mode uint8) {
+	s.stateMu.Lock()
+	s.gameMode = mode
+	s.stateMu.Unlock()
+}
+
+// healthStatus 返回当前生命、饥饿度与饱食度。
+func (s *session) healthStatus() (health float32, food int32, saturation float32) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.health, s.food, s.saturation
+}
+
+// applyDamage 扣减生命。处于死亡、无敌帧或创造/旁观模式时不生效。
+// 返回扣减后的状态与是否生效、是否因此死亡。
+func (s *session) applyDamage(amount float32, now time.Time) (health float32, food int32, saturation float32, applied, died bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.dead || s.gameMode == uint8(config.GameModeCreative) || s.gameMode == uint8(config.GameModeSpectator) {
+		return s.health, s.food, s.saturation, false, false
+	}
+	if !s.lastHurt.IsZero() && now.Sub(s.lastHurt) < playerHurtCooldown {
+		return s.health, s.food, s.saturation, false, false
+	}
+	s.lastHurt = now
+	s.health -= amount
+	if s.health <= 0 {
+		s.health = 0
+		s.dead = true
+		return s.health, s.food, s.saturation, true, true
+	}
+	return s.health, s.food, s.saturation, true, false
+}
+
+// markRespawned 把死亡状态重置为满生命。返回 false 表示玩家未死亡。
+func (s *session) markRespawned() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if !s.dead {
+		return false
+	}
+	s.dead = false
+	s.health = maxPlayerHealth
+	s.food = maxPlayerFood
+	s.saturation = playerSaturation
+	s.lastHurt = time.Time{}
+	return true
 }
 
 func (s *session) run() {
@@ -367,7 +483,8 @@ func (s *session) runPlay() {
 		slog.Error("failed to load spawn chunk", "name", s.name, "error", err)
 		return
 	}
-	spawnY := float64(world.FlatSpawnY)
+	spawnX, spawnY, spawnZ := s.server.spawnPosition()
+	s.setPlayerPosition(spawnX, spawnY, spawnZ, 0, 0)
 
 	login := protocol.LoginPlayData{
 		EntityID:            s.entityID,
@@ -376,10 +493,7 @@ func (s *session) runPlay() {
 		ViewDistance:        int32(s.server.config.ViewDistance),
 		SimulationDistance:  int32(s.server.config.ViewDistance),
 		EnableRespawnScreen: true,
-		DimensionTypeID:     registry.DimensionTypeOverworldID, // 同步注册表中 minecraft:overworld 的 ID
-		DimensionName:       "minecraft:overworld",
-		GameMode:            1, // 创造模式
-		SeaLevel:            63,
+		Spawn:               s.server.spawnInfo(s.gameMode),
 	}
 
 	// 注册到玩家列表；离开时（任何返回路径）注销并通知其他玩家。
@@ -388,23 +502,31 @@ func (s *session) runPlay() {
 
 	packets := [][]byte{
 		protocol.EncodeLoginPlay(login),
-		protocol.EncodeSetDefaultSpawnPosition("minecraft:overworld", 0, world.FlatSpawnY, 0, 0, 0),
+		protocol.EncodeSetDefaultSpawnPosition("minecraft:overworld",
+			int(math.Floor(spawnX)), int(math.Floor(spawnY)), int(math.Floor(spawnZ)), 0, 0),
 		protocol.EncodeGameEvent(13, 0), // 开始等待区块
 		protocol.EncodeSetCenterChunk(0, 0),
 		world.EncodeChunkDataPacket(spawnChunk),
-		protocol.EncodeSynchronizePlayerPosition(s.teleportID, 0.5, spawnY, 0.5, 0, 0, 0, 0, 0),
+		protocol.EncodeSynchronizePlayerPosition(s.teleportID, spawnX, spawnY, spawnZ, 0, 0, 0, 0, 0),
 		protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name),
 	}
 	for _, other := range others {
 		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name))
 	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
-	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn。
+	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
 	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands()))
 	packets = append(packets, s.giveStartingItems()...)
+	health, food, saturation := s.healthStatus()
+	packets = append(packets, protocol.EncodeUpdateHealth(health, food, saturation))
 	if err := s.writePackets(packets...); err != nil {
 		return
 	}
+	// 世界中已有的生物（僵尸等）也要发送给新玩家。
+	if err := s.server.sendExistingMobs(s); err != nil {
+		return
+	}
+	s.markJoined()
 	// 通知其他玩家：新玩家加入。
 	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name), s)
 	s.server.broadcastPacketExcluding(protocol.EncodeSystemChat(s.name+" joined the game"), s)
@@ -503,14 +625,52 @@ func (s *session) playReadLoop() {
 			if id, err := protocol.ParseConfirmTeleportation(packet); err == nil && id == s.teleportID {
 				slog.Debug("player confirmed teleport", "name", s.name, "teleportId", id)
 			}
+		case protocol.PlayServerboundPacketIDInteract:
+			targetID, action, err := protocol.ParseInteract(packet)
+			if err != nil {
+				slog.Debug("malformed interact packet", "name", s.name, "error", err)
+				continue
+			}
+			if action == protocol.InteractActionAttack {
+				s.server.handleAttack(s, targetID)
+			}
+		case protocol.PlayServerboundPacketIDClientCommand:
+			if action, err := protocol.ParsePlayClientCommand(packet); err == nil && action == 0 {
+				// 0 = 重生请求。
+				s.server.respawnPlayer(s)
+			}
+		case protocol.PlayServerboundPacketIDPlayerPosition:
+			x, y, z, err := protocol.ParsePlayerPosition(packet)
+			if err != nil || !validPlayerY(y) {
+				continue
+			}
+			_, _, _, yaw, pitch := s.playerPosition()
+			s.setPlayerPosition(x, y, z, yaw, pitch)
+		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
+			x, y, z, yaw, pitch, err := protocol.ParsePlayerPositionRotation(packet)
+			if err != nil || !validPlayerY(y) {
+				continue
+			}
+			s.setPlayerPosition(x, y, z, yaw, pitch)
+		case protocol.PlayServerboundPacketIDPlayerRotation:
+			yaw, pitch, err := protocol.ParsePlayerRotation(packet)
+			if err != nil {
+				continue
+			}
+			s.setPlayerRotation(yaw, pitch)
 		case protocol.PlayServerboundPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
 				s.clientInfo = info
 			}
 		default:
-			// 位置、输入等数据包暂未实现，忽略。
+			// 其他数据包（输入、快捷栏切换等）暂未实现，忽略。
 		}
 	}
+}
+
+// validPlayerY 拒绝世界范围之外的坐标（简单的服务端校验）。
+func validPlayerY(y float64) bool {
+	return y >= world.WorldMinY-16 && y <= world.WorldMinY+world.WorldHeight+16
 }
 
 // validUsername 校验离线模式玩家名：1-16 个字符，只允许字母、数字与下划线

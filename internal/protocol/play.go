@@ -47,19 +47,42 @@ type LoginPlayData struct {
 	ReducedDebugInfo    bool
 	EnableRespawnScreen bool
 	LimitedCrafting     bool
+	Spawn               SpawnInfo
+	EnforcesSecureChat  bool
+}
 
-	// worldState（SpawnInfo）。
+// SpawnInfo 是 Login 与 Respawn 包共用的世界状态（SpawnInfo）。
+type SpawnInfo struct {
 	DimensionTypeID  int32
 	DimensionName    string
 	HashedSeed       int64
 	GameMode         uint8
-	PreviousGameMode uint8 // 0 表示未定义；否则为游戏模式 + 1
+	PreviousGameMode uint8 // 0xFF 表示未定义
 	Debug            bool
 	Flat             bool
+	HasDeathLocation bool
+	DeathDimension   string
+	DeathPosition    [3]int
 	PortalCooldown   int32
 	SeaLevel         int32
+}
 
-	EnforcesSecureChat bool
+// appendSpawnInfo 追加 SpawnInfo 字段。
+func appendSpawnInfo(packet []byte, spawn SpawnInfo) []byte {
+	packet = AppendVarInt(packet, spawn.DimensionTypeID)
+	packet = appendString(packet, spawn.DimensionName)
+	packet = AppendInt64(packet, spawn.HashedSeed)
+	packet = append(packet, spawn.GameMode)
+	packet = append(packet, spawn.PreviousGameMode)
+	packet = AppendBool(packet, spawn.Debug)
+	packet = AppendBool(packet, spawn.Flat)
+	packet = AppendBool(packet, spawn.HasDeathLocation)
+	if spawn.HasDeathLocation {
+		packet = appendString(packet, spawn.DeathDimension)
+		packet = AppendInt64(packet, PackPosition(spawn.DeathPosition[0], spawn.DeathPosition[1], spawn.DeathPosition[2]))
+	}
+	packet = AppendVarInt(packet, spawn.PortalCooldown)
+	return AppendVarInt(packet, spawn.SeaLevel)
 }
 
 // EncodeLoginPlay 编码 Login (play) 包。
@@ -77,17 +100,7 @@ func EncodeLoginPlay(play LoginPlayData) []byte {
 	packet = AppendBool(packet, play.ReducedDebugInfo)
 	packet = AppendBool(packet, play.EnableRespawnScreen)
 	packet = AppendBool(packet, play.LimitedCrafting)
-	// worldState
-	packet = AppendVarInt(packet, play.DimensionTypeID)
-	packet = appendString(packet, play.DimensionName)
-	packet = AppendInt64(packet, play.HashedSeed)
-	packet = append(packet, play.GameMode)
-	packet = append(packet, play.PreviousGameMode)
-	packet = AppendBool(packet, play.Debug)
-	packet = AppendBool(packet, play.Flat)
-	packet = AppendBool(packet, false) // 暂无死亡位置
-	packet = AppendVarInt(packet, play.PortalCooldown)
-	packet = AppendVarInt(packet, play.SeaLevel)
+	packet = appendSpawnInfo(packet, play.Spawn)
 	packet = AppendBool(packet, play.EnforcesSecureChat)
 	return packet
 }

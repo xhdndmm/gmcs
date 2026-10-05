@@ -14,6 +14,24 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	}
 }
 
+func TestGameModeID(t *testing.T) {
+	cases := map[string]GameMode{
+		"survival":  GameModeSurvival,
+		"creative":  GameModeCreative,
+		"adventure": GameModeAdventure,
+		"spectator": GameModeSpectator,
+	}
+	for name, want := range cases {
+		got, ok := GameModeID(name)
+		if !ok || got != want {
+			t.Fatalf("GameModeID(%q) = %d, %v; want %d, true", name, got, ok, want)
+		}
+	}
+	if _, ok := GameModeID("HARDCORE"); ok {
+		t.Fatal("unknown game mode should not resolve")
+	}
+}
+
 func TestValidateRejectsInvalidValues(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -28,6 +46,8 @@ func TestValidateRejectsInvalidValues(t *testing.T) {
 		{name: "view distance too large", mutate: func(c *Config) { c.ViewDistance = 33 }},
 		{name: "empty world dir", mutate: func(c *Config) { c.WorldDir = "" }},
 		{name: "negative autosave", mutate: func(c *Config) { c.AutosaveSeconds = -1 }},
+		{name: "unknown game mode", mutate: func(c *Config) { c.GameMode = "hardcore" }},
+		{name: "negative max mobs", mutate: func(c *Config) { c.MaxMobs = -1 }},
 	}
 
 	for _, test := range tests {

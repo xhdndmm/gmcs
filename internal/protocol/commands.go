@@ -27,6 +27,9 @@ const (
 // BrigadierStringParser 是 brigadier:string 的 parser ID（1.21.11）。
 const BrigadierStringParser = 5
 
+// GameModeParser 是 minecraft:gamemode 的 parser ID（1.21.11）。
+const GameModeParser = 42
+
 // StringGreedyPhrase 是 brigadier:string 的 greedy 属性（读入整行剩余内容）。
 const StringGreedyPhrase = 2
 
@@ -34,8 +37,11 @@ const StringGreedyPhrase = 2
 type CommandDef struct {
 	// Name 是命令名（不含前导斜杠）。
 	Name string
-	// ArgName 非空时该命令带一个 greedy 字符串参数（如 /say <message>）。
+	// ArgName 非空时该命令带一个参数（如 /say <message>）。
 	ArgName string
+	// ArgParser 是参数的 parser ID；0 表示默认的 greedy 字符串
+	// （brigadier:string + GREEDY_PHRASE）。
+	ArgParser int32
 }
 
 // EncodeDeclareCommands 编码 Commands 包：命令树为 root + 每个命令的
@@ -87,12 +93,18 @@ func EncodeDeclareCommands(commands []CommandDef) []byte {
 		packet = appendString(packet, command.Name)
 		index++
 
-		// argument 节点：greedy string、可执行。
+		// argument 节点：可执行。
+		parser := command.ArgParser
+		if parser == 0 {
+			parser = BrigadierStringParser
+		}
 		packet = append(packet, commandNodeTypeArgument|commandNodeHasCommand)
 		packet = AppendVarInt(packet, 0) // 无子节点
 		packet = appendString(packet, command.ArgName)
-		packet = AppendVarInt(packet, BrigadierStringParser)
-		packet = AppendVarInt(packet, StringGreedyPhrase)
+		packet = AppendVarInt(packet, parser)
+		if parser == BrigadierStringParser {
+			packet = AppendVarInt(packet, StringGreedyPhrase)
+		}
 		index++
 	}
 

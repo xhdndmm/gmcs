@@ -36,10 +36,13 @@ func TestEncodeLoginPlay(t *testing.T) {
 		ViewDistance:        10,
 		SimulationDistance:  8,
 		EnableRespawnScreen: true,
-		DimensionTypeID:     0,
-		DimensionName:       "minecraft:overworld",
-		GameMode:            1,
-		SeaLevel:            63,
+		Spawn: SpawnInfo{
+			DimensionTypeID:  0,
+			DimensionName:    "minecraft:overworld",
+			GameMode:         1,
+			PreviousGameMode: 0xFF,
+			SeaLevel:         63,
+		},
 	}
 	packet := EncodeLoginPlay(data)
 	packetID, offset, err := DecodeVarInt(packet)

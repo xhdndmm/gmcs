@@ -24,11 +24,15 @@ const (
 
 // 常用方块的默认方块状态 ID，来自 registry 生成数据（客户端内置全局 ID）。
 var (
-	AirBlock     = mustBlockState("minecraft:air")
-	StoneBlock   = mustBlockState("minecraft:stone")
-	BedrockBlock = mustBlockState("minecraft:bedrock")
-	DirtBlock    = mustBlockState("minecraft:dirt")
-	GrassBlock   = mustBlockState("minecraft:grass_block")
+	AirBlock       = mustBlockState("minecraft:air")
+	StoneBlock     = mustBlockState("minecraft:stone")
+	BedrockBlock   = mustBlockState("minecraft:bedrock")
+	DirtBlock      = mustBlockState("minecraft:dirt")
+	GrassBlock     = mustBlockState("minecraft:grass_block")
+	SandBlock      = mustBlockState("minecraft:sand")
+	WaterBlock     = mustBlockState("minecraft:water")
+	OakLogBlock    = mustBlockState("minecraft:oak_log")
+	OakLeavesBlock = mustBlockState("minecraft:oak_leaves")
 )
 
 // mustBlockState 查询方块默认状态 ID；生成数据缺少必需方块属于部署错误，立即失败。
@@ -121,6 +125,27 @@ func (c *Chunk) SetBlockState(x, y, z int, state uint16) {
 	}
 	localY := y - (WorldMinY + sectionIndex*SectionSize)
 	s.blocks[blockIndex(x, localY, z)] = state
+}
+
+// TopBlock 返回该列最高的非空气方块（包括水）的方块状态与 Y 坐标。
+func (c *Chunk) TopBlock(x, z int) (uint16, int, bool) {
+	for y := WorldMinY + WorldHeight - 1; y >= WorldMinY; y-- {
+		if state := c.GetBlockState(x, y, z); state != AirBlock {
+			return state, y, true
+		}
+	}
+	return AirBlock, 0, false
+}
+
+// TopSolidY 返回该列最高的固体（非空气、非水）方块的 Y 坐标。
+func (c *Chunk) TopSolidY(x, z int) (int, bool) {
+	for y := WorldMinY + WorldHeight - 1; y >= WorldMinY; y-- {
+		state := c.GetBlockState(x, y, z)
+		if state != AirBlock && state != WaterBlock {
+			return y, true
+		}
+	}
+	return 0, false
 }
 
 // SectionBiome 返回指定 section 的生物群系 ID。

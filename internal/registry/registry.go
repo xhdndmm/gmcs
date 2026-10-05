@@ -66,6 +66,37 @@ var cachedTags = sync.OnceValue(func() []RegistryTags {
 	return result
 })
 
+// staticIndex 是 StaticEntryIDs 的查询副本（注册表名 → 条目 → ID）。
+var staticIndex = sync.OnceValue(func() map[string]map[string]int32 {
+	return StaticEntryIDs
+})
+
+// StaticEntryID 查询静态注册表（条目 ID 由客户端内置注册表决定，如实体类型、
+// 音效事件）中条目的 protocol_id。
+func StaticEntryID(registryName, entry string) (int32, bool) {
+	id, ok := staticIndex()[registryName][entry]
+	return id, ok
+}
+
+// syncIndex 是同步注册表的反向索引（注册表名 → 条目 → ID）。
+var syncIndex = sync.OnceValue(func() map[string]map[string]int32 {
+	index := make(map[string]map[string]int32, len(syncEntries))
+	for name, entries := range syncEntries {
+		byName := make(map[string]int32, len(entries))
+		for id, entry := range entries {
+			byName[entry] = int32(id)
+		}
+		index[name] = byName
+	}
+	return index
+})
+
+// SyncEntryID 查询同步注册表条目的 ID（即服务器通过 Registry Data 发送的顺序）。
+func SyncEntryID(registryName, entry string) (int32, bool) {
+	id, ok := syncIndex()[registryName][entry]
+	return id, ok
+}
+
 // AllTags 返回需要由服务器在配置阶段通过 Update Tags 完整发送的全部注册表标签：
 // 同步注册表（ID 为服务器发送顺序）与静态注册表（ID 为客户端内置的全局注册表 ID）。
 // 标签无法通过 Known Packs 获取，缺失会导致客户端解析本地数据失败。

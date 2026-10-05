@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"gmcs/internal/config"
 	"gmcs/internal/protocol"
-	"gmcs/internal/world"
 )
 
 // serverCommands 返回服务器向客户端声明的命令。
@@ -17,6 +17,7 @@ func serverCommands() []protocol.CommandDef {
 		{Name: "list"},
 		{Name: "say", ArgName: "message"},
 		{Name: "spawn"},
+		{Name: "gamemode", ArgName: "mode", ArgParser: protocol.GameModeParser},
 	}
 }
 
@@ -39,6 +40,7 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 			"/list — 列出在线玩家",
 			"/say <消息> — 向所有玩家广播消息",
 			"/spawn — 传送到出生点",
+			"/gamemode <模式> — 切换游戏模式（survival/creative/adventure/spectator）",
 		}, "\n")))
 	case "list":
 		names := s.onlineNames()
@@ -54,6 +56,22 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 		slog.Info("server say", "name", player.name, "message", message)
 	case "spawn":
 		player.teleportToSpawn()
+	case "gamemode":
+		argument := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(commandLine, fields[0])))
+		if argument == "" {
+			player.tryWrite(protocol.EncodeSystemChat("用法：/gamemode <survival|creative|adventure|spectator>"))
+			return
+		}
+		mode, ok := config.GameModeID(argument)
+		if !ok {
+			player.tryWrite(protocol.EncodeSystemChat("未知游戏模式：" + argument))
+			return
+		}
+		player.setGameMode(uint8(mode))
+		// Game Event（reason 3 = 切换游戏模式，值为模式 ID）。
+		player.tryWrite(protocol.EncodeGameEvent(3, float32(mode)))
+		player.tryWrite(protocol.EncodeSystemChat("已将你的游戏模式设为 " + argument))
+		slog.Info("game mode changed", "name", player.name, "mode", argument)
 	default:
 		player.tryWrite(protocol.EncodeSystemChat("未知命令：" + name + "（输入 /help 查看可用命令）"))
 	}
@@ -74,9 +92,10 @@ func (s *Server) onlineNames() []string {
 // teleportToSpawn 把玩家传送回出生点。
 // 由会话读循环调用，与读循环共享 teleportID。
 func (s *session) teleportToSpawn() {
+	x, y, z := s.server.spawnPosition()
 	s.teleportID++
-	packet := protocol.EncodeSynchronizePlayerPosition(
-		s.teleportID, 0.5, float64(world.FlatSpawnY), 0.5, 0, 0, 0, 0, 0)
+	s.setPlayerPosition(x, y, z, 0, 0)
+	packet := protocol.EncodeSynchronizePlayerPosition(s.teleportID, x, y, z, 0, 0, 0, 0, 0)
 	if err := s.writePacket(packet); err != nil {
 		_ = s.conn.Close()
 	}

@@ -16,10 +16,14 @@ import (
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
+	"gmcs/internal/registry"
 	"gmcs/internal/world"
 )
 
 const clientTimeout = 5 * time.Second
+
+// defaultTickInterval 是实体 Tick 的默认间隔（20 TPS）。
+const defaultTickInterval = 50 * time.Millisecond
 
 type Server struct {
 	config  config.Config
@@ -36,6 +40,29 @@ type Server struct {
 	chatIndex         atomic.Int32
 	keepAliveInterval time.Duration
 
+	// 实体（生物）状态：mobs 与 mob 字段受 entityMu 保护。
+	entityMu   sync.Mutex
+	mobs       map[int32]*mob
+	spawnTicks int
+	randState  atomic.Uint64
+
+	// tickInterval 是实体 Tick 间隔；<= 0 时禁用后台 Tick（测试手动驱动）。
+	tickInterval time.Duration
+
+	// 出生点（世界坐标，脚部位置）。
+	spawnX, spawnY, spawnZ float64
+	// defaultGameMode 是新玩家的游戏模式。
+	defaultGameMode uint8
+	// mobsEnabled 为 false 时禁用全部生物逻辑（注册表数据缺失时）。
+	mobsEnabled bool
+	// 生物/伤害系统使用的注册表 ID。
+	zombieTypeID             int32
+	mobAttackDamageTypeID    int32
+	playerAttackDamageTypeID int32
+	soundMobHurt             int32
+	soundMobDeath            int32
+	soundPlayerHurt          int32
+
 	// rsaKey 用于正版登录的加密握手（仅在线模式生成）。
 	rsaKey *rsa.PrivateKey
 	// httpClient 用于访问会话服务器。
@@ -46,9 +73,19 @@ func New(cfg config.Config) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	gameWorld, err := world.Open(cfg.WorldDir, world.FlatGenerator{})
+	gameMode, ok := config.GameModeID(cfg.GameMode)
+	if !ok {
+		return nil, fmt.Errorf("未知游戏模式 %q", cfg.GameMode)
+	}
+	gameWorld, err := world.Open(cfg.WorldDir, world.SeededGenerator{Seed: cfg.WorldSeed})
 	if err != nil {
 		return nil, err
+	}
+	// 出生点：优先使用世界实际地形（已有存档可能与当前种子不同），
+	// 无法确定时回退到生成器的高度。
+	spawnY, found := gameWorld.GroundY(0, 0)
+	if !found {
+		spawnY = float64(gameWorld.SurfaceY(0, 0) + 1)
 	}
 	// 在线模式：为加密握手生成服务器密钥对（1024 位，与客户端兼容）。
 	var rsaKey *rsa.PrivateKey
@@ -59,16 +96,44 @@ func New(cfg config.Config) (*Server, error) {
 		}
 		rsaKey = key
 	}
-	return &Server{
+	server := &Server{
 		config:            cfg,
 		world:             gameWorld,
 		clients:           make(chan struct{}, cfg.MaxConnections),
 		conns:             make(map[net.Conn]struct{}),
 		players:           make(map[[16]byte]*session),
 		keepAliveInterval: defaultKeepAliveInterval,
+		mobs:              make(map[int32]*mob),
+		tickInterval:      defaultTickInterval,
+		spawnX:            0.5,
+		spawnY:            spawnY,
+		spawnZ:            0.5,
+		defaultGameMode:   uint8(gameMode),
 		rsaKey:            rsaKey,
 		httpClient:        &http.Client{Timeout: 10 * time.Second},
-	}, nil
+	}
+	server.resolveMobRegistryIDs()
+	if !server.mobsEnabled {
+		slog.Warn("生物系统已禁用：注册表数据缺失")
+	}
+	return server, nil
+}
+
+// spawnInfo 构造带出生点信息的世界状态（Login 与 Respawn 共用）。
+func (s *Server) spawnInfo(gameMode uint8) protocol.SpawnInfo {
+	return protocol.SpawnInfo{
+		DimensionTypeID:  registry.DimensionTypeOverworldID,
+		DimensionName:    "minecraft:overworld",
+		HashedSeed:       s.config.WorldSeed,
+		GameMode:         gameMode,
+		PreviousGameMode: 0xFF, // 未定义
+		SeaLevel:         world.SeaLevel,
+	}
+}
+
+// spawnPosition 返回出生点（脚部）的世界坐标。
+func (s *Server) spawnPosition() (x, y, z float64) {
+	return s.spawnX, s.spawnY, s.spawnZ
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
@@ -92,6 +157,9 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	if interval := s.config.AutosaveSeconds; interval > 0 {
 		go s.world.Autosave(ctx, time.Duration(interval)*time.Second)
 	}
+
+	// 实体 Tick 循环：推进生物 AI 并提供确定性测试入口（tickInterval <= 0 时禁用）。
+	go s.tickLoop(ctx)
 
 	var serveErr error
 	for {

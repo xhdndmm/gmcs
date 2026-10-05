@@ -28,6 +28,14 @@ type Config struct {
 	ViewDistance int `json:"view_distance"`
 	// WorldDir 是地图数据目录。
 	WorldDir string `json:"world_dir"`
+	// WorldSeed 是地形生成种子：相同种子生成相同地形。
+	WorldSeed int64 `json:"world_seed"`
+	// GameMode 是新玩家的游戏模式（survival、creative、adventure、spectator）。
+	GameMode string `json:"game_mode"`
+	// SpawnMonsters 控制是否在玩家附近生成敌对生物。
+	SpawnMonsters bool `json:"spawn_monsters"`
+	// MaxMobs 是同时存在的生物数量上限（0 表示不生成）。
+	MaxMobs int `json:"max_mobs"`
 	// AutosaveSeconds 是自动保存间隔（秒）；0 表示禁用自动保存。
 	AutosaveSeconds int `json:"autosave_seconds"`
 	// OnlineMode 启用正版验证（通过会话服务器确认玩家身份）。
@@ -49,6 +57,10 @@ func Default() Config {
 		MaxConnections:  256,
 		ViewDistance:    10,
 		WorldDir:        "world",
+		WorldSeed:       0,
+		GameMode:        "survival",
+		SpawnMonsters:   true,
+		MaxMobs:         8,
 		AutosaveSeconds: 300, OnlineMode: false,
 		SessionServerURL: "https://sessionserver.mojang.com", StartingItems: []string{"minecraft:stone"},
 	}
@@ -124,8 +136,40 @@ func (c Config) Validate() error {
 	if c.AutosaveSeconds < 0 {
 		return fmt.Errorf("autosave seconds must not be negative")
 	}
+	if c.MaxMobs < 0 {
+		return fmt.Errorf("max mobs must not be negative")
+	}
+	if _, ok := GameModeID(c.GameMode); !ok {
+		return fmt.Errorf("unknown game mode %q", c.GameMode)
+	}
 	if c.OnlineMode && c.SessionServerURL == "" {
 		return fmt.Errorf("session server URL must not be empty in online mode")
 	}
 	return nil
+}
+
+// GameMode 是游戏模式（与原版 Game Type ID 一致）。
+type GameMode uint8
+
+// 游戏模式常量。
+const (
+	GameModeSurvival  GameMode = 0
+	GameModeCreative  GameMode = 1
+	GameModeAdventure GameMode = 2
+	GameModeSpectator GameMode = 3
+)
+
+// GameModeID 把配置中的游戏模式名解析为 ID。
+func GameModeID(name string) (GameMode, bool) {
+	switch name {
+	case "survival":
+		return GameModeSurvival, true
+	case "creative":
+		return GameModeCreative, true
+	case "adventure":
+		return GameModeAdventure, true
+	case "spectator":
+		return GameModeSpectator, true
+	}
+	return 0, false
 }

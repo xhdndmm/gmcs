@@ -50,6 +50,51 @@ func (w *World) Dir() string {
 	return w.dir
 }
 
+// SurfaceY 返回世界坐标 (x, z) 处生成器给出的地形表面 Y（最高固体方块）。
+// 用于出生点等需要与生成器一致的场景。
+func (w *World) SurfaceY(x, z int) int {
+	return w.generator.SurfaceY(x, z)
+}
+
+// GroundY 返回世界坐标 (x, z) 处可供站立的脚部 Y 坐标（最高非空气、
+// 非水方块的上一格）；该列没有地面时返回 false。区块不存在时按需生成。
+func (w *World) GroundY(x, z int) (float64, bool) {
+	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	if err != nil {
+		return 0, false
+	}
+	y, ok := chunk.TopSolidY(floorMod(x, SectionSize), floorMod(z, SectionSize))
+	if !ok {
+		return 0, false
+	}
+	return float64(y + 1), true
+}
+
+// TopBlock 返回世界坐标 (x, z) 处最高的非空气方块（包括水）。
+func (w *World) TopBlock(x, z int) (uint16, int, bool) {
+	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	if err != nil {
+		return 0, 0, false
+	}
+	return chunk.TopBlock(floorMod(x, SectionSize), floorMod(z, SectionSize))
+}
+
+func floorDiv(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
+}
+
+func floorMod(a, b int) int {
+	m := a % b
+	if m < 0 {
+		m += b
+	}
+	return m
+}
+
 // Chunk 返回区块：依次尝试内存缓存与磁盘文件，最后调用生成器生成。
 // 新生成的区块会被标记为需要保存。
 func (w *World) Chunk(x, z int) (*Chunk, error) {

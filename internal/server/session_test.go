@@ -201,8 +201,9 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 
 	// Play 阶段初始包：
 	// Login → Set Default Spawn → Game Event → Set Center Chunk → Chunk Data →
-	// Synchronize Player Position → Player Info → System Chat → Declare Commands → Set Player Inventory
-	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77, 0x10, 0x6A} {
+	// Synchronize Player Position → Player Info → System Chat → Declare Commands →
+	// Set Player Inventory → Update Health
+	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77, 0x10, 0x6A, 0x66} {
 		id, _ := readCompressedPacket(t, conn)
 		if id != want {
 			t.Fatalf("expected play packet %#x, got %#x", want, id)
