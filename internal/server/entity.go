@@ -455,16 +455,13 @@ func (s *Server) respawnPlayer(player *session) {
 	if err := player.writePacket(protocol.EncodeRespawn(spawn, 0)); err != nil {
 		return
 	}
-	// 重生后客户端会清空世界：重发出生区块与位置。
-	chunk, err := s.world.Chunk(0, 0)
-	if err != nil {
-		slog.Error("failed to load spawn chunk for respawn", "name", player.name, "error", err)
-		return
-	}
+	// 重生后客户端会清空世界：重置区块记录并重发出生点视距内的区块。
+	player.sentChunks = make(map[world.ChunkPos]struct{})
 	if err := player.writePacket(protocol.EncodeSetCenterChunk(0, 0)); err != nil {
 		return
 	}
-	if err := player.writePacket(world.EncodeChunkDataPacket(chunk)); err != nil {
+	if err := player.syncChunks(0, 0); err != nil {
+		slog.Error("failed to send chunks after respawn", "name", player.name, "error", err)
 		return
 	}
 	player.teleportToSpawn()

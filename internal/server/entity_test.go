@@ -18,6 +18,7 @@ import (
 // 后台实体 Tick 被禁用，测试通过 instance.tick() 手动驱动以获得确定性。
 func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn) {
 	t.Helper()
+	cfg.ViewDistance = 2 // 测试用小视距，减少区块生成量
 	instance, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -122,8 +123,16 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 	if cfg.WorldBorderSize > 0 {
 		initial = append(initial, 0x2A)
 	}
-	initial = append(initial, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77, 0x10, 0x6A, 0x66)
+	initial = append(initial, 0x26, 0x5C)
 	for _, want := range initial {
+		expectPlayPacket(t, conn, want)
+	}
+	// 出生点视距内的区块。
+	chunkCount := (2*cfg.ViewDistance + 1) * (2*cfg.ViewDistance + 1)
+	for i := 0; i < chunkCount; i++ {
+		expectPlayPacket(t, conn, protocol.PlayPacketIDChunkData)
+	}
+	for _, want := range []int32{0x46, 0x44, 0x77, 0x10, 0x6A, 0x66} {
 		expectPlayPacket(t, conn, want)
 	}
 	// 确认传送

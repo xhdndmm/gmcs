@@ -62,6 +62,10 @@ type session struct {
 	// profileProperties 是会话服务器返回的玩家属性（在线模式）。
 	profileProperties []protocol.GameProfileProperty
 
+	// 区块流式加载状态（由会话 goroutine 串行访问）。
+	sentChunks  map[world.ChunkPos]struct{}
+	centerChunk world.ChunkPos
+
 	// inventory 是玩家物品栏，由会话串行访问。
 	inventory item.Inventory
 
@@ -108,6 +112,7 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		food:            maxPlayerFood,
 		saturation:      playerSaturation,
 		gameMode:        server.defaultGameMode,
+		sentChunks:      make(map[world.ChunkPos]struct{}),
 	}
 }
 
@@ -500,11 +505,6 @@ func (s *session) awaitConfigurationFinished() bool {
 // runPlay 发送进入世界所需的初始数据包，注册到玩家列表，并进入游戏主循环。
 func (s *session) runPlay() {
 	s.teleportID = 1
-	spawnChunk, err := s.server.world.Chunk(0, 0)
-	if err != nil {
-		slog.Error("failed to load spawn chunk", "name", s.name, "error", err)
-		return
-	}
 	spawnX, spawnY, spawnZ := s.server.spawnPosition()
 	s.setPlayerPosition(spawnX, spawnY, spawnZ, 0, 0)
 
@@ -522,6 +522,7 @@ func (s *session) runPlay() {
 	others := s.server.registerPlayer(s)
 	defer s.server.unregisterPlayer(s)
 
+	// 进入世界的前置包。
 	packets := [][]byte{
 		protocol.EncodeLoginPlay(login),
 		protocol.EncodeSetDefaultSpawnPosition("minecraft:overworld",
@@ -535,10 +536,20 @@ func (s *session) runPlay() {
 	packets = append(packets,
 		protocol.EncodeGameEvent(13, 0), // 开始等待区块
 		protocol.EncodeSetCenterChunk(0, 0),
-		world.EncodeChunkDataPacket(spawnChunk),
+	)
+	if err := s.writePackets(packets...); err != nil {
+		return
+	}
+	// 出生点视距内的全部区块（由近到远；跨区块移动时由 updateChunks 增量维护）。
+	if err := s.syncChunks(0, 0); err != nil {
+		slog.Error("failed to send spawn chunks", "name", s.name, "error", err)
+		return
+	}
+
+	packets = [][]byte{
 		protocol.EncodeSynchronizePlayerPosition(s.teleportID, spawnX, spawnY, spawnZ, 0, 0, 0, 0, 0),
 		protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name),
-	)
+	}
 	for _, other := range others {
 		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name))
 	}
@@ -679,6 +690,7 @@ func (s *session) playReadLoop() {
 			}
 			_, _, _, yaw, pitch := s.playerPosition()
 			s.setPlayerPosition(x, y, z, yaw, pitch)
+			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
 			x, y, z, yaw, pitch, err := protocol.ParsePlayerPositionRotation(packet)
 			if err != nil || !validPlayerY(y) {
@@ -689,6 +701,7 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.setPlayerPosition(x, y, z, yaw, pitch)
+			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerRotation:
 			yaw, pitch, err := protocol.ParsePlayerRotation(packet)
 			if err != nil {

@@ -17,10 +17,12 @@ const (
 	PlayPacketIDPlayerInfoRemove     = 0x43 // clientbound
 	PlayPacketIDPlayerInfoUpdate     = 0x44 // clientbound
 	PlayPacketIDSynchronizePlayerPos = 0x46 // clientbound
-	PlayPacketIDSetCenterChunk       = 0x5C // clientbound
-	PlayPacketIDSetDefaultSpawn      = 0x5F // clientbound
-	PlayPacketIDSetPlayerInventory   = 0x6A // clientbound
-	PlayPacketIDSystemChat           = 0x77 // clientbound
+	// PlayPacketIDForgetLevelChunk 是 Forget Level Chunk（卸载客户端区块缓存）。
+	PlayPacketIDForgetLevelChunk   = 0x25 // clientbound
+	PlayPacketIDSetCenterChunk     = 0x5C // clientbound
+	PlayPacketIDSetDefaultSpawn    = 0x5F // clientbound
+	PlayPacketIDSetPlayerInventory = 0x6A // clientbound
+	PlayPacketIDSystemChat         = 0x77 // clientbound
 
 	PlayServerboundPacketIDConfirmTeleportation   = 0x00
 	PlayServerboundPacketIDChatMessage            = 0x08
@@ -147,6 +149,14 @@ func EncodeSetCenterChunk(x, z int32) []byte {
 	packet := AppendVarInt(nil, int32(PlayPacketIDSetCenterChunk))
 	packet = AppendVarInt(packet, x)
 	return AppendVarInt(packet, z)
+}
+
+// EncodeForgetLevelChunk 编码 Forget Level Chunk 包（卸载客户端区块缓存）。
+// 注意字段顺序为 Z、X（与 Set Center Chunk 的 X、Z 相反）。
+func EncodeForgetLevelChunk(x, z int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDForgetLevelChunk))
+	packet = AppendInt32(packet, z)
+	return AppendInt32(packet, x)
 }
 
 // EncodeKeepAlivePlay 编码 Play 阶段的 Keep Alive 包。
