@@ -25,6 +25,9 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 	}
 	instance.keepAliveInterval = time.Hour // 测试期间不需要 Keep Alive
 	instance.tickInterval = 0              // 手动驱动 Tick
+	// 后台区块卸载由测试显式调用 unloadFarChunks 驱动：避免周期卸载在
+	// “加载区块 → 断言数量”之间存在竞态（-race 或慢机器下必现）。
+	instance.chunkUnloadInterval = time.Hour
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

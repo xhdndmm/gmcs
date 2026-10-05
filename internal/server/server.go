@@ -50,6 +50,10 @@ type Server struct {
 	// tickInterval 是实体 Tick 间隔；<= 0 时禁用后台 Tick（测试手动驱动）。
 	tickInterval time.Duration
 
+	// chunkUnloadInterval 是区块内存卸载扫描的周期；<= 0 时禁用后台周期卸载
+	// （测试通过显式调用 unloadFarChunks 驱动，保证断言不被周期卸载干扰）。
+	chunkUnloadInterval time.Duration
+
 	// 出生点（世界坐标，脚部位置）。
 	spawnX, spawnY, spawnZ float64
 	// borderHalfSize 是世界边界的半边长（方块）；0 表示未启用边界。
@@ -108,22 +112,23 @@ func New(cfg config.Config) (*Server, error) {
 		rsaKey = key
 	}
 	server := &Server{
-		config:            cfg,
-		world:             gameWorld,
-		clients:           make(chan struct{}, cfg.MaxConnections),
-		conns:             make(map[net.Conn]struct{}),
-		players:           make(map[[16]byte]*session),
-		keepAliveInterval: defaultKeepAliveInterval,
-		mobs:              make(map[int32]*mob),
-		tickInterval:      defaultTickInterval,
-		spawnX:            0.5,
-		spawnY:            spawnY,
-		spawnZ:            0.5,
-		borderHalfSize:    float64(cfg.WorldBorderSize) / 2,
-		defaultGameMode:   uint8(gameMode),
-		rsaKey:            rsaKey,
-		httpClient:        &http.Client{Timeout: 10 * time.Second},
-		playerData:        make(map[[16]byte]playerRecord),
+		config:              cfg,
+		world:               gameWorld,
+		clients:             make(chan struct{}, cfg.MaxConnections),
+		conns:               make(map[net.Conn]struct{}),
+		players:             make(map[[16]byte]*session),
+		keepAliveInterval:   defaultKeepAliveInterval,
+		mobs:                make(map[int32]*mob),
+		tickInterval:        defaultTickInterval,
+		chunkUnloadInterval: defaultChunkUnloadInterval,
+		spawnX:              0.5,
+		spawnY:              spawnY,
+		spawnZ:              0.5,
+		borderHalfSize:      float64(cfg.WorldBorderSize) / 2,
+		defaultGameMode:     uint8(gameMode),
+		rsaKey:              rsaKey,
+		httpClient:          &http.Client{Timeout: 10 * time.Second},
+		playerData:          make(map[[16]byte]playerRecord),
 	}
 	server.resolveMobRegistryIDs()
 	server.resolvePlayerEntityType()

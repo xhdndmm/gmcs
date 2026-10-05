@@ -89,16 +89,22 @@ func absInt(value int) int {
 // 距所有玩家都超过 视距+chunkUnloadMargin 的区块移出内存缓存；
 // 其中未保存的区块会先写入磁盘，玩家再次接近时重新读取或重新生成。
 const (
-	// chunkUnloadInterval 是卸载扫描的周期。
-	chunkUnloadInterval = 5 * time.Second
+	// defaultChunkUnloadInterval 是卸载扫描的默认周期（Server.chunkUnloadInterval
+	// 可覆盖；测试将其调大以避免周期卸载干扰断言）。
+	defaultChunkUnloadInterval = 5 * time.Second
 	// chunkUnloadMargin 是卸载半径相对视距的余量（区块）。
 	// 大于会话侧的卸载余量（视距+2），避免刚发出的区块立刻被移出缓存。
 	chunkUnloadMargin = 4
 )
 
 // chunkUnloadLoop 周期性卸载远离玩家的区块，直到 ctx 取消。
+// 间隔来自 Server.chunkUnloadInterval；<= 0 时禁用。
 func (s *Server) chunkUnloadLoop(ctx context.Context) {
-	ticker := time.NewTicker(chunkUnloadInterval)
+	interval := s.chunkUnloadInterval
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
