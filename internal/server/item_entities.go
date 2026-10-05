@@ -11,19 +11,24 @@ import (
 	"gmcs/internal/world"
 )
 
-// 掉落物（物品实体）：Q 键丢弃、死亡掉落、重力/滑动/水面漂浮、生成时合并、
+// 掉落物（物品实体）：Q 键丢弃、死亡掉落、重力/滑动/水面漂浮、周期合并、
 // 拾取与过期消失。
 //
-// 简化说明（与其他系统一致的取舍，见 docs/TODO.md）：
-//   - 碰撞按“列高度”近似（与生物移动相同），不模拟完整 AABB 物理；
-//   - 合并只发生在生成时（同一点连续丢出的同类堆叠会合并，最多 64/垛）；
-//   - 不与火/仙人掌/爆炸交互；掉入虚空（远低于世界底部）直接移除；
+// 实现说明（见 docs/TODO.md）：
+//   - 逐轴 AABB 碰撞（0.25×0.25×0.25，与原版 ItemEntity 尺寸一致），
+//     按 Y→X→Z 顺序推进并在碰撞处停下；
+//   - 合并按原版为周期性（每 4 tick 检查一次、0.5 格内、需视线可通），
+//     合并时保留两者中较长的拾取延迟与较短的存在时间；
+//   - 水/岩浆/火/仙人掌会销毁或改变掉落物（岩浆/火/仙人掌销毁）；
+//   - 掉入虚空（远低于世界底部）直接移除；
 //   - 速度不持久化（重启后掉落物停在保存位置）。
 const (
 	// itemEntityTypeName 是掉落物的实体类型（静态注册表 minecraft:entity_type）。
 	itemEntityTypeName = "minecraft:item"
-	// itemPickupDelayTicks 是掉落物出生后不可拾取的时间（40 tick = 2 秒）。
-	itemPickupDelayTicks = 40
+	// itemPickupDelayMining 是挖掘/生物掉落物的拾取延迟（10 tick，与原版一致）。
+	itemPickupDelayMining = 10
+	// itemPickupDelayPlayer 是玩家丢弃/死亡掉落的拾取延迟（40 tick = 2 秒）。
+	itemPickupDelayPlayer = 40
 	// itemDespawnTicks 是掉落物的存活时间（6000 tick = 5 分钟）。
 	itemDespawnTicks = 6000
 	// itemGravityPerTick 是每 tick 的重力速度增量（方块/tick）。
@@ -40,8 +45,17 @@ const (
 	itemPickupRange = 1.0
 	// itemPickupVerticalRange 是可拾取的垂直距离（方块）。
 	itemPickupVerticalRange = 1.5
-	// itemMergeRange 是生成时合并同类掉落物的距离（方块）。
-	itemMergeRange = 0.7
+	// itemMergeRange 是周期合并的检查距离（方块）。
+	itemMergeRange = 0.5
+	// itemMergeIntervalTicks 是合并检查的间隔（与原版一致：每 4 tick）。
+	itemMergeIntervalTicks = 4
+	// 掉落物碰撞盒（与原版 ItemEntity 一致：0.25 见方）。
+	itemHalfWidth = 0.125
+	itemHeight    = 0.25
+	// itemWaterBuoyancy 是水中每 tick 的向上速度增量。
+	itemWaterBuoyancy = 0.02
+	// itemWaterDrag 是水中每 tick 的速度衰减。
+	itemWaterDrag = 0.8
 )
 
 // itemEntity 是一个掉落物。字段由 Server.entityMu 保护。
@@ -77,8 +91,9 @@ func (s *Server) resolveItemRegistryIDs() {
 	s.itemsEnabled = true
 }
 
-// spawnItem 生成一个掉落物：合并附近同类堆叠（生成时一次），
-// 广播 Add Entity 与 Item 元数据。pickupDelay 为可拾取延迟（tick）。
+// spawnItem 生成一个掉落物：广播 Add Entity 与 Item 元数据，并立即尝试与
+// 附近的同类堆叠合并（原版在生成后由周期合并处理；这里首帧不合并，
+// 由 tickItems 的周期合并统一负责）。pickupDelay 为可拾取延迟（tick）。
 func (s *Server) spawnItem(stack item.Stack, x, y, z, vx, vy, vz float64, pickupDelay int) *itemEntity {
 	if !s.itemsEnabled || stack.IsEmpty() {
 		return nil
@@ -86,41 +101,6 @@ func (s *Server) spawnItem(stack item.Stack, x, y, z, vx, vy, vz float64, pickup
 	if stack.Count > item.StackLimit {
 		stack.Count = item.StackLimit
 	}
-
-	// 生成时合并：把数量并入附近最近的同类未满堆叠，超出部分继续生成。
-	var (
-		mergedPacket []byte
-		merged       *itemEntity
-		remainder    int32
-	)
-	s.entityMu.Lock()
-	for _, other := range s.items {
-		if other.Stack.ItemID != stack.ItemID || other.Stack.Count >= item.StackLimit {
-			continue
-		}
-		if math.Abs(other.X-x) > itemMergeRange ||
-			math.Abs(other.Y-y) > itemMergeRange ||
-			math.Abs(other.Z-z) > itemMergeRange {
-			continue
-		}
-		total := other.Stack.Count + stack.Count
-		other.Stack.Count = min(total, int32(item.StackLimit))
-		remainder = total - other.Stack.Count
-		mergedPacket = protocol.EncodeEntityMetadataItem(other.ID, other.Stack.AppendSlot(nil))
-		merged = other
-		break
-	}
-	s.entityMu.Unlock()
-	if mergedPacket != nil {
-		s.broadcastPacket(mergedPacket)
-	}
-	if merged != nil && remainder == 0 {
-		return merged
-	}
-	if merged != nil {
-		stack.Count = remainder
-	}
-
 	e := &itemEntity{
 		ID:               s.entityIDs.Add(1),
 		UUID:             newEntityUUID(),
@@ -172,7 +152,7 @@ func (s *Server) dropItemFromPlayer(player *session, dropStack bool) {
 	dirY := -math.Sin(pitchRad)
 	dirZ := math.Cos(pitchRad) * math.Cos(yawRad)
 	const throwSpeed = 0.3
-	s.spawnItem(dropped, x, y+1.0, z, dirX*throwSpeed, dirY*throwSpeed+0.1, dirZ*throwSpeed, itemPickupDelayTicks)
+	s.spawnItem(dropped, x, y+1.0, z, dirX*throwSpeed, dirY*throwSpeed+0.1, dirZ*throwSpeed, itemPickupDelayPlayer)
 }
 
 // dropPlayerInventory 在玩家死亡时把整个物品栏（含护甲与副手）掉落为掉落物，
@@ -189,28 +169,117 @@ func (s *Server) dropPlayerInventory(player *session) {
 		// 小幅随机速度让掉落物散开。
 		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-		s.spawnItem(stack, px, py+0.5, pz, vx, 0.2, vz, itemPickupDelayTicks)
+		s.spawnItem(stack, px, py+0.5, pz, vx, 0.2, vz, itemPickupDelayPlayer)
 	}
 }
 
-// itemGroundY 返回掉落物静止时的高度：列顶为水时浮在水面，否则停在
-// 最高固体方块顶面；未加载的区块返回 false（冻结）。
-func (s *Server) itemGroundY(x, z float64) (float64, bool) {
-	column, ok := s.world.ColumnAt(int(math.Floor(x)), int(math.Floor(z)))
-	if !ok {
-		return 0, false
-	}
-	if column.HasSolid {
-		if column.TopState == world.WaterBlock && column.TopY > column.SolidY {
-			return float64(column.TopY + 1), true
+// itemCollides 报告掉落物碰撞盒（以位置为中心的水平 0.25、垂直 0.25）
+// 是否与固体方块相交。
+func (s *Server) itemCollides(x, y, z float64) bool {
+	minX, maxX := x-itemHalfWidth, x+itemHalfWidth
+	minZ, maxZ := z-itemHalfWidth, z+itemHalfWidth
+	minY, maxY := y, y+itemHeight
+	for blockX := int(math.Floor(minX)); blockX <= int(math.Floor(maxX)); blockX++ {
+		for blockY := int(math.Floor(minY)); blockY <= int(math.Floor(maxY)); blockY++ {
+			for blockZ := int(math.Floor(minZ)); blockZ <= int(math.Floor(maxZ)); blockZ++ {
+				if s.isSolidBlock(blockX, blockY, blockZ) {
+					return true
+				}
+			}
 		}
-		return float64(column.SolidY + 1), true
 	}
-	if column.HasTop && column.TopState == world.WaterBlock {
-		return float64(column.TopY + 1), true
+	return false
+}
+
+// moveItemAxis 沿单轴推进掉落物，遇到固体方块时停在上一步。
+// 返回是否发生碰撞。以 ≤0.05 的步长推进，避免高速穿透。
+func (s *Server) moveItemAxis(e *itemEntity, axis int, delta float64) bool {
+	if delta == 0 {
+		return false
 	}
-	// 空列：地面在世界底部之下，掉落物会继续下落并触发虚空销毁。
-	return float64(world.WorldMinY - 64), true
+	steps := int(math.Ceil(math.Abs(delta) / 0.05))
+	if steps > 16 {
+		steps = 16
+	}
+	step := delta / float64(steps)
+	for i := 0; i < steps; i++ {
+		x, y, z := e.X, e.Y, e.Z
+		switch axis {
+		case 0:
+			x += step
+		case 1:
+			y += step
+		case 2:
+			z += step
+		}
+		if s.itemCollides(x, y, z) {
+			return true
+		}
+		e.X, e.Y, e.Z = x, y, z
+	}
+	return false
+}
+
+// itemHazardAt 报告掉落物所在位置的破坏性方块（岩浆/火/灵魂火/仙人掌）。
+func (s *Server) itemHazardAt(x, y, z float64) bool {
+	name, ok := s.blockNames[s.world.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z)))]
+	if !ok {
+		return false
+	}
+	switch name {
+	case "minecraft:lava", "minecraft:fire", "minecraft:soul_fire", "minecraft:cactus":
+		return true
+	}
+	return false
+}
+
+// itemInWater 报告掉落物是否位于水中（漂浮：不受重力、缓慢上浮）。
+func (s *Server) itemInWater(x, y, z float64) bool {
+	return s.world.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))) == world.WaterBlock
+}
+
+// mergeItems 执行一次周期合并：把同类型、0.5 格内且视线可通的掉落物
+// 合并进当前堆叠（上限 64），保留较长的拾取延迟与较短的存在时间。
+// 调用方必须持有 entityMu。返回需要广播的元数据更新与移除列表。
+func (s *Server) mergeItems(e *itemEntity) (updates [][]byte, removals []int32) {
+	if e.Stack.Count >= item.StackLimit {
+		return nil, nil
+	}
+	changed := false
+	for id, other := range s.items {
+		if other == e || other.Stack.ItemID != e.Stack.ItemID {
+			continue
+		}
+		if math.Abs(other.X-e.X) > itemMergeRange || math.Abs(other.Y-e.Y) > itemMergeRange ||
+			math.Abs(other.Z-e.Z) > itemMergeRange {
+			continue
+		}
+		if other.Stack.Count >= item.StackLimit {
+			continue
+		}
+		if !s.attackPathClear(e.X, e.Y+0.1, e.Z, other.X, other.Y+0.1, other.Z) {
+			continue // 隔墙不合并（与原版 Paper 的修复一致）
+		}
+		total := e.Stack.Count + other.Stack.Count
+		e.Stack.Count = min(total, int32(item.StackLimit))
+		other.Stack.Count = total - e.Stack.Count
+		e.PickupDelayTicks = max(e.PickupDelayTicks, other.PickupDelayTicks)
+		e.AgeTicks = min(e.AgeTicks, other.AgeTicks)
+		changed = true
+		if other.Stack.Count <= 0 {
+			delete(s.items, id)
+			removals = append(removals, id)
+		} else {
+			updates = append(updates, protocol.EncodeEntityMetadataItem(other.ID, other.Stack.AppendSlot(nil)))
+		}
+		if e.Stack.Count >= item.StackLimit {
+			break
+		}
+	}
+	if changed {
+		updates = append(updates, protocol.EncodeEntityMetadataItem(e.ID, e.Stack.AppendSlot(nil)))
+	}
+	return updates, removals
 }
 
 // itemPickup 记录一次拾取（锁外发送数据包）。
@@ -250,46 +319,65 @@ func (s *Server) tickItems(players []*session) {
 		if e.PickupDelayTicks > 0 {
 			e.PickupDelayTicks--
 		}
-		groundY, ok := s.itemGroundY(e.X, e.Z)
-		if !ok {
-			continue // 区块未加载：冻结（等待重新加载）。
+		// 区块未加载时冻结：不推进物理，也不强制重新加载区块。
+		if !s.world.ChunkLoaded(int(math.Floor(e.X)), int(math.Floor(e.Z))) {
+			continue
 		}
+		// 破坏性方块（岩浆/火/仙人掌）销毁掉落物。
+		if s.itemHazardAt(e.X, e.Y, e.Z) {
+			delete(s.items, id)
+			removals = append(removals, id)
+			continue
+		}
+		// 周期合并（每 4 tick，与原版一致）。
+		if e.AgeTicks%itemMergeIntervalTicks == 0 {
+			mergedUpdates, mergedRemovals := s.mergeItems(e)
+			updates = append(updates, mergedUpdates...)
+			removals = append(removals, mergedRemovals...)
+		}
+
 		startX, startY, startZ := e.X, e.Y, e.Z
-		airborne := e.Y > groundY+1e-3
-		if airborne {
+		inWater := s.itemInWater(e.X, e.Y, e.Z)
+		if inWater {
+			// 漂浮：缓慢上浮 + 强阻力。
+			e.VelY += itemWaterBuoyancy
+			if e.VelY > 0.1 {
+				e.VelY = 0.1
+			}
+			e.VelX *= itemWaterDrag
+			e.VelZ *= itemWaterDrag
+		} else {
 			e.VelY -= itemGravityPerTick
 			if e.VelY < itemTerminalVelocity {
 				e.VelY = itemTerminalVelocity
 			}
 		}
-		// 水平移动：空中弱衰减，地面强摩擦。
-		if math.Abs(e.VelX) > itemMinVelocity || math.Abs(e.VelZ) > itemMinVelocity {
-			newX, newZ := e.X+e.VelX, e.Z+e.VelZ
-			if s.insideBorder(newX, newZ) {
-				e.X, e.Z = newX, newZ
-			} else {
-				e.VelX, e.VelZ = 0, 0
-			}
-			if airborne {
-				e.VelX *= itemAirDrag
-				e.VelZ *= itemAirDrag
-			} else {
-				e.VelX *= itemGroundFriction
-				e.VelZ *= itemGroundFriction
-				if math.Abs(e.VelX) <= itemMinVelocity {
-					e.VelX = 0
-				}
-				if math.Abs(e.VelZ) <= itemMinVelocity {
-					e.VelZ = 0
-				}
+		// 逐轴移动（Y → X → Z，与原版一致）：碰撞时沿该轴停下。
+		if s.moveItemAxis(e, 1, e.VelY) {
+			e.VelY = 0
+		}
+		if math.Abs(e.VelX) > itemMinVelocity {
+			if !s.insideBorder(e.X+e.VelX, e.Z) || s.moveItemAxis(e, 0, e.VelX) {
+				e.VelX = 0
 			}
 		}
-		// 竖直移动与落地。
-		if airborne || e.VelY != 0 {
-			e.Y += e.VelY
-			if e.VelY <= 0 && e.Y <= groundY {
-				e.Y = groundY
-				e.VelY = 0
+		if math.Abs(e.VelZ) > itemMinVelocity {
+			if !s.insideBorder(e.X, e.Z+e.VelZ) || s.moveItemAxis(e, 2, e.VelZ) {
+				e.VelZ = 0
+			}
+		}
+		// 速度衰减：空中弱阻尼，落地/水中强摩擦。
+		if !inWater && !s.itemCollides(e.X, e.Y-0.05, e.Z) {
+			e.VelX *= itemAirDrag
+			e.VelZ *= itemAirDrag
+		} else {
+			e.VelX *= itemGroundFriction
+			e.VelZ *= itemGroundFriction
+			if math.Abs(e.VelX) <= itemMinVelocity {
+				e.VelX = 0
+			}
+			if math.Abs(e.VelZ) <= itemMinVelocity {
+				e.VelZ = 0
 			}
 		}
 		if e.Y < float64(world.WorldMinY)-16 {

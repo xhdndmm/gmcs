@@ -123,5 +123,5 @@ func (s *Server) dropBlockItem(state uint16, x, y, z int) {
 	}
 	vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 	vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-	s.spawnItem(stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayTicks)
+	s.spawnItem(stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayMining)
 }

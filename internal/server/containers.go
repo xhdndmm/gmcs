@@ -355,7 +355,7 @@ func (s *Server) dropContainerContents(x, y, z int, def *containerDef) {
 		stack := item.Stack{ItemID: slot.ItemID, Count: slot.Count}
 		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-		s.spawnItem(stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayTicks)
+		s.spawnItem(stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayPlayer)
 	}
 	if err := s.world.RemoveBlockEntity(x, y, z); err != nil {
 		slog.Error("清除容器内容失败", "x", x, "y", y, "z", z, "error", err)
@@ -865,5 +865,5 @@ func (s *Server) dropFromContainer(player *session, stack item.Stack) {
 	dirY := -math.Sin(pitchRad)
 	dirZ := math.Cos(pitchRad) * math.Cos(yawRad)
 	const throwSpeed = 0.3
-	s.spawnItem(stack, x, y+1.0, z, dirX*throwSpeed, dirY*throwSpeed+0.1, dirZ*throwSpeed, itemPickupDelayTicks)
+	s.spawnItem(stack, x, y+1.0, z, dirX*throwSpeed, dirY*throwSpeed+0.1, dirZ*throwSpeed, itemPickupDelayPlayer)
 }

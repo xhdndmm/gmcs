@@ -61,14 +61,16 @@ func TestPlayerDropItem(t *testing.T) {
 		t.Fatalf("dropped items = %+v, want one stone", items)
 	}
 
-	// Ctrl+Q（状态 3 = DROP_ALL_ITEMS）：丢出剩余整组，合并到已有掉落物。
+	// Ctrl+Q（状态 3 = DROP_ALL_ITEMS）：丢出剩余整组。
 	sendPlayerAction(t, conn, 3, 0, 0, 0, 0)
 	invPacket = expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
 	if count := slotCount(t, invPacket); count != 0 {
 		t.Fatalf("inventory after drop stack = %d, want empty", count)
 	}
-	// 合并只更新元数据，不新增实体。
-	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
+	// 合并为周期检查（每 4 tick）：推进到合并帧后应只剩一个实体。
+	for i := 0; i < itemMergeIntervalTicks; i++ {
+		instance.tick()
+	}
 	if stack := player.inventory.Get(item.SlotHotbarStart); !stack.IsEmpty() {
 		t.Fatalf("inventory after drop stack = %+v, want empty", stack)
 	}
@@ -127,7 +129,7 @@ func TestItemPickup(t *testing.T) {
 	}
 }
 
-// TestItemMergeOverflow 验证生成时合并：超出 64 的部分生成新实体。
+// TestItemMergeOverflow 验证周期合并：40 + 30 合并为 64 + 6（两个实体）。
 func TestItemMergeOverflow(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
@@ -144,13 +146,17 @@ func TestItemMergeOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance.spawnItem(first, x, y, z, 0, 0, 0, 0)
+	instance.spawnItem(first, x, y, z, 0, 0, 0, itemPickupDelayPlayer)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
-	instance.spawnItem(second, x, y, z, 0, 0, 0, 0)
-	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata) // 合并到 64
-	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)      // 剩余 6 生成新实体
+	instance.spawnItem(second, x, y, z, 0, 0, 0, itemPickupDelayPlayer)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
+
+	// 周期合并（每 4 tick）：合并为 64 + 6。
+	for i := 0; i < itemMergeIntervalTicks; i++ {
+		instance.tick()
+	}
 
 	instance.entityMu.Lock()
 	counts := make([]int32, 0, len(instance.items))

@@ -225,6 +225,14 @@ func (w *World) ChunkCount() int {
 	return len(w.chunks)
 }
 
+// ChunkLoaded 报告区块当前是否在内存缓存中（不触发加载或生成）。
+func (w *World) ChunkLoaded(x, z int) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, ok := w.chunks[ChunkPos{X: x, Z: z}]
+	return ok
+}
+
 // Flush 把所有待保存的区块写入磁盘。
 // 编码 + 压缩在锁内完成（区块数据在锁内保持一致性）；磁盘 IO 在锁外执行。
 // 保存失败的区块会被重新标记为待保存以便重试。可被多个 goroutine 并发调用。

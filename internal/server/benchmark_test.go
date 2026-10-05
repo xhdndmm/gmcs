@@ -70,7 +70,7 @@ func BenchmarkItemTick(b *testing.B) {
 		if !ok {
 			b.Fatal("no ground at spawn area")
 		}
-		e := instance.spawnItem(stack, x, groundY+1, z, 0, 0, 0, itemPickupDelayTicks)
+		e := instance.spawnItem(stack, x, groundY+1, z, 0, 0, 0, itemPickupDelayMining)
 		if e == nil {
 			b.Fatal("spawnItem returned nil")
 		}

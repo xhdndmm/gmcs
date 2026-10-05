@@ -171,7 +171,7 @@ func (s *Server) loadEntities() error {
 			X:                record.X,
 			Y:                record.Y,
 			Z:                record.Z,
-			PickupDelayTicks: itemPickupDelayTicks,
+			PickupDelayTicks: itemPickupDelayMining,
 		}
 		s.items[e.ID] = e
 		restoredItems++
