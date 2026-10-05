@@ -30,6 +30,10 @@ type Config struct {
 	WorldDir string `json:"world_dir"`
 	// AutosaveSeconds 是自动保存间隔（秒）；0 表示禁用自动保存。
 	AutosaveSeconds int `json:"autosave_seconds"`
+	// OnlineMode 启用正版验证（通过会话服务器确认玩家身份）。
+	OnlineMode bool `json:"online_mode"`
+	// SessionServerURL 是会话验证服务基地址（在线模式使用）。
+	SessionServerURL string `json:"session_server_url"`
 	// StartingItems 是新玩家进入世界时获得的物品（命名空间 ID）。
 	StartingItems []string `json:"starting_items"`
 }
@@ -45,8 +49,8 @@ func Default() Config {
 		MaxConnections:  256,
 		ViewDistance:    10,
 		WorldDir:        "world",
-		AutosaveSeconds: 300,
-		StartingItems:   []string{"minecraft:stone"},
+		AutosaveSeconds: 300, OnlineMode: false,
+		SessionServerURL: "https://sessionserver.mojang.com", StartingItems: []string{"minecraft:stone"},
 	}
 }
 
@@ -119,6 +123,9 @@ func (c Config) Validate() error {
 	}
 	if c.AutosaveSeconds < 0 {
 		return fmt.Errorf("autosave seconds must not be negative")
+	}
+	if c.OnlineMode && c.SessionServerURL == "" {
+		return fmt.Errorf("session server URL must not be empty in online mode")
 	}
 	return nil
 }

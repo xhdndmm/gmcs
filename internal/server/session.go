@@ -1,6 +1,13 @@
 package server
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -38,6 +45,10 @@ type session struct {
 	conn            net.Conn
 	protocolVersion int32
 
+	// reader/writer 是会话的读写通道；正版登录后包装为 AES/CFB8 加密流。
+	reader io.Reader
+	writer io.Writer
+
 	writeMu sync.Mutex
 
 	name       string
@@ -45,6 +56,9 @@ type session struct {
 	entityID   int32
 	teleportID int32
 	clientInfo protocol.ClientInformation
+
+	// profileProperties 是会话服务器返回的玩家属性（在线模式）。
+	profileProperties []protocol.GameProfileProperty
 
 	// inventory 是玩家物品栏，由会话串行访问。
 	inventory item.Inventory
@@ -57,7 +71,13 @@ type session struct {
 }
 
 func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
-	return &session{server: server, conn: conn, protocolVersion: protocolVersion}
+	return &session{
+		server:          server,
+		conn:            conn,
+		protocolVersion: protocolVersion,
+		reader:          conn,
+		writer:          conn,
+	}
 }
 
 func (s *session) run() {
@@ -74,14 +94,14 @@ func (s *session) run() {
 func (s *session) writeRawPacket(packet []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return protocol.WritePacket(s.conn, packet)
+	return protocol.WritePacket(s.writer, packet)
 }
 
 // writePacket 以启用的压缩发送单个数据包；可被多个 goroutine 并发调用。
 func (s *session) writePacket(packet []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return protocol.WritePacketWithCompression(s.conn, packet, compressionThreshold)
+	return protocol.WritePacketWithCompression(s.writer, packet, compressionThreshold)
 }
 
 func (s *session) writePackets(packets ...[]byte) error {
@@ -105,7 +125,7 @@ func (s *session) readRawPacket(timeout time.Duration) ([]byte, error) {
 	if err := s.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
 	}
-	return protocol.ReadPacket(s.conn)
+	return protocol.ReadPacket(s.reader)
 }
 
 // readPacket 重设读超时并读取一个压缩格式的数据包。
@@ -113,7 +133,7 @@ func (s *session) readPacket(timeout time.Duration) ([]byte, error) {
 	if err := s.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
 	}
-	return protocol.ReadPacketWithCompression(s.conn, compressionThreshold)
+	return protocol.ReadPacketWithCompression(s.reader, compressionThreshold)
 }
 
 // runLogin 执行登录阶段：Login Start → Set Compression → Login Success → Login Acknowledged。
@@ -139,12 +159,17 @@ func (s *session) runLogin() bool {
 	s.name = loginStart.Name
 	// 离线模式：忽略客户端上报的 UUID，按原版规则从用户名推导。
 	s.uuid = protocol.OfflineUUID(s.name)
+	if s.server.config.OnlineMode {
+		if !s.runOnlineAuthentication() {
+			return false
+		}
+	}
 	s.entityID = s.server.entityIDs.Add(1)
 
 	if err := s.writeRawPacket(protocol.EncodeSetCompression(compressionThreshold)); err != nil {
 		return false
 	}
-	if err := s.writePacket(protocol.EncodeLoginSuccess(s.uuid, s.name)); err != nil {
+	if err := s.writePacket(protocol.EncodeLoginSuccessWithProperties(s.uuid, s.name, s.profileProperties)); err != nil {
 		return false
 	}
 
@@ -157,6 +182,70 @@ func (s *session) runLogin() bool {
 		return false
 	}
 	slog.Info("player logged in", "name", s.name, "remote", s.conn.RemoteAddr())
+	return true
+}
+
+// runOnlineAuthentication 执行正版登录：发起加密请求、接收并解密响应，
+// 然后通过会话服务器验证玩家身份。成功后用会话服务器的权威数据
+// 覆盖 s.uuid、s.name 与 s.profileProperties。
+func (s *session) runOnlineAuthentication() bool {
+	verifyToken := make([]byte, 4)
+	if _, err := rand.Read(verifyToken); err != nil {
+		slog.Error("failed to generate verify token", "error", err)
+		return false
+	}
+	publicKey, err := x509.MarshalPKIXPublicKey(&s.server.rsaKey.PublicKey)
+	if err != nil {
+		slog.Error("failed to marshal public key", "error", err)
+		return false
+	}
+	if err := s.writeRawPacket(protocol.EncodeEncryptionRequest("", publicKey, verifyToken, true)); err != nil {
+		return false
+	}
+
+	packet, err := s.readRawPacket(loginTimeout)
+	if err != nil {
+		return false
+	}
+	encryptedSecret, encryptedToken, err := protocol.ParseEncryptionResponse(packet)
+	if err != nil {
+		slog.Debug("rejecting malformed encryption response", "remote", s.conn.RemoteAddr(), "error", err)
+		return false
+	}
+	sharedSecret, err := rsa.DecryptPKCS1v15(nil, s.server.rsaKey, encryptedSecret)
+	if err != nil || len(sharedSecret) != 16 {
+		slog.Debug("failed to decrypt shared secret", "remote", s.conn.RemoteAddr(), "error", err)
+		return false
+	}
+	token, err := rsa.DecryptPKCS1v15(nil, s.server.rsaKey, encryptedToken)
+	if err != nil || !bytes.Equal(token, verifyToken) {
+		slog.Debug("encryption verify token mismatch", "remote", s.conn.RemoteAddr())
+		return false
+	}
+
+	block, err := aes.NewCipher(sharedSecret)
+	if err != nil {
+		slog.Debug("failed to create cipher", "remote", s.conn.RemoteAddr(), "error", err)
+		return false
+	}
+	// 加密从此生效：后续读写都经 AES/CFB8（IV 即共享密钥）。
+	s.reader = protocol.NewStreamReader(s.conn, protocol.NewCFB8Decrypter(block, sharedSecret))
+	s.writer = protocol.NewStreamWriter(s.conn, protocol.NewCFB8Encrypter(block, sharedSecret))
+
+	profile, err := s.server.verifySession(s.name, protocol.ServerHash("", sharedSecret, publicKey))
+	if err != nil {
+		if errors.Is(err, errSessionRejected) {
+			slog.Info("player failed session verification", "name", s.name, "remote", s.conn.RemoteAddr())
+			// 尽力在已加密的通道上告知客户端，失败不影响断开。
+			_ = s.writeRawPacket(protocol.EncodeLoginDisconnect("Failed to verify username!"))
+		} else {
+			slog.Error("session verification failed", "name", s.name, "remote", s.conn.RemoteAddr(), "error", err)
+		}
+		return false
+	}
+	s.uuid = profile.UUID
+	s.name = profile.Name
+	s.profileProperties = profile.Properties
 	return true
 }
 
@@ -310,6 +399,8 @@ func (s *session) runPlay() {
 		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name))
 	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
+	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn。
+	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands()))
 	packets = append(packets, s.giveStartingItems()...)
 	if err := s.writePackets(packets...); err != nil {
 		return
@@ -401,6 +492,13 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.server.broadcastChat(s, message)
+		case protocol.PlayServerboundPacketIDChatCommand, protocol.PlayServerboundPacketIDChatCommandSigned:
+			command, err := protocol.ParseChatCommand(packet)
+			if err != nil {
+				slog.Debug("malformed chat command", "name", s.name, "error", err)
+				continue
+			}
+			s.server.handleCommand(s, command)
 		case protocol.PlayServerboundPacketIDConfirmTeleportation:
 			if id, err := protocol.ParseConfirmTeleportation(packet); err == nil && id == s.teleportID {
 				slog.Debug("player confirmed teleport", "name", s.name, "teleportId", id)

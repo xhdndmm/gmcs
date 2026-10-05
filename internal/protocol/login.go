@@ -11,7 +11,14 @@ const (
 	LoginPacketIDSuccess        = 0x02
 	LoginPacketIDSetCompression = 0x03
 
+	// LoginPacketIDDisconnect 是 Login Disconnect（clientbound）。
+	LoginPacketIDDisconnect = 0x00
+	// LoginPacketIDEncryptionRequest 是 Encryption Request（clientbound，官方名 hello）。
+	LoginPacketIDEncryptionRequest = 0x01
+
 	LoginServerboundPacketIDAcknowledged = 0x03
+	// LoginServerboundPacketIDEncryptionResponse 是 Encryption Response（官方名 key）。
+	LoginServerboundPacketIDEncryptionResponse = 0x01
 )
 
 // LoginStart 是客户端发出的登录起始数据。
@@ -54,14 +61,45 @@ func EncodeSetCompression(threshold int32) []byte {
 	return packet
 }
 
-// EncodeLoginSuccess 编码 Login Success 包（1.21.11）。
-// 结构：UUID（16 字节二进制）、用户名（String）、属性数量（VarInt）。
+// GameProfileProperty 是 Login Success 包中的玩家属性（如皮肤纹理）。
+type GameProfileProperty struct {
+	Name      string
+	Value     string
+	Signature string
+	// Signed 表示 Signature 有效（正版纹理带有 Mojang 签名）。
+	Signed bool
+}
+
+// EncodeLoginSuccess 编码 Login Success 包（1.21.11，无属性）。
 func EncodeLoginSuccess(uuid [16]byte, username string) []byte {
+	return EncodeLoginSuccessWithProperties(uuid, username, nil)
+}
+
+// EncodeLoginSuccessWithProperties 编码 Login Success 包（1.21.11）。
+// 结构：UUID（16 字节二进制）、用户名（String）、属性列表
+// （每项：名称、值、可选签名）。
+func EncodeLoginSuccessWithProperties(uuid [16]byte, username string, properties []GameProfileProperty) []byte {
 	packet := AppendVarInt(nil, int32(LoginPacketIDSuccess))
 	packet = append(packet, uuid[:]...)
 	packet = appendString(packet, username)
-	packet = AppendVarInt(packet, 0) // 离线模式没有纹理签名属性
+	packet = AppendVarInt(packet, int32(len(properties)))
+	for _, property := range properties {
+		packet = appendString(packet, property.Name)
+		packet = appendString(packet, property.Value)
+		if property.Signed {
+			packet = append(packet, 0x01)
+			packet = appendString(packet, property.Signature)
+		} else {
+			packet = append(packet, 0x00)
+		}
+	}
 	return packet
+}
+
+// EncodeLoginDisconnect 编码 Login Disconnect 包（登录阶段的踢出消息）。
+func EncodeLoginDisconnect(reason string) []byte {
+	packet := AppendVarInt(nil, int32(LoginPacketIDDisconnect))
+	return AppendNBTString(packet, reason)
 }
 
 // OfflineUUID 按原版离线模式规则生成 UUID：MD5("OfflinePlayer:"+username)，并设置 v3 变体位。

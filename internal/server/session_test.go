@@ -34,6 +34,58 @@ func readCompressedPacket(t *testing.T, conn net.Conn) (int32, []byte) {
 	return packetID, packet
 }
 
+// replyKeepAlive 在测试读取循环中回复服务器的 Keep Alive。
+func replyKeepAlive(t *testing.T, conn net.Conn, payload []byte) {
+	t.Helper()
+	_, offset, err := protocol.DecodeVarInt(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply := protocol.AppendVarInt(nil, 0x1B)
+	reply = protocol.AppendInt64(reply, int64(binary.BigEndian.Uint64(payload[offset:])))
+	if err := protocol.WritePacketWithCompression(conn, reply, compressionThreshold); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// expectPlayPacket 读取数据包直到收到指定 ID 的包（期间自动回复 Keep Alive）。
+func expectPlayPacket(t *testing.T, conn net.Conn, want int32) []byte {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("did not receive play packet %#x", want)
+		}
+		id, payload := readCompressedPacket(t, conn)
+		if id == 0x2B {
+			replyKeepAlive(t, conn, payload)
+			continue
+		}
+		if id == want {
+			return payload
+		}
+	}
+}
+
+// expectSystemChat 读取数据包直到收到包含指定文本的 System Chat。
+func expectSystemChat(t *testing.T, conn net.Conn, contains string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("did not receive system chat containing %q", contains)
+		}
+		id, payload := readCompressedPacket(t, conn)
+		if id == 0x2B {
+			replyKeepAlive(t, conn, payload)
+			continue
+		}
+		if id == 0x77 && bytes.Contains(payload, []byte(contains)) {
+			return
+		}
+	}
+}
+
 // TestOfflineLoginAndPlayFlow 模拟 1.21.11 客户端完成
 // 登录 → 配置 → 进入世界 的完整流程。
 func TestOfflineLoginAndPlayFlow(t *testing.T) {
@@ -149,8 +201,8 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 
 	// Play 阶段初始包：
 	// Login → Set Default Spawn → Game Event → Set Center Chunk → Chunk Data →
-	// Synchronize Player Position → Player Info → System Chat → Set Player Inventory
-	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77, 0x6A} {
+	// Synchronize Player Position → Player Info → System Chat → Declare Commands → Set Player Inventory
+	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x2C, 0x46, 0x44, 0x77, 0x10, 0x6A} {
 		id, _ := readCompressedPacket(t, conn)
 		if id != want {
 			t.Fatalf("expected play packet %#x, got %#x", want, id)
@@ -211,6 +263,21 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 		}
 		break
 	}
+
+	// 命令：/help 与 /list 应返回 System Chat，/spawn 应触发传送包。
+	sendCommand := func(command string) {
+		payload := protocol.AppendVarInt(nil, 0x06)
+		payload = appendTestString(payload, command)
+		if err := protocol.WritePacketWithCompression(conn, payload, compressionThreshold); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sendCommand("/help")
+	expectSystemChat(t, conn, "/help")
+	sendCommand("/list")
+	expectSystemChat(t, conn, "TestPlayer")
+	sendCommand("/spawn")
+	expectPlayPacket(t, conn, 0x46)
 
 	// 等待并响应一个 Keep Alive，确认会话保持活跃。
 	deadline := time.Now().Add(5 * time.Second)

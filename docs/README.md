@@ -31,7 +31,26 @@ go run ./cmd/gmcs -config /path/to/gmcs.json -listen :25565
 | `view_distance` | 发送给客户端的视距（区块，2–32） | `10` |
 | `world_dir` | 地图数据目录 | `world` |
 | `autosave_seconds` | 自动保存间隔（秒，0 表示禁用） | `300` |
+| `online_mode` | 启用正版验证（通过会话服务器确认账号） | `false` |
+| `session_server_url` | 会话验证服务基地址（在线模式使用） | `https://sessionserver.mojang.com` |
 | `starting_items` | 新玩家初始物品（命名空间 ID，每个 1 个） | `["minecraft:stone"]` |
+
+## 内置命令
+
+进入世界后可在聊天栏使用（已通过 Declare Commands 向客户端声明）：
+
+| 命令 | 说明 |
+| --- | --- |
+| `/help` | 显示可用命令 |
+| `/list` | 列出在线玩家 |
+| `/say <消息>` | 向所有玩家广播消息 |
+| `/spawn` | 传送回出生点 |
+
+## 正版验证（online_mode）
+
+`online_mode = true` 时启用正版登录：服务器与客户端完成 AES-128/CFB8 加密握手，
+并通过 `session_server_url` 的 `hasJoined` 接口验证账号，登录成功后透传玩家属性（如签名皮肤）。
+`online_mode = false`（默认）时按离线模式运行，UUID 由用户名按原版规则推导。
 
 ## 测试
 

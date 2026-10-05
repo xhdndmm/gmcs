@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +35,11 @@ type Server struct {
 	entityIDs         atomic.Int32
 	chatIndex         atomic.Int32
 	keepAliveInterval time.Duration
+
+	// rsaKey 用于正版登录的加密握手（仅在线模式生成）。
+	rsaKey *rsa.PrivateKey
+	// httpClient 用于访问会话服务器。
+	httpClient *http.Client
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -42,6 +50,15 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 在线模式：为加密握手生成服务器密钥对（1024 位，与客户端兼容）。
+	var rsaKey *rsa.PrivateKey
+	if cfg.OnlineMode {
+		key, err := rsa.GenerateKey(rand.Reader, 1024)
+		if err != nil {
+			return nil, fmt.Errorf("生成 RSA 密钥：%w", err)
+		}
+		rsaKey = key
+	}
 	return &Server{
 		config:            cfg,
 		world:             gameWorld,
@@ -49,6 +66,8 @@ func New(cfg config.Config) (*Server, error) {
 		conns:             make(map[net.Conn]struct{}),
 		players:           make(map[[16]byte]*session),
 		keepAliveInterval: defaultKeepAliveInterval,
+		rsaKey:            rsaKey,
+		httpClient:        &http.Client{Timeout: 10 * time.Second},
 	}, nil
 }
 
