@@ -3,36 +3,41 @@
 本文件记录 gmcs 关键路径的 Go micro-benchmark 方法与实测结果。
 
 > 说明：这些数字是**开发机参考基线**，用于发现回归与对比优化前后差异，
-> 不代表真实服务器吞吐。真实多玩家负载压测与 CPU/内存 profiling 仍在计划中
-> （见 [TODO.md](TODO.md)）。
+> 不代表真实服务器吞吐。真实多玩家负载压测仍在计划中（见第 4 节）。
 
-## 环境与复现
+## 1. 环境与复现
 
 - 环境：Linux amd64，12th Gen Intel(R) Core(TM) i7-12700F（20 逻辑核心），Go 1.27.1
-- 复现命令：
+- **更新于 2026-10-05**：第 2 节与第 3.3 节随最新代码全部复测；
+  表中为 `-count=6` 中位数（压缩基准 `-count=3`）。
+- internal 包基准未启用 PGO（内置 PGO 配置 `cmd/gmcs/default.pgo` 仅影响
+  主程序构建）；PGO 对照见第 3.3 节。
+- 所有 benchmark 均为单进程、单线程逻辑（`-cpu` 未指定），数字随硬件与
+  系统负载波动，同机对比时请保证条件一致。
+
+复现命令：
 
 ```bash
-scripts/test.sh --bench
+scripts/test.sh --bench          # 全部基准
 # 等价于：
 go test -run=^$ -bench=. -benchmem ./...
 ```
 
-- **更新于 2026-10-05**（Go 1.27.1）；表内为 `-pgo=off` 基线中位数，绝对值
-  随工具链/硬件/负载变化，仅用于同机对比。
-- 所有 benchmark 均为单进程、单线程逻辑（`-cpu` 未指定），数字随硬件与
-  系统负载波动，同机对比时请保证条件一致。
+单基准模板：`go test -count=6 -run '^$' -bench=基準名 ./内部包 -benchmem`。
 
-## 基准一览（实测）
+## 2. 当前基准快照（实测）
+
+本节始终对应最新代码；各次优化的历史过程见第 3 节。
 
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | world | ≈735 µs/op | 72,767 B/op | 18 allocs/op |
-| `BenchmarkEncodeChunkDataPacket` | world | ≈57.1 µs/op | 6,150 B/op | 3 allocs/op |
-| `BenchmarkAppendChunkDataPacketReuse` | world | ≈56.5 µs/op | 6,150 B/op | 3 allocs/op |
-| `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.7 ns/op | 120 B/op | 4 allocs/op |
-| `BenchmarkEncodeAddEntity` | protocol | ≈104.0 ns/op | 176 B/op | 4 allocs/op |
-| `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈75.7 µs/op | 50 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈8.0 µs/op | 3,209 B/op | 64 allocs/op |
+| `BenchmarkGenerateChunk` | world | ≈741 µs/op | 72,761 B/op | 18 allocs/op |
+| `BenchmarkEncodeChunkDataPacket` | world | ≈57.4 µs/op | 6,150 B/op | 3 allocs/op |
+| `BenchmarkAppendChunkDataPacketReuse` | world | ≈56.1 µs/op | 6,151 B/op | 3 allocs/op |
+| `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.0 ns/op | 120 B/op | 4 allocs/op |
+| `BenchmarkEncodeAddEntity` | protocol | ≈103.0 ns/op | 176 B/op | 4 allocs/op |
+| `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈74.3 µs/op | 49 B/op | 1 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈8.1 µs/op | 3,185 B/op | 64 allocs/op |
 
 各基准覆盖的内容：
 
@@ -53,9 +58,13 @@ go test -run=^$ -bench=. -benchmem ./...
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
 按编码 57 µs/区块计算约 25 ms 纯编码时间（不含地形生成与网络 IO）。
 
-## 区块编码优化（实测优化前后对比）
+## 3. 优化记录
 
-对 `EncodeChunkDataPacket` 做了一次针对热路径的优化，同机前后对比如下：
+### 3.1 区块编码重构（c58bd09，当时实测）
+
+对 `EncodeChunkDataPacket` 做了一次针对热路径的重构，同机前后对比如下
+（注：本小节为当时记录；其“优化后”数字已由后续 3.2 节进一步改进，
+当前值见第 2 节）：
 
 | 指标 | 优化前 | 优化后 | 变化 |
 | --- | --- | --- | --- |
@@ -77,9 +86,10 @@ go test -run=^$ -bench=. -benchmem ./...
 正确性验证：`internal/world` 全部单元测试通过（含调色板/位流 round-trip 测试），
 `go test -race ./...` 通过。
 
-## 内存与热路径优化：压缩池化、发送缓冲复用、列高度缓存（实测）
+### 3.2 内存与热路径优化（fbf619a，实测）
 
-来自 CPU/分配 profile 的三处热点与对应处理（同机会话内对比，`-count=6` 中位数）：
+来自 CPU/分配 profile 的三处热点与对应处理（同机会话内对比，`-count=6` 中位数；
+本表为当时的同窗对照，最新快照见第 2 节——编码 ≈57.4 µs、压缩 ≈74.3 µs、Tick ≈8.1 µs）：
 
 | 指标 | 优化前 | 优化后 | 变化 |
 | --- | --- | --- | --- |
@@ -115,7 +125,66 @@ go test -count=6 -run '^$' -bench=BenchmarkServerTick ./internal/server -benchme
 go test -count=3 -run '^$' -bench=BenchmarkWritePacketWithCompression -benchtime=2s ./internal/protocol -benchmem
 ```
 
-## 区块缓存内存行为（手工测量）
+### 3.3 构建优化：PGO 与产物体积（502ce61，数据复测于最新代码）
+
+构建脚本（`scripts/build.sh`）的发布参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `CGO_ENABLED=0` | 纯 Go 静态二进制，无系统库依赖 |
+| `-trimpath` | 去除本机构建路径（可复现构建，略减小体积） |
+| `-ldflags "-s -w -buildid="` | 剥离符号表与 DWARF、去除构建 ID |
+| `-pgo=auto` | 自动使用 `cmd/gmcs/default.pgo`（随仓库提交的 PGO 配置） |
+
+#### 产物体积（linux/amd64）
+
+| 参数组合 | 体积 |
+| --- | --- |
+| `-trimpath -ldflags "-s -w"`（旧链接参数，PGO=off） | 7,794,848 B（7.43 MiB） |
+| `-trimpath -ldflags "-s -w -buildid="`、`PGO=off` | 7,794,812 B |
+| 新参数（含 PGO，`default.pgo` 24,131 B） | 7,852,156 B（7.49 MiB，+0.74%） |
+
+说明：剥离符号（`-s -w`）与 `-trimpath` 之前已在使用；`-buildid=` 对体积影响可忽略
+（主要用于可复现构建），PGO 因内联/去虚拟化会小幅增加体积。需要最小体积时用
+`PGO=off scripts/build.sh`。
+
+#### PGO 前后 benchmark 对比
+
+`cmd/gmcs/default.pgo` 由 `scripts/genpgo.sh` 从世界生成/编码、实体包、服务器
+Tick 的 benchmark 采样并合并生成（当前约 24 KB，随热路径变化重新生成后复测）。
+当前代码的对照如下（`-count=6` 中位数，Go 1.27.1，i7-12700F）：
+
+| Benchmark | `-pgo=off` | PGO | 变化 |
+| --- | --- | --- | --- |
+| `BenchmarkGenerateChunk` | ≈732 µs/op | ≈722 µs/op | ≈ -1.4% |
+| `BenchmarkEncodeChunkDataPacket` | ≈56.9 µs/op | ≈56.3 µs/op | ≈ -1.1% |
+| `BenchmarkEncodeEntityPositionSync` | ≈68.6 ns/op | ≈69.0 ns/op | ≈ +0.6%（噪声范围） |
+| `BenchmarkEncodeAddEntity` | ≈105.7 ns/op | ≈98.2 ns/op | ≈ -7.1% |
+| `BenchmarkServerTick`（32 生物） | ≈8.1 µs/op | ≈7.8 µs/op | ≈ -3.4% |
+
+结论：收益约 1%–7%；`EncodeEntityPositionSync` 的 +0.6%（约 0.4 ns）在噪声
+范围内。注：列高度缓存（3.2）消除了原先占 Tick 大半的整列扫描热点，Tick 的
+PGO 增益从首次引入时的 ≈ -20.5%（当时热点仍在，见提交 502ce61）缩小到
+≈ -3.4%。以上为单机 micro-benchmark，不代表真实服务器吞吐；真实负载验证
+仍在计划中（见第 4 节）。
+
+#### 重新生成 PGO 配置
+
+```bash
+scripts/genpgo.sh                 # 默认 benchtime 1s
+scripts/genpgo.sh --benchtime=3s  # 更长采样，数值更稳
+```
+
+建议在热路径代码明显变化或升级 Minecraft/协议版本后重新生成并提交。
+
+复现 PGO 对比：
+
+```bash
+go test -count=6 -run '^$' -bench=. -pgo=off ./internal/world ./internal/protocol ./internal/server
+go test -count=6 -run '^$' -bench=. -pgo=cmd/gmcs/default.pgo ./internal/world ./internal/protocol ./internal/server
+```
+
+### 3.4 区块缓存内存卸载（d49dd70，手工测量）
 
 区块内存缓存过去只增不减：玩家跑图经过的每个区块都会常驻内存。现在服务器每
 5 秒把距所有玩家都超过 `view_distance + 4` 的区块移出缓存（未保存的先写盘），
@@ -128,76 +197,16 @@ GMCS_MEM_DEMO=1 go test -count=1 -run TestChunkMemoryDemo -v ./internal/world/
 ```
 
 一次实测（Go 1.27.1，i7-12700F）：生成并缓存 40×40 = 1600 个区块后
-`HeapAlloc ≈ 111.8 MiB`（约 70 KiB/区块）；调用卸载（保留中心 11×11 = 121
-个区块）并 GC 后 `HeapAlloc ≈ 9.1 MiB`，即区块数据被真正回收（约 100 MiB 回落）。
+`HeapAlloc ≈ 111.9 MiB`（约 70 KiB/区块）；调用卸载（保留中心 11×11 = 121
+个区块）并 GC 后 `HeapAlloc ≈ 9.2 MiB`，即区块数据被真正回收（约 100 MiB 回落）。
 
 注意：这一数字是单次手工测量，仅作量级参考；Go 运行时不保证把已回收的堆立即
 归还操作系统，进程 RSS 可能下降较慢，但区块数据本身不再被引用。
 
-## 构建优化：PGO 与产物体积（实测）
-
-构建脚本（`scripts/build.sh`）的发布参数：
-
-| 参数 | 作用 |
-| --- | --- |
-| `CGO_ENABLED=0` | 纯 Go 静态二进制，无系统库依赖 |
-| `-trimpath` | 去除本机构建路径（可复现构建，略减小体积） |
-| `-ldflags "-s -w -buildid="` | 剥离符号表与 DWARF、去除构建 ID |
-| `-pgo=auto` | 自动使用 `cmd/gmcs/default.pgo`（随仓库提交的 PGO 配置） |
-
-### 产物体积（linux/amd64）
-
-| 参数组合 | 体积 |
-| --- | --- |
-| `-trimpath -ldflags "-s -w"`（旧参数） | 7,786,656 B（7.43 MiB） |
-| `-trimpath -ldflags "-s -w -buildid="`、`PGO=off` | 7,786,620 B |
-| 新参数（含 PGO） | 7,835,772 B（7.47 MiB，+0.63%） |
-
-说明：剥离符号（`-s -w`）与 `-trimpath` 之前已在使用；`-buildid=` 对体积影响可忽略
-（主要用于可复现构建），PGO 因内联/去虚拟化会小幅增加体积。需要最小体积时用
-`PGO=off scripts/build.sh`。
-
-### PGO 前后 benchmark 对比
-
-`cmd/gmcs/default.pgo` 由 `scripts/genpgo.sh` 从世界生成/编码、实体包、服务器
-Tick 的 benchmark 采样并合并生成（约 21 KB）。同机会话内对比（`-count=6` 取中位数，
-Go 1.27.1，i7-12700F）：
-
-| Benchmark | `-pgo=off` | PGO | 变化 |
-| --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | ≈735.0 µs/op | ≈720.9 µs/op | ≈ -1.9% |
-| `BenchmarkEncodeChunkDataPacket` | ≈68.0 µs/op | ≈66.6 µs/op | ≈ -2.1% |
-| `BenchmarkEncodeEntityPositionSync` | ≈68.7 ns/op | ≈70.6 ns/op | ≈ +2.7%（轻微回退） |
-| `BenchmarkEncodeAddEntity` | ≈104.0 ns/op | ≈98.5 ns/op | ≈ -5.2% |
-| `BenchmarkServerTick`（32 生物） | ≈36.7 µs/op | ≈29.1 µs/op | ≈ -20.5% |
-
-结论：主要工作负载（服务器 Tick、区块生成/编码、实体包）收益约 2%–20%；
-`EncodeEntityPositionSync`（绝对量 <2 ns）出现约 2.7% 的轻微回退，实际影响
-可忽略。以上为单机 micro-benchmark，不等于真实服务器吞吐；真实负载验证仍在
-计划中（见“尚未覆盖”）。对比数据与顶部基准表的绝对值可能因工具链/系统状态
-不同而有差异，请以同次会话内对比为准。注：PGO 数据测量于后续内存/热路径
-优化之前，两种优化叠加后的最新数字见上方基准一览与“内存与热路径优化”一节。
-
-### 重新生成 PGO 配置
-
-```bash
-scripts/genpgo.sh                 # 默认 benchtime 1s
-scripts/genpgo.sh --benchtime=3s  # 更长采样，数值更稳
-```
-
-建议在热路径代码明显变化或升级 Minecraft/协议版本后重新生成并提交。
-
-### 复现对比
-
-```bash
-go test -count=6 -run '^$' -bench=. -pgo=off ./internal/world ./internal/protocol ./internal/server
-go test -count=6 -run '^$' -bench=. -pgo=cmd/gmcs/default.pgo ./internal/world ./internal/protocol ./internal/server
-```
-
-## 尚未覆盖
+## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
-- `go tool pprof` CPU/heap/allocation 分析
 - `go tool trace` 调度与阻塞分析
 - 区块保存/加载（区域文件读写）路径的 benchmark
-- 网络编解码端到端（压缩、加密、帧处理）的 benchmark
+- 端到端连接压测（真实 socket + 加密 + 多包交织；当前仅覆盖编解码与压缩）
+- 内存随在线时长/跑图的持续观测（当前仅区块卸载演示与快照测量）
