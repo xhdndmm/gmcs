@@ -246,9 +246,6 @@ func (s *Server) destroyContainer(x, y, z int, breaker *session, def *containerD
 	s.dropContainerContents(x, y, z, def)
 }
 
-// sessionForReadLoop 占位（保留以防误用）。
-func (s *Server) sessionForReadLoop() *session { return nil }
-
 // broadcastContainerAction 向附近玩家广播箱子开合动画（Block Action）。
 // 原版中参数 B 是观察者数量，这里取当前窗口观察者数。
 func (s *Server) broadcastContainerAction(container *containerState, open bool, except *session) {

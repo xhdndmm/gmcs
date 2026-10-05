@@ -517,8 +517,6 @@ func (s *session) eatFood(itemID int32) bool {
 	}
 	s.food = min(maxPlayerFood, s.food+food.Nutrition)
 	s.saturation = min(float32(s.food), s.saturation+food.Saturation)
-	s.stateMu.Unlock()
-	s.stateMu.Lock()
 	return true
 }
 
