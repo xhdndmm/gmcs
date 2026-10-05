@@ -172,6 +172,18 @@ func (s *session) canBeAttacked() bool {
 	return !s.dead && s.gameMode != uint8(config.GameModeCreative) && s.gameMode != uint8(config.GameModeSpectator)
 }
 
+// maxMoveDistance 是单个移动数据包允许的最大位移（方块）。
+// 超出该值的位移（瞬移式作弊的典型特征）会被拒绝并回拉。
+// 这是一个保守阈值，未逐 tick 校验速度（见 docs/TODO.md 已知限制）。
+const maxMoveDistance = 100.0
+
+// acceptMove 报告目标位置是否在允许的单包位移范围内。
+func (s *session) acceptMove(x, y, z float64) bool {
+	px, py, pz, _, _ := s.playerPosition()
+	dx, dy, dz := x-px, y-py, z-pz
+	return dx*dx+dy*dy+dz*dz <= maxMoveDistance*maxMoveDistance
+}
+
 // resyncPosition 把客户端拉回服务器记录的位置（拒绝越界或无效移动）。
 // 仅在会话读循环中调用。
 func (s *session) resyncPosition() {
@@ -853,7 +865,7 @@ func (s *session) playReadLoop() {
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
-			if !s.server.insideBorder(x, z) {
+			if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z) {
 				s.resyncPosition()
 				continue
 			}
@@ -867,7 +879,7 @@ func (s *session) playReadLoop() {
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
-			if !s.server.insideBorder(x, z) {
+			if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z) {
 				s.resyncPosition()
 				continue
 			}

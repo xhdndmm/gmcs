@@ -17,13 +17,16 @@ func TestChunkStreamingOnMovement(t *testing.T) {
 	_, spawnY, spawnZ := instance.spawnPosition()
 
 	// 移动到区块 (10, 0)：距原中心 10 > 视距 2+2，区块 (0,0) 等应被卸载。
-	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDPlayerPosition)
-	packet = protocol.AppendFloat64(packet, 10*16+0.5)
-	packet = protocol.AppendFloat64(packet, spawnY)
-	packet = protocol.AppendFloat64(packet, spawnZ)
-	packet = protocol.AppendBool(packet, true)
-	if err := protocol.WritePacketWithCompression(conn, packet, compressionThreshold); err != nil {
-		t.Fatal(err)
+	// 分两步发送（单包位移上限 100 格，见 session.go 的 maxMoveDistance）。
+	for _, x := range []float64{80.5, 10*16 + 0.5} {
+		packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDPlayerPosition)
+		packet = protocol.AppendFloat64(packet, x)
+		packet = protocol.AppendFloat64(packet, spawnY)
+		packet = protocol.AppendFloat64(packet, spawnZ)
+		packet = protocol.AppendBool(packet, true)
+		if err := protocol.WritePacketWithCompression(conn, packet, compressionThreshold); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCenterChunk)

@@ -50,7 +50,8 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `online_mode` | 启用正版验证（通过会话服务器确认账号） | `false` |
 | `session_server_url` | 会话验证服务基地址（在线模式使用） | `https://sessionserver.mojang.com` |
 | `starting_items` | 新玩家初始物品（命名空间 ID；`name` 或 `name*数量`，数量上限 64；可写数组或单个字符串） | `["minecraft:stone"]` |
-| `ops` | 管理员玩家名列表（使用 `/say`、`/gamemode` 等管理命令；可写数组或单个字符串） | `[]` |
+| `ops` | 管理员玩家名列表（使用管理命令；项可写 `name`（等价 4 级）或 `name:level`（1–4）；可写数组或单个字符串） | `[]` |
+| `pprof_address` | pprof 诊断监听地址（如 `127.0.0.1:6060`，空值表示关闭；仅本地诊断，勿暴露公网） | `""` |
 
 ## 内置命令
 
@@ -101,8 +102,10 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 ### 方块交互与玩家物理
 
 - 生存/创造可破坏与放置方块：修改广播附近玩家并随区块保存；生存挖掘完成后生效、
-  放置消耗物品；创造即时且不消耗；支持创造物品栏取放；冒险/旁观不可交互；无挖掘时间、
-  破坏方块不产生掉落物。
+  放置消耗物品；创造即时且不消耗；支持创造物品栏取放；冒险/旁观不可交互；无挖掘时间。
+- 破坏掉落：生存模式按简化掉落表生成掉落物（石头→圆石、草方块→泥土、矿石→原矿/宝石、
+  玻璃/树叶/冰无掉落等，见 `internal/server/block_drops.go`）；创造模式不掉落。
+  不实现工具要求、精准采集、时运与概率掉落（砂砾的燧石等）。
 - 掉落物与拾取：生存/创意下 Q 丢 1 个、Ctrl+Q 丢整组（沿视线抛出）；掉落物有重力/摩擦运动，
   落地或浮于水面后停稳，同类堆叠自动合并，走近 1 格内自动拾取（含拾取动画与音效）；
   5 分钟消失、掉入虚空移除；死亡掉落整个物品栏；随 `world/entities.json` 持久化。
@@ -114,6 +117,16 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 
 - 玩家以实体互相可见：加入/退出、移动与朝向在 64 格内同步；皮肤来自正版档案属性。
 - 可攻击其他玩家：伤害/受伤动画/生命同步与生物战斗一致；挥空也播放挥手动画。
+
+### 移动校验与诊断
+
+- 位置校验：拒绝 NaN/越界 Y 与单包超过 100 格的位移（与原版服务端阈值一致），
+  并把客户端拉回服务器记录的位置；未实现逐 tick 速度上限与穿墙检测。
+- `pprof_address`：启用后在 `/debug/pprof/*` 提供 CPU/内存/goroutine 分析
+  （`go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=20`）。
+- `cmd/gmcsload`：离线模式负载压测客户端（登录 → 配置 → 进入世界 → 持续移动），
+  输出进入世界耗时、收包量、流量与包类型分布；单机 loopback 结果见
+  [docs/PERFORMANCE.md](PERFORMANCE.md)。
 
 ### 玩家数据（players.json）
 
@@ -135,6 +148,8 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 scripts/test.sh          # gofmt + build + vet + 单元测试 + race
 scripts/test.sh --bench  # 附加 benchmark
 go test -race ./...      # 仅数据竞争检测
+
+go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s  # 负载压测
 ```
 
 关键路径的 benchmark 方法与实测数据见 [docs/PERFORMANCE.md](PERFORMANCE.md)。
@@ -156,6 +171,7 @@ go run ./tools/genregistries \
 
 ```text
 cmd/gmcs            服务器入口
+cmd/gmcsload        负载压测客户端（离线模式模拟并发玩家）
 internal/config     配置结构与 JSON 持久化
 internal/protocol   协议包编解码（握手/登录/配置/Play、NBT、Slot 等）
 internal/registry   生成的注册表、方块状态与物品 ID 数据

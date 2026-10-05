@@ -14,9 +14,10 @@ import (
 // 方块交互：破坏与放置。服务端校验距离与方块后修改世界，并把
 // Block Update 广播给附近玩家；体素修改会随区块保存（Flush/卸载）持久化。
 //
-// 当前为简化实现：挖掘没有时间与掉落物（生存模式在客户端完成挖掘后提交
-// STOP_DESTROY_BLOCK，创意模式在按下瞬间生效），放置只支持不携带数据组件的
-// 方块物品；冒险与旁观模式不支持交互。
+// 当前为简化实现：挖掘没有时间（生存模式在客户端完成后提交
+// STOP_DESTROY_BLOCK，创意模式在按下瞬间生效），掉落物按简化掉落表生成
+// （无工具/精准采集/时运与概率掉落，见 block_drops.go），放置只支持
+// 不携带数据组件的方块物品；冒险与旁观模式不支持交互。
 
 const (
 	// survivalReach / creativeReach 是方块交互的最大距离（相对玩家眼睛）。
@@ -89,6 +90,10 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 		return
 	}
 	s.broadcastBlockUpdate(action.X, action.Y, action.Z, int32(world.AirBlock))
+	if player.gameModeID() != uint8(config.GameModeCreative) {
+		// 生存模式掉落（创意模式破坏不掉落物品，与原版一致）。
+		s.dropBlockItem(current, action.X, action.Y, action.Z)
+	}
 }
 
 // blockFaceOffsets 是 Use Item On 的六个朝向对应的放置偏移（-Y、+Y、-Z、+Z、-X、+X）。

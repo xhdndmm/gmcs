@@ -86,6 +86,10 @@ type Config struct {
 	// "name:level"（level 1–4，例如 "Alice:2"），命令要求等级见
 	// internal/server/commands.go。JSON 中可写数组或单个字符串。
 	Ops StringList `json:"ops"`
+	// PprofAddress 是 pprof 诊断监听地址（如 "127.0.0.1:6060"）；
+	// 空值表示不启用。启用后在该地址上提供 /debug/pprof/*（CPU/内存/
+	// goroutine 分析）。仅用于本地诊断，不要暴露到公网。
+	PprofAddress string `json:"pprof_address"`
 }
 
 // Default 返回默认配置。

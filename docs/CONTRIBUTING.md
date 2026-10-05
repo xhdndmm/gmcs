@@ -60,6 +60,11 @@ scripts/test.sh --bench     # 附加 benchmark
 go test -run=^$ -bench=. -benchmem ./...   # 仅 benchmark
 ```
 
+端到端负载观测（可选）：启用 `pprof_address` 后可用 `/debug/pprof` 采集 CPU/内存
+profile；`go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s`
+可模拟并发客户端并输出进入世界耗时、流量与包类型分布（方法见
+[PERFORMANCE.md](PERFORMANCE.md) 3.7）。
+
 ## 3. 项目结构
 
 | 路径 | 职责 | 注意点 |
@@ -68,6 +73,7 @@ go test -run=^$ -bench=. -benchmem ./...   # 仅 benchmark
 | `internal/config` | 配置结构、JSON 持久化与校验 | 新字段需同步 README 配置表与 MIGRATION 字段演化表 |
 | `internal/protocol` | 协议编解码（握手/登录/配置/Play、NBT、Slot、加密等） | 数据包 ID 与格式严格对应 1.21.11（协议 774） |
 | `internal/registry` | 注册表、方块状态、物品与静态 ID 数据 | `*_generated.go` 由工具生成，禁止手改 |
+| `cmd/gmcsload` | 负载压测客户端（离线模式模拟并发玩家） | 仅用于测试/基准，不参与服务器运行 |
 | `internal/world` | 区块模型、地形生成、区域文件存储 | 存储负载为 gmcs 自定义格式（magic `GMCS`） |
 | `internal/item` | 物品堆栈与玩家物品栏 | 与注册表物品 ID 表配合 |
 | `internal/server` | 会话生命周期、世界循环、实体/战斗、命令 | 并发与生命周期集中在这里 |

@@ -160,6 +160,29 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPprofAddress 验证 pprof 配置项默认关闭、可从文件读取并参与往返保存。
+func TestPprofAddress(t *testing.T) {
+	if Default().PprofAddress != "" {
+		t.Fatalf("默认 pprof_address = %q，want 空（关闭）", Default().PprofAddress)
+	}
+	path := filepath.Join(t.TempDir(), "gmcs.json")
+	cfg := Default()
+	cfg.PprofAddress = "127.0.0.1:6060"
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.PprofAddress != "127.0.0.1:6060" {
+		t.Fatalf("pprof_address = %q，want 127.0.0.1:6060", loaded.PprofAddress)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("启用 pprof 的配置应合法：%v", err)
+	}
+}
+
 func TestLoadMergesDefaultsForMissingFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gmcs.json")
 	// 只提供部分字段，其余应保留默认值。

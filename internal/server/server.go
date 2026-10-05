@@ -87,6 +87,10 @@ type Server struct {
 	// fallDamageMultipliers 是落点方块的摔落伤害倍率（New 中解析）。
 	fallDamageMultipliers map[uint16]float32
 
+	// blockNames 是方块状态 ID → 命名空间名的反查表（New 中构建），
+	// 用于破坏方块时的掉落判定。
+	blockNames map[uint16]string
+
 	// rsaKey 用于正版登录的加密握手（仅在线模式生成）。
 	rsaKey *rsa.PrivateKey
 	// httpClient 用于访问会话服务器。
@@ -149,6 +153,7 @@ func New(cfg config.Config) (*Server, error) {
 	server.resolvePlayerEntityType()
 	server.resolveItemRegistryIDs()
 	server.resolveFallDamageBlocks()
+	server.blockNames = resolveBlockNames()
 	if !server.mobsEnabled {
 		slog.Warn("生物系统已禁用：注册表数据缺失")
 	}
