@@ -19,6 +19,30 @@ func TestVarIntRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAppendVarIntEncoding 固定边界值的 VarInt 字节序列，
+// 防止后续改动（例如为静态分析调整掩码与上界判断）改变编码输出。
+func TestAppendVarIntEncoding(t *testing.T) {
+	for _, test := range []struct {
+		value int32
+		want  []byte
+	}{
+		{value: 0, want: []byte{0x00}},
+		{value: 1, want: []byte{0x01}},
+		{value: 127, want: []byte{0x7f}},
+		{value: 128, want: []byte{0x80, 0x01}},
+		{value: 255, want: []byte{0xff, 0x01}},
+		{value: 300, want: []byte{0xac, 0x02}},
+		{value: 2147483647, want: []byte{0xff, 0xff, 0xff, 0xff, 0x07}},
+		{value: -1, want: []byte{0xff, 0xff, 0xff, 0xff, 0x0f}},
+		{value: -2147483648, want: []byte{0x80, 0x80, 0x80, 0x80, 0x08}},
+	} {
+		got := AppendVarInt(nil, test.value)
+		if !bytes.Equal(got, test.want) {
+			t.Fatalf("AppendVarInt(%d) = % x, want % x", test.value, got, test.want)
+		}
+	}
+}
+
 func TestDecodeVarIntRejectsMalformedAndIncompleteValues(t *testing.T) {
 	for _, encoded := range [][]byte{{0x80}, {0xff, 0xff, 0xff, 0xff, 0x10}, {0x80, 0x80, 0x80, 0x80, 0x80, 0x00}} {
 		if _, _, err := DecodeVarInt(encoded); !errors.Is(err, ErrMalformedVarInt) {

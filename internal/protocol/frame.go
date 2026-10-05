@@ -30,13 +30,18 @@ func ReadVarInt(reader io.ByteReader) (int32, error) {
 	return 0, ErrMalformedVarInt
 }
 
+// AppendVarInt 追加 VarInt 编码。
+//
+// VarInt 每个字节只使用低 7 位：循环条件用常量上界（encoded > 0x7f），
+// 且每次 byte 转换前都显式取低 7 位（byte(x & 0x7f)），
+// 使转换不可能溢出，也让静态分析能够验证上界（避免整数截断误报）。
 func AppendVarInt(dst []byte, value int32) []byte {
 	encoded := uint32(value)
-	for encoded&^uint32(0x7f) != 0 {
+	for encoded > 0x7f {
 		dst = append(dst, byte(encoded&0x7f)|0x80)
 		encoded >>= 7
 	}
-	return append(dst, byte(encoded))
+	return append(dst, byte(encoded&0x7f))
 }
 
 func DecodeVarInt(data []byte) (int32, int, error) {
