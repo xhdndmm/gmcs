@@ -644,14 +644,14 @@ func splitItemCount(entry string) (string, int32) {
 	if index < 0 {
 		return name, 1
 	}
-	count, err := strconv.Atoi(strings.TrimSpace(name[index+1:]))
-	if err != nil || count < 1 {
+	parsed, err := strconv.ParseInt(strings.TrimSpace(name[index+1:]), 10, 32)
+	if err != nil || parsed < 1 {
 		return strings.TrimSpace(name[:index]), 1
 	}
-	if count > 64 {
-		count = 64
+	if parsed > 64 {
+		parsed = 64
 	}
-	return strings.TrimSpace(name[:index]), int32(count)
+	return strings.TrimSpace(name[:index]), int32(parsed)
 }
 
 // keepAliveLoop 周期发送 Keep Alive；写失败时关闭连接以唤醒读循环。
