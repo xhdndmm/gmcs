@@ -98,8 +98,8 @@ func (s *Server) spawnItem(stack item.Stack, x, y, z, vx, vy, vz float64, pickup
 	if !s.itemsEnabled || stack.IsEmpty() {
 		return nil
 	}
-	if stack.Count > item.StackLimit {
-		stack.Count = item.StackLimit
+	if limit := stack.MaxStack(); stack.Count > limit {
+		stack.Count = limit
 	}
 	e := &itemEntity{
 		ID:               s.entityIDs.Add(1),
@@ -242,7 +242,8 @@ func (s *Server) itemInWater(x, y, z float64) bool {
 // 合并进当前堆叠（上限 64），保留较长的拾取延迟与较短的存在时间。
 // 调用方必须持有 entityMu。返回需要广播的元数据更新与移除列表。
 func (s *Server) mergeItems(e *itemEntity) (updates [][]byte, removals []int32) {
-	if e.Stack.Count >= item.StackLimit {
+	limit := e.Stack.MaxStack()
+	if e.Stack.Count >= limit {
 		return nil, nil
 	}
 	changed := false
@@ -254,14 +255,14 @@ func (s *Server) mergeItems(e *itemEntity) (updates [][]byte, removals []int32) 
 			math.Abs(other.Z-e.Z) > itemMergeRange {
 			continue
 		}
-		if other.Stack.Count >= item.StackLimit {
+		if other.Stack.Count >= limit {
 			continue
 		}
 		if !s.attackPathClear(e.X, e.Y+0.1, e.Z, other.X, other.Y+0.1, other.Z) {
 			continue // 隔墙不合并（与原版 Paper 的修复一致）
 		}
 		total := e.Stack.Count + other.Stack.Count
-		e.Stack.Count = min(total, int32(item.StackLimit))
+		e.Stack.Count = min(total, limit)
 		other.Stack.Count = total - e.Stack.Count
 		e.PickupDelayTicks = max(e.PickupDelayTicks, other.PickupDelayTicks)
 		e.AgeTicks = min(e.AgeTicks, other.AgeTicks)
@@ -272,7 +273,7 @@ func (s *Server) mergeItems(e *itemEntity) (updates [][]byte, removals []int32) 
 		} else {
 			updates = append(updates, protocol.EncodeEntityMetadataItem(other.ID, other.Stack.AppendSlot(nil)))
 		}
-		if e.Stack.Count >= item.StackLimit {
+		if e.Stack.Count >= limit {
 			break
 		}
 	}

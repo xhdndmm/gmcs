@@ -2,16 +2,29 @@ package server
 
 import (
 	"math"
+	"net"
 	"testing"
-	"time"
 
 	"gmcs/internal/config"
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/world"
 )
 
-// TestHealthRegeneration 验证脱战回血：受伤后 8 秒内不回血，
-// 之后每 4 秒（80 tick）恢复 1 点，并同步给客户端。
+// sendUseItem 发送 Use Item（使用物品，如进食）包。
+func sendUseItem(t *testing.T, conn net.Conn) {
+	t.Helper()
+	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDUseItem)
+	packet = protocol.AppendVarInt(packet, 0) // hand
+	packet = protocol.AppendVarInt(packet, 0) // sequence
+	packet = append(packet, 0x00)             // rotation（无）
+	if err := protocol.WritePacketWithCompression(conn, packet, compressionThreshold); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHealthRegeneration 验证饥饿驱动的自然恢复：
+// 受伤后饥饿值 ≥ 18 时，每 4 秒（80 tick）恢复 1 点，并同步给客户端。
 func TestHealthRegeneration(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
@@ -29,20 +42,12 @@ func TestHealthRegeneration(t *testing.T) {
 	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-5 {
 		t.Fatalf("health = %v after damage", health)
 	}
-
-	// 脱战延迟内不恢复。
-	for i := 0; i < playerRegenIntervalTicks; i++ {
-		instance.tick()
-	}
-	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-5 {
-		t.Fatalf("health = %v during regen delay, want %v", health, maxPlayerHealth-5)
+	if _, food, _ := player.healthStatus(); food < playerRegenFoodThreshold {
+		t.Fatalf("food = %d, want >= %d", food, playerRegenFoodThreshold)
 	}
 
-	// 把上次受伤时间提前到延迟之外，推进一个恢复周期。
-	player.stateMu.Lock()
-	player.lastHurt = time.Now().Add(-playerRegenDelay - time.Second)
-	player.stateMu.Unlock()
-	for i := 0; i < playerRegenIntervalTicks; i++ {
+	// 一个恢复周期后恢复 1 点。
+	for i := 0; i < playerFoodTickInterval; i++ {
 		instance.tick()
 	}
 	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-4 {
@@ -56,6 +61,79 @@ func TestHealthRegeneration(t *testing.T) {
 	health, _, err := protocol.DecodeFloat32(healthPacket, offset)
 	if err != nil || health != maxPlayerHealth-4 {
 		t.Fatalf("update health packet = %v (err=%v)", health, err)
+	}
+
+	// 饥饿值低于阈值时不恢复：把饥饿值降到 17 后推进一个周期。
+	player.stateMu.Lock()
+	player.food = playerRegenFoodThreshold - 1
+	player.saturation = 0
+	player.foodTimer = 0
+	player.stateMu.Unlock()
+	for i := 0; i < playerFoodTickInterval; i++ {
+		instance.tick()
+	}
+	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-4 {
+		t.Fatalf("hunger below threshold should not regen: health = %v", health)
+	}
+}
+
+// TestStarvationDamage 验证饥饿值为 0 时每 4 秒受到 1 点伤害（最低到 1）。
+func TestStarvationDamage(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "Starving")
+	player := findSession(t, instance, "Starving")
+
+	player.stateMu.Lock()
+	player.food = 0
+	player.saturation = 0
+	player.foodTimer = 0
+	player.health = 2
+	player.stateMu.Unlock()
+
+	for i := 0; i < playerFoodTickInterval; i++ {
+		instance.tick()
+	}
+	if health, _, _ := player.healthStatus(); health != 1 {
+		t.Fatalf("starvation damage: health = %v, want 1", health)
+	}
+	// 生命降到 1 后不再因饥饿受损。
+	for i := 0; i < playerFoodTickInterval*2; i++ {
+		instance.tick()
+	}
+	if health, _, _ := player.healthStatus(); health != 1 {
+		t.Fatalf("starvation should stop at 1: health = %v", health)
+	}
+}
+
+// TestEatingRestoresHunger 验证进食恢复饥饿值、消耗物品并同步数据包。
+func TestEatingRestoresHunger(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:apple*2"}
+	instance, conn := joinServer(t, cfg, "Eater")
+	player := findSession(t, instance, "Eater")
+
+	// 先消耗到饥饿值 10。
+	player.stateMu.Lock()
+	player.food = 10
+	player.saturation = 0
+	player.stateMu.Unlock()
+
+	sendUseItem(t, conn)
+	// 期望：槽位数量 2 → 1，然后 Update Health（饥饿值 +4）。
+	slotPacket := expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
+	if count := slotCount(t, slotPacket); count != 1 {
+		t.Fatalf("apple count after eating = %d, want 1", count)
+	}
+	expectPlayPacket(t, conn, protocol.PlayPacketIDUpdateHealth)
+	if _, food, _ := player.healthStatus(); food != 14 {
+		t.Fatalf("food after eating apple = %d, want 14", food)
+	}
+	if stack := player.inventory.Get(item.SlotHotbarStart); stack.Count != 1 {
+		t.Fatalf("inventory apple count = %+v", stack)
 	}
 }
 

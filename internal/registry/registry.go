@@ -64,6 +64,28 @@ func ItemName(id int32) (string, bool) {
 	return name, ok
 }
 
+// Food 返回物品的食物数值（营养与饱和度）；不是食物时返回 false。
+func Food(itemID int32) (FoodValue, bool) {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return FoodValue{}, false
+	}
+	value, ok := FoodValues[name]
+	return value, ok
+}
+
+// MaxStackSize 返回物品的堆叠上限（未收录的物品按 64 处理）。
+func MaxStackSize(itemID int32) int32 {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return 64
+	}
+	if size, ok := MaxStackSizes[name]; ok && size > 0 {
+		return size
+	}
+	return 64
+}
+
 var cachedTags = sync.OnceValue(func() []RegistryTags {
 	names := make([]string, 0, len(allTags))
 	for name := range allTags {

@@ -21,8 +21,8 @@ const (
 	SlotOffhand = 40
 )
 
-// StackLimit 是单槽位物品数量上限（本服务器统一 64；物品组件派生的
-// 堆叠上限暂不校验）。
+// StackLimit 是默认堆叠上限（未知物品的退估值）；具体物品的上限见
+// registry.MaxStackSize（如雪球 16、工具 1）。
 const StackLimit = 64
 
 // Inventory 是玩家物品栏（41 槽）。
@@ -44,13 +44,14 @@ func (inv *Inventory) Add(stack Stack) (remaining int32, changed []int) {
 		return 0, nil
 	}
 	remaining = stack.Count
+	limit := stack.MaxStack()
 	// 先并入同类未满堆栈。
 	for slot := SlotHotbarStart; slot <= SlotMainEnd && remaining > 0; slot++ {
 		existing := inv.slots[slot]
-		if existing.IsEmpty() || existing.ItemID != stack.ItemID || existing.Count >= StackLimit {
+		if existing.IsEmpty() || existing.ItemID != stack.ItemID || existing.Count >= limit {
 			continue
 		}
-		moved := min(StackLimit-existing.Count, remaining)
+		moved := min(limit-existing.Count, remaining)
 		existing.Count += moved
 		inv.slots[slot] = existing
 		remaining -= moved
@@ -61,7 +62,7 @@ func (inv *Inventory) Add(stack Stack) (remaining int32, changed []int) {
 		if !inv.slots[slot].IsEmpty() {
 			continue
 		}
-		placed := min(int32(StackLimit), remaining)
+		placed := min(limit, remaining)
 		inv.slots[slot] = Stack{ItemID: stack.ItemID, Count: placed}
 		remaining -= placed
 		changed = append(changed, slot)

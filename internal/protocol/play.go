@@ -27,7 +27,11 @@ const (
 	PlayPacketIDSetCenterChunk     = 0x5C // clientbound
 	PlayPacketIDSetDefaultSpawn    = 0x5F // clientbound
 	PlayPacketIDSetPlayerInventory = 0x6A // clientbound
-	PlayPacketIDSystemChat         = 0x77 // clientbound
+	// PlayPacketIDUpdateTime 是 Update Time（世界时间）。
+	PlayPacketIDUpdateTime = 0x6F // clientbound
+	// PlayPacketIDSetExperience 是 Set Experience（经验条）。
+	PlayPacketIDSetExperience = 0x65 // clientbound
+	PlayPacketIDSystemChat    = 0x77 // clientbound
 	// PlayPacketIDChunkBatchFinished 是 Chunk Batch Finished（批次结束）。
 	PlayPacketIDChunkBatchFinished = 0x0B // clientbound
 	// PlayPacketIDChunkBatchStart 是 Chunk Batch Start（批次开始）。
@@ -55,6 +59,8 @@ const (
 	PlayServerboundPacketIDSetCreativeSlot        = 0x37
 	PlayServerboundPacketIDSwingArm               = 0x3C
 	PlayServerboundPacketIDUseItemOn              = 0x3F
+	// PlayServerboundPacketIDUseItem 是 Use Item（使用物品，如进食）。
+	PlayServerboundPacketIDUseItem = 0x40
 )
 
 // LoginPlayData 是 Login (play) 数据包的内容。
@@ -371,6 +377,23 @@ func EncodeBlockUpdate(x, y, z int, state int32) []byte {
 	return AppendVarInt(packet, state)
 }
 
+// EncodeUpdateTime 编码 Update Time 包：age 是世界存在的时间（tick），
+// time 是当前时刻（0–23999），tickDayTime 表示客户端应推进时间。
+func EncodeUpdateTime(age, time int64, tickDayTime bool) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDUpdateTime))
+	packet = AppendInt64(packet, age)
+	packet = AppendInt64(packet, time)
+	return AppendBool(packet, tickDayTime)
+}
+
+// EncodeSetExperience 编码 Set Experience 包（经验条、等级与总经验）。
+func EncodeSetExperience(bar float32, level, total int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDSetExperience))
+	packet = AppendFloat32(packet, bar)
+	packet = AppendVarInt(packet, level)
+	return AppendVarInt(packet, total)
+}
+
 // EncodeBlockAction 编码 Block Action 包（方块动画与事件，如箱子开合）。
 // blockID 是方块注册表 ID（不是方块状态 ID）。
 func EncodeBlockAction(x, y, z int, paramA, paramB uint8, blockID int32) []byte {
@@ -395,6 +418,9 @@ func ParsePlayerInput(packet []byte) (uint8, error) {
 
 // PlayerInputShift 是 Player Input 位标志中的潜行位。
 const PlayerInputShift = 1 << 5
+
+// PlayerInputSprint 是 Player Input 位标志中的疾跑位。
+const PlayerInputSprint = 1 << 6
 
 // EncodeRemoveEntities 编码 Remove Entities 包（实体 ID 列表）。
 func EncodeRemoveEntities(ids []int32) []byte {

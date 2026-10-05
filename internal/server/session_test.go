@@ -303,6 +303,10 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 			}
 			continue
 		}
+		if id == 0x6F || id == 0x65 {
+			// Update Time / Set Experience（进入世界的同步包）可以穿插其中。
+			continue
+		}
 		if id != 0x3F {
 			t.Fatalf("expected player chat broadcast, got %#x", id)
 		}

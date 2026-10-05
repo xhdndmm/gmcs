@@ -110,11 +110,18 @@ type session struct {
 	health     float32
 	food       int32
 	saturation float32
-	dead       bool
-	gameMode   uint8
-	lastHurt   time.Time
-	// regenTicks 是脱战回血的计数（每 playerRegenIntervalTicks 恢复 1 点）。
-	regenTicks int
+	// exhaustion 是饥饿系统的疲劳度：累计到 4 点消耗 1 点饥饿值。
+	exhaustion float32
+	// foodTimer 驱动自然恢复/饥饿伤害的 4 秒（80 tick）计时。
+	foodTimer int
+	// sprinting 记录客户端上报的疾跑状态（用于计算疲劳度）。
+	sprinting bool
+	// experience 是经验值（总量与等级）。
+	experience    int32
+	experienceBar float32
+	dead          bool
+	gameMode      uint8
+	lastHurt      time.Time
 
 	// 下落跟踪（摔落伤害）：以服务器端地面检测驱动，仅由会话读循环访问。
 	fallStartY float64
@@ -334,6 +341,27 @@ func (s *session) resetFallState() {
 	s.airborne = false
 }
 
+// isFalling 报告玩家当前是否处于下落状态（用于跳跃暴击判定）。
+// 仅由会话读循环调用（与 updateFallState 同 goroutine）。
+func (s *session) isFalling() bool {
+	return s.airborne
+}
+
+// addMovementExhaustion 依据位移与输入计算疲劳度（疾跑 0.1/格、跳跃 0.05/次）。
+// 仅由会话读循环调用（sprinting 由读循环维护）。
+func (s *session) addMovementExhaustion(distance float64, jumped bool) {
+	exhaustion := float32(0)
+	if s.sprinting {
+		exhaustion += float32(distance) * playerExhaustionSprint
+	}
+	if jumped {
+		exhaustion += playerExhaustionJump
+	}
+	if exhaustion > 0 {
+		s.addExhaustion(exhaustion)
+	}
+}
+
 // fallDamageMultiplier 返回落点方块对摔落伤害的倍率（默认 1；干草堆 0.2，
 // 床 0.5，粘液块/蜂蜜块/细雪完全免疫）。
 func (s *Server) fallDamageMultiplier(landed uint16) float32 {
@@ -395,7 +423,8 @@ func (s *session) applyDamage(amount float32, now time.Time) (health float32, fo
 		return s.health, s.food, s.saturation, false, false
 	}
 	s.lastHurt = now
-	s.regenTicks = 0
+	// 受伤会积累疲劳度（与原版一致：0.1）。
+	s.exhaustion += playerExhaustionDamage
 	s.health -= amount
 	if s.health <= 0 {
 		s.health = 0
@@ -405,28 +434,153 @@ func (s *session) applyDamage(amount float32, now time.Time) (health float32, fo
 	return s.health, s.food, s.saturation, true, false
 }
 
-// applyRegen 推进脱战回血：距离上次受伤超过 playerRegenDelay 后，
-// 每 playerRegenIntervalTicks 恢复 1 点生命。返回是否发生恢复。
-func (s *session) applyRegen(now time.Time) (health float32, food int32, saturation float32, healed bool) {
+// addExhaustion 累加疲劳度并按原版规则消耗饥饿值。
+// 由会话读循环调用（移动/攻击）或实体 Tick（通过 addExhaustionLocked）。
+func (s *session) addExhaustion(amount float32) {
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	if s.dead || s.health <= 0 || s.health >= maxPlayerHealth {
-		return s.health, s.food, s.saturation, false
-	}
-	if !s.lastHurt.IsZero() && now.Sub(s.lastHurt) < playerRegenDelay {
-		s.regenTicks = 0
-		return s.health, s.food, s.saturation, false
-	}
-	s.regenTicks++
-	if s.regenTicks < playerRegenIntervalTicks {
-		return s.health, s.food, s.saturation, false
-	}
-	s.regenTicks = 0
-	s.health++
-	return s.health, s.food, s.saturation, true
+	s.exhaustion += amount
+	s.drainFoodLocked()
+	s.stateMu.Unlock()
 }
 
-// markRespawned 把死亡状态重置为满生命。返回 false 表示玩家未死亡。
+// drainFoodLocked 把累计到阈值的疲劳度折算为饥饿值（每 4 点疲劳消耗 1 点）。
+// 调用方必须持有 stateMu。
+func (s *session) drainFoodLocked() {
+	for s.exhaustion >= playerExhaustionPerFood && s.food > 0 {
+		s.exhaustion -= playerExhaustionPerFood
+		s.food--
+	}
+	if s.food <= 0 {
+		s.food = 0
+		s.exhaustion = min(s.exhaustion, playerExhaustionPerFood)
+	}
+}
+
+// playerHungerStatus 是 tickPlayerHunger 的结果。
+type playerHungerStatus struct {
+	health, saturation float32
+	food               int32
+	changed            bool
+}
+
+// applyHungerTick 推进饥饿系统一帧（每帧调用；内部按 80 tick 计时）：
+//   - 饥饿值 ≥ 18 且未满血时自然恢复：优先消耗饱食度（更快），
+//     否则每 4 秒恢复 1 点并积累疲劳；
+//   - 饥饿值为 0 时每 4 秒受到 1 点饥饿伤害（普通难度）。
+//
+// 不再使用“脱战回血”的简化模型。
+func (s *session) applyHungerTick() playerHungerStatus {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	status := playerHungerStatus{health: s.health, food: s.food, saturation: s.saturation}
+	if s.dead || s.gameMode == uint8(config.GameModeCreative) || s.gameMode == uint8(config.GameModeSpectator) {
+		return status
+	}
+	s.foodTimer++
+	if s.foodTimer < playerFoodTickInterval {
+		return status
+	}
+	s.foodTimer = 0
+	switch {
+	case s.food >= playerRegenFoodThreshold && s.health < maxPlayerHealth && s.health > 0:
+		// 自然恢复：有饱食度时消耗饱食度（不消耗饥饿值），否则消耗饥饿值。
+		if s.saturation > 0 {
+			s.saturation = max(0, s.saturation-playerSaturationPerRegen)
+		} else {
+			s.exhaustion += playerExhaustionRegen
+			s.drainFoodLocked()
+		}
+		s.health++
+		status.changed = true
+	case s.food <= 0 && s.health > 1:
+		// 饥饿伤害：生命降到 1 为止（与普通难度一致）。
+		s.health--
+		status.changed = true
+		if s.health < 1 {
+			s.health = 1
+		}
+	}
+	status.health, status.food, status.saturation = s.health, s.food, s.saturation
+	return status
+}
+
+// eatFood 应用一次进食：恢复饥饿值与饱食度。返回是否实际进食。
+func (s *session) eatFood(itemID int32) bool {
+	food, ok := registry.Food(itemID)
+	if !ok {
+		return false
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.dead || s.food >= maxPlayerFood {
+		return false
+	}
+	s.food = min(maxPlayerFood, s.food+food.Nutrition)
+	s.saturation = min(float32(s.food), s.saturation+food.Saturation)
+	s.stateMu.Unlock()
+	s.stateMu.Lock()
+	return true
+}
+
+// addExperience 增加经验值并返回新的经验条状态（原版等级公式）。
+func (s *session) addExperience(points int32) (bar float32, level, total int32) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.experience += points
+	level, progress := experienceLevel(s.experience)
+	s.experienceBar = progress
+	return s.experienceBar, level, s.experience
+}
+
+// experienceStatus 返回当前经验条状态。
+func (s *session) experienceStatus() (bar float32, level, total int32) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	level, progress := experienceLevel(s.experience)
+	return progress, level, s.experience
+}
+
+// setSprinting 记录疾跑状态。
+func (s *session) setSprinting(sprinting bool) {
+	s.stateMu.Lock()
+	s.sprinting = sprinting
+	s.stateMu.Unlock()
+}
+
+// sprintingStatus 返回疾跑状态。
+func (s *session) sprintingStatus() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.sprinting
+}
+
+// experienceLevel 按原版公式把总经验换算为等级与经验条进度（0–1）。
+func experienceLevel(total int32) (level int32, progress float32) {
+	remaining := total
+	for remaining >= experienceCost(level) {
+		remaining -= experienceCost(level)
+		level++
+	}
+	cost := experienceCost(level)
+	if cost <= 0 {
+		return level, 0
+	}
+	return level, float32(remaining) / float32(cost)
+}
+
+// experienceCost 返回从该等级升到下一级需要的经验（原版公式）。
+func experienceCost(level int32) int32 {
+	switch {
+	case level >= 31:
+		return 9*level - 158
+	case level >= 16:
+		return 5*level - 38
+	default:
+		return 2*level + 7
+	}
+}
+
+// markRespawned 把死亡状态重置为满生命与满饥饿。返回 false 表示玩家未死亡。
 func (s *session) markRespawned() bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
@@ -437,8 +591,12 @@ func (s *session) markRespawned() bool {
 	s.health = maxPlayerHealth
 	s.food = maxPlayerFood
 	s.saturation = playerSaturation
+	s.exhaustion = 0
+	s.foodTimer = 0
 	s.lastHurt = time.Time{}
-	s.regenTicks = 0
+	// 与原版一致：死亡会清空经验（不掉落经验球）。
+	s.experience = 0
+	s.experienceBar = 0
 	return true
 }
 
@@ -806,6 +964,12 @@ func (s *session) runPlay() {
 	}
 	health, food, saturation := s.healthStatus()
 	packets = append(packets, protocol.EncodeUpdateHealth(health, food, saturation))
+	// 世界时间与经验条。
+	packets = append(packets,
+		protocol.EncodeUpdateTime(s.server.worldAge.Load(), s.server.worldAge.Load()%worldDayLength, true),
+	)
+	experienceBar, experienceLevel, experienceTotal := s.experienceStatus()
+	packets = append(packets, protocol.EncodeSetExperience(experienceBar, experienceLevel, experienceTotal))
 	if err := s.writePackets(packets...); err != nil {
 		return
 	}
@@ -980,9 +1144,10 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.lastMoveTime = time.Now()
-			_, _, _, yaw, pitch := s.playerPosition()
+			prevX, prevY, prevZ, yaw, pitch := s.playerPosition()
 			s.setPlayerPosition(x, y, z, yaw, pitch)
 			s.updateFallState(x, y, z)
+			s.addMovementExhaustion(math.Hypot(x-prevX, z-prevZ), y > prevY+0.5)
 			s.server.broadcastPlayerMove(s)
 			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
@@ -995,8 +1160,10 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.lastMoveTime = time.Now()
+			prevX, prevY, prevZ, _, _ := s.playerPosition()
 			s.setPlayerPosition(x, y, z, yaw, pitch)
 			s.updateFallState(x, y, z)
+			s.addMovementExhaustion(math.Hypot(x-prevX, z-prevZ), y > prevY+0.5)
 			s.server.broadcastPlayerMove(s)
 			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerRotation:
@@ -1047,7 +1214,12 @@ func (s *session) playReadLoop() {
 		case protocol.PlayServerboundPacketIDPlayerInput:
 			if flags, err := protocol.ParsePlayerInput(packet); err == nil {
 				s.sneaking = flags&protocol.PlayerInputShift != 0
+				s.setSprinting(flags&protocol.PlayerInputSprint != 0)
 			}
+		case protocol.PlayServerboundPacketIDUseItem:
+			// 使用物品（进食等）：手持食物且未满饥饿时立即食用。
+			// 说明：未实现原版 1.6 秒的进食过程（无进度条与中断处理）。
+			s.server.handleUseItem(s)
 		case protocol.PlayServerboundPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
 				s.clientInfo = info

@@ -158,7 +158,7 @@ func (s *Server) loadEntities() error {
 			slog.Warn("跳过无效的掉落物记录", "item", record.Item, "error", itemErr)
 			continue
 		}
-		stack.Count = min(stack.Count, int32(item.StackLimit))
+		stack.Count = min(stack.Count, stack.MaxStack())
 		uuid, uuidErr := parseMobUUID(record.UUID)
 		if uuidErr != nil {
 			slog.Warn("掉落物的 UUID 无效，重新生成", "uuid", record.UUID, "error", uuidErr)

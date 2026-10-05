@@ -29,6 +29,11 @@ func (s Stack) IsEmpty() bool {
 	return s.Count <= 0
 }
 
+// MaxStack 返回该物品的堆叠上限（来自官方物品数据；未知物品按 64）。
+func (s Stack) MaxStack() int32 {
+	return registry.MaxStackSize(s.ItemID)
+}
+
 // FromName 按命名空间 ID 与数量创建堆栈。
 func FromName(name string, count int32) (Stack, error) {
 	if count <= 0 {

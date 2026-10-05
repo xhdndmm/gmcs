@@ -159,6 +159,9 @@ func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPack
 		expectPlayPacketObserved(t, conn, protocol.PlayPacketIDSetPlayerInventory, observe)
 	}
 	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDUpdateHealth, observe)
+	// 世界时间与经验条。
+	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDUpdateTime, observe)
+	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDSetExperience, observe)
 	// 确认传送
 	confirm := protocol.AppendVarInt(nil, 0x00)
 	confirm = protocol.AppendVarInt(confirm, 1)
@@ -334,11 +337,13 @@ func TestMobAttackBlockedByWall(t *testing.T) {
 func TestWorldBorderLimitsMobSpawn(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
-	cfg.WorldBorderSize = 32 // 半边长 16 格，小于生成距离 12–24
+	cfg.WorldBorderSize = 128 // 半边长 64 格，大于生成距离（24–36）
 	cfg.SpawnMonsters = true
 	cfg.MaxMobs = 8
 	instance, conn := joinServer(t, cfg, "Borderer")
 	_ = conn
+	// 怪物只在夜间生成。
+	instance.worldAge.Store(worldNightStart)
 	players := instance.playerSnapshot()
 
 	spawned := 0
@@ -464,13 +469,15 @@ func TestGameModeCommand(t *testing.T) {
 	}
 }
 
-// TestMobSpawnAndCap 验证自动生成（尝试多次后必定生成）与数量上限。
+// TestMobSpawnAndCap 验证夜间自动生成（尝试多次后必定生成）与数量上限。
 func TestMobSpawnAndCap(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = true
 	cfg.MaxMobs = 1
 	instance, conn := joinServer(t, cfg, "Spawner")
+	// 怪物只在夜间生成。
+	instance.worldAge.Store(worldNightStart)
 	players := instance.playerSnapshot()
 
 	spawned := false

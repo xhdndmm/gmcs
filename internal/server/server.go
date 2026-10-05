@@ -40,6 +40,8 @@ type Server struct {
 	entityIDs         atomic.Int32
 	chatIndex         atomic.Int32
 	keepAliveInterval time.Duration
+	// worldAge 是世界时间（tick，每次 tick 递增；用于昼夜与 Update Time）。
+	worldAge atomic.Int64
 
 	// 实体状态：mobs、items 与各自的字段受 entityMu 保护。
 	entityMu   sync.Mutex

@@ -545,7 +545,10 @@ func (s *Server) applyContainerClick(player *session, backing slotBacking, worki
 	if click.Mode != protocol.ClickModeQuickCraft && (slot < 0 || slot >= len(working) || !backing.Supported(slot)) {
 		return cursor
 	}
-	limit := int32(item.StackLimit)
+	limit := cursor.MaxStack()
+	if cursor.IsEmpty() {
+		limit = working[slot].MaxStack()
+	}
 	switch click.Mode {
 	case protocol.ClickModePickup:
 		if click.MouseButton == 0 {
@@ -742,7 +745,7 @@ func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor i
 					placed.Count = 1
 					working[index] = placed
 					cursor.Count--
-				} else if stack.ItemID == cursor.ItemID && stack.Count < int32(item.StackLimit) {
+				} else if stack.ItemID == cursor.ItemID && stack.Count < cursor.MaxStack() {
 					stack.Count++
 					working[index] = stack
 					cursor.Count--
@@ -764,7 +767,7 @@ func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor i
 					one.Count = 1
 					working[index] = one
 					placed++
-				} else if stack.ItemID == cursor.ItemID && stack.Count < int32(item.StackLimit) {
+				} else if stack.ItemID == cursor.ItemID && stack.Count < cursor.MaxStack() {
 					stack.Count++
 					working[index] = stack
 					placed++
@@ -825,7 +828,7 @@ func quickMoveTargets(backing slotBacking, slot int) [][2]int {
 
 // mergeIntoArea 把 stack 合并/放入 [start, end) 区间，返回剩余部分。
 func mergeIntoArea(working []item.Stack, stack item.Stack, start, end int) item.Stack {
-	limit := int32(item.StackLimit)
+	limit := stack.MaxStack()
 	// 先并入同类未满堆叠。
 	for i := start; i < end && stack.Count > 0; i++ {
 		current := working[i]
