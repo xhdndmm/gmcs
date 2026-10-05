@@ -425,9 +425,9 @@ func TestParsePlayerMovement(t *testing.T) {
 	position = AppendFloat64(position, 64)
 	position = AppendFloat64(position, -2.5)
 	position = append(position, 0x01)
-	x, y, z, err := ParsePlayerPosition(position)
-	if err != nil || x != 1.5 || y != 64 || z != -2.5 {
-		t.Fatalf("position = (%v, %v, %v), err=%v", x, y, z, err)
+	x, y, z, onGround, err := ParsePlayerPosition(position)
+	if err != nil || x != 1.5 || y != 64 || z != -2.5 || !onGround {
+		t.Fatalf("position = (%v, %v, %v, %v), err=%v", x, y, z, onGround, err)
 	}
 
 	rotation := AppendVarInt(nil, PlayServerboundPacketIDPlayerRotation)
@@ -446,9 +446,18 @@ func TestParsePlayerMovement(t *testing.T) {
 	look = AppendFloat32(look, 180)
 	look = AppendFloat32(look, 10)
 	look = append(look, 0x00)
-	x, y, z, yaw, pitch, err = ParsePlayerPositionRotation(look)
-	if err != nil || x != 0.5 || y != 65 || z != 0.5 || yaw != 180 || pitch != 10 {
-		t.Fatalf("position rotation = (%v,%v,%v,%v,%v), err=%v", x, y, z, yaw, pitch, err)
+	x, y, z, yaw, pitch, onGround, err = ParsePlayerPositionRotation(look)
+	if err != nil || x != 0.5 || y != 65 || z != 0.5 || yaw != 180 || pitch != 10 || onGround {
+		t.Fatalf("position rotation = (%v,%v,%v,%v,%v,%v), err=%v", x, y, z, yaw, pitch, onGround, err)
+	}
+
+	// 缺少 flags 字节的截断包必须被拒绝。
+	truncated := AppendVarInt(nil, PlayServerboundPacketIDPlayerPosition)
+	truncated = AppendFloat64(truncated, 1)
+	truncated = AppendFloat64(truncated, 64)
+	truncated = AppendFloat64(truncated, 0)
+	if _, _, _, _, err := ParsePlayerPosition(truncated); err == nil {
+		t.Fatal("expected error for truncated position packet")
 	}
 
 	// NaN 坐标必须被拒绝。
@@ -457,7 +466,7 @@ func TestParsePlayerMovement(t *testing.T) {
 	invalid = AppendFloat64(invalid, 64)
 	invalid = AppendFloat64(invalid, 0)
 	invalid = append(invalid, 0x00)
-	if _, _, _, err := ParsePlayerPosition(invalid); err == nil {
+	if _, _, _, _, err := ParsePlayerPosition(invalid); err == nil {
 		t.Fatal("expected error for NaN coordinate")
 	}
 }

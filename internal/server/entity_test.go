@@ -359,7 +359,7 @@ func TestPlayerDeathAndRespawn(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Victim")
 	player := findSession(t, instance, "Victim")
 
-	if !instance.damagePlayer(player, maxPlayerHealth, "Zombie", -1, nil) {
+	if !instance.damagePlayer(player, maxPlayerHealth, "Zombie", -1, instance.mobAttackDamageTypeID, nil) {
 		t.Fatal("lethal damage should apply")
 	}
 	expectPlayPacket(t, conn, protocol.PlayPacketIDDamageEvent)
@@ -377,7 +377,7 @@ func TestPlayerDeathAndRespawn(t *testing.T) {
 	if !player.isDead() {
 		t.Fatal("player should be dead")
 	}
-	if instance.damagePlayer(player, 5, "Zombie", -1, nil) {
+	if instance.damagePlayer(player, 5, "Zombie", -1, instance.mobAttackDamageTypeID, nil) {
 		t.Fatal("damage while dead must not apply")
 	}
 
@@ -405,6 +405,7 @@ func TestGameModeCommand(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
+	cfg.Ops = []string{"Builder"}
 	instance, conn := joinServer(t, cfg, "Builder")
 	player := findSession(t, instance, "Builder")
 	if player.gameModeID() != uint8(config.GameModeSurvival) {
@@ -426,7 +427,7 @@ func TestGameModeCommand(t *testing.T) {
 	if player.gameModeID() != uint8(config.GameModeCreative) {
 		t.Fatalf("game mode = %d, want creative", player.gameModeID())
 	}
-	if instance.damagePlayer(player, 5, "Zombie", -1, nil) {
+	if instance.damagePlayer(player, 5, "Zombie", -1, instance.mobAttackDamageTypeID, nil) {
 		t.Fatal("creative players must be immune to damage")
 	}
 
@@ -438,7 +439,7 @@ func TestGameModeCommand(t *testing.T) {
 	sendChatCommand(t, conn, "/gamemode survival")
 	expectPlayPacket(t, conn, protocol.PlayPacketIDGameEvent)
 	expectSystemChat(t, conn, "已将你的游戏模式设为 survival")
-	if !instance.damagePlayer(player, 5, "Zombie", -1, nil) {
+	if !instance.damagePlayer(player, 5, "Zombie", -1, instance.mobAttackDamageTypeID, nil) {
 		t.Fatal("damage should apply after switching back to survival")
 	}
 }

@@ -93,6 +93,11 @@ type session struct {
 	// regenTicks 是脱战回血的计数（每 playerRegenIntervalTicks 恢复 1 点）。
 	regenTicks int
 
+	// 下落跟踪（摔落伤害）：仅由会话读循环串行访问。
+	fallStartY  float64
+	airborne    bool
+	wasOnGround bool
+
 	// joined 在初始数据包全部发送后置位；在此之前生物不会索敌该玩家。
 	joined atomic.Bool
 }
@@ -119,6 +124,7 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		saturation:      playerSaturation,
 		gameMode:        server.defaultGameMode,
 		sentChunks:      make(map[world.ChunkPos]struct{}),
+		wasOnGround:     true,
 	}
 }
 
@@ -166,6 +172,7 @@ func (s *session) canBeAttacked() bool {
 func (s *session) resyncPosition() {
 	x, y, z, yaw, pitch := s.playerPosition()
 	s.teleportID++
+	s.resetFallState()
 	packet := protocol.EncodeSynchronizePlayerPosition(s.teleportID, x, y, z, 0, 0, 0, yaw, pitch)
 	if err := s.writePacket(packet); err != nil {
 		_ = s.conn.Close()
@@ -173,6 +180,43 @@ func (s *session) resyncPosition() {
 	}
 	// 其他玩家看到的实体也要拉回同一位置。
 	s.server.broadcastPlayerMove(s)
+}
+
+// fallDamageThreshold 是摔落伤害的下落阈值（原版：下落超过 3 格后
+// 每多 1 格造成 1 点伤害）。
+const fallDamageThreshold = 3.0
+
+// updateFallState 根据移动包的着地标志跟踪下落并结算摔落伤害。
+// 落点是水时不受伤害；创造/旁观模式由 applyDamage 直接忽略。
+// 仅由会话读循环调用。
+func (s *session) updateFallState(x, y, z float64, onGround bool) {
+	switch {
+	case !onGround:
+		if s.wasOnGround {
+			s.airborne = true
+			s.fallStartY = y
+		} else if s.airborne && y > s.fallStartY {
+			s.fallStartY = y
+		}
+	case s.airborne:
+		s.airborne = false
+		fall := s.fallStartY - y
+		if fall > fallDamageThreshold {
+			landY := int(math.Floor(y))
+			landed := s.server.world.BlockAt(int(math.Floor(x)), landY, int(math.Floor(z)))
+			if landed != world.WaterBlock {
+				damage := float32(math.Ceil(fall - fallDamageThreshold))
+				s.server.damagePlayer(s, damage, "a fall", 0, s.server.fallDamageTypeID, nil)
+			}
+		}
+	}
+	s.wasOnGround = onGround
+}
+
+// resetFallState 清除下落跟踪（传送/重生/拉回后调用，避免误判摔落伤害）。
+func (s *session) resetFallState() {
+	s.airborne = false
+	s.wasOnGround = true
 }
 
 // gameModeID 返回当前游戏模式。
@@ -606,7 +650,7 @@ func (s *session) runPlay() {
 	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
 	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
-	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands()))
+	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands(s.server.isOp(s.name))))
 	if !restored {
 		// 仅新玩家发放初始物品；恢复的玩家沿用其已保存的物品栏。
 		packets = append(packets, s.giveStartingItems()...)
@@ -735,6 +779,12 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.server.handleCommand(s, command)
+		case protocol.PlayServerboundPacketIDTabComplete:
+			transactionID, text, err := protocol.ParseTabCompleteRequest(packet)
+			if err != nil {
+				continue
+			}
+			s.server.handleTabComplete(s, transactionID, text)
 		case protocol.PlayServerboundPacketIDConfirmTeleportation:
 			if id, err := protocol.ParseConfirmTeleportation(packet); err == nil && id == s.teleportID {
 				slog.Debug("player confirmed teleport", "name", s.name, "teleportId", id)
@@ -754,7 +804,7 @@ func (s *session) playReadLoop() {
 				s.server.respawnPlayer(s)
 			}
 		case protocol.PlayServerboundPacketIDPlayerPosition:
-			x, y, z, err := protocol.ParsePlayerPosition(packet)
+			x, y, z, onGround, err := protocol.ParsePlayerPosition(packet)
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
@@ -764,10 +814,11 @@ func (s *session) playReadLoop() {
 			}
 			_, _, _, yaw, pitch := s.playerPosition()
 			s.setPlayerPosition(x, y, z, yaw, pitch)
+			s.updateFallState(x, y, z, onGround)
 			s.server.broadcastPlayerMove(s)
 			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
-			x, y, z, yaw, pitch, err := protocol.ParsePlayerPositionRotation(packet)
+			x, y, z, yaw, pitch, onGround, err := protocol.ParsePlayerPositionRotation(packet)
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
@@ -776,6 +827,7 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.setPlayerPosition(x, y, z, yaw, pitch)
+			s.updateFallState(x, y, z, onGround)
 			s.server.broadcastPlayerMove(s)
 			s.updateChunks(x, z)
 		case protocol.PlayServerboundPacketIDPlayerRotation:

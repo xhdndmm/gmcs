@@ -65,6 +65,7 @@ type Server struct {
 	zombieTypeID             int32
 	mobAttackDamageTypeID    int32
 	playerAttackDamageTypeID int32
+	fallDamageTypeID         int32
 	soundMobHurt             int32
 	soundMobDeath            int32
 	soundPlayerHurt          int32

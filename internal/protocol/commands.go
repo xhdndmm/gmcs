@@ -6,10 +6,14 @@ import "fmt"
 const (
 	// PlayPacketIDDeclareCommands 是 Commands（clientbound）。
 	PlayPacketIDDeclareCommands = 0x10
+	// PlayPacketIDTabComplete 是 Command Suggestions Response（clientbound）。
+	PlayPacketIDTabComplete = 0x0F
 	// PlayServerboundPacketIDChatCommand 是 Chat Command（无签名）。
 	PlayServerboundPacketIDChatCommand = 0x06
 	// PlayServerboundPacketIDChatCommandSigned 是 Chat Command（带签名）。
 	PlayServerboundPacketIDChatCommandSigned = 0x07
+	// PlayServerboundPacketIDTabComplete 是 Command Suggestion Request。
+	PlayServerboundPacketIDTabComplete = 0x0E
 )
 
 // maxChatCommandLength 是命令文本的最大字节数（与 1.21.11 一致）。
@@ -32,6 +36,38 @@ const GameModeParser = 42
 
 // StringGreedyPhrase 是 brigadier:string 的 greedy 属性（读入整行剩余内容）。
 const StringGreedyPhrase = 2
+
+// ParseTabCompleteRequest 解析 Command Suggestion Request（0x0E）包。
+func ParseTabCompleteRequest(packet []byte) (transactionID int32, text string, err error) {
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDTabComplete {
+		return 0, "", fmt.Errorf("invalid tab complete packet")
+	}
+	transactionID, n, err := DecodeVarInt(packet[offset:])
+	if err != nil {
+		return 0, "", err
+	}
+	text, _, err = readStringAt(packet, offset+n)
+	if err != nil {
+		return 0, "", err
+	}
+	return transactionID, text, nil
+}
+
+// EncodeTabCompleteResponse 编码 Command Suggestions Response（0x0F）包。
+// start 与 length 描述用候选替换请求文本中的哪一段（按字符计）。
+func EncodeTabCompleteResponse(transactionID, start, length int32, matches []string) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDTabComplete))
+	packet = AppendVarInt(packet, transactionID)
+	packet = AppendVarInt(packet, start)
+	packet = AppendVarInt(packet, length)
+	packet = AppendVarInt(packet, int32(len(matches)))
+	for _, match := range matches {
+		packet = appendString(packet, match)
+		packet = append(packet, 0x00) // 无 tooltip。
+	}
+	return packet
+}
 
 // CommandDef 定义服务器向客户端声明的一个命令。
 type CommandDef struct {

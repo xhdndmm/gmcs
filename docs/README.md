@@ -39,6 +39,7 @@ go run ./cmd/gmcs -config /path/to/gmcs.json -listen :25565
 | `online_mode` | 启用正版验证（通过会话服务器确认账号） | `false` |
 | `session_server_url` | 会话验证服务基地址（在线模式使用） | `https://sessionserver.mojang.com` |
 | `starting_items` | 新玩家初始物品（命名空间 ID；`name` 或 `name*数量`，数量上限 64） | `["minecraft:stone"]` |
+| `ops` | 管理员玩家名列表（使用 `/say`、`/gamemode` 等管理命令） | `[]` |
 
 ## 内置命令
 
@@ -48,9 +49,13 @@ go run ./cmd/gmcs -config /path/to/gmcs.json -listen :25565
 | --- | --- |
 | `/help` | 显示可用命令 |
 | `/list` | 列出在线玩家 |
-| `/say <消息>` | 向所有玩家广播消息 |
+| `/say <消息>` | 向所有玩家广播消息（需要管理员） |
 | `/spawn` | 传送回出生点 |
-| `/gamemode <模式>` | 切换游戏模式（survival/creative/adventure/spectator） |
+| `/gamemode <模式>` | 切换游戏模式（需要管理员；survival/creative/adventure/spectator） |
+
+命令补全（Tab）：支持命令名与 `/gamemode` 模式参数的候选；配置 `ops`
+名单中的玩家可以补全并执行管理命令，其他玩家看不到这些命令
+（命令树按玩家过滤，执行时再次校验权限）。
 
 ## 世界生成
 
@@ -99,6 +104,14 @@ entities.json（非原版实体格式）；无饥饿系统（回血为脱战定�
 - 生存模式：客户端完成挖掘后生效，放置消耗物品；创造模式：破坏即时生效，放置不消耗
 - 支持创造模式物品栏取放物品；冒险/旁观模式不支持方块交互
 - 当前为简化实现：没有掉落物与挖掘时间（见 docs/TODO.md 已知限制）
+
+## 玩家物理（摔落伤害）
+
+- 根据移动包的着地标志跟踪下落：下落超过 3 格后落地受到伤害，每多 1 格 1 点
+  （与原版公式一致：`ceil(下落格数 - 3)`）
+- 落点为水时免疫；创造/旁观模式免伤；传送/重生/回拉后重置下落状态
+- 未验证/已知限制：未实现服务器端重力模拟与其它摔落保护（干草堆、床、滑翔等），
+  也无移动速度/穿墙校验（见 docs/TODO.md 已知限制）
 
 ## 多人
 

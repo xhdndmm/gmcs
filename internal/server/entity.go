@@ -293,7 +293,7 @@ func (s *Server) broadcastToNearby(packet []byte, x, z float64, players []*sessi
 func (s *Server) performMobAttack(attack pendingAttack) {
 	s.broadcastPacket(protocol.EncodeAnimate(attack.mobID, 0))
 	position := [3]float64{attack.x, attack.y + 1, attack.z}
-	s.damagePlayer(attack.player, mobAttackDamage, "Zombie", attack.mobID, &position)
+	s.damagePlayer(attack.player, mobAttackDamage, "Zombie", attack.mobID, s.mobAttackDamageTypeID, &position)
 }
 
 // absAngleDelta 返回两个角度（度）之间的最小差值（0–180）。
@@ -551,7 +551,10 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 
 // damagePlayer 对玩家造成伤害并发送伤害事件、生命值与音效；
 // 冷却期内、死亡后或创造/旁观模式不生效。返回是否实际造成伤害。
-func (s *Server) damagePlayer(player *session, amount float32, sourceName string, sourceMobID int32, sourcePosition *[3]float64) bool {
+// damagePlayer 对玩家应用伤害：扣血、发送受伤动画与事件、播放音效，
+// 濒死时广播死亡消息。damageTypeID 是伤害类型注册表同步 ID（如
+// mob_attack/player_attack/fall）。返回伤害是否实际生效。
+func (s *Server) damagePlayer(player *session, amount float32, sourceName string, sourceMobID, damageTypeID int32, sourcePosition *[3]float64) bool {
 	health, food, saturation, applied, died := player.applyDamage(amount, time.Now())
 	if !applied {
 		return false
@@ -562,7 +565,7 @@ func (s *Server) damagePlayer(player *session, amount float32, sourceName string
 		hurtYaw := float32(math.Atan2(-(sourcePosition[0]-px), sourcePosition[2]-pz) * 180 / math.Pi)
 		player.tryWrite(protocol.EncodeHurtAnimation(player.entityID, hurtYaw))
 	}
-	player.tryWrite(protocol.EncodeDamageEvent(player.entityID, s.mobAttackDamageTypeID, sourceMobID, sourceMobID, sourcePosition))
+	player.tryWrite(protocol.EncodeDamageEvent(player.entityID, damageTypeID, sourceMobID, sourceMobID, sourcePosition))
 	player.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))
 	player.tryWrite(protocol.EncodeSoundEffect(s.soundPlayerHurt, protocol.SoundCategoryPlayer, px, py, pz, 1, 1, 0))
 	if died {
@@ -656,6 +659,7 @@ func (s *Server) resolveMobRegistryIDs() {
 		{"minecraft:entity_type", zombieTypeName, true, &s.zombieTypeID},
 		{"minecraft:damage_type", "minecraft:mob_attack", false, &s.mobAttackDamageTypeID},
 		{"minecraft:damage_type", "minecraft:player_attack", false, &s.playerAttackDamageTypeID},
+		{"minecraft:damage_type", "minecraft:fall", false, &s.fallDamageTypeID},
 		{"minecraft:sound_event", "minecraft:entity.zombie.hurt", true, &s.soundMobHurt},
 		{"minecraft:sound_event", "minecraft:entity.zombie.death", true, &s.soundMobDeath},
 		{"minecraft:sound_event", "minecraft:entity.player.hurt", true, &s.soundPlayerHurt},

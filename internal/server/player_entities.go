@@ -94,7 +94,7 @@ func (s *Server) handlePlayerAttack(attacker *session, targetID int32, px, py, p
 		return
 	}
 	position := [3]float64{px, py + 1, pz}
-	if s.damagePlayer(target, playerAttackDamage, attacker.name, attacker.entityID, &position) {
+	if s.damagePlayer(target, playerAttackDamage, attacker.name, attacker.entityID, s.playerAttackDamageTypeID, &position) {
 		s.broadcastPacket(protocol.EncodeAnimate(attacker.entityID, 0))
 	}
 }

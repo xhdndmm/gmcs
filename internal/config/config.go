@@ -51,6 +51,9 @@ type Config struct {
 	SessionServerURL string `json:"session_server_url"`
 	// StartingItems 是新玩家进入世界时获得的物品（命名空间 ID）。
 	StartingItems []string `json:"starting_items"`
+	// Ops 是管理员玩家名列表：名单中的玩家可以使用 /say、/gamemode 等
+	// 管理命令，这些命令也只向名单中的玩家下发。
+	Ops []string `json:"ops"`
 }
 
 // Default 返回默认配置。

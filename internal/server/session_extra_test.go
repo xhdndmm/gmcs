@@ -19,7 +19,7 @@ func TestHealthRegeneration(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Healer")
 	player := findSession(t, instance, "Healer")
 
-	if !instance.damagePlayer(player, 5, "Zombie", -1, nil) {
+	if !instance.damagePlayer(player, 5, "Zombie", -1, instance.mobAttackDamageTypeID, nil) {
 		t.Fatal("damage should apply")
 	}
 	// 排空受伤产生的数据包（伤害事件 → 生命值 → 音效）。
