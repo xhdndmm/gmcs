@@ -223,11 +223,14 @@ func TestEncodeChunkDataPacketPalette(t *testing.T) {
 		palette[i] = value
 		offset += size
 	}
-	// 调色板按首次出现顺序：y=-64 的基岩、泥土、草方块、空气。
-	wantPalette := []int32{int32(BedrockBlock), int32(DirtBlock), int32(GrassBlock), int32(AirBlock)}
-	for i, want := range wantPalette {
-		if palette[i] != want {
-			t.Fatalf("palette[%d] = %d, want %d", i, palette[i], want)
+	// 调色板包含 4 种方块（顺序由紧凑存储的插入顺序决定，协议不要求特定顺序）。
+	seen := make(map[int32]bool, len(palette))
+	for _, state := range palette {
+		seen[state] = true
+	}
+	for _, want := range []int32{int32(BedrockBlock), int32(DirtBlock), int32(GrassBlock), int32(AirBlock)} {
+		if !seen[want] {
+			t.Fatalf("palette %v 缺少方块状态 %d", palette, want)
 		}
 	}
 	// 数据数组无长度前缀：直接是 256 个 long。
@@ -304,36 +307,98 @@ func TestPackBitsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPackIndirectMatchesPackBits 验证生产路径 packIndirect（线性查找调色板
-// 且不生成中间索引数组）与参考实现 packBits 的打包结果完全一致。
-func TestPackIndirectMatchesPackBits(t *testing.T) {
-	for _, bits := range []int{4, 5, 6, 8} {
-		paletteSize := 1 << uint(bits)
+// TestAppendBlockStatesPacking 验证紧凑存储重新打包为网络调色板的正确性：
+// 覆盖 1/2/4/8 位存储与 4–8 位网络位宽的多种组合。
+func TestAppendBlockStatesPacking(t *testing.T) {
+	for _, paletteSize := range []int{2, 3, 5, 9, 17, 33, 65, 129, 256} {
 		palette := make([]uint16, paletteSize)
 		for i := range palette {
-			palette[i] = uint16(100 + i*13)
+			palette[i] = uint16(100 + i*7)
 		}
 		blocks := make([]uint16, SectionVolume)
 		for i := range blocks {
-			blocks[i] = palette[(i*17+i/7)%paletteSize]
+			blocks[i] = palette[i%paletteSize]
 		}
-		values := make([]uint16, len(blocks))
+		section := &section{biome: BiomePlains}
 		for i, state := range blocks {
-			for j, candidate := range palette {
-				if candidate == state {
-					values[i] = uint16(j)
-					break
+			section.setBlock(i, state)
+		}
+		if section.nonAir != SectionVolume {
+			t.Fatalf("palette size %d: nonAir = %d，期望 %d", paletteSize, section.nonAir, SectionVolume)
+		}
+
+		data := appendBlockStates(nil, &section.storage)
+		bits := int(data[0])
+		if bits == 15 {
+			// 全局调色板：每 long 4 个 15 位直接状态值，无调色板表。
+			offset := 1
+			longCount := (SectionVolume + 3) / 4
+			longs := make([]int64, longCount)
+			for i := range longs {
+				value, next, err := protocol.DecodeInt64(data, offset)
+				if err != nil {
+					t.Fatal(err)
+				}
+				longs[i] = value
+				offset = next
+			}
+			if offset != len(data) {
+				t.Fatalf("palette size %d: %d trailing bytes", paletteSize, len(data)-offset)
+			}
+			for i, want := range blocks {
+				got := uint16(uint64(longs[i/4])>>(uint(i%4)*15)) & 0x7FFF
+				if got != want {
+					t.Fatalf("palette size %d index %d: got %d, want %d", paletteSize, i, got, want)
 				}
 			}
+			continue
 		}
-		want := packBits(values, bits)
-		got := packIndirect(blocks, palette, bits)
-		if len(got) != len(want) {
-			t.Fatalf("bits=%d: %d longs, want %d", bits, len(got), len(want))
+		if bits < 4 || bits > 8 {
+			t.Fatalf("palette size %d: bits per entry = %d", paletteSize, bits)
 		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("bits=%d long %d: got %#x, want %#x", bits, i, got[i], want[i])
+		size, consumed, err := protocol.DecodeVarInt(data[1:])
+		// 紧凑存储的调色板可能包含历史遗留的未使用条目（如初始的空气），
+		// 因此网络调色板是实际使用集合的超集，不能小于 paletteSize。
+		if err != nil || int(size) < paletteSize {
+			t.Fatalf("palette size %d: decoded size %d (err=%v)", paletteSize, size, err)
+		}
+		offset := 1 + consumed
+		network := make([]uint16, size)
+		for i := range network {
+			value, consumed, err := protocol.DecodeVarInt(data[offset:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			network[i] = uint16(value)
+			offset += consumed
+		}
+		// 反向索引：方块状态 → 调色板索引，逐位置校验。
+		indexOf := make(map[uint16]int, len(network))
+		for i, state := range network {
+			indexOf[state] = i
+		}
+		for _, state := range blocks {
+			if _, ok := indexOf[state]; !ok {
+				t.Fatalf("palette size %d: 调色板缺少方块状态 %d", paletteSize, state)
+			}
+		}
+		longCount := (SectionVolume*bits + 63) / 64
+		longs := make([]int64, longCount)
+		for i := range longs {
+			value, next, err := protocol.DecodeInt64(data, offset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			longs[i] = value
+			offset = next
+		}
+		if offset != len(data) {
+			t.Fatalf("palette size %d: %d trailing bytes", paletteSize, len(data)-offset)
+		}
+		values := unpackBits(t, longs, SectionVolume, bits)
+		for i := range values {
+			if got := network[values[i]]; got != blocks[i] {
+				t.Fatalf("palette size %d index %d: got %d, want %d", paletteSize, i, got, blocks[i])
 			}
 		}
 	}

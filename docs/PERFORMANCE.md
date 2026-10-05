@@ -31,9 +31,11 @@ go test -run=^$ -bench=. -benchmem ./...
 
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | world | ≈732 µs/op | 72,766 B/op | 18 allocs/op |
-| `BenchmarkEncodeChunkDataPacket` | world | ≈63.0 µs/op | 6,473 B/op | 4 allocs/op |
-| `BenchmarkAppendChunkDataPacketReuse` | world | ≈62.4 µs/op | 6,474 B/op | 4 allocs/op |
+| `BenchmarkGenerateChunk` | world | ≈223 µs/op | 9,444 B/op | 33 allocs/op |
+| `BenchmarkEncodeChunkDataPacket` | world | ≈40.5 µs/op | 65,870 B/op | 1 allocs/op |
+| `BenchmarkAppendChunkDataPacketReuse` | world | ≈30.3 µs/op | 0 B/op | 0 allocs/op |
+| `BenchmarkEncodeChunkPayload` | world | ≈50.4 µs/op | 81,920 B/op | 1 allocs/op |
+| `BenchmarkEncodeCompressedChunkPayload` | world | ≈190 µs/op | ≈126 KB/op | 2–3 allocs/op |
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.7 ns/op | 120 B/op | 4 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈104.3 ns/op | 176 B/op | 4 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈75.3 µs/op | 16–85 B/op | 1 allocs/op |
@@ -48,6 +50,8 @@ go test -run=^$ -bench=. -benchmem ./...
   Light 包（调色板容器 + heightmap + 全亮天空光）。
 - `BenchmarkAppendChunkDataPacketReuse`：复用输出缓冲连续编码（进入世界/移动时
   区块流式发送的实际路径，与上者相同，含 heightmap）。
+- `BenchmarkEncodeChunkPayload` / `BenchmarkEncodeCompressedChunkPayload`：区块
+  存储负载（未压缩 / zlib 压缩）的编码，对应 Flush/UnloadFar 的保存路径（见 3.8）。
 - `BenchmarkWritePacketWithCompression`：60 KB 大包的压缩发送路径
   （长度前缀 + zlib + 帧写出）。
 - `BenchmarkEncodeEntityPositionSync` / `BenchmarkEncodeAddEntity`：高频实体包的编码成本
@@ -59,7 +63,7 @@ go test -run=^$ -bench=. -benchmem ./...
   重力与摩擦、合并扫描与拾取判定；场景中无玩家（走不拾取分支）。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
-按编码 63 µs/区块计算约 28 ms 纯编码时间（不含地形生成与网络 IO）。
+按编码 30 µs/区块计算约 13 ms 纯编码时间（不含地形生成与网络 IO）。
 
 ## 3. 优化记录
 
@@ -201,9 +205,11 @@ go test -count=6 -run '^$' -bench=. -pgo=cmd/gmcs/default.pgo ./internal/world .
 GMCS_MEM_DEMO=1 go test -count=1 -run TestChunkMemoryDemo -v ./internal/world/
 ```
 
-一次实测（Go 1.27.1，i7-12700F）：生成并缓存 40×40 = 1600 个区块后
-`HeapAlloc ≈ 111.9 MiB`（约 70 KiB/区块）；调用卸载（保留中心 11×11 = 121
-个区块）并 GC 后 `HeapAlloc ≈ 9.2 MiB`，即区块数据被真正回收（约 100 MiB 回落）。
+一次实测（2026-10-05，紧凑存储上线后）：生成并缓存 40×40 = 1600 个区块后
+`HeapAlloc ≈ 12.3 MiB`（约 7.9 KiB/区块）；调用卸载（保留中心 11×11 = 121
+个区块）并 GC 后 `HeapAlloc ≈ 1.7 MiB`，即区块数据被真正回收（约 10.6 MiB 回落）。
+紧凑存储之前的对应数字为 `≈111.9 MiB` / `≈9.2 MiB`（约 70 KiB/区块），
+见 3.8。
 
 注意：这一数字是单次手工测量，仅作量级参考；Go 运行时不保证把已回收的堆立即
 归还操作系统，进程 RSS 可能下降较慢，但区块数据本身不再被引用。
@@ -274,6 +280,70 @@ go run ./cmd/gmcsload -addr 127.0.0.1:25599 -players 50 -duration 20s -ramp 20ms
 不代表真实网络环境；未测长期运行、真实客户端渲染与更多玩家数（仍见第 4 节）。
 - 复跑（同一命令、当前构建含新 PGO）：117,349 个包 / 487 MiB、服务器 CPU 2.22 s/20 s、
 VmRSS ≈ 74 MB（与上表差异在 ±10% 以内，属单次运行波动）。
+
+### 3.8 区块紧凑存储与存储管线（本批，实测）
+
+本轮针对“内存占用、释放与缓存”做了两处结构性优化。
+
+**1. section 紧凑存储（internal/world/section.go）**
+
+旧实现为每个已分配的 16×16×16 section 恒定分配 `4096 × uint16` = 8 KiB 数组；
+种子地形单个区块约 9 个非空 section，即 ≈72 KiB，其中绝大多数位置是少数几种
+方块（石头/泥土/水/空气）。新实现改为与原版同思想的“调色板 + 位流”：
+
+- 全同方块（uniform）不分配数组（零值 = 全空气）；
+- 1–4 种方块用 1–2 位索引（512 B–1 KiB/section）；
+- 最多 256 种用 4–8 位；超过时退化为 16 位直接存储；
+- 调色板满 256 项时先压缩掉历史未使用条目，仍放不下才升级到直接存储；
+- 方块被全部挖空后回退为零值全空气（释放数组）。
+
+磁盘格式**不变**（仍是每方块 2 字节的 v1 负载，兼容已有存档），网络协议
+格式也不变。网络编码直接从紧凑存储按协议位宽重新打包（不再构建中间调色板/
+索引数组），并对“所有位置同一种方块”的 section 走单值调色板（紧凑存储可能
+保留历史未使用条目，不能只看位宽）。
+
+**2. 存储管线（internal/world/storage.go、world.go）**
+
+- 加载单个区块只读取目标槽位（`ReadAt`），不再把整个区域文件（最多 1024 个
+  区块）全部解压进内存；
+- 保存区域文件时，未更新的槽位按原始压缩数据原样复制（不解压、不重新压缩）；
+- zlib 压缩器与缓冲区使用 `sync.Pool`（此前每个区块新建 writer，分配数百 KB）；
+- 区块负载大小可精确计算，一次分配后按偏移写入（消除 append 增长反复拷贝）；
+- 生成器改为生成期无锁写入（区块在 `World.Chunk` 锁内生成、尚未发布），
+  消除了旧实现每个方块一次加解锁的开销。
+
+**实测（同机 `-count=3` 中位数，Go 1.27.1，i7-12700F）**
+
+| Benchmark | 优化前 | 优化后 | 变化 |
+| --- | --- | --- | --- |
+| `BenchmarkGenerateChunk` | 730 µs/op；72,766 B/op；18 allocs | 222 µs/op；9,444 B/op；33 allocs | 3.3× 更快；分配字节 7.7× 更少 |
+| `BenchmarkEncodeChunkDataPacket` | 72.5 µs/op；72,108 B/op；5 allocs | 40.5 µs/op；65,870 B/op；1 alloc | 1.8× 更快 |
+| `BenchmarkAppendChunkDataPacketReuse` | 61.9 µs/op；6,477 B/op；4 allocs | 30.3 µs/op；0 B/op；0 allocs | 2.0× 更快；零分配 |
+| `BenchmarkEncodeChunkPayload` | 41.1 µs/op；315,264 B/op；9 allocs | 50.4 µs/op；81,920 B/op；1 alloc | 分配字节 3.8× 更少（展开紧凑存储略慢） |
+| `BenchmarkEncodeCompressedChunkPayload` | 355 µs/op；1,393,123 B/op；29 allocs | 190 µs/op；125,678 B/op；3 allocs | 1.9× 更快；分配字节 11× 更少 |
+
+> 注：`BenchmarkEncodeChunkDataPacket` 本轮加入了全局 sink（防止编译器把丢弃
+> 结果的编码调用当作死代码消除），优化前列按同一加 sink 口径复测。
+
+区块内存（`GMCS_MEM_DEMO=1`，1600 区块）：`HeapAlloc ≈ 111.9 MiB → ≈ 12.3 MiB`
+（约 70 KiB/区块 → 约 7.9 KiB/区块）；卸载后 `9.2 MiB → 1.7 MiB`。
+
+正确性验证：新增/更新测试包括 `TestSectionStorageSequence`（30 万次随机写入
+对比参考模型，覆盖全部位宽增长与清空回退）、`TestAppendBlockStatesPacking`
+（多种调色板规模 / 网络位宽的逐方块校验）、`TestSectionStorageUniformNetwork`
+（单值调色板回归）、`TestChunkPayloadRoundTripSeeded`（种子地形逐方块编解码
+校验）、`TestChunkStorageFootprint`（确定性内存回归断言：种子地形平均
+<16 KiB/区块、超平坦 <4 KiB/区块）；`scripts/test.sh`（gofmt/build/vet/test/
+race）全部通过。已按热路径变化重新生成 `cmd/gmcs/default.pgo`（24,131 B →
+≈32 KB，本次 31,980 B），第 3.3 节 PGO 对照表未重测。
+
+已知取舍：
+
+- 紧凑存储的调色板是追加式的：方块类型被完全替换后条目可能残留。网络编码对
+  全同 section 会退化为单值调色板；8 位满时会先压缩再升级直接存储，残留不会
+  无界增长。
+- 未压缩存储负载编码比旧实现略慢（需把紧凑存储展开为每方块 2 字节）；但生产
+  保存路径是压缩编码，整条路径由 ≈396 µs/区块 降至 ≈240 µs/区块（1.65×）。
 
 ## 4. 尚未覆盖
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

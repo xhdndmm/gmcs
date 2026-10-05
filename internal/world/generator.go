@@ -32,14 +32,16 @@ type Generator interface {
 type FlatGenerator struct{}
 
 // GenerateChunk 实现 Generator。
+// 返回的区块尚未发布（World.Chunk 在锁内生成后才加入缓存），
+// 因此生成过程使用无锁写入。
 func (FlatGenerator) GenerateChunk(x, z int) *Chunk {
 	chunk := NewChunk(x, z)
 	for blockX := 0; blockX < SectionSize; blockX++ {
 		for blockZ := 0; blockZ < SectionSize; blockZ++ {
-			chunk.SetBlockState(blockX, WorldMinY, blockZ, BedrockBlock)
-			chunk.SetBlockState(blockX, WorldMinY+1, blockZ, DirtBlock)
-			chunk.SetBlockState(blockX, WorldMinY+2, blockZ, DirtBlock)
-			chunk.SetBlockState(blockX, FlatGroundLevel, blockZ, GrassBlock)
+			chunk.setBlockStateDirect(blockX, WorldMinY, blockZ, BedrockBlock)
+			chunk.setBlockStateDirect(blockX, WorldMinY+1, blockZ, DirtBlock)
+			chunk.setBlockStateDirect(blockX, WorldMinY+2, blockZ, DirtBlock)
+			chunk.setBlockStateDirect(blockX, FlatGroundLevel, blockZ, GrassBlock)
 		}
 	}
 	return chunk
@@ -72,6 +74,8 @@ const (
 )
 
 // GenerateChunk 实现 Generator。
+// 返回的区块尚未发布（World.Chunk 在锁内生成后才加入缓存），
+// 因此生成过程使用无锁写入。
 func (g SeededGenerator) GenerateChunk(chunkX, chunkZ int) *Chunk {
 	chunk := NewChunk(chunkX, chunkZ)
 	baseX := chunkX * SectionSize
@@ -82,26 +86,26 @@ func (g SeededGenerator) GenerateChunk(chunkX, chunkZ int) *Chunk {
 			worldZ := baseZ + localZ
 			height := terrainHeight(g.Seed, worldX, worldZ)
 
-			chunk.SetBlockState(localX, WorldMinY, localZ, BedrockBlock)
+			chunk.setBlockStateDirect(localX, WorldMinY, localZ, BedrockBlock)
 			// 石头填充到最上三层之下。
 			for y := WorldMinY + 1; y <= height-4; y++ {
-				chunk.SetBlockState(localX, y, localZ, StoneBlock)
+				chunk.setBlockStateDirect(localX, y, localZ, StoneBlock)
 			}
 			firstLayer := max(height-3, WorldMinY+1)
 			if height <= SeaLevel+1 {
 				// 水下与水边的沙滩。
 				for y := firstLayer; y <= height; y++ {
-					chunk.SetBlockState(localX, y, localZ, SandBlock)
+					chunk.setBlockStateDirect(localX, y, localZ, SandBlock)
 				}
 			} else {
 				for y := firstLayer; y < height; y++ {
-					chunk.SetBlockState(localX, y, localZ, DirtBlock)
+					chunk.setBlockStateDirect(localX, y, localZ, DirtBlock)
 				}
-				chunk.SetBlockState(localX, height, localZ, GrassBlock)
+				chunk.setBlockStateDirect(localX, height, localZ, GrassBlock)
 			}
 			// 水：从地面往上填满到海平面。
 			for y := height + 1; y <= SeaLevel; y++ {
-				chunk.SetBlockState(localX, y, localZ, WaterBlock)
+				chunk.setBlockStateDirect(localX, y, localZ, WaterBlock)
 			}
 		}
 	}
@@ -116,6 +120,7 @@ func (g SeededGenerator) SurfaceY(x, z int) int {
 
 // decorateTrees 在草地上生成稀疏的橡树。树冠半径最大 2 格，因此只在距
 // 区块边缘至少 2 格的列上生长，避免需要修改相邻区块。
+// 只操作刚生成的未发布区块，使用无锁读写。
 func (g SeededGenerator) decorateTrees(chunk *Chunk) {
 	baseX := chunk.X * SectionSize
 	baseZ := chunk.Z * SectionSize
@@ -132,7 +137,7 @@ func (g SeededGenerator) decorateTrees(chunk *Chunk) {
 			}
 			trunkHeight := 4 + int(hashUnit(g.Seed^trunkSalt, worldX, worldZ)*3) // 4-6
 			for y := height + 1; y <= height+trunkHeight; y++ {
-				chunk.SetBlockState(localX, y, localZ, OakLogBlock)
+				chunk.setBlockStateDirect(localX, y, localZ, OakLogBlock)
 			}
 			top := height + trunkHeight
 			for dy := -2; dy <= 1; dy++ {
@@ -149,10 +154,10 @@ func (g SeededGenerator) decorateTrees(chunk *Chunk) {
 						if abs(dx) == radius && abs(dz) == radius && (dy <= -2 || dy >= 1) {
 							continue
 						}
-						if chunk.GetBlockState(localX+dx, top+dy, localZ+dz) != AirBlock {
+						if chunk.getBlockStateLocked(localX+dx, top+dy, localZ+dz) != AirBlock {
 							continue
 						}
-						chunk.SetBlockState(localX+dx, top+dy, localZ+dz, OakLeavesBlock)
+						chunk.setBlockStateDirect(localX+dx, top+dy, localZ+dz, OakLeavesBlock)
 					}
 				}
 			}

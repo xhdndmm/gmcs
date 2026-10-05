@@ -185,37 +185,46 @@ func (w *World) ChunkCount() int {
 }
 
 // Flush 把所有待保存的区块写入磁盘。
-// 编码在锁内完成（快），磁盘 IO 在锁外执行（慢）；保存失败的区块会被
-// 重新标记为待保存以便重试。可被多个 goroutine 并发调用。
+// 编码 + 压缩在锁内完成（区块数据在锁内保持一致性）；磁盘 IO 在锁外执行。
+// 保存失败的区块会被重新标记为待保存以便重试。可被多个 goroutine 并发调用。
 func (w *World) Flush() error {
 	w.saveMu.Lock()
 	defer w.saveMu.Unlock()
 
 	w.mu.Lock()
 	payloads := make(map[ChunkPos][]byte, len(w.dirty))
+	var encodeErr error
 	for pos := range w.dirty {
 		chunk, ok := w.chunks[pos]
 		if !ok {
+			delete(w.dirty, pos)
 			continue
 		}
-		payloads[pos] = encodeChunkPayload(chunk)
+		compressed, err := encodeCompressedChunkPayload(chunk)
+		if err != nil {
+			// 保留为待保存，下一次 Flush 重试。
+			if encodeErr == nil {
+				encodeErr = fmt.Errorf("区块 (%d,%d) 编码失败：%w", pos.X, pos.Z, err)
+			}
+			continue
+		}
+		payloads[pos] = compressed
+		delete(w.dirty, pos)
 	}
-	clear(w.dirty)
 	w.mu.Unlock()
 
-	if len(payloads) == 0 {
-		return nil
-	}
-	if err := SavePayloads(w.dir, payloads); err != nil {
-		w.mu.Lock()
-		for pos := range payloads {
-			w.dirty[pos] = struct{}{}
+	if len(payloads) > 0 {
+		if err := SavePayloads(w.dir, payloads); err != nil {
+			w.mu.Lock()
+			for pos := range payloads {
+				w.dirty[pos] = struct{}{}
+			}
+			w.mu.Unlock()
+			return err
 		}
-		w.mu.Unlock()
-		return err
 	}
 	slog.Debug("world flushed", "chunks", len(payloads))
-	return nil
+	return encodeErr
 }
 
 // UnloadFar 把距所有中心点都超过 radius 的区块移出内存缓存
@@ -239,6 +248,7 @@ func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
 	var (
 		candidates []ChunkPos
 		payloads   = make(map[ChunkPos][]byte)
+		encodeErr  error
 	)
 	for pos, chunk := range w.chunks {
 		if withinAny(pos, centers, radius) {
@@ -246,7 +256,15 @@ func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
 		}
 		candidates = append(candidates, pos)
 		if _, dirty := w.dirty[pos]; dirty {
-			payloads[pos] = encodeChunkPayload(chunk)
+			compressed, err := encodeCompressedChunkPayload(chunk)
+			if err != nil {
+				// 保留在内存中并保持待保存，避免丢失修改。
+				if encodeErr == nil {
+					encodeErr = fmt.Errorf("区块 (%d,%d) 编码失败：%w", pos.X, pos.Z, err)
+				}
+				continue
+			}
+			payloads[pos] = compressed
 			delete(w.dirty, pos)
 		}
 	}
@@ -270,7 +288,7 @@ func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
 	unloaded := 0
 	for _, pos := range candidates {
 		if _, dirty := w.dirty[pos]; dirty {
-			// 编码后又发生修改：保留在内存中，等待下一次卸载/保存。
+			// 编码后又发生修改（或编码失败）：保留在内存中，等待下一次卸载/保存。
 			continue
 		}
 		if _, ok := w.chunks[pos]; ok {
@@ -279,7 +297,7 @@ func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
 		}
 	}
 	w.mu.Unlock()
-	return unloaded, nil
+	return unloaded, encodeErr
 }
 
 // withinAny 报告 pos 是否位于任一中心点的 radius 半径内（切比雪夫距离）。

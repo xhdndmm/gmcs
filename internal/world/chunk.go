@@ -71,16 +71,8 @@ type columnHeights struct {
 	solid [SectionSize * SectionSize]int16
 }
 
-// section 是一个 16×16×16 的方块段。
-type section struct {
-	// blocks 为 nil 时表示该 section 全部为空气；否则长度为 SectionVolume，
-	// 索引 = y*256 + z*16 + x（section 内局部坐标）。
-	blocks []uint16
-	// biome 是该 section 统一的生物群系 ID（暂不支持 4×4×4 逐格生物群系）。
-	biome uint16
-}
-
 // NewChunk 创建全空（空气）区块。
+// section 及其紧凑方块存储见 section.go。
 func NewChunk(x, z int) *Chunk {
 	return &Chunk{X: x, Z: z}
 }
@@ -116,11 +108,11 @@ func (c *Chunk) getBlockStateLocked(x, y, z int) uint16 {
 		return AirBlock
 	}
 	s := c.sections[sectionIndex]
-	if s == nil || s.blocks == nil {
+	if s == nil {
 		return AirBlock
 	}
 	localY := y - (WorldMinY + sectionIndex*SectionSize)
-	return s.blocks[blockIndex(x, localY, z)]
+	return s.blockState(blockIndex(x, localY, z))
 }
 
 // SetBlockState 设置世界坐标处的方块状态；越界时忽略。
@@ -136,22 +128,44 @@ func (c *Chunk) SetBlockState(x, y, z int, state uint16) {
 	defer c.mu.Unlock()
 	s := c.sections[sectionIndex]
 	if s == nil {
+		if state == AirBlock {
+			return // 全空气 section 保持 nil
+		}
 		s = &section{biome: BiomePlains}
 		c.sections[sectionIndex] = s
 	}
-	if s.blocks == nil {
-		if state == AirBlock {
-			return // 未分配的全空气 section 保持 nil
-		}
-		s.blocks = make([]uint16, SectionVolume)
-	}
 	localY := y - (WorldMinY + sectionIndex*SectionSize)
-	s.blocks[blockIndex(x, localY, z)] = state
+	if !s.setBlock(blockIndex(x, localY, z), state) {
+		return
+	}
 	if c.heights != nil {
 		column := (z << 4) | x
 		c.heights.top[column] = 0
 		c.heights.solid[column] = 0
 	}
+}
+
+// setBlockStateDirect 是生成期的无锁写入：调用方必须保证区块尚未发布
+// （生成器正在构建一个新区块，其他 goroutine 不可见）。不维护列高度缓存
+// （生成期缓存必然为 nil，无需失效）。
+func (c *Chunk) setBlockStateDirect(x, y, z int, state uint16) {
+	if x < 0 || x >= SectionSize || z < 0 || z >= SectionSize {
+		return
+	}
+	sectionIndex, ok := SectionIndex(y)
+	if !ok {
+		return
+	}
+	s := c.sections[sectionIndex]
+	if s == nil {
+		if state == AirBlock {
+			return
+		}
+		s = &section{biome: BiomePlains}
+		c.sections[sectionIndex] = s
+	}
+	localY := y - (WorldMinY + sectionIndex*SectionSize)
+	s.setBlock(blockIndex(x, localY, z), state)
 }
 
 // Column 描述一列方块的高度信息：一次查询即可获得原先 TopBlock 与
@@ -211,12 +225,12 @@ func (c *Chunk) computeColumnLocked(x, z int) (topValue, solidValue int16) {
 	topValue, solidValue = -1, -1
 	for sectionIndex := SectionCount - 1; sectionIndex >= 0; sectionIndex-- {
 		s := c.sections[sectionIndex]
-		if s == nil || s.blocks == nil {
+		if s == nil || s.storage.allAir() {
 			continue
 		}
 		base := sectionIndex * SectionSize
 		for localY := SectionSize - 1; localY >= 0; localY-- {
-			state := s.blocks[blockIndex(x, localY, z)]
+			state := s.blockState(blockIndex(x, localY, z))
 			if state == AirBlock {
 				continue
 			}
@@ -268,6 +282,9 @@ func (c *Chunk) SetSectionBiome(index int, biomeID uint16) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.sections[index] == nil {
+		if biomeID == BiomePlains {
+			return // nil 已表示默认生物群系
+		}
 		c.sections[index] = &section{biome: biomeID}
 		return
 	}
@@ -316,17 +333,17 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 	dst = protocol.AppendInt32(dst, int32(chunk.Z))
 	// heightmaps：WORLD_SURFACE（1）与 MOTION_BLOCKING（4）。本世界的方块
 	// 非固体即流体，两者对“占用高度”的定义结果一致（列最高非空气方块），
-	// 因此共用同一份打包数据（37 个 long）。
+	// 因此共用同一份打包数据（每 long 7 个值，共 37 个 long），
+	// 直接从栈上数组打包输出，不分配中间 long 数组。
 	var heights [SectionSize * SectionSize]uint16
 	for columnZ := 0; columnZ < SectionSize; columnZ++ {
 		for columnX := 0; columnX < SectionSize; columnX++ {
 			heights[(columnZ<<4)|columnX] = chunk.topHeightLocked(columnX, columnZ)
 		}
 	}
-	heightmapLongs := packBitsPadded(heights[:], heightmapBits)
 	dst = protocol.AppendVarInt(dst, 2)
-	dst = appendHeightmap(dst, heightmapTypeWorldSurface, heightmapLongs)
-	dst = appendHeightmap(dst, heightmapTypeMotionBlocking, heightmapLongs)
+	dst = appendPackedHeightmap(dst, heightmapTypeWorldSurface, heights[:], heightmapBits)
+	dst = appendPackedHeightmap(dst, heightmapTypeMotionBlocking, heights[:], heightmapBits)
 
 	scratch := chunkDataScratchPool.Get().(*[]byte)
 	data := (*scratch)[:0]
@@ -352,13 +369,25 @@ const (
 	heightmapBits = 9
 )
 
-// appendHeightmap 追加一个 heightmap：类型 + 带长度前缀的 long 数组。
-// 数据需已按 heightmapBits 打包（每 long 7 个值、高位填充、不允许跨 long）。
-func appendHeightmap(dst []byte, kind int32, longs []int64) []byte {
+// appendPackedHeightmap 追加一个 heightmap：类型 + 带长度前缀的 long 数组。
+// 值按“每 long 独立”的方式打包（每 long 7 个 9 位值、高位填充、不跨 long），
+// 直接追加到 dst，不分配中间 long 数组。
+func appendPackedHeightmap(dst []byte, kind int32, values []uint16, bits int) []byte {
+	perLong := 64 / bits
+	longCount := (len(values) + perLong - 1) / perLong
 	dst = protocol.AppendVarInt(dst, kind)
-	dst = protocol.AppendVarInt(dst, int32(len(longs)))
-	for _, value := range longs {
-		dst = protocol.AppendInt64(dst, value)
+	dst = protocol.AppendVarInt(dst, int32(longCount))
+	var accumulator uint64
+	for i, value := range values {
+		slot := i % perLong
+		accumulator |= uint64(value) << (uint(slot) * uint(bits))
+		if slot == perLong-1 {
+			dst = protocol.AppendInt64(dst, int64(accumulator))
+			accumulator = 0
+		}
+	}
+	if len(values)%perLong != 0 {
+		dst = protocol.AppendInt64(dst, int64(accumulator))
 	}
 	return dst
 }
@@ -369,11 +398,11 @@ func appendHeightmap(dst []byte, kind int32, longs []int64) []byte {
 func (c *Chunk) topHeightLocked(x, z int) uint16 {
 	for sectionIndex := SectionCount - 1; sectionIndex >= 0; sectionIndex-- {
 		s := c.sections[sectionIndex]
-		if s == nil || s.blocks == nil {
+		if s == nil || s.storage.allAir() {
 			continue
 		}
 		for localY := SectionSize - 1; localY >= 0; localY-- {
-			if s.blocks[blockIndex(x, localY, z)] != AirBlock {
+			if s.blockState(blockIndex(x, localY, z)) != AirBlock {
 				return uint16(sectionIndex*SectionSize + localY + 1)
 			}
 		}
@@ -387,98 +416,104 @@ func (c *Chunk) topHeightLocked(x, z int) uint16 {
 // 注意：fluid count 是 26.1 才加入的字段，1.21.11 没有该字段
 // （参考 ViaVersion ChunkSectionType1_18 / ChunkSectionType26_1，并经实机验证）。
 func appendSection(dst []byte, s *section) []byte {
-	var blocks []uint16
-	biome := uint16(BiomePlains)
+	var (
+		blockCount uint16
+		biome      = uint16(BiomePlains)
+		storage    *sectionStorage
+	)
 	if s != nil {
-		blocks = s.blocks
+		blockCount = s.nonAir
 		biome = s.biome
-	}
-	blockCount := 0
-	for _, state := range blocks {
-		if state != AirBlock {
-			blockCount++
-		}
+		storage = &s.storage
 	}
 	// Block count 为大端 short。
 	dst = append(dst, byte(blockCount>>8), byte(blockCount))
 
-	dst = appendBlockStates(dst, blocks)
+	dst = appendBlockStates(dst, storage)
 	// 生物群系：单值调色板（BPE = 0 + VarInt 值，无数据数组）。
 	dst = append(dst, 0x00)
 	return protocol.AppendVarInt(dst, int32(biome))
 }
 
-// maxIndirectPalette 是间接调色板的最大条目数；超过时使用全局调色板（15 位）。
-const maxIndirectPalette = 256
-
 // appendBlockStates 追加方块状态调色板容器。
-// blocks 为 nil 表示全空气 section。
+// storage 为 nil 或全空气表示全空气 section。
 //
 // 1.21.5+ 的调色板格式：数据数组不带长度前缀（数量由位宽计算），
 // 单值调色板只跟随一个 VarInt（无空数据数组）。
 // 参考 ViaVersion PaletteType1_21_5。
 //
-// 性能：调色板用局部数组 + 线性查找（典型 ≤16 种方块），避免 map 与
-// 中间索引数组的分配；全局调色板路径直接使用方块状态 ID。
-func appendBlockStates(dst []byte, blocks []uint16) []byte {
-	if blocks == nil {
-		// 单值调色板：空气。
-		dst = append(dst, 0x00)
-		return protocol.AppendVarInt(dst, int32(AirBlock))
-	}
-
-	var paletteBuffer [maxIndirectPalette]uint16
-	palette := paletteBuffer[:0]
-	global := false
-	for _, state := range blocks {
-		found := false
-		for _, existing := range palette {
-			if existing == state {
-				found = true
-				break
-			}
-		}
-		if found {
-			continue
-		}
-		if len(palette) >= maxIndirectPalette {
-			global = true
-			break
-		}
-		palette = append(palette, state)
-	}
-
-	switch {
-	case global:
-		// 全局调色板：直接使用全局方块状态 ID（15 位、每 long 独立打包）。
-		// 当前全部方块状态 ID < 32768（29670），如需更多请扩展位宽。
-		const bits = 15
-		dst = append(dst, byte(bits))
-		return appendRawLongs(dst, packBitsPadded(blocks, bits))
-	case len(palette) <= 1:
+// 性能：直接从紧凑存储打包输出到 dst，不产生中间 long 数组，
+// 也不做调色板线性查找（索引已存储在 section 中）。
+// 调色板索引按网络位宽（4–8 位）重新紧密打包；
+// 调色板超过 256 项（bits == 16）时使用全局调色板（15 位、每 long 独立）。
+func appendBlockStates(dst []byte, storage *sectionStorage) []byte {
+	if storage == nil || storage.bits == 0 {
 		// 单值调色板。
 		state := AirBlock
-		if len(palette) == 1 {
-			state = palette[0]
+		if storage != nil {
+			state = storage.uniform
 		}
 		dst = append(dst, 0x00)
 		return protocol.AppendVarInt(dst, int32(state))
-	default:
-		// 间接调色板：位宽 4–8（方块调色板最小 4 位）。
-		bits := bitsFor(len(palette))
-		dst = append(dst, byte(bits))
-		dst = protocol.AppendVarInt(dst, int32(len(palette)))
-		for _, state := range palette {
-			dst = protocol.AppendVarInt(dst, int32(state))
-		}
-		return appendRawLongs(dst, packIndirect(blocks, palette, bits))
 	}
+	// 紧凑存储可能包含历史遗留的未使用条目（如被完全覆盖的空气）：
+	// 打包条目全部相同时按单值调色板发送，省去 2 KiB 数据数组。
+	if state, uniform := storage.uniformState(); uniform {
+		dst = append(dst, 0x00)
+		return protocol.AppendVarInt(dst, int32(state))
+	}
+	if storage.bits == 16 {
+		// 全局调色板：直接使用全局方块状态 ID（15 位、每 long 独立打包，
+		// 4 项/long）。当前全部方块状态 ID < 32768（29670），
+		// 如需更多请扩展位宽。
+		dst = append(dst, 15)
+		for _, word := range storage.data {
+			first := word & 0xFFFF
+			second := (word >> 16) & 0xFFFF
+			third := (word >> 32) & 0xFFFF
+			fourth := word >> 48
+			packed := (first & 0x7FFF) | (second&0x7FFF)<<15 | (third&0x7FFF)<<30 | (fourth&0x7FFF)<<45
+			dst = protocol.AppendInt64(dst, int64(packed))
+		}
+		return dst
+	}
+	palette := storage.palette
+	bits := bitsFor(len(palette))
+	dst = append(dst, byte(bits))
+	dst = protocol.AppendVarInt(dst, int32(len(palette)))
+	for _, state := range palette {
+		dst = protocol.AppendVarInt(dst, int32(state))
+	}
+	return appendPackedIndices(dst, storage, bits)
 }
 
-// appendRawLongs 追加 long 数组（无长度前缀）。
-func appendRawLongs(dst []byte, longs []int64) []byte {
-	for _, value := range longs {
-		dst = protocol.AppendInt64(dst, value)
+// appendPackedIndices 把紧凑存储中的调色板索引重新打包为网络位宽的紧密
+// 位流（允许跨 long 边界，位宽 ≤ 8），直接追加到 dst，不分配中间数组。
+func appendPackedIndices(dst []byte, storage *sectionStorage, bits int) []byte {
+	sourceBits := int(storage.bits)
+	mask := uint64(1)<<uint(sourceBits) - 1
+	var (
+		accumulator uint64
+		accumBits   uint
+	)
+	for i := 0; i < SectionVolume; i++ {
+		position := i * sourceBits
+		value := (storage.data[position>>6] >> uint(position&63)) & mask
+		accumulator |= value << accumBits
+		accumBits += uint(bits)
+		if accumBits >= 64 {
+			dst = protocol.AppendInt64(dst, int64(accumulator))
+			if overflow := accumBits - 64; overflow > 0 {
+				accumulator = value >> (uint(bits) - overflow)
+				accumBits = overflow
+			} else {
+				accumulator = 0
+				accumBits = 0
+			}
+		}
+	}
+	if accumBits > 0 {
+		dst = protocol.AppendInt64(dst, int64(accumulator))
 	}
 	return dst
 }
@@ -492,33 +527,8 @@ func bitsFor(paletteSize int) int {
 	return bits
 }
 
-// packIndirect 把方块按调色板索引打包为紧密位流（允许跨 long 边界）。
-// 索引通过调色板线性查找获得（典型 ≤16 种），避免生成中间索引数组。
-func packIndirect(blocks []uint16, palette []uint16, bits int) []int64 {
-	longs := make([]int64, (len(blocks)*bits+63)/64)
-	position := 0
-	for _, state := range blocks {
-		value := 0
-		for i, candidate := range palette {
-			if candidate == state {
-				value = i
-				break
-			}
-		}
-		v := uint64(value)
-		index := position >> 6
-		offset := uint(position & 63)
-		longs[index] |= int64(v << offset)
-		if offset+uint(bits) > 64 {
-			longs[index+1] |= int64(v >> (64 - offset))
-		}
-		position += bits
-	}
-	return longs
-}
-
 // packBits 按 1.16+ 的紧密位流把值打包为 long 数组（允许跨 long 边界）。
-// 生产路径使用 packIndirect；此实现作为格式参考用于测试校验。
+// 生产路径为 appendPackedIndices；此实现作为格式参考用于测试校验。
 func packBits(values []uint16, bits int) []int64 {
 	longs := make([]int64, (len(values)*bits+63)/64)
 	position := 0
@@ -535,7 +545,9 @@ func packBits(values []uint16, bits int) []int64 {
 	return longs
 }
 
-// packBitsPadded 按“每 long 独立”的方式打包（全局调色板，允许内部填充）。
+// packBitsPadded 按“每 long 独立”的方式打包（允许内部填充）。
+// 生产路径为 appendPackedHeightmap 与 appendBlockStates 的全局调色板分支；
+// 此实现作为格式参考用于测试校验。
 func packBitsPadded(values []uint16, bits int) []int64 {
 	perLong := 64 / bits
 	longs := make([]int64, (len(values)+perLong-1)/perLong)

@@ -9,7 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"sync"
 	"time"
 )
 
@@ -45,114 +45,192 @@ func regionPath(dir string, x, z int) string {
 	return filepath.Join(dir, fmt.Sprintf("r.%d.%d.mca", x>>regionShift, z>>regionShift))
 }
 
-// regionFile 是一个已加载的区域文件：位置表、时间戳表与未压缩的区块负载。
-type regionFile struct {
-	locations  [regionSize * regionSize]uint32
-	timestamps [regionSize * regionSize]uint32
-	payloads   map[int][]byte
-}
-
-// loadRegionFile 读取区域文件；文件不存在时返回空表。
-func loadRegionFile(path string) (*regionFile, error) {
-	file := &regionFile{payloads: make(map[int][]byte)}
-	data, err := os.ReadFile(path)
+// loadChunkPayload 读取单个区块的负载（已解压）；区块不存在时返回 (nil, nil)。
+// 只读取目标槽位，不加载同一区域文件的其余区块——避免加载单个区块时
+// 对大区域文件产生“整区解压”的内存峰值。
+func loadChunkPayload(dir string, x, z int) ([]byte, error) {
+	path := regionPath(dir, x, z)
+	file, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return file, nil
+			return nil, nil
 		}
 		return nil, err
 	}
-	if len(data) < headerSectors*sectorSize {
-		return nil, fmt.Errorf("区域文件 %s 过短（%d 字节）", path, len(data))
+	defer file.Close()
+
+	slot := regionSlot(x, z)
+	var location [4]byte
+	if _, err := file.ReadAt(location[:], int64(slot)*4); err != nil {
+		return nil, fmt.Errorf("区域文件 %s 读取位置表失败：%w", path, err)
+	}
+	entry := binary.BigEndian.Uint32(location[:])
+	if entry == 0 {
+		return nil, nil
+	}
+	offset := int64(entry>>8) * sectorSize
+	sectors := int64(entry & 0xFF)
+	if sectors == 0 {
+		return nil, fmt.Errorf("区域文件 %s 槽位 %d 的位置表项无效", path, slot)
 	}
 
-	const slotCount = regionSize * regionSize
-	for slot := 0; slot < slotCount; slot++ {
-		entry := binary.BigEndian.Uint32(data[slot*4:])
-		file.locations[slot] = entry
-		file.timestamps[slot] = binary.BigEndian.Uint32(data[slotCount*4+slot*4:])
-		if entry == 0 {
-			continue
-		}
-		offset := int64(entry>>8) * sectorSize
-		compressedLength := int64(entry & 0xFF)
-		if compressedLength == 0 || offset+4 > int64(len(data)) {
-			return nil, fmt.Errorf("区域文件 %s 槽位 %d 的位置表项无效", path, slot)
-		}
-		length := int64(binary.BigEndian.Uint32(data[offset:]))
-		if length < 1 || offset+4+length > int64(len(data)) {
-			return nil, fmt.Errorf("区域文件 %s 槽位 %d 的负载长度 %d 越界", path, slot, length)
-		}
-		compressionType := data[offset+4]
-		if compressionType != 2 {
-			return nil, fmt.Errorf("区域文件 %s 槽位 %d 使用了不支持的压缩类型 %d", path, slot, compressionType)
-		}
-		payload, err := zlibDecompress(data[offset+5:offset+4+length], maxChunkPayload)
-		if err != nil {
-			return nil, fmt.Errorf("区域文件 %s 槽位 %d 解压失败：%w", path, slot, err)
-		}
-		file.payloads[slot] = payload
+	var header [5]byte
+	if _, err := file.ReadAt(header[:], offset); err != nil {
+		return nil, fmt.Errorf("区域文件 %s 槽位 %d 读取负载头失败：%w", path, slot, err)
 	}
-	return file, nil
+	length := int64(binary.BigEndian.Uint32(header[:4]))
+	if length < 2 || length > sectors*sectorSize-4 {
+		return nil, fmt.Errorf("区域文件 %s 槽位 %d 的负载长度 %d 越界", path, slot, length)
+	}
+	if header[4] != 2 {
+		return nil, fmt.Errorf("区域文件 %s 槽位 %d 使用了不支持的压缩类型 %d", path, slot, header[4])
+	}
+	compressed := make([]byte, length-1)
+	if _, err := file.ReadAt(compressed, offset+5); err != nil {
+		return nil, fmt.Errorf("区域文件 %s 槽位 %d 读取负载失败：%w", path, slot, err)
+	}
+	payload, err := zlibDecompress(compressed, maxChunkPayload)
+	if err != nil {
+		return nil, fmt.Errorf("区域文件 %s 槽位 %d 解压失败：%w", path, slot, err)
+	}
+	return payload, nil
 }
 
-// save 把区域文件写回磁盘。
-// 先写临时文件并 fsync，再重命名，避免崩溃造成部分写入。
-func (r *regionFile) save(path string) error {
-	var buf bytes.Buffer
-	buf.Write(make([]byte, headerSectors*sectorSize)) // 头部占位，稍后回填
-
-	nextSector := uint32(headerSectors)
-	slots := make([]int, 0, len(r.payloads))
-	for slot := range r.payloads {
-		slots = append(slots, slot)
-	}
-	sort.Ints(slots)
-	for _, slot := range slots {
-		compressed, err := zlibCompress(r.payloads[slot])
-		if err != nil {
+// saveRegion 把若干槽位的新负载写入区域文件：未更新的槽位从原文件按
+// 原始压缩数据复制（不解压、不重新压缩）。先写临时文件并 fsync，
+// 再重命名，避免崩溃造成部分写入。
+// payloads 必须是 zlib 压缩后的区块负载。
+func saveRegion(path string, payloads map[int][]byte) error {
+	old, err := os.Open(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		// 负载 = 4 字节长度（含压缩类型字节）+ 1 字节压缩类型 + 压缩数据。
-		total := 1 + len(compressed)
-		sectorCount := (4 + total + sectorSize - 1) / sectorSize
-		if sectorCount > 255 {
-			return fmt.Errorf("区块负载过大（压缩后 %d 字节）", len(compressed))
-		}
-		r.locations[slot] = nextSector<<8 | uint32(sectorCount)
-
-		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(total))
-		buf.Write(length[:])
-		buf.WriteByte(2) // zlib
-		buf.Write(compressed)
-		if pad := sectorCount*sectorSize - 4 - total; pad > 0 {
-			buf.Write(make([]byte, pad))
-		}
-		nextSector += uint32(sectorCount)
+		old = nil
+	}
+	if old != nil {
+		defer old.Close()
 	}
 
-	out := buf.Bytes()
 	const slotCount = regionSize * regionSize
-	for slot := 0; slot < slotCount; slot++ {
-		binary.BigEndian.PutUint32(out[slot*4:], r.locations[slot])
-		binary.BigEndian.PutUint32(out[slotCount*4+slot*4:], r.timestamps[slot])
+	var locations, timestamps [slotCount]uint32
+	if old != nil {
+		header := make([]byte, headerSectors*sectorSize)
+		if _, err := io.ReadFull(old, header); err != nil {
+			return fmt.Errorf("区域文件 %s 头部读取失败：%w", path, err)
+		}
+		for slot := 0; slot < slotCount; slot++ {
+			locations[slot] = binary.BigEndian.Uint32(header[slot*4:])
+			timestamps[slot] = binary.BigEndian.Uint32(header[slotCount*4+slot*4:])
+		}
 	}
 
 	temp := path + ".tmp"
-	handle, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
-	if _, err := handle.Write(out); err != nil {
-		_ = handle.Close()
+	fail := func(err error) error {
+		_ = out.Close()
+		_ = os.Remove(temp)
 		return err
 	}
-	if err := handle.Sync(); err != nil {
-		_ = handle.Close()
-		return err
+
+	// 头部占位（位置表与时间戳表在末尾回填）。
+	if _, err := out.Write(make([]byte, headerSectors*sectorSize)); err != nil {
+		return fail(err)
 	}
-	if err := handle.Close(); err != nil {
+
+	var (
+		nextSector = uint32(headerSectors)
+		now        = uint32(time.Now().Unix())
+	)
+	// 逐槽位写出：新负载直接写压缩数据，旧槽位保留原始压缩数据。
+	for slot := 0; slot < slotCount; slot++ {
+		if payload, ok := payloads[slot]; ok {
+			// 负载 = 4 字节长度（含压缩类型字节）+ 1 字节压缩类型 + 压缩数据。
+			total := 1 + len(payload)
+			sectorCount := (4 + total + sectorSize - 1) / sectorSize
+			if sectorCount > 255 {
+				return fail(fmt.Errorf("区域文件 %s 槽位 %d 的区块负载过大（压缩后 %d 字节）", path, slot, len(payload)))
+			}
+			var length [4]byte
+			binary.BigEndian.PutUint32(length[:], uint32(total))
+			if _, err := out.Write(length[:]); err != nil {
+				return fail(err)
+			}
+			if _, err := out.Write([]byte{2}); err != nil { // zlib
+				return fail(err)
+			}
+			if _, err := out.Write(payload); err != nil {
+				return fail(err)
+			}
+			if pad := sectorCount*sectorSize - 4 - total; pad > 0 {
+				if _, err := out.Write(make([]byte, pad)); err != nil {
+					return fail(err)
+				}
+			}
+			locations[slot] = nextSector<<8 | uint32(sectorCount)
+			timestamps[slot] = now
+			nextSector += uint32(sectorCount)
+			continue
+		}
+		if locations[slot] == 0 || old == nil {
+			continue
+		}
+		// 未更新的槽位：原样复制旧数据（不解压、不重新压缩）。
+		entry := locations[slot]
+		offset := int64(entry>>8) * sectorSize
+		sectors := int64(entry & 0xFF)
+		if sectors == 0 {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的位置表项无效", path, slot))
+		}
+		var length [4]byte
+		if _, err := old.ReadAt(length[:], offset); err != nil {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 读取负载头失败：%w", path, slot, err))
+		}
+		total := int64(binary.BigEndian.Uint32(length[:]))
+		if total < 2 || total > sectors*sectorSize-4 {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的负载长度 %d 越界", path, slot, total))
+		}
+		stored := make([]byte, 4+total)
+		copy(stored, length[:])
+		if _, err := old.ReadAt(stored[4:], offset+4); err != nil {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 读取负载失败：%w", path, slot, err))
+		}
+		if stored[4] != 2 {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 使用了不支持的压缩类型 %d", path, slot, stored[4]))
+		}
+		sectorCount := uint32((len(stored) + sectorSize - 1) / sectorSize)
+		if sectorCount > 255 {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的区块负载过大", path, slot))
+		}
+		if _, err := out.Write(stored); err != nil {
+			return fail(err)
+		}
+		if pad := int(sectorCount)*sectorSize - len(stored); pad > 0 {
+			if _, err := out.Write(make([]byte, pad)); err != nil {
+				return fail(err)
+			}
+		}
+		locations[slot] = nextSector<<8 | uint32(sectorCount)
+		nextSector += uint32(sectorCount)
+	}
+
+	// 回填位置表与时间戳表。
+	header := make([]byte, headerSectors*sectorSize)
+	for slot := 0; slot < slotCount; slot++ {
+		binary.BigEndian.PutUint32(header[slot*4:], locations[slot])
+		binary.BigEndian.PutUint32(header[slotCount*4+slot*4:], timestamps[slot])
+	}
+	if _, err := out.WriteAt(header, 0); err != nil {
+		return fail(err)
+	}
+	if err := out.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(temp)
 		return err
 	}
 	if err := os.Rename(temp, path); err != nil {
@@ -169,12 +247,11 @@ func (r *regionFile) save(path string) error {
 
 // LoadChunk 从世界目录读取区块；区块不存在时返回 (nil, nil)。
 func LoadChunk(dir string, x, z int) (*Chunk, error) {
-	file, err := loadRegionFile(regionPath(dir, x, z))
+	payload, err := loadChunkPayload(dir, x, z)
 	if err != nil {
 		return nil, err
 	}
-	payload, ok := file.payloads[regionSlot(x, z)]
-	if !ok {
+	if payload == nil {
 		return nil, nil
 	}
 	chunk, err := decodeChunkPayload(payload)
@@ -187,64 +264,102 @@ func LoadChunk(dir string, x, z int) (*Chunk, error) {
 	return chunk, nil
 }
 
-// SavePayloads 把已编码的区块负载写入磁盘：按区域文件分组，
-// 每个文件只做一次读-改-写（原子替换）。
+// SavePayloads 把区块负载写入磁盘：按区域文件分组，每个文件只做一次
+// 读-改-写（原子替换）。payloads 必须是 zlib 压缩后的负载
+// （encodeCompressedChunkPayload 的输出）；未更新的槽位按原始压缩数据复制。
 func SavePayloads(dir string, payloads map[ChunkPos][]byte) error {
 	if len(payloads) == 0 {
 		return nil
 	}
-	byRegion := make(map[string][]ChunkPos)
-	for pos := range payloads {
+	byRegion := make(map[string]map[int][]byte)
+	for pos, payload := range payloads {
 		path := regionPath(dir, pos.X, pos.Z)
-		byRegion[path] = append(byRegion[path], pos)
+		slots := byRegion[path]
+		if slots == nil {
+			slots = make(map[int][]byte)
+			byRegion[path] = slots
+		}
+		slots[regionSlot(pos.X, pos.Z)] = payload
 	}
-	for path, positions := range byRegion {
-		file, err := loadRegionFile(path)
-		if err != nil {
-			return err
-		}
-		now := uint32(time.Now().Unix())
-		for _, pos := range positions {
-			slot := regionSlot(pos.X, pos.Z)
-			file.payloads[slot] = payloads[pos]
-			file.timestamps[slot] = now
-		}
-		if err := file.save(path); err != nil {
+	for path, slots := range byRegion {
+		if err := saveRegion(path, slots); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// encodeChunkPayload 把区块编码为存储负载。
+// encodeChunkPayload 把区块编码为存储负载（未压缩）。
+// 负载大小可精确计算，先一次分配再按偏移写入，避免 append 反复增长与拷贝。
 func encodeChunkPayload(chunk *Chunk) []byte {
 	// 与运行时方块修改互斥（调用方可能持有 world.mu，但不会持有 chunk 锁）。
 	chunk.mu.RLock()
 	defer chunk.mu.RUnlock()
 
-	payload := make([]byte, 0, 14+SectionCount*3+SectionVolume*2)
-	payload = append(payload, "GMCS"...)
-	payload = binary.BigEndian.AppendUint16(payload, chunkVersion)
-	payload = binary.BigEndian.AppendUint32(payload, uint32(int32(chunk.X)))
-	payload = binary.BigEndian.AppendUint32(payload, uint32(int32(chunk.Z)))
+	size := 14 + SectionCount*3
+	for _, s := range chunk.sections {
+		if s != nil && !s.storage.allAir() {
+			size += SectionVolume * 2
+		}
+	}
+	payload := make([]byte, size)
+	copy(payload, "GMCS")
+	binary.BigEndian.PutUint16(payload[4:6], chunkVersion)
+	binary.BigEndian.PutUint32(payload[6:10], uint32(int32(chunk.X)))
+	binary.BigEndian.PutUint32(payload[10:14], uint32(int32(chunk.Z)))
+	offset := 14
 	for _, s := range chunk.sections {
 		var flags byte
 		biome := uint16(BiomePlains)
 		if s != nil {
 			biome = s.biome
-			if s.blocks != nil {
+			if !s.storage.allAir() {
 				flags = 1
 			}
 		}
-		payload = append(payload, flags)
-		payload = binary.BigEndian.AppendUint16(payload, biome)
+		payload[offset] = flags
+		binary.BigEndian.PutUint16(payload[offset+1:offset+3], biome)
+		offset += 3
 		if flags&1 != 0 {
-			for _, state := range s.blocks {
-				payload = binary.BigEndian.AppendUint16(payload, state)
-			}
+			offset = writeSectionPayload(payload, offset, &s.storage)
 		}
 	}
 	return payload
+}
+
+// writeSectionPayload 把 v1 存储格式的 section 方块数据
+// （4096 个方块状态 × u16 大端）写入 dst 的 offset 处，返回新偏移。
+// 按存储位宽分派展开，避免逐方块调用 at() 的 switch 与调色板查找开销。
+func writeSectionPayload(dst []byte, offset int, st *sectionStorage) int {
+	switch st.bits {
+	case 0:
+		// uniform：重复写同一对字节。
+		high, low := byte(st.uniform>>8), byte(st.uniform)
+		for i := 0; i < SectionVolume; i++ {
+			dst[offset] = high
+			dst[offset+1] = low
+			offset += 2
+		}
+	case 16:
+		// 直接存储：每个 uint64 含 4 个 16 位状态，直接展开。
+		for _, word := range st.data {
+			binary.BigEndian.PutUint16(dst[offset:offset+2], uint16(word>>48))
+			binary.BigEndian.PutUint16(dst[offset+2:offset+4], uint16(word>>32))
+			binary.BigEndian.PutUint16(dst[offset+4:offset+6], uint16(word>>16))
+			binary.BigEndian.PutUint16(dst[offset+6:offset+8], uint16(word))
+			offset += 8
+		}
+	default:
+		bits := int(st.bits)
+		mask := uint64(1)<<uint(bits) - 1
+		for _, word := range st.data {
+			for shift := 0; shift < 64; shift += bits {
+				binary.BigEndian.PutUint16(dst[offset:offset+2], st.palette[(word>>uint(shift))&mask])
+				offset += 2
+			}
+		}
+	}
+	return offset
 }
 
 // decodeChunkPayload 解析存储负载。
@@ -277,12 +392,18 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 		if offset+need > len(payload) {
 			return nil, fmt.Errorf("区块负载截断于 section %d 的方块数据", index)
 		}
-		blocks := make([]uint16, SectionVolume)
-		for i := range blocks {
-			blocks[i] = binary.BigEndian.Uint16(payload[offset+2*i : offset+2*i+2])
+		s := &section{biome: biome}
+		// 顺序解码为紧凑存储：全空气保持零值；其余方块走增量维护。
+		for i := 0; i < SectionVolume; i++ {
+			state := binary.BigEndian.Uint16(payload[offset+2*i : offset+2*i+2])
+			if state != AirBlock {
+				s.setBlock(i, state)
+			}
 		}
 		offset += need
-		chunk.sections[index] = &section{blocks: blocks, biome: biome}
+		if !s.storage.allAir() || biome != BiomePlains {
+			chunk.sections[index] = s
+		}
 	}
 	if offset != len(payload) {
 		return nil, fmt.Errorf("区块负载尾部有 %d 字节多余数据", len(payload)-offset)
@@ -290,17 +411,40 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 	return chunk, nil
 }
 
-// zlibCompress 压缩数据。
+// 存储压缩使用独立对象池：Flush/UnloadFar 会连续压缩大量区块，
+// 每次新建 zlib.Writer（窗口 + 哈希表，数百 KB）会造成显著的分配与 GC 压力。
+var (
+	storageBufferPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	storageWriterPool = sync.Pool{New: func() any { return zlib.NewWriter(io.Discard) }}
+)
+
+// encodeCompressedChunkPayload 把区块编码为 zlib 压缩的存储负载。
+func encodeCompressedChunkPayload(chunk *Chunk) ([]byte, error) {
+	return zlibCompress(encodeChunkPayload(chunk))
+}
+
+// zlibCompress 压缩数据；复用 zlib.Writer 与缓冲区，
+// 返回的切片与池中缓冲不共享底层数组。
 func zlibCompress(data []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	writer := zlib.NewWriter(&buf)
-	if _, err := writer.Write(data); err != nil {
-		return nil, err
+	buffer := storageBufferPool.Get().(*bytes.Buffer)
+	buffer.Reset()
+	writer := storageWriterPool.Get().(*zlib.Writer)
+	writer.Reset(buffer)
+	_, err := writer.Write(data)
+	if err == nil {
+		err = writer.Close()
 	}
-	if err := writer.Close(); err != nil {
-		return nil, err
+	storageWriterPool.Put(writer)
+	var compressed []byte
+	if err == nil {
+		compressed = append([]byte(nil), buffer.Bytes()...)
 	}
-	return buf.Bytes(), nil
+	// 防御性处理：不让对象池长期保留超大缓冲。
+	if buffer.Cap() > maxChunkPayload {
+		buffer = new(bytes.Buffer)
+	}
+	storageBufferPool.Put(buffer)
+	return compressed, err
 }
 
 // zlibDecompress 解压数据；limit 限制解压后的大小（防压缩炸弹）。

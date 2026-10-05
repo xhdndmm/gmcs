@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+// compressedPayload 返回区块的 zlib 压缩存储负载（SavePayloads 的输入格式）。
+func compressedPayload(t *testing.T, chunk *Chunk) []byte {
+	t.Helper()
+	payload, err := zlibCompress(encodeChunkPayload(chunk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
 func TestChunkPayloadRoundTrip(t *testing.T) {
 	chunk := FlatGenerator{}.GenerateChunk(-5, 7)
 	chunk.SetBlockState(1, WorldMinY+100, 2, StoneBlock)
@@ -41,6 +51,29 @@ func TestChunkPayloadRoundTrip(t *testing.T) {
 	}
 }
 
+// TestChunkPayloadRoundTripSeeded 逐方块校验种子地形区块的存储负载编解码
+// （覆盖紧凑存储的展开与重建，包括 1/2/4/8 位调色板路径）。
+func TestChunkPayloadRoundTripSeeded(t *testing.T) {
+	chunk := SeededGenerator{Seed: 9}.GenerateChunk(-3, 4)
+	decoded, err := decodeChunkPayload(encodeChunkPayload(chunk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sectionIndex := 0; sectionIndex < SectionCount; sectionIndex++ {
+		for x := 0; x < SectionSize; x++ {
+			for z := 0; z < SectionSize; z++ {
+				for localY := 0; localY < SectionSize; localY++ {
+					y := WorldMinY + sectionIndex*SectionSize + localY
+					want := chunk.GetBlockState(x, y, z)
+					if got := decoded.GetBlockState(x, y, z); got != want {
+						t.Fatalf("(%d,%d,%d)：got %d, want %d", x, y, z, got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestDecodeChunkPayloadRejectsCorrupt(t *testing.T) {
 	valid := encodeChunkPayload(NewChunk(0, 0))
 
@@ -64,7 +97,7 @@ func TestDecodeChunkPayloadRejectsCorrupt(t *testing.T) {
 func TestSaveAndLoadChunk(t *testing.T) {
 	dir := t.TempDir()
 	chunk := FlatGenerator{}.GenerateChunk(3, -9)
-	payloads := map[ChunkPos][]byte{{X: 3, Z: -9}: encodeChunkPayload(chunk)}
+	payloads := map[ChunkPos][]byte{{X: 3, Z: -9}: compressedPayload(t, chunk)}
 	if err := SavePayloads(dir, payloads); err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +126,12 @@ func TestSaveAndLoadChunk(t *testing.T) {
 func TestRegionFileKeepsNeighborChunks(t *testing.T) {
 	dir := t.TempDir()
 	first := FlatGenerator{}.GenerateChunk(0, 0)
-	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 0, Z: 0}: encodeChunkPayload(first)}); err != nil {
+	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 0, Z: 0}: compressedPayload(t, first)}); err != nil {
 		t.Fatal(err)
 	}
 	second := NewChunk(1, 1)
 	second.SetBlockState(2, WorldMinY+200, 3, StoneBlock)
-	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 1, Z: 1}: encodeChunkPayload(second)}); err != nil {
+	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 1, Z: 1}: compressedPayload(t, second)}); err != nil {
 		t.Fatal(err)
 	}
 
