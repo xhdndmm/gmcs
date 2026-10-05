@@ -55,8 +55,15 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 // （握手 → 登录 → 配置 → 初始数据包），返回就绪的连接。
 // startingItemPackets 是预期在命令树之后收到的 Set Player Inventory 包数量
 // （恢复已保存数据的玩家不会重新获得初始物品，为 0）。
-func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPackets int) net.Conn {
+// observers 会收到 Play 阶段加入流程中读到的每个数据包（含被跳过的），
+// 用于在加入流程中断言特定数据包（如聊天会话分发）。
+func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPackets int, observers ...func(id int32, payload []byte)) net.Conn {
 	t.Helper()
+	observe := func(id int32, payload []byte) {
+		for _, observer := range observers {
+			observer(id, payload)
+		}
+	}
 	conn, err := net.DialTimeout("tcp", addr, time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -138,20 +145,20 @@ func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPack
 	}
 	initial = append(initial, 0x26, 0x5C)
 	for _, want := range initial {
-		expectPlayPacket(t, conn, want)
+		expectPlayPacketObserved(t, conn, want, observe)
 	}
 	// 出生点视距内的区块。
 	chunkCount := (2*cfg.ViewDistance + 1) * (2*cfg.ViewDistance + 1)
 	for i := 0; i < chunkCount; i++ {
-		expectPlayPacket(t, conn, protocol.PlayPacketIDChunkData)
+		expectPlayPacketObserved(t, conn, protocol.PlayPacketIDChunkData, observe)
 	}
 	for _, want := range []int32{0x46, 0x44, 0x77, 0x10} {
-		expectPlayPacket(t, conn, want)
+		expectPlayPacketObserved(t, conn, want, observe)
 	}
 	for i := 0; i < startingItemPackets; i++ {
-		expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
+		expectPlayPacketObserved(t, conn, protocol.PlayPacketIDSetPlayerInventory, observe)
 	}
-	expectPlayPacket(t, conn, protocol.PlayPacketIDUpdateHealth)
+	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDUpdateHealth, observe)
 	// 确认传送
 	confirm := protocol.AppendVarInt(nil, 0x00)
 	confirm = protocol.AppendVarInt(confirm, 1)

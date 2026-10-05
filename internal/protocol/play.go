@@ -35,8 +35,10 @@ const (
 	// PlayPacketIDCollect 是 Pickup Item（拾取物品动画）。
 	PlayPacketIDCollect = 0x7A // clientbound
 
-	PlayServerboundPacketIDConfirmTeleportation   = 0x00
-	PlayServerboundPacketIDChatMessage            = 0x08
+	PlayServerboundPacketIDConfirmTeleportation = 0x00
+	PlayServerboundPacketIDChatMessage          = 0x08
+	// PlayServerboundPacketIDChatSessionUpdate 是 Chat Session Update（聊天会话公钥）。
+	PlayServerboundPacketIDChatSessionUpdate      = 0x09
 	PlayServerboundPacketIDChunkBatchReceived     = 0x0A
 	PlayServerboundPacketIDClientCommand          = 0x0B
 	PlayServerboundPacketIDClientTickEnd          = 0x0C

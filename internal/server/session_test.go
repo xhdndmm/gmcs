@@ -67,6 +67,29 @@ func expectPlayPacket(t *testing.T, conn net.Conn, want int32) []byte {
 	}
 }
 
+// expectPlayPacketObserved 与 expectPlayPacket 相同，但把读到的每个包
+// （包括被跳过的）交给 observer。用于在加入流程中收集特定数据包。
+func expectPlayPacketObserved(t *testing.T, conn net.Conn, want int32, observer func(id int32, payload []byte)) []byte {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("did not receive play packet %#x", want)
+		}
+		id, payload := readCompressedPacket(t, conn)
+		if observer != nil {
+			observer(id, payload)
+		}
+		if id == 0x2B {
+			replyKeepAlive(t, conn, payload)
+			continue
+		}
+		if id == want {
+			return payload
+		}
+	}
+}
+
 // expectSystemChat 读取数据包直到收到包含指定文本的 System Chat。
 func expectSystemChat(t *testing.T, conn net.Conn, contains string) {
 	t.Helper()
@@ -250,9 +273,14 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 	}
 
 	// 聊天消息：服务器应广播回 Player Chat 包（0x3F），内容包含消息文本。
+	// 包格式与真实客户端一致（消息、时间戳、盐、无签名、确认窗口、校验和）。
 	chat := protocol.AppendVarInt(nil, 0x08)
 	chat = appendTestString(chat, "hello world")
-	chat = protocol.AppendInt64(chat, 0)
+	chat = protocol.AppendInt64(chat, 0)        // timestamp
+	chat = protocol.AppendInt64(chat, 0)        // salt
+	chat = append(chat, 0x00)                   // 无签名
+	chat = protocol.AppendVarInt(chat, 0)       // offset
+	chat = append(chat, 0x00, 0x00, 0x00, 0x00) // acknowledged + checksum
 	if err := protocol.WritePacketWithCompression(conn, chat, compressionThreshold); err != nil {
 		t.Fatal(err)
 	}

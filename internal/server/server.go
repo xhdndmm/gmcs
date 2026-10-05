@@ -105,6 +105,10 @@ type Server struct {
 	// 玩家数据（players.json）：受 playerDataMu 保护，按 UUID 索引。
 	playerDataMu sync.Mutex
 	playerData   map[[16]byte]playerRecord
+
+	// permissionIndex 是 players → 权限节点的索引（玩家名小写；
+	// "*" 条目对所有玩家生效）。在 New 中从配置构建。
+	permissionIndex map[string][]string
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -155,6 +159,7 @@ func New(cfg config.Config) (*Server, error) {
 		httpClient:             &http.Client{Timeout: 10 * time.Second},
 		playerData:             make(map[[16]byte]playerRecord),
 		containers:             make(map[[3]int]*containerState),
+		permissionIndex:        buildPermissionIndex(cfg),
 	}
 	server.resolveMobRegistryIDs()
 	server.resolvePlayerEntityType()

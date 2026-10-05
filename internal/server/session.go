@@ -64,6 +64,11 @@ type session struct {
 	// profileProperties 是会话服务器返回的玩家属性（在线模式）。
 	profileProperties []protocol.GameProfileProperty
 
+	// chatSession 是客户端上报的聊天会话公钥（chat_session_update）；
+	// 由会话读循环写入，其他玩家读取时需要加锁。
+	chatSessionMu sync.Mutex
+	chatSession   *protocol.ChatSession
+
 	// 区块流式加载状态（由会话 goroutine 串行访问）。
 	sentChunks  map[world.ChunkPos]struct{}
 	centerChunk world.ChunkPos
@@ -128,6 +133,20 @@ func (s *session) nextWindowID() int32 {
 		s.windowCounter = 1
 	}
 	return s.windowCounter
+}
+
+// setChatSession 保存客户端上报的聊天会话公钥。
+func (s *session) setChatSession(session protocol.ChatSession) {
+	s.chatSessionMu.Lock()
+	s.chatSession = &session
+	s.chatSessionMu.Unlock()
+}
+
+// chatSessionSnapshot 返回当前聊天会话（没有时为 nil）。
+func (s *session) chatSessionSnapshot() *protocol.ChatSession {
+	s.chatSessionMu.Lock()
+	defer s.chatSessionMu.Unlock()
+	return s.chatSession
 }
 
 // markJoined 标记玩家已完成进入世界的初始化。
@@ -769,12 +788,18 @@ func (s *session) runPlay() {
 		packets = append(packets, protocol.EncodePlayerInfoAddPlayer(other.uuid, other.name, other.profileProperties))
 	}
 	for _, other := range others {
+		// 已上报聊天会话公钥的玩家：把会话信息也发给新玩家。
+		if session := other.chatSessionSnapshot(); session != nil {
+			packets = append(packets, protocol.EncodePlayerInfoChatSession(other.uuid, *session))
+		}
+	}
+	for _, other := range others {
 		// 其他玩家已在世界中的实体（皮肤来自上面的玩家列表档案属性）。
 		packets = append(packets, s.server.playerSpawnPacket(other))
 	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
 	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
-	packets = append(packets, protocol.EncodeDeclareCommands(serverCommands(s.server.opLevel(s.name))))
+	packets = append(packets, protocol.EncodeDeclareCommands(s.server.serverCommands(s)))
 	if !restored {
 		// 仅新玩家发放初始物品；恢复的玩家沿用其已保存的物品栏。
 		packets = append(packets, s.giveStartingItems()...)
@@ -892,12 +917,22 @@ func (s *session) playReadLoop() {
 				s.keepAliveMu.Unlock()
 			}
 		case protocol.PlayServerboundPacketIDChatMessage:
-			message, err := protocol.ParseChatMessage(packet)
+			message, err := protocol.ParseSignedChatMessage(packet)
 			if err != nil {
 				slog.Debug("malformed chat message", "name", s.name, "error", err)
 				continue
 			}
-			s.server.broadcastChat(s, message)
+			s.server.broadcastChat(s, message.Message)
+		case protocol.PlayServerboundPacketIDChatSessionUpdate:
+			session, err := protocol.ParseChatSessionUpdate(packet)
+			if err != nil {
+				slog.Debug("malformed chat session update", "name", s.name, "error", err)
+				continue
+			}
+			s.setChatSession(session)
+			// 把会话公钥分发给其他玩家（Player Info 的 Initialize Chat），
+			// 使客户端能够识别该玩家的聊天会话信息。
+			s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoChatSession(s.uuid, session), s)
 		case protocol.PlayServerboundPacketIDChatCommand, protocol.PlayServerboundPacketIDChatCommandSigned:
 			command, err := protocol.ParseChatCommand(packet)
 			if err != nil {

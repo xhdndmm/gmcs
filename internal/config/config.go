@@ -86,6 +86,18 @@ type Config struct {
 	// "name:level"（level 1–4，例如 "Alice:2"），命令要求等级见
 	// internal/server/commands.go。JSON 中可写数组或单个字符串。
 	Ops StringList `json:"ops"`
+	// Permissions 是细粒度命令权限节点（按玩家名，大小写不敏感）。
+	// 键为玩家名（"*" 表示所有玩家），值为节点列表，例如：
+	//
+	//	"permissions": {
+	//	  "Alice": ["gmcs.command.gamemode", "gmcs.command.*"],
+	//	  "*": "gmcs.command.spawn"
+	//	}
+	//
+	// 支持精确节点、前缀通配（"gmcs.command.*"）与全通配（"*"）。
+	// 拥有节点即可使用对应命令，无需管理员等级；内建节点见
+	// internal/server/commands.go 的命令表。
+	Permissions map[string]StringList `json:"permissions"`
 	// PprofAddress 是 pprof 诊断监听地址（如 "127.0.0.1:6060"）；
 	// 空值表示不启用。启用后在该地址上提供 /debug/pprof/*（CPU/内存/
 	// goroutine 分析）。仅用于本地诊断，不要暴露到公网。

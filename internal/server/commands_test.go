@@ -109,45 +109,112 @@ func TestHandleCommand(t *testing.T) {
 
 // TestCommandSuggestions 验证补全候选、替换区间与权限过滤（离线）。
 func TestCommandSuggestions(t *testing.T) {
-	instance := &Server{config: config.Default()}
+	cfg := config.Default()
+	cfg.Ops = []string{"Op"}
+	instance := &Server{config: cfg, permissionIndex: buildPermissionIndex(cfg)}
+	op := &session{name: "Op"}
+	guest := &session{name: "Guest"}
 
 	// 管理员补全命令名：替换整段文本，候选带斜杠。
-	matches, start, length := instance.commandSuggestions("/ga", 4)
+	matches, start, length := instance.commandSuggestions(op, "/ga")
 	if len(matches) != 1 || matches[0] != "/gamemode" || start != 0 || length != 3 {
 		t.Fatalf("op /ga = %v [%d,%d)", matches, start, length)
 	}
 	// 非管理员看不到 /gamemode。
-	if matches, _, _ = instance.commandSuggestions("/ga", 0); len(matches) != 0 {
+	if matches, _, _ = instance.commandSuggestions(guest, "/ga"); len(matches) != 0 {
 		t.Fatalf("non-op /ga = %v, want no matches", matches)
 	}
 	// 非管理员可以看到公共命令。
-	if matches, _, _ = instance.commandSuggestions("/h", 0); len(matches) != 1 || matches[0] != "/help" {
+	if matches, _, _ = instance.commandSuggestions(guest, "/h"); len(matches) != 1 || matches[0] != "/help" {
 		t.Fatalf("non-op /h = %v", matches)
 	}
 	// 参数补全：/gamemode 的模式名。
-	matches, start, length = instance.commandSuggestions("/gamemode c", 4)
+	matches, start, length = instance.commandSuggestions(op, "/gamemode c")
 	if len(matches) != 1 || matches[0] != "creative" || start != 10 || length != 1 {
 		t.Fatalf("gamemode c = %v [%d,%d)", matches, start, length)
 	}
-	matches, start, length = instance.commandSuggestions("/gamemode ", 4)
+	matches, start, length = instance.commandSuggestions(op, "/gamemode ")
 	if len(matches) != 4 || start != 10 || length != 0 {
 		t.Fatalf("gamemode all = %v [%d,%d)", matches, start, length)
 	}
-	// 非管理员没有参数补全；聊天文本不补全。
-	if matches, _, _ = instance.commandSuggestions("/gamemode c", 0); len(matches) != 0 {
+	// 非管理员没有参数补全；聊天文本按玩家名补全（无在线玩家时为空）。
+	if matches, _, _ = instance.commandSuggestions(guest, "/gamemode c"); len(matches) != 0 {
 		t.Fatalf("non-op gamemode arg = %v", matches)
 	}
-	if matches, _, _ = instance.commandSuggestions("hello", 4); len(matches) != 0 {
+	if matches, _, _ = instance.commandSuggestions(op, "hello"); len(matches) != 0 {
 		t.Fatalf("chat text = %v, want no matches", matches)
 	}
-	// 参数补全：/kick 的在线玩家名（需要等级 3）。
+	// 聊天补全：提及玩家名（非命令文本）补全在线玩家。
 	instance.players = make(map[[16]byte]*session)
 	instance.players[[16]byte{1}] = &session{name: "Alice"}
-	if matches, _, _ = instance.commandSuggestions("/kick Al", 3); len(matches) != 1 || matches[0] != "Alice" {
+	if matches, start, length = instance.commandSuggestions(op, "hi Al"); len(matches) != 1 ||
+		matches[0] != "Alice" || start != 3 || length != 2 {
+		t.Fatalf("chat mention = %v [%d,%d), want [Alice] [3,5)", matches, start, length)
+	}
+	// 参数补全：/kick 的在线玩家名（需要等级 3）。
+	if matches, _, _ = instance.commandSuggestions(op, "/kick Al"); len(matches) != 1 || matches[0] != "Alice" {
 		t.Fatalf("kick Al = %v", matches)
 	}
-	if matches, _, _ = instance.commandSuggestions("/kick Al", 2); len(matches) != 0 {
+	level2 := &session{name: "Level2"}
+	cfg.Ops = []string{"Level2:2"}
+	instance = &Server{config: cfg, permissionIndex: buildPermissionIndex(cfg)}
+	instance.players = make(map[[16]byte]*session)
+	instance.players[[16]byte{1}] = &session{name: "Alice"}
+	if matches, _, _ = instance.commandSuggestions(level2, "/kick Al"); len(matches) != 0 {
 		t.Fatalf("level 2 kick arg = %v", matches)
+	}
+}
+
+// TestNodePermissions 验证细粒度权限节点：
+//   - 拥有节点即可使用对应命令（无需管理员等级）；
+//   - 前缀通配 gmcs.command.* 覆盖全部命令，* 覆盖一切；
+//   - "*" 玩家条目对所有玩家生效；
+//   - 无节点且无等级时命令被拒绝，且不出现在命令树中。
+func TestNodePermissions(t *testing.T) {
+	cfg := config.Default()
+	cfg.Permissions = map[string]config.StringList{
+		"Alice": {"gmcs.command.gamemode"}, // 仅授予 /gamemode
+		"Bob":   {"gmcs.command.*"},        // 全部命令
+		"*":     {"gmcs.command.spawn"},    // 所有玩家
+	}
+	instance := &Server{config: cfg, permissionIndex: buildPermissionIndex(cfg)}
+	instance.players = make(map[[16]byte]*session)
+
+	names := func(player *session) string {
+		list := make([]string, 0, 6)
+		for _, command := range instance.serverCommands(player) {
+			list = append(list, command.Name)
+		}
+		return strings.Join(list, ",")
+	}
+	if got := names(&session{name: "Alice"}); got != "help,list,gamemode,spawn" {
+		t.Fatalf("Alice commands = %q", got)
+	}
+	if got := names(&session{name: "Bob"}); got != "help,list,say,gamemode,kick,spawn" {
+		t.Fatalf("Bob commands = %q", got)
+	}
+	if got := names(&session{name: "Guest"}); got != "help,list,spawn" {
+		t.Fatalf("Guest commands = %q", got)
+	}
+	if got := names(&session{name: "alice"}); got != "help,list,gamemode,spawn" {
+		t.Fatalf("alice commands = %q", got)
+	}
+
+	// 执行路径同样按节点放行。
+	var buffer bytes.Buffer
+	alice := &session{server: instance, writer: &buffer, name: "Alice"}
+	instance.players[alice.uuid] = alice
+	instance.handleCommand(alice, "/gamemode creative")
+	if output := sessionOutputText(t, buffer.Bytes()); strings.Contains(output, "没有权限") {
+		t.Fatalf("Alice should be allowed via node: %q", output)
+	}
+	if alice.gameModeID() != uint8(config.GameModeCreative) {
+		t.Fatalf("Alice game mode = %d, want creative", alice.gameModeID())
+	}
+	buffer.Reset()
+	instance.handleCommand(alice, "/say hi")
+	if output := sessionOutputText(t, buffer.Bytes()); !strings.Contains(output, "没有权限") {
+		t.Fatalf("Alice should be denied for /say: %q", output)
 	}
 }
 
@@ -155,7 +222,7 @@ func TestCommandSuggestions(t *testing.T) {
 func TestOpLevels(t *testing.T) {
 	cfg := config.Default()
 	cfg.Ops = []string{"Alice", "Bob:2", "Carol:3", "Dave:9", "Eve:0", "  Frank : 1 "}
-	instance := &Server{config: cfg}
+	instance := &Server{config: cfg, permissionIndex: buildPermissionIndex(cfg)}
 
 	cases := []struct {
 		name string
@@ -176,24 +243,25 @@ func TestOpLevels(t *testing.T) {
 		}
 	}
 
-	commandNames := func(level int) []string {
+	commandNames := func(name string) []string {
+		player := &session{name: name}
 		names := make([]string, 0, 6)
-		for _, command := range serverCommands(level) {
+		for _, command := range instance.serverCommands(player) {
 			names = append(names, command.Name)
 		}
 		return names
 	}
 	join := strings.Join
-	if got := join(commandNames(0), ","); got != "help,list,spawn" {
+	if got := join(commandNames("Guest"), ","); got != "help,list,spawn" {
 		t.Fatalf("level 0 commands = %q", got)
 	}
-	if got := join(commandNames(1), ","); got != "help,list,spawn" {
+	if got := join(commandNames("Frank"), ","); got != "help,list,spawn" {
 		t.Fatalf("level 1 commands = %q", got)
 	}
-	if got := join(commandNames(2), ","); got != "help,list,say,gamemode,spawn" {
+	if got := join(commandNames("Bob"), ","); got != "help,list,say,gamemode,spawn" {
 		t.Fatalf("level 2 commands = %q", got)
 	}
-	if got := join(commandNames(3), ","); got != "help,list,say,gamemode,kick,spawn" {
+	if got := join(commandNames("Carol"), ","); got != "help,list,say,gamemode,kick,spawn" {
 		t.Fatalf("level 3 commands = %q", got)
 	}
 }
