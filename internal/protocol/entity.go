@@ -128,7 +128,9 @@ func angleByte(degrees float32) byte {
 // EncodeAddEntity 编码 Add Entity 包（1.21.9+：位置后跟低精度速度向量）。
 // velocity 为方块/tick。
 func EncodeAddEntity(id int32, uuid [16]byte, typeID int32, x, y, z, velocityX, velocityY, velocityZ float64, yaw, pitch float32) []byte {
-	packet := AppendVarInt(nil, int32(PlayPacketIDAddEntity))
+	// 固定布局 ≈70 字节：包 ID 2 + 实体 ID 5 + UUID 16 + 类型 5 + 坐标 24
+	// + 速度 ≤7 + 角度 3 + 对象数据 5；预分配避免倍增扩容。
+	packet := AppendVarInt(make([]byte, 0, 80), int32(PlayPacketIDAddEntity))
 	packet = AppendVarInt(packet, id)
 	packet = append(packet, uuid[:]...)
 	packet = AppendVarInt(packet, typeID)
@@ -142,10 +144,21 @@ func EncodeAddEntity(id int32, uuid [16]byte, typeID int32, x, y, z, velocityX, 
 	return AppendVarInt(packet, 0)          // object data（生物为 0）
 }
 
+// EntityPositionSyncMaxSize 是 Entity Position Sync 包的编码上限
+// （包 ID 2 + 实体 ID 5 + 6×float64 48 + 2×float32 8 + bool 1）。
+const EntityPositionSyncMaxSize = 63
+
 // EncodeEntityPositionSync 编码 Entity Position Sync 包：
 // 绝对坐标、速度（方块/tick）、视角与是否着地。
 func EncodeEntityPositionSync(id int32, x, y, z, velocityX, velocityY, velocityZ float64, yaw, pitch float32, onGround bool) []byte {
-	packet := AppendVarInt(nil, int32(PlayPacketIDEntityPositionSync))
+	return AppendEntityPositionSync(make([]byte, 0, EntityPositionSyncMaxSize),
+		id, x, y, z, velocityX, velocityY, velocityZ, yaw, pitch, onGround)
+}
+
+// AppendEntityPositionSync 把 Entity Position Sync 包追加到 dst
+// （调用方可传池化/栈上缓冲，实现移动广播零堆分配）。
+func AppendEntityPositionSync(dst []byte, id int32, x, y, z, velocityX, velocityY, velocityZ float64, yaw, pitch float32, onGround bool) []byte {
+	packet := AppendVarInt(dst, int32(PlayPacketIDEntityPositionSync))
 	packet = AppendVarInt(packet, id)
 	packet = AppendFloat64(packet, x)
 	packet = AppendFloat64(packet, y)
@@ -160,7 +173,7 @@ func EncodeEntityPositionSync(id int32, x, y, z, velocityX, velocityY, velocityZ
 
 // EncodeEntityDestroy 编码 Remove Entities 包。
 func EncodeEntityDestroy(ids []int32) []byte {
-	packet := AppendVarInt(nil, int32(PlayPacketIDEntityDestroy))
+	packet := AppendVarInt(make([]byte, 0, 4+5*len(ids)), int32(PlayPacketIDEntityDestroy))
 	packet = AppendVarInt(packet, int32(len(ids)))
 	for _, id := range ids {
 		packet = AppendVarInt(packet, id)
@@ -302,6 +315,16 @@ func ParseInteract(packet []byte) (targetID int32, action int32, err error) {
 		return 0, 0, err
 	}
 	return targetID, action, nil
+}
+
+// EntityHeadRotationMaxSize 是 Rotate Head 包的编码上限（包 ID 2 + 实体 ID 5）。
+const EntityHeadRotationMaxSize = 7
+
+// AppendEntityHeadRotation 把 Rotate Head 包追加到 dst。
+func AppendEntityHeadRotation(dst []byte, id int32, yaw float32) []byte {
+	packet := AppendVarInt(dst, int32(PlayPacketIDEntityHeadRotation))
+	packet = AppendVarInt(packet, id)
+	return append(packet, angleByte(yaw))
 }
 
 // EncodeEntityHeadRotation 编码 Rotate Head 包（头部朝向，1/256 圈字节角度）。

@@ -207,8 +207,9 @@ func (s *Server) tickMobs(players []*session) {
 		return
 	}
 	type pendingMove struct {
-		packet []byte
-		x, z   float64
+		id         int32
+		x, y, z    float64
+		yaw, pitch float32
 	}
 	var (
 		attacks  []pendingAttack
@@ -306,29 +307,29 @@ func (s *Server) tickMobs(players []*session) {
 			m.AttackCooldown--
 		}
 		if moved {
-			moves = append(moves, pendingMove{
-				packet: protocol.EncodeEntityPositionSync(m.ID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch, true),
-				x:      m.X,
-				z:      m.Z,
-			})
+			moves = append(moves, pendingMove{id: m.ID, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
 			if absAngleDelta(m.Yaw, m.HeadYaw) >= mobHeadYawThreshold {
 				m.HeadYaw = m.Yaw
-				heads = append(heads, pendingMove{
-					packet: protocol.EncodeEntityHeadRotation(m.ID, m.Yaw),
-					x:      m.X,
-					z:      m.Z,
-				})
+				heads = append(heads, pendingMove{id: m.ID, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
 			}
 		}
 	}
 	s.entityMu.Unlock()
 
+	// 池缓冲构造移动包：同一缓冲顺序复用，广播是同步写，完成即归还。
+	buf := packetBufferPool.Get().(*[]byte)
 	for _, move := range moves {
-		s.broadcastToNearby(move.packet, move.x, move.z, players)
+		packet := protocol.AppendEntityPositionSync((*buf)[:0],
+			move.id, move.x, move.y, move.z, 0, 0, 0, move.yaw, move.pitch, true)
+		*buf = packet
+		s.broadcastToNearby(packet, move.x, move.z, players)
 	}
 	for _, head := range heads {
-		s.broadcastToNearby(head.packet, head.x, head.z, players)
+		packet := protocol.AppendEntityHeadRotation((*buf)[:0], head.id, head.yaw)
+		*buf = packet
+		s.broadcastToNearby(packet, head.x, head.z, players)
 	}
+	packetBufferPool.Put(buf)
 	if len(removals) > 0 {
 		s.broadcastPacket(protocol.EncodeEntityDestroy(removals))
 	}

@@ -36,10 +36,10 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkAppendChunkDataPacketReuse` | world | ≈30.3 µs/op | 0 B/op | 0 allocs/op |
 | `BenchmarkEncodeChunkPayload` | world | ≈50.4 µs/op | 81,920 B/op | 1 allocs/op |
 | `BenchmarkEncodeCompressedChunkPayload` | world | ≈190 µs/op | ≈126 KB/op | 2–3 allocs/op |
-| `BenchmarkEncodeEntityPositionSync` | protocol | ≈68.7 ns/op | 120 B/op | 4 allocs/op |
-| `BenchmarkEncodeAddEntity` | protocol | ≈104.3 ns/op | 176 B/op | 4 allocs/op |
-| `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈75.3 µs/op | 16–85 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈8.1 µs/op | 3,190 B/op | 64 allocs/op |
+| `BenchmarkEncodeEntityPositionSync` | protocol | ≈6.7 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkEncodeAddEntity` | protocol | ≈53.7 ns/op | 80 B/op | 1 allocs/op |
+| `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈70–75 µs/op | 17–250 B/op | 1 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈6.2 µs/op | 1,277 B/op | 5 allocs/op |
 | `BenchmarkItemTick`（128 掉落物） | server | ≈9.5 µs/op | 1 B/op | 0 allocs/op |
 
 各基准覆盖的内容：
@@ -344,6 +344,43 @@ race）全部通过。已按热路径变化重新生成 `cmd/gmcs/default.pgo`�
   无界增长。
 - 未压缩存储负载编码比旧实现略慢（需把紧凑存储展开为每方块 2 字节）；但生产
   保存路径是压缩编码，整条路径由 ≈396 µs/区块 降至 ≈240 µs/区块（1.65×）。
+
+### 3.9 移动广播零分配（本批，实测）
+
+pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来自
+`EncodeEntityPositionSync`：从 nil slice 起 `append` 倍增扩容（每次 4 个分配、
+120 B，每 tick 每移动生物一次）。
+
+优化内容：
+
+1. **编码预分配**：`EncodeAddEntity` / `EncodeEntityPositionSync` /
+   `EncodeEntityDestroy` / 未压缩帧 payload 按固定布局精确预分配容量，
+   消除倍增扩容（4 allocs → 1 allocs）。
+2. **Append 变体 + 池缓冲**：新增 `AppendEntityPositionSync` /
+   `AppendEntityHeadRotation`（追加到调用方缓冲）；`tickMobs` 与
+   `broadcastPlayerMove` 的移动广播改用 `sync.Pool` 缓冲顺序复用
+   （包写入是同步的（writePacket 持写锁完成），广播完成即归还），
+   并把 `pendingMove` 从"已编码包"改为参数快照，广播时才编码。
+3. **未压缩帧路径预分配**：`WritePacketWithCompression` 阈值下的
+   payload 按 5+包长一次成型。
+
+实测对比（同一机器，`-benchtime=300ms`）：
+
+| Benchmark | Before | After | 变化 |
+| --- | --- | --- | --- |
+| `EncodeEntityPositionSync` | 66.96 ns/op，120 B，4 allocs | 6.68 ns/op，0 B，0 allocs | ≈10× 提速，零分配 |
+| `EncodeAddEntity` | 102.4 ns/op，176 B，4 allocs | 53.7 ns/op，80 B，1 allocs | ≈1.9× 提速 |
+| `ServerTick`（32 生物） | 7907 ns/op，3127 B，65 allocs | 6212 ns/op，1277 B，5 allocs | ≈1.27× 提速，分配 −92% |
+
+正确性验证：`go test ./...`、`go test -race ./...` 全部通过
+（含 `TestEncodeEntityMetadataSkinParts`、`TestMobCombatFlow` 等实体广播路径测试）。
+
+已知取舍：
+
+- 池缓冲在"构造→同步广播→归还"的顺序中复用同一 `[]byte`：若未来把网络写改为
+  异步队列，必须先改为每包独立缓冲或引用计数，否则会破坏包内容。
+- `BenchmarkEncodeAddEntity` 仍有 1 次分配（返回的包被持有跨多个玩家的同步写出）；
+  进一步归零需要调用方传入缓冲，收益低于复杂度，未做。
 
 ## 4. 尚未覆盖
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

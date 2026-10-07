@@ -149,7 +149,8 @@ func WritePacketWithCompression(writer io.Writer, packet []byte, threshold int32
 		return fmt.Errorf("packet length %d exceeds the maximum %d", len(packet), MaxPacketSize)
 	}
 	if int64(len(packet)) < int64(threshold) {
-		payload := AppendVarInt(nil, 0)
+		// 预分配 5（数据长度 varint 上限）+ 包体，一次成型。
+		payload := AppendVarInt(make([]byte, 0, 5+len(packet)), 0)
 		payload = append(payload, packet...)
 		return writeFrame(writer, payload)
 	}

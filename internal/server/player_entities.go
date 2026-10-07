@@ -3,6 +3,7 @@ package server
 import (
 	"log/slog"
 	"math"
+	"sync"
 
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
@@ -12,6 +13,12 @@ import (
 // 头部朝向 / Remove Entities）。皮肤由 Player Info 的档案属性提供；
 // 注册表缺少玩家实体类型时整体禁用（其他功能不受影响）。
 const playerMoveBroadcastRange = 64
+
+// packetBufferPool 复用广播编码缓冲（稳态零分配）。
+var packetBufferPool = sync.Pool{New: func() any {
+	b := make([]byte, 0, protocol.EntityPositionSyncMaxSize)
+	return &b
+}}
 
 // resolvePlayerEntityType 解析玩家实体类型 ID；失败时禁用玩家实体同步。
 func (s *Server) resolvePlayerEntityType() {
@@ -56,8 +63,13 @@ func (s *Server) broadcastPlayerMove(player *session) {
 		return
 	}
 	x, y, z, yaw, pitch := player.playerPosition()
-	s.writeToNearbyPlayers(protocol.EncodeEntityPositionSync(player.entityID, x, y, z, 0, 0, 0, yaw, pitch, true), x, z, player)
-	s.writeToNearbyPlayers(protocol.EncodeEntityHeadRotation(player.entityID, yaw), x, z, player)
+	buf := packetBufferPool.Get().(*[]byte)
+	movePacket := protocol.AppendEntityPositionSync((*buf)[:0], player.entityID, x, y, z, 0, 0, 0, yaw, pitch, true)
+	s.writeToNearbyPlayers(movePacket, x, z, player)
+	headPacket := protocol.AppendEntityHeadRotation((*buf)[:0], player.entityID, yaw)
+	*buf = headPacket
+	s.writeToNearbyPlayers(headPacket, x, z, player)
+	packetBufferPool.Put(buf)
 }
 
 // broadcastSwing 广播玩家的挥手动画（攻击挥空时其他玩家也能看到动作）。

@@ -90,6 +90,8 @@
 - [x] 生物掉落与跳跃暴击（僵尸掉落腐肉与稀有物品；下落攻击 ×1.5 伤害）
 - [x] 按物品数据的堆叠上限（官方 `minecraft:max_stack_size`，1505 项；背包/容器/创造/
   掉落物统一按实际上限处理）
+- [x] 移动广播零分配（实体包编码精确预分配、Append 变体 + sync.Pool 缓冲复用；
+  EncodeEntityPositionSync 0 分配、ServerTick 分配 −92%，实测见 docs/PERFORMANCE.md 3.9）
 - [x] 合成系统（玩家物品栏 2×2 与工作台 3×3：有序/无序/标签配方匹配（706 有序、304 无序、
   116 烹饪，由 `tools/genregistries` 从官方 recipe 数据生成）、结果槽实时计算、
   取走消耗原料、Shift 快速合成、关闭窗口合成格归还）
