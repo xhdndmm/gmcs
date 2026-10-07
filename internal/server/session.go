@@ -87,10 +87,18 @@ type session struct {
 	// windowID 是窗口编号（0 保留给玩家物品栏），windowState 是槽位状态号，
 	// cursor 是鼠标持有的物品，drag 是进行中的拖拽分发。
 	openContainer *containerState
-	windowID      int32
-	windowState   int32
-	cursor        item.Stack
-	drag          *dragState
+	// invCraft / openCraft 是合成格状态：invCraft 为窗口 0 的 2×2 格
+	// （随物品栏生命周期），openCraft 为工作台 3×3 格（随窗口生命周期）。
+	invCraft  *craftingState
+	openCraft *craftingState
+	// enderChest 是玩家的末影箱内容（按玩家独立存储，随玩家数据持久化）。
+	enderChest enderChestStorage
+	// openEnder 标记末影箱窗口是否打开。
+	openEnder   bool
+	windowID    int32
+	windowState int32
+	cursor      item.Stack
+	drag        *dragState
 	// windowCounter 是窗口编号分配计数器。
 	windowCounter int32
 	// sneaking 记录客户端上报的潜行状态（潜行时交互不打开容器）。
@@ -812,7 +820,7 @@ func (s *session) runConfiguration() bool {
 			return s.awaitConfigurationFinished()
 		case protocol.ConfigPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
-				s.clientInfo = info
+				s.setClientInfo(info)
 			}
 		default:
 			// 忽略其余配置阶段数据包（Keep Alive、Pong 等）。
@@ -871,7 +879,7 @@ func (s *session) awaitConfigurationFinished() bool {
 			return true
 		case protocol.ConfigPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
-				s.clientInfo = info
+				s.setClientInfo(info)
 			}
 		default:
 			// 忽略其他数据包。
@@ -950,8 +958,10 @@ func (s *session) runPlay() {
 		}
 	}
 	for _, other := range others {
-		// 其他玩家已在世界中的实体（皮肤来自上面的玩家列表档案属性）。
+		// 其他玩家已在世界中的实体（皮肤来自上面的玩家列表档案属性，
+		// 皮肤层显示掩码来自实体元数据）。
 		packets = append(packets, s.server.playerSpawnPacket(other))
+		packets = append(packets, s.server.playerSkinPacket(other))
 	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
 	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
@@ -979,6 +989,7 @@ func (s *session) runPlay() {
 	// 通知其他玩家：新玩家加入（档案属性 + 实体）。
 	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name, s.profileProperties), s)
 	s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), x, z, s)
+	s.server.writeToNearbyPlayers(s.server.playerSkinPacket(s), x, z, s)
 	s.server.broadcastPacketExcluding(protocol.EncodeSystemChat(s.name+" joined the game"), s)
 	slog.Info("player joined the world", "name", s.name, "entityId", s.entityID)
 
@@ -992,8 +1003,11 @@ func (s *session) runPlay() {
 	s.playReadLoop()
 	close(stop)
 	keepAliveWG.Wait()
-	// 会话结束：保存并关闭可能仍打开的容器窗口。
+	// 会话结束：保存并关闭可能仍打开的容器/合成窗口。
 	s.server.closeContainer(s, false)
+	s.server.closeCrafting(s, false)
+	s.server.closeEnderChest(s, false)
+	s.server.returnInventoryCraft(s)
 	slog.Info("player disconnected", "name", s.name)
 }
 
@@ -1206,8 +1220,17 @@ func (s *session) playReadLoop() {
 			s.server.handleContainerClick(s, click)
 		case protocol.PlayServerboundPacketIDContainerClose:
 			windowID, err := protocol.ParseContainerClose(packet)
-			if err == nil && s.openContainer != nil && windowID == s.windowID {
+			if err != nil {
+				continue
+			}
+			if s.openContainer != nil && windowID == s.windowID {
 				s.server.closeContainer(s, false)
+			}
+			if s.getOpenCraft() != nil && windowID == s.windowID {
+				s.server.closeCrafting(s, false)
+			}
+			if s.getOpenEnder() && windowID == s.windowID {
+				s.server.closeEnderChest(s, false)
 			}
 		case protocol.PlayServerboundPacketIDPlayerInput:
 			if flags, err := protocol.ParsePlayerInput(packet); err == nil {
@@ -1220,12 +1243,108 @@ func (s *session) playReadLoop() {
 			s.server.handleUseItem(s)
 		case protocol.PlayServerboundPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
-				s.clientInfo = info
+				oldInfo := s.setClientInfo(info)
+				// 皮肤层掩码变化时同步给附近玩家（Entity Metadata 索引 16）。
+				if oldInfo.SkinParts != info.SkinParts {
+					x, _, z, _, _ := s.playerPosition()
+					s.server.writeToNearbyPlayers(
+						protocol.EncodeEntityMetadataSkinParts(s.entityID, info.SkinParts), x, z, s)
+				}
 			}
 		default:
 			// 其他数据包（输入、快捷栏切换等）暂未实现，忽略。
 		}
 	}
+}
+
+// getOpenCraft 返回打开的工作台合成状态（线程安全）。
+func (s *session) getOpenCraft() *craftingState {
+	s.stateMu.Lock()
+	state := s.openCraft
+	s.stateMu.Unlock()
+	return state
+}
+
+// setOpenCraft 设置打开的工作台合成状态（线程安全）。
+func (s *session) setOpenCraft(state *craftingState) {
+	s.stateMu.Lock()
+	s.openCraft = state
+	s.stateMu.Unlock()
+}
+
+// invCraftState 返回窗口 0 的 2×2 合成状态；不存在时按需创建（线程安全）。
+func (s *session) invCraftState() *craftingState {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.invCraft == nil {
+		s.invCraft = newCraftingState(2)
+	}
+	return s.invCraft
+}
+
+// peekInvCraft 返回窗口 0 的 2×2 合成状态（可能为 nil，不创建）。
+func (s *session) peekInvCraft() *craftingState {
+	s.stateMu.Lock()
+	state := s.invCraft
+	s.stateMu.Unlock()
+	return state
+}
+
+// clearInvCraft 取出并清空窗口 0 的合成状态（线程安全）。
+func (s *session) clearInvCraft() *craftingState {
+	s.stateMu.Lock()
+	state := s.invCraft
+	s.invCraft = nil
+	s.stateMu.Unlock()
+	return state
+}
+
+// getOpenEnder 返回末影箱窗口是否打开（线程安全）。
+func (s *session) getOpenEnder() bool {
+	s.stateMu.Lock()
+	open := s.openEnder
+	s.stateMu.Unlock()
+	return open
+}
+
+// setOpenEnder 设置末影箱窗口是否打开（线程安全）。
+func (s *session) setOpenEnder(open bool) {
+	s.stateMu.Lock()
+	s.openEnder = open
+	s.stateMu.Unlock()
+}
+
+// getCursor 返回鼠标光标持有的物品（线程安全）。
+func (s *session) getCursor() item.Stack {
+	s.stateMu.Lock()
+	cursor := s.cursor
+	s.stateMu.Unlock()
+	return cursor
+}
+
+// setCursor 设置鼠标光标持有的物品（线程安全）。
+func (s *session) setCursor(cursor item.Stack) {
+	s.stateMu.Lock()
+	s.cursor = cursor
+	s.stateMu.Unlock()
+}
+
+// setClientInfo 更新客户端信息并返回旧值（线程安全：
+// 皮肤掩码会被其他会话的生成路径读取）。
+func (s *session) setClientInfo(info protocol.ClientInformation) protocol.ClientInformation {
+	s.stateMu.Lock()
+	old := s.clientInfo
+	s.clientInfo = info
+	s.stateMu.Unlock()
+	return old
+}
+
+// skinParts 返回客户端上报的皮肤层显示掩码（线程安全）。
+func (s *session) skinParts() uint8 {
+	s.stateMu.Lock()
+	parts := s.clientInfo.SkinParts
+	s.stateMu.Unlock()
+	return parts
 }
 
 // validPlayerY 拒绝世界范围之外的坐标（简单的服务端校验）。

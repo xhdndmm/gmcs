@@ -165,6 +165,24 @@ func main() {
 	if err := writeStaticIDs(filepath.Dir(*outPath), *version, generated.staticIDs); err != nil {
 		fatal("写入静态 ID 表：%v", err)
 	}
+	// 配方表：从 jar 内置数据包提取合成与烹饪配方。
+	recipeList, err := collectRecipes(&reader.Reader)
+	if err != nil {
+		fatal("解析配方：%v", err)
+	}
+	itemTags := make(map[string][]int32, len(generated.tags["minecraft:item"]))
+	for _, tag := range generated.tags["minecraft:item"] {
+		itemTags[tag.name] = tag.entries
+	}
+	recipeTables, err := resolveRecipes(recipeList, itemIDs, itemTags)
+	if err != nil {
+		fatal("展开配方原料：%v", err)
+	}
+	if err := writeRecipes(filepath.Dir(*outPath), *version, recipeTables); err != nil {
+		fatal("写入配方表：%v", err)
+	}
+	fmt.Printf("已生成配方表（有序 %d、无序 %d、烹饪 %d）\n",
+		len(recipeTables.shaped), len(recipeTables.shapeless), len(recipeTables.cooking))
 	if *itemsPath != "" {
 		foods, stackSizes, err := loadItemComponents(*itemsPath)
 		if err != nil {

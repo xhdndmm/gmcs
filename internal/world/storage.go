@@ -19,10 +19,11 @@ import (
 //
 // 区块负载为 gmcs 自有格式（不是原版 NBT，不能与原版互读）：
 //
-//	magic "GMCS" (4B) | version u16 | x i32 | z i32 | 24 × section
-//	section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
-//	(version 2+) blockEntityCount varint | 每项: packedXZ u8 | y i16 | type varint
-//	                                          | itemCount varint | (itemID varint | count varint)*
+//		magic "GMCS" (4B) | version u16 | x i32 | z i32 | 24 × section
+//		section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
+//		(version 2+) blockEntityCount varint | 每项: packedXZ u8 | y i16 | type varint//     | slotCount varint | slotCount × (itemID varint, count varint)
+//	  (version 3+) 熔炉类方块实体追加: burnRemaining varint | burnTotal varint
+//	    | cookProgress varint | cookTotal varint//	                                          | itemCount varint | (itemID varint | count varint)*
 //
 // version 1 的负载不含方块实体（读取时视为空），version 2 起追加。
 // 所有多字节整数均为大端；负载使用 zlib 压缩（区域文件压缩类型 2）。
@@ -31,7 +32,8 @@ const (
 	regionSize    = 1 << regionShift // 32 个区块
 	sectorSize    = 4096
 	headerSectors = 2
-	chunkVersion  = 2
+	// chunkVersion 是当前存储负载版本：v2 追加方块实体，v3 追加熔炉进度。
+	chunkVersion = 3
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 )
@@ -306,10 +308,11 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 		}
 	}
 	// 方块实体：数量前缀 + 每项 1 字节坐标 + type/槽位数的 varint 上限，
-	// 每个槽位按 itemID/count 两个 varint 的上限（10 字节）估算。
+	// 每个槽位按 itemID/count 两个 varint 的上限（10 字节）估算；
+	// 熔炉进度 4 个 varint 上限 20 字节。
 	size += 5
 	for _, entity := range chunk.blockEntities {
-		size += 11 + len(entity.Items)*10
+		size += 31 + len(entity.Items)*10
 	}
 	payload := make([]byte, size)
 	copy(payload, "GMCS")
@@ -351,8 +354,9 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 	sortInts(indices)
 	for _, index := range indices {
 		entity := chunk.blockEntities[index]
-		dst[offset] = byte(index) // 低 8 位即 packed XZ（x<<4|z）
-		offset++
+		// v3 起写完整索引（uvarint）：v2 的单字节写法丢失了 Y 高位，
+		// 导致重新加载后按世界 Y 查询不到方块实体。
+		offset += binary.PutUvarint(dst[offset:], uint64(uint32(index)))
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(int64(entity.TypeID))))
 		// 槽位数量与内容。
 		offset += binary.PutUvarint(dst[offset:], uint64(len(entity.Items)))
@@ -360,6 +364,11 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 			offset += binary.PutUvarint(dst[offset:], uint64(uint32(slot.ItemID)))
 			offset += binary.PutUvarint(dst[offset:], uint64(slot.Count))
 		}
+		// 熔炉类进度（非熔炉为 0，仍写出以保证格式统一）。
+		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BurnRemaining)))
+		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BurnTotal)))
+		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.CookProgress)))
+		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.CookTotal)))
 	}
 	return offset
 }
@@ -445,7 +454,7 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 	}
 	if version >= 2 {
 		var err error
-		offset, err = decodeBlockEntities(payload, offset, chunk)
+		offset, err = decodeBlockEntities(payload, offset, chunk, version)
 		if err != nil {
 			return nil, err
 		}
@@ -456,8 +465,8 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 	return chunk, nil
 }
 
-// decodeBlockEntities 解析版本 2 负载中的方块实体部分。
-func decodeBlockEntities(payload []byte, offset int, chunk *Chunk) (int, error) {
+// decodeBlockEntities 解析版本 2+ 负载中的方块实体部分（v3 起含熔炉进度）。
+func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint16) (int, error) {
 	count, size := binary.Uvarint(payload[offset:])
 	if size <= 0 {
 		return 0, fmt.Errorf("方块实体数量前缀无效")
@@ -470,8 +479,20 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk) (int, error) 
 		if offset >= len(payload) {
 			return 0, fmt.Errorf("方块实体数据截断")
 		}
-		index := int(payload[offset])
-		offset++
+		var index int
+		if version >= 3 {
+			// v3：完整索引（含 Y 高位）。
+			value, size := binary.Uvarint(payload[offset:])
+			if size <= 0 {
+				return 0, fmt.Errorf("方块实体索引无效")
+			}
+			offset += size
+			index = int(uint32(value))
+		} else {
+			// v2：单字节 packed XZ（历史格式，Y 高位丢失）。
+			index = int(payload[offset])
+			offset++
+		}
 		typeID, size := binary.Uvarint(payload[offset:])
 		if size <= 0 {
 			return 0, fmt.Errorf("方块实体类型无效")
@@ -501,6 +522,19 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk) (int, error) 
 				offset += size
 				entity.Items[slot] = ContainerItem{ItemID: int32(itemID), Count: int32(itemCount)}
 			}
+		}
+		if version >= 3 {
+			var values [4]int32
+			for i := range values {
+				value, size := binary.Uvarint(payload[offset:])
+				if size <= 0 {
+					return 0, fmt.Errorf("熔炉进度字段无效")
+				}
+				offset += size
+				values[i] = int32(uint32(value))
+			}
+			entity.BurnRemaining, entity.BurnTotal = values[0], values[1]
+			entity.CookProgress, entity.CookTotal = values[2], values[3]
 		}
 		if chunk.blockEntities == nil {
 			chunk.blockEntities = make(map[int]BlockEntity)

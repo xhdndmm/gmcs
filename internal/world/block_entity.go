@@ -26,10 +26,19 @@ type BlockEntity struct {
 	TypeID int32
 	// Items 是容器槽位（顺序即槽位顺序）；nil 表示空容器。
 	Items []ContainerItem
+	// BurnRemaining / BurnTotal 是熔炉类方块的燃料剩余/总时长（tick）。
+	BurnRemaining int32
+	BurnTotal     int32
+	// CookProgress / CookTotal 是熔炉类方块的烹饪进度/总时长（tick）。
+	CookProgress int32
+	CookTotal    int32
 }
 
-// Empty 报告方块实体是否没有任何内容。
+// Empty 报告方块实体是否没有任何内容（槽位全空且无熔炉进度）。
 func (b BlockEntity) Empty() bool {
+	if b.BurnRemaining > 0 || b.CookProgress > 0 {
+		return false
+	}
 	for _, slot := range b.Items {
 		if !slot.IsEmpty() {
 			return false

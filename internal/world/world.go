@@ -225,6 +225,28 @@ func (w *World) ChunkCount() int {
 	return len(w.chunks)
 }
 
+// FurnaceBlockPositions 返回当前已加载区块中指定类型方块实体的世界坐标快照
+// （熔炉 Tick 扫描用；调用方随后按坐标读写方块实体）。
+func (w *World) FurnaceBlockPositions(typeIDs map[int32]bool) [][3]int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var result [][3]int
+	for pos, chunk := range w.chunks {
+		chunk.mu.RLock()
+		for index, entity := range chunk.blockEntities {
+			if !typeIDs[entity.TypeID] {
+				continue
+			}
+			x := index & 0xF
+			z := (index >> 4) & 0xF
+			y := (index >> 8) + WorldMinY
+			result = append(result, [3]int{pos.X*SectionSize + x, y, pos.Z*SectionSize + z})
+		}
+		chunk.mu.RUnlock()
+	}
+	return result
+}
+
 // ChunkLoaded 报告区块当前是否在内存缓存中（不触发加载或生成）。
 func (w *World) ChunkLoaded(x, z int) bool {
 	w.mu.Lock()

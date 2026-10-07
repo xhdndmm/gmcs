@@ -515,3 +515,37 @@ func TestEncodeEntityMetadataItem(t *testing.T) {
 		t.Fatalf("metadata trailing bytes: %d", len(packet)-offset-1)
 	}
 }
+
+func TestEncodeEntityMetadataSkinParts(t *testing.T) {
+	packet := EncodeEntityMetadataSkinParts(7, 0x7F)
+	// 解析：包 ID、实体 ID、元数据索引、类型、值、终止符。
+	packetID, n, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayPacketIDEntityMetadata {
+		t.Fatalf("unexpected packet ID %#x (err=%v)", packetID, err)
+	}
+	entityID, n2, err := DecodeVarInt(packet[n:])
+	if err != nil || entityID != 7 {
+		t.Fatalf("entity ID = %d (err=%v)", entityID, err)
+	}
+	pos := n + n2
+	if packet[pos] != EntityMetadataSkinPartsIndex {
+		t.Fatalf("metadata index = %d, want %d", packet[pos], EntityMetadataSkinPartsIndex)
+	}
+	pos++
+	typeID, n3, err := DecodeVarInt(packet[pos:])
+	if err != nil || typeID != 0 {
+		t.Fatalf("metadata type = %d (err=%v)", typeID, err)
+	}
+	pos += n3
+	if packet[pos] != 0x7F {
+		t.Fatalf("skin parts value = %#x, want 0x7f", packet[pos])
+	}
+	pos++
+	if packet[pos] != 0xFF {
+		t.Fatalf("missing metadata terminator")
+	}
+	pos++
+	if pos != len(packet) {
+		t.Fatalf("unexpected trailing bytes: %d", len(packet)-pos)
+	}
+}

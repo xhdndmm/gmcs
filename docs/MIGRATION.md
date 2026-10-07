@@ -12,9 +12,9 @@
 | 资产 | 格式 | 升级行为 |
 | --- | --- | --- |
 | `gmcs.json` | JSON（snake_case 字段） | 缺失字段回退默认值；仅在文件不存在时写回磁盘，运行期间不会重写配置 |
-| `world/r.x.z.mca` | 区域文件框架（头部/扇区/zlib）与原版一致；区块负载为 gmcs 自定义格式（magic `GMCS`，version=2，兼容读取 version=1） | 负载严格校验魔数与版本；version=1 的旧负载会按“无方块实体”读取，下次保存写入 version=2 |
+| `world/r.x.z.mca` | 区域文件框架（头部/扇区/zlib）与原版一致；区块负载为 gmcs 自定义格式（magic `GMCS`，version=3，兼容读取 version=1/2） | 负载严格校验魔数与版本；旧负载下次保存自动升级为 version=3 |
 | `world/entities.json` | gmcs 自定义 JSON（生物：位置/生命/朝向；掉落物：物品/数量/位置） | 增量引入（`c58bd09`，`items` 字段为后续批次）；文件不存在时视为无实体 |
-| `world/players.json` | gmcs 自定义 JSON（位置/生命/死亡状态/游戏模式/物品栏，物品按命名空间 ID） | 增量引入；文件不存在时按新玩家处理（发放初始物品） |
+| `world/players.json` | gmcs 自定义 JSON（位置/生命/死亡状态/游戏模式/物品栏/末影箱（`ender_inventory`），物品按命名空间 ID） | 增量引入；文件不存在时按新玩家处理（发放初始物品）；旧文件无 `ender_inventory` 按空末影箱处理 |
 | 游戏协议 | 单一目标版本（当前 1.21.11，协议 774） | 无跨版本兼容层 |
 
 ## 2. 升级 gmcs（Minecraft 版本不变）
@@ -74,17 +74,23 @@
 区块负载格式：
 
 ```text
-magic "GMCS" (4B) | version u16（当前为 2） | x i32 | z i32 | 24 × section
+magic "GMCS" (4B) | version u16（当前为 3） | x i32 | z i32 | 24 × section
 section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
 (version 2+) 方块实体：数量 varint | 每项: packedXZ u8 | type varint | 槽位数 varint
                                     |（槽位: itemID varint | count varint）*
+                                    |（槽位数 >0 时追加）燃烧剩余/燃烧总长/烹饪进度/烹饪总长 各 varint
+(version 3+) 方块实体索引为 varint（version 2 为 u8，丢失 Y 高位；索引 = x | z<<4 | (y−WorldMinY)<<8）
 ```
 
 - 所有多字节整数为大端
 - 解码时严格校验魔数与版本；版本不匹配会报错（形如 `不支持的区块负载版本 N`）
-- **version 1 → 2**：仅追加方块实体（容器槽位）字段。旧负载可直接读取（无方块实体），
-  下一次保存自动升级为 version 2；需要回退到旧版 gmcs 时，请先备份存档
-- 方块实体类型为容器（箱子/木桶/漏斗等）时保存槽位；类型 ID 来自官方注册表数据
+- **version 1 → 2**：仅追加方块实体（容器槽位）字段。旧负载可直接读取（无方块实体）
+- **version 2 → 3**：方块实体索引从 u8 改为 varint（修复 v2 丢失 Y 高位的缺陷：Y 不在
+  [WorldMinY, WorldMinY+8) 的方块实体（含熔炉进度）在 v2 中会错位/丢失）；
+  熔炉类方块实体追加燃烧/烹饪进度字段。v1/v2 负载均可直接读取，
+  下一次保存自动升级为 version 3；需要回退到旧版 gmcs 时，请先备份存档
+- 方块实体类型为容器（箱子/木桶/漏斗等）时保存槽位；熔炉/高炉/烟熏炉额外保存
+  燃烧/烹饪进度；类型 ID 来自官方注册表数据
 
 地形生成器变更与"地形接缝"：
 

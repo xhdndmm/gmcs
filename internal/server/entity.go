@@ -154,6 +154,7 @@ func (s *Server) tick() {
 	s.tickMobs(players)
 	s.tickItems(players)
 	s.tickWorldTime(players)
+	s.tickFurnaces()
 	s.spawnTicks++
 	if s.spawnTicks >= spawnCheckInterval {
 		s.spawnTicks = 0

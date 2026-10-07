@@ -30,6 +30,12 @@ func (s *Server) playerSpawnPacket(player *session) []byte {
 	return protocol.EncodeAddEntity(player.entityID, player.uuid, s.playerTypeID, x, y, z, 0, 0, 0, yaw, pitch)
 }
 
+// playerSkinPacket 构造玩家皮肤层显示掩码的实体元数据
+// （Avatar 基类索引 16，值来自客户端 Client Information）。
+func (s *Server) playerSkinPacket(player *session) []byte {
+	return protocol.EncodeEntityMetadataSkinParts(player.entityID, player.skinParts())
+}
+
 // writeToNearbyPlayers 把数据包写给附近（水平距离 ≤ playerMoveBroadcastRange）
 // 且已完成进入世界的玩家。
 func (s *Server) writeToNearbyPlayers(packet []byte, x, z float64, except *session) {

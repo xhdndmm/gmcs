@@ -8,6 +8,9 @@ const (
 	PlayPacketIDCloseContainer = 0x11 // clientbound
 	// PlayPacketIDSetContainerSlot 是 Set Container Slot（clientbound，单槽位更新）。
 	PlayPacketIDSetContainerSlot = 0x14 // clientbound
+	// PlayPacketIDSetContainerProperty 是 Set Container Property（clientbound，
+	// 窗口属性更新：熔炉燃烧/烹饪进度条等）。
+	PlayPacketIDSetContainerProperty = 0x13 // clientbound
 	// PlayPacketIDContainerSetContent 是 Container Set Content（clientbound，全量内容）。
 	PlayPacketIDContainerSetContent = 0x12 // clientbound
 	// PlayPacketIDOpenScreen 是 Open Screen（clientbound，打开窗口）。
@@ -60,6 +63,16 @@ func EncodeSetContainerSlot(windowID, stateID int32, slot int16, slotData []byte
 	packet = AppendVarInt(packet, stateID)
 	packet = AppendInt16(packet, slot)
 	return append(packet, slotData...)
+}
+
+// EncodeSetContainerProperty 编码 Set Container Property 包：更新窗口属性
+// （熔炉：0 燃烧剩余、1 燃料总时长、2 烹饪进度、3 烹饪总时长）。
+func EncodeSetContainerProperty(windowID int32, property int16, value int16) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDSetContainerProperty))
+	packet = AppendVarInt(packet, windowID)
+	packet = AppendInt16(packet, property)
+	packet = AppendInt16(packet, value)
+	return packet
 }
 
 // EncodeContainerClose 编码 Close Container 包（clientbound）：要求客户端关闭窗口。

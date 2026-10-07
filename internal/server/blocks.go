@@ -88,7 +88,11 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	}
 	// 破坏容器方块：先关闭观察窗口，再把内容物掉落到世界中（与原版一致）。
 	if def, _, ok := s.containerForState(current); ok {
-		s.destroyContainer(action.X, action.Y, action.Z, player, def)
+		if def.IsFurnace {
+			s.destroyFurnace(action.X, action.Y, action.Z, def, player)
+		} else {
+			s.destroyContainer(action.X, action.Y, action.Z, player, def)
+		}
 	}
 	if !s.world.SetBlock(action.X, action.Y, action.Z, world.AirBlock) {
 		return
@@ -116,8 +120,20 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	}
 	// 右键容器方块：打开窗口（潜行时改为放置，与原版一致）。
 	if !player.sneaking {
-		if def, blockName, ok := s.containerForState(s.world.BlockAt(use.X, use.Y, use.Z)); ok {
+		current := s.world.BlockAt(use.X, use.Y, use.Z)
+		if def, blockName, ok := s.containerForState(current); ok {
 			s.openContainer(player, use.X, use.Y, use.Z, def, blockName)
+			return
+		}
+		// 右键工作台：打开 3×3 合成窗口。
+		name, hasName := s.blockNames[current]
+		if hasName && name == "minecraft:crafting_table" {
+			s.openCraftingTable(player)
+			return
+		}
+		// 右键末影箱：打开玩家自己的末影箱（内容随玩家）。
+		if hasName && name == "minecraft:ender_chest" {
+			s.openEnderChest(player)
 			return
 		}
 	}

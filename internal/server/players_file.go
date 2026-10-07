@@ -56,6 +56,8 @@ type playerRecord struct {
 	Experience int32        `json:"experience"`
 	GameMode   string       `json:"game_mode"`
 	Inventory  []playerItem `json:"inventory"`
+	// EnderItems 是末影箱内容（27 槽，按玩家独立存储）。
+	EnderItems []playerItem `json:"ender_inventory"`
 }
 
 // playerItem 是物品栏中的一个堆栈；Item 为命名空间 ID。
@@ -199,6 +201,7 @@ func playerRecordFromSession(player *session) playerRecord {
 	if !ok {
 		modeName = "survival"
 	}
+	enderItems := enderItemsOf(player)
 	items := make([]playerItem, 0, item.InventorySlots)
 	for slot, stack := range player.inventory.Slots() {
 		if stack.IsEmpty() {
@@ -225,7 +228,25 @@ func playerRecordFromSession(player *session) playerRecord {
 		Experience: experience,
 		GameMode:   modeName,
 		Inventory:  items,
+		EnderItems: enderItems,
 	}
+}
+
+// enderItemsOf 把会话的末影箱内容转为持久化记录格式。
+func enderItemsOf(player *session) []playerItem {
+	var items []playerItem
+	for slot := 0; slot < enderChestSlots; slot++ {
+		stack := player.enderChest.Get(slot)
+		if stack.IsEmpty() {
+			continue
+		}
+		name, ok := registry.ItemName(stack.ItemID)
+		if !ok {
+			continue
+		}
+		items = append(items, playerItem{Slot: slot, Item: name, Count: stack.Count})
+	}
+	return items
 }
 
 // applyPlayerRecord 把持久化的玩家状态应用到会话（进入世界前调用）。
@@ -273,6 +294,17 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 	}
 	s.stateMu.Unlock()
 
+	for _, stored := range record.EnderItems {
+		if stored.Slot < 0 || stored.Slot >= enderChestSlots || stored.Count <= 0 {
+			continue
+		}
+		stack, err := item.FromName(stored.Item, stored.Count)
+		if err != nil {
+			slog.Warn("跳过未知的末影箱物品", "name", s.name, "item", stored.Item, "error", err)
+			continue
+		}
+		s.enderChest.Set(stored.Slot, stack)
+	}
 	for _, stored := range record.Inventory {
 		if stored.Slot < 0 || stored.Slot >= item.InventorySlots || stored.Count <= 0 {
 			continue

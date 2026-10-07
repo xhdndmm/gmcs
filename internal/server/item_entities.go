@@ -113,11 +113,15 @@ func (s *Server) spawnItem(stack item.Stack, x, y, z, vx, vy, vz float64, pickup
 		VelZ:             vz,
 		PickupDelayTicks: pickupDelay,
 	}
+	// 广播包在实体入表前用入参快照构造：入表后 tick goroutine 会并发修改
+	// 坐标与堆栈字段。
+	add := protocol.EncodeAddEntity(e.ID, e.UUID, s.itemTypeID, x, y, z, vx, vy, vz, 0, 0)
+	meta := protocol.EncodeEntityMetadataItem(e.ID, stack.AppendSlot(nil))
 	s.entityMu.Lock()
 	s.items[e.ID] = e
 	s.entityMu.Unlock()
-	s.broadcastPacket(protocol.EncodeAddEntity(e.ID, e.UUID, s.itemTypeID, e.X, e.Y, e.Z, e.VelX, e.VelY, e.VelZ, 0, 0))
-	s.broadcastPacket(protocol.EncodeEntityMetadataItem(e.ID, e.Stack.AppendSlot(nil)))
+	s.broadcastPacket(add)
+	s.broadcastPacket(meta)
 	return e
 }
 

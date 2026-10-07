@@ -183,6 +183,27 @@ func EncodeEntityMetadataItem(id int32, slotData []byte) []byte {
 	return append(packet, 0xFF) // 元数据数组结束标记
 }
 
+// EntityMetadataSkinPartsIndex 是玩家（Avatar 基类）Displayed Skin Parts 字段的
+// 元数据索引（0–7 基类、8–14 生物、15 主手、16 皮肤层；见 wiki 实体元数据表）。
+const EntityMetadataSkinPartsIndex = 16
+
+// EncodeEntityMetadataByte 编码 Set Entity Data 包，设置单个字节元数据字段
+// （元数据类型 0 = byte）。
+func EncodeEntityMetadataByte(id int32, index uint8, value byte) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDEntityMetadata))
+	packet = AppendVarInt(packet, id)
+	packet = append(packet, index)
+	packet = AppendVarInt(packet, 0) // 元数据类型：byte
+	packet = append(packet, value)
+	return append(packet, 0xFF) // 元数据数组结束标记
+}
+
+// EncodeEntityMetadataSkinParts 编码 Set Entity Data 包，设置玩家的皮肤层
+// 显示掩码（与 Client Information 的 Displayed Skin Parts 一致）。
+func EncodeEntityMetadataSkinParts(id int32, parts uint8) []byte {
+	return EncodeEntityMetadataByte(id, EntityMetadataSkinPartsIndex, parts)
+}
+
 // EncodeEntityEvent 编码 Entity Event 包（entityId 为 int32）。
 func EncodeEntityEvent(id int32, status uint8) []byte {
 	packet := AppendVarInt(nil, int32(PlayPacketIDEntityEvent))

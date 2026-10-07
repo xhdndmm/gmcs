@@ -92,6 +92,13 @@ type Server struct {
 	containerMu   sync.Mutex
 	containers    map[[3]int]*containerState
 
+	// 熔炉系统：furnaces 是已注册的熔炉运行时状态（按方块坐标索引），
+	// 受 furnaceMu 保护；cookKinds 是方块实体类型 → 烹饪类型映射。
+	furnaceMu          sync.Mutex
+	furnaces           map[[3]int]*furnaceState
+	cookKinds          map[int32]registry.CookingKind
+	furnaceScanCounter int
+
 	// fallDamageMultipliers 是落点方块的摔落伤害倍率（New 中解析）。
 	fallDamageMultipliers map[uint16]float32
 
@@ -168,6 +175,9 @@ func New(cfg config.Config) (*Server, error) {
 	server.resolveItemRegistryIDs()
 	server.resolveFallDamageBlocks()
 	server.resolveContainerDefs()
+	server.initFurnaceKinds()
+	server.furnaces = make(map[[3]int]*furnaceState)
+	bucketItemID, bucketLavaItemID = initFurnaceItems()
 	server.blockNames = resolveBlockNames()
 	if len(server.containerDefs) == 0 {
 		slog.Warn("容器交互已禁用：注册表数据缺失")

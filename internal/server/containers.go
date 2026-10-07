@@ -36,14 +36,20 @@ type containerDef struct {
 	Slots int
 	// Title 是窗口标题（纯文本；原版使用翻译键，此处直接显示名称）。
 	Title string
+	// CookKind 非零时表示处理型容器（熔炉/高炉/烟熏炉）。
+	CookKind registry.CookingKind
+	// IsFurnace 标记熔炉类容器（有燃烧/烹饪进度，独立 Tick）。
+	IsFurnace bool
 }
 
 // containerState 是一个已打开的容器内容；服务器侧权威状态。
 type containerState struct {
-	mu    sync.Mutex
-	pos   [3]int
-	def   *containerDef
-	slots []item.Stack
+	mu  sync.Mutex
+	pos [3]int
+	def *containerDef
+	// furnace 非空时表示熔炉类容器：槽位与进度由 furnaceState 权威持有。
+	furnace *furnaceState
+	slots   []item.Stack
 	// viewers 是当前打开该容器的玩家会话。
 	viewers map[*session]struct{}
 	// closed 表示容器方块已被破坏（窗口数据不再有效）。
@@ -89,6 +95,20 @@ func (s *Server) resolveContainerDefs() {
 	add("minecraft:dispenser", "minecraft:dispenser", "minecraft:generic_3x3", "Dispenser", 9)
 	add("minecraft:dropper", "minecraft:dropper", "minecraft:generic_3x3", "Dropper", 9)
 	add("minecraft:hopper", "minecraft:hopper", "minecraft:hopper", "Hopper", 5)
+	// 熔炉类：3 槽（原料/燃料/产物）+ 36 背包；带燃烧/烹饪进度。
+	addFurnace := func(blockName, blockEntityName, menuName, title string, kind registry.CookingKind) {
+		def, ok := resolveContainerDef(blockName, blockEntityName, menuName, title, 3)
+		if !ok {
+			slog.Warn("熔炉类型不可用：注册表数据缺失", "block", blockName)
+			return
+		}
+		def.CookKind = kind
+		def.IsFurnace = true
+		defs[blockName] = def
+	}
+	addFurnace("minecraft:furnace", "minecraft:furnace", "minecraft:furnace", "Furnace", registry.CookingSmelting)
+	addFurnace("minecraft:blast_furnace", "minecraft:blast_furnace", "minecraft:blast_furnace", "Blast Furnace", registry.CookingBlasting)
+	addFurnace("minecraft:smoker", "minecraft:smoker", "minecraft:smoker", "Smoker", registry.CookingSmoking)
 	for _, name := range []string{
 		"minecraft:shulker_box",
 		"minecraft:white_shulker_box", "minecraft:orange_shulker_box", "minecraft:magenta_shulker_box",
@@ -120,6 +140,9 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	if player.openContainer != nil {
 		s.closeContainer(player, false)
 	}
+	if player.getOpenCraft() != nil {
+		s.closeCrafting(player, false)
+	}
 
 	state, err := s.world.BlockEntityAt(x, y, z)
 	if err != nil {
@@ -137,10 +160,17 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	}
 
 	container := s.registerViewer(x, y, z, def, items, player)
+	if def.IsFurnace {
+		container.furnace = s.registerFurnace(x, y, z)
+		if container.furnace != nil {
+			// 槽位统一由 furnaceState 持有（Tick 与窗口共用一份状态）。
+			container.slots = container.furnace.slots[:]
+		}
+	}
 	player.openContainer = container
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
-	player.cursor = item.Empty()
+	player.setCursor(item.Empty())
 
 	if err := player.writePacket(protocol.EncodeOpenScreen(player.windowID, def.MenuType, def.Title)); err != nil {
 		return
@@ -177,7 +207,7 @@ func (s *Server) closeContainer(player *session, sendClose bool) {
 		return
 	}
 	player.openContainer = nil
-	player.cursor = item.Empty()
+	player.setCursor(item.Empty())
 	player.drag = nil
 	windowID := player.windowID
 
@@ -188,8 +218,12 @@ func (s *Server) closeContainer(player *session, sendClose bool) {
 	container.mu.Unlock()
 
 	if !closed {
-		// 容器仍有效：把内容写回区块。
-		s.flushContainer(container)
+		// 容器仍有效：把内容写回区块（熔炉额外写回燃烧/烹饪进度）。
+		if container.furnace != nil {
+			s.flushFurnace(container.furnace)
+		} else {
+			s.flushContainer(container)
+		}
 	}
 	if empty {
 		key := container.pos
@@ -307,7 +341,7 @@ func (s *Server) sendContainerContent(player *session, container *containerState
 		slots = append(slots, stack.AppendSlot(nil))
 	}
 	_ = player.writePacket(protocol.EncodeContainerSetContent(
-		player.windowID, player.windowState, slots, player.cursor.AppendSlot(nil)))
+		player.windowID, player.windowState, slots, player.getCursor().AppendSlot(nil)))
 }
 
 // containerPlayerInvSlot 把容器菜单中玩家部分的槽位（0–35）映射到物品栏槽位：
@@ -446,35 +480,6 @@ func playerInvForMenuSlot(index int) (int, bool) {
 	return 0, false
 }
 
-// playerSlotBacking 是玩家物品栏窗口（window 0）的槽位访问层。
-type playerSlotBacking struct {
-	player *session
-}
-
-// SlotCount 返回窗口 0 的槽位总数。
-func (b playerSlotBacking) SlotCount() int { return playerMenuSlots }
-
-// Get 返回槽位内容；合成格返回空（不支持合成）。
-func (b playerSlotBacking) Get(index int) item.Stack {
-	if slot, ok := playerInvForMenuSlot(index); ok {
-		return b.player.inventory.Get(slot)
-	}
-	return item.Empty()
-}
-
-// Set 设置槽位内容；合成格忽略。
-func (b playerSlotBacking) Set(index int, stack item.Stack) {
-	if slot, ok := playerInvForMenuSlot(index); ok {
-		b.player.inventory.Set(slot, stack)
-	}
-}
-
-// Supported 报告槽位是否可交互（合成格不可）。
-func (b playerSlotBacking) Supported(index int) bool {
-	_, ok := playerInvForMenuSlot(index)
-	return ok
-}
-
 // handleContainerClick 处理窗口点击（Container Click 包）。
 // 由会话读循环调用。
 func (s *Server) handleContainerClick(player *session, click protocol.ContainerClick) {
@@ -484,8 +489,14 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 	)
 	switch {
 	case click.WindowID == protocol.PlayerInventoryWindowID:
-		backing = playerSlotBacking{player}
+		backing = craftSlotBacking{player: player, state: player.invCraftState(), windowZero: true}
 		windowID = protocol.PlayerInventoryWindowID
+	case player.getOpenCraft() != nil && click.WindowID == player.windowID:
+		backing = craftSlotBacking{player: player, state: player.getOpenCraft()}
+		windowID = player.windowID
+	case player.getOpenEnder() && click.WindowID == player.windowID:
+		backing = enderSlotBacking{player: player}
+		windowID = player.windowID
 	case player.openContainer != nil && click.WindowID == player.windowID:
 		container := player.openContainer
 		// 容器方块已被破坏：清理窗口状态（内容已掉落）。
@@ -503,7 +514,11 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 			s.closeContainer(player, true)
 			return
 		}
-		backing = containerSlotBacking{server: s, player: player, container: container}
+		if container.furnace != nil {
+			backing = furnaceSlotBacking{player: player, state: container.furnace}
+		} else {
+			backing = containerSlotBacking{server: s, player: player, container: container}
+		}
 		windowID = player.windowID
 	default:
 		return
@@ -515,9 +530,25 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 	}
 	working := make([]item.Stack, len(before))
 	copy(working, before)
-	cursor := player.cursor
+	cursor := player.getCursor()
 
-	cursor = s.applyContainerClick(player, backing, working, cursor, click)
+	switch {
+	case click.Slot == 0:
+		if craft, ok := backing.(craftSlotBacking); ok {
+			cursor = s.craftResultClick(player, craft, working, cursor, click)
+			break
+		}
+		if furnace, ok := backing.(furnaceSlotBacking); ok {
+			cursor = s.furnaceResultClick(player, furnace, working, cursor, click)
+			break
+		}
+		cursor = s.applyContainerClick(player, backing, working, cursor, click)
+	default:
+		cursor = s.applyContainerClick(player, backing, working, cursor, click)
+	}
+	if craft, ok := backing.(craftSlotBacking); ok {
+		working[0] = craft.resultOf(working) // 结果槽随合成格刷新
+	}
 
 	player.windowState++
 	for i := range working {
@@ -526,8 +557,8 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 			player.tryWrite(protocol.EncodeSetContainerSlot(windowID, player.windowState, int16(i), working[i].AppendSlot(nil)))
 		}
 	}
-	if cursor != player.cursor {
-		player.cursor = cursor
+	if cursor != player.getCursor() {
+		player.setCursor(cursor)
 		player.tryWrite(protocol.EncodeSetContainerSlot(windowID, player.windowState, -1, cursor.AppendSlot(nil)))
 	}
 }
@@ -606,8 +637,15 @@ func swapHotbarIndex(backing slotBacking, hotbar int) int {
 	switch b := backing.(type) {
 	case containerSlotBacking:
 		return len(b.container.slots) + 27 + hotbar
-	case playerSlotBacking:
-		return 36 + hotbar
+	case craftSlotBacking:
+		if b.windowZero {
+			return 36 + hotbar
+		}
+		return 37 + hotbar
+	case furnaceSlotBacking:
+		return 30 + hotbar
+	case enderSlotBacking:
+		return enderChestSlots + 27 + hotbar
 	}
 	return -1
 }
@@ -808,16 +846,56 @@ func quickMoveTargets(backing slotBacking, slot int) [][2]int {
 			}
 		}
 		return [][2]int{{0, containerSlots}}
-	case playerSlotBacking:
+	case enderSlotBacking:
+		if slot < enderChestSlots {
+			return [][2]int{{enderChestSlots, enderChestSlots + 27}, {enderChestSlots + 27, enderChestSlots + 36}}
+		}
 		switch {
-		case slot >= 9 && slot <= 35: // 主背包 → 快捷栏
-			return [][2]int{{36, 45}}
-		case slot >= 36 && slot <= 44: // 快捷栏 → 主背包
-			return [][2]int{{9, 36}}
-		case slot >= 5 && slot <= 8: // 盔甲 → 主背包/快捷栏
-			return [][2]int{{9, 45}}
-		case slot == 45: // 副手 → 主背包
-			return [][2]int{{9, 36}}
+		case slot >= enderChestSlots && slot <= enderChestSlots+26:
+			return [][2]int{{enderChestSlots + 27, enderChestSlots + 36}}
+		case slot >= enderChestSlots+27:
+			return [][2]int{{enderChestSlots, enderChestSlots + 27}}
+		}
+		return nil
+	case furnaceSlotBacking:
+		if slot < 3 {
+			if slot == 2 {
+				return nil // 产物槽由专用路径处理
+			}
+			return [][2]int{{3, 30}, {30, 39}} // 原料/燃料 → 背包
+		}
+		switch {
+		case slot >= 3 && slot <= 29: // 主背包 → 快捷栏
+			return [][2]int{{30, 39}}
+		case slot >= 30 && slot <= 38: // 快捷栏 → 主背包
+			return [][2]int{{3, 30}}
+		}
+		return nil
+	case craftSlotBacking:
+		if slot == 0 {
+			return nil // 结果槽由合成路径处理
+		}
+		if slot <= b.gridCount() {
+			return b.invRanges() // 合成格 → 背包
+		}
+		if b.windowZero {
+			switch {
+			case slot >= 9 && slot <= 35: // 主背包 → 快捷栏
+				return [][2]int{{36, 45}}
+			case slot >= 36 && slot <= 44: // 快捷栏 → 主背包
+				return [][2]int{{9, 36}}
+			case slot >= 5 && slot <= 8: // 盔甲 → 主背包/快捷栏
+				return [][2]int{{9, 45}}
+			case slot == 45: // 副手 → 主背包
+				return [][2]int{{9, 36}}
+			}
+			return nil
+		}
+		switch {
+		case slot >= 10 && slot <= 36: // 主背包 → 快捷栏
+			return [][2]int{{37, 46}}
+		case slot >= 37 && slot <= 45: // 快捷栏 → 主背包
+			return [][2]int{{10, 37}}
 		}
 	}
 	return nil
