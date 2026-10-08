@@ -382,6 +382,21 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 - `BenchmarkEncodeAddEntity` 仍有 1 次分配（返回的包被持有跨多个玩家的同步写出）；
   进一步归零需要调用方传入缓冲，收益低于复杂度，未做。
 
+### 3.10 碰撞形状查询（本批，实测）
+
+本批引入方块碰撞形状表与共享 AABB 查询（`internal/world/collision.go`）：
+玩家防穿墙/站立检测与掉落物逐轴移动从“点采样/0.05 步长近似”改为形状级
+扫描裁剪（半砖/台阶/栅栏/门等非完整碰撞体参与碰撞）。
+
+| 基准 | 结果 |
+| --- | --- |
+| `BenchmarkCollides`（玩家碰撞盒） | 151 ns/op，0 B/op，0 allocs/op |
+| `BenchmarkClipMove`（逐轴扫描裁剪） | 294 ns/op，0 B/op，0 allocs/op |
+| `BenchmarkServerTick`（32 生物，复测） | 6335 ns/op，1277 B/op，5 allocs/op（与 3.9 基本持平） |
+
+正确性验证：`go test ./...`、`go test -race ./...` 全部通过
+（含新增 `internal/world/collision_test.go`、`internal/registry/block_shapes_test.go`）。
+
 ## 4. 尚未覆盖
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家 loopback 压测（见 3.7），真实网络 / 更高并发 / 长时间运行仍待验证

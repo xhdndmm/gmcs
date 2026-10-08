@@ -162,6 +162,14 @@ func main() {
 	if err := writeRegistryTables(filepath.Dir(*outPath), *version, blockStates, itemIDs); err != nil {
 		fatal("写入 ID 表：%v", err)
 	}
+	blockShapeData, err := loadBlockShapeData(*blocksPath)
+	if err != nil {
+		fatal("读取 blocks 形状数据：%v", err)
+	}
+	if err := writeBlockShapes(filepath.Dir(*outPath), *version, blockShapeData); err != nil {
+		fatal("写入碰撞形状表：%v", err)
+	}
+	fmt.Printf("已生成碰撞形状表（%d 个方块）\n", len(blockShapeData))
 	if err := writeStaticIDs(filepath.Dir(*outPath), *version, generated.staticIDs); err != nil {
 		fatal("写入静态 ID 表：%v", err)
 	}

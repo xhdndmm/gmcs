@@ -263,25 +263,34 @@ func (s *session) acceptMove(x, y, z float64, now time.Time) bool {
 }
 
 // isSolidBlock 报告世界坐标处是否为固体方块（非空气、非水）。
+// 仅用于视线遮挡等粗略判定；移动碰撞请使用 positionClear（形状级 AABB）。
 func (s *Server) isSolidBlock(x, y, z int) bool {
 	state := s.world.BlockAt(x, y, z)
 	return state != world.AirBlock && state != world.WaterBlock
 }
 
-// positionClear 报告玩家身体（脚部与头部采样点）是否未嵌入固体方块。
-// 用于检测穿墙（no-clip）式移动：客户端自身的碰撞不允许进入固体方块，
-// 因此“终点嵌在方块里”只可能来自作弊或状态错乱。
-func (s *Server) positionClear(x, y, z float64) bool {
-	blockX, blockZ := int(math.Floor(x)), int(math.Floor(z))
-	if s.isSolidBlock(blockX, int(math.Floor(y+0.1)), blockZ) {
-		return false
+// playerBox 返回玩家碰撞盒（宽 0.6、高 1.8，脚底在 y）。
+func playerBox(x, y, z float64) world.Box {
+	return world.Box{
+		MinX: x - 0.3, MinY: y, MinZ: z - 0.3,
+		MaxX: x + 0.3, MaxY: y + 1.8, MaxZ: z + 0.3,
 	}
-	return !s.isSolidBlock(blockX, int(math.Floor(y+1.5)), blockZ)
 }
 
-// supportedAt 报告玩家脚下是否有可站立的固体表面（服务器端重力模拟）。
+// positionClear 报告玩家碰撞盒是否未嵌入方块碰撞形状。
+// 用于检测穿墙（no-clip）式移动：客户端自身的碰撞不允许进入方块形状，
+// 因此“终点嵌在形状里”只可能来自作弊或状态错乱。查询为形状级 AABB
+// （支持半砖/台阶/栅栏/门等非完整碰撞体），相触不算相交。
+func (s *Server) positionClear(x, y, z float64) bool {
+	return !s.world.Collides(playerBox(x, y, z))
+}
+
+// supportedAt 报告玩家脚下是否有可站立的碰撞面（服务器端重力模拟）。
+// 形状级判定：脚底 0.1 格以内存在水平相交的碰撞面顶面即视为支撑
+// （半砖/台阶/雪层/栅栏顶面等均正确）。
 func (s *Server) supportedAt(x, y, z float64) bool {
-	return s.isSolidBlock(int(math.Floor(x)), int(math.Floor(y-0.08)), int(math.Floor(z)))
+	_, _, ok := s.world.SurfaceBelow(playerBox(x, y, z), 0.1)
+	return ok
 }
 
 // feetInWater 报告玩家脚部是否位于水中（落水重置下落高度）。
@@ -308,11 +317,13 @@ func (s *session) resyncPosition() {
 // 每多 1 格造成 1 点伤害）。
 const fallDamageThreshold = 3.0
 
-// updateFallState 以服务器端地面检测（脚下是否有固体方块）跟踪下落并结算
+// updateFallState 以服务器端支撑面检测（脚底碰撞形状顶面）跟踪下落并结算
 // 摔落伤害，不依赖客户端上报的着地标志。落点是水时不受伤害；
+// 减伤按提供支撑面的方块计算（干草堆/床/粘液块/蜂蜜块/细雪）。
 // 创造/旁观模式由 applyDamage 直接忽略。仅由会话读循环调用。
 func (s *session) updateFallState(x, y, z float64) {
-	if !s.server.supportedAt(x, y, z) {
+	top, surface, supported := s.server.world.SurfaceBelow(playerBox(x, y, z), 0.1)
+	if !supported {
 		if s.server.feetInWater(x, y, z) {
 			// 落水/游泳中断下落，避免把“高处落水再上岸”算成摔落。
 			s.airborne = false
@@ -331,12 +342,10 @@ func (s *session) updateFallState(x, y, z float64) {
 		return
 	}
 	s.airborne = false
-	fall := s.fallStartY - y
+	fall := s.fallStartY - top
 	if fall <= fallDamageThreshold {
 		return
 	}
-	// 落点表面取脚下第一格（受保护方块减伤：干草堆/床/粘液块/蜂蜜块/细雪）。
-	surface := s.server.world.BlockAt(int(math.Floor(x)), int(math.Floor(y))-1, int(math.Floor(z)))
 	damage := float32(math.Ceil(fall - fallDamageThreshold))
 	damage *= s.server.fallDamageMultiplier(surface)
 	if damage > 0 {

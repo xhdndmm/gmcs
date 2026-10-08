@@ -177,51 +177,33 @@ func (s *Server) dropPlayerInventory(player *session) {
 	}
 }
 
-// itemCollides 报告掉落物碰撞盒（以位置为中心的水平 0.25、垂直 0.25）
-// 是否与固体方块相交。
-func (s *Server) itemCollides(x, y, z float64) bool {
-	minX, maxX := x-itemHalfWidth, x+itemHalfWidth
-	minZ, maxZ := z-itemHalfWidth, z+itemHalfWidth
-	minY, maxY := y, y+itemHeight
-	for blockX := int(math.Floor(minX)); blockX <= int(math.Floor(maxX)); blockX++ {
-		for blockY := int(math.Floor(minY)); blockY <= int(math.Floor(maxY)); blockY++ {
-			for blockZ := int(math.Floor(minZ)); blockZ <= int(math.Floor(maxZ)); blockZ++ {
-				if s.isSolidBlock(blockX, blockY, blockZ) {
-					return true
-				}
-			}
-		}
+// itemBoxAt 返回掉落物碰撞盒（0.25×0.25×0.25，与原版 ItemEntity 尺寸一致）。
+func itemBoxAt(x, y, z float64) world.Box {
+	return world.Box{
+		MinX: x - itemHalfWidth, MinY: y, MinZ: z - itemHalfWidth,
+		MaxX: x + itemHalfWidth, MaxY: y + itemHeight, MaxZ: z + itemHalfWidth,
 	}
-	return false
 }
 
-// moveItemAxis 沿单轴推进掉落物，遇到固体方块时停在上一步。
-// 返回是否发生碰撞。以 ≤0.05 的步长推进，避免高速穿透。
+// itemCollides 报告掉落物碰撞盒是否与方块碰撞形状相交（形状级 AABB，
+// 支持半砖/台阶/栅栏等非完整碰撞体）。
+func (s *Server) itemCollides(x, y, z float64) bool {
+	return s.world.Collides(itemBoxAt(x, y, z))
+}
+
+// moveItemAxis 沿单轴推进掉落物，被碰撞形状裁剪（扫描式逐轴碰撞，
+// 与原版 ItemEntity 一致）。返回是否发生碰撞。仅由 tickItems 调用。
 func (s *Server) moveItemAxis(e *itemEntity, axis int, delta float64) bool {
-	if delta == 0 {
-		return false
+	clipped := s.world.ClipMove(itemBoxAt(e.X, e.Y, e.Z), axis, delta)
+	switch axis {
+	case 0:
+		e.X += clipped
+	case 1:
+		e.Y += clipped
+	case 2:
+		e.Z += clipped
 	}
-	steps := int(math.Ceil(math.Abs(delta) / 0.05))
-	if steps > 16 {
-		steps = 16
-	}
-	step := delta / float64(steps)
-	for i := 0; i < steps; i++ {
-		x, y, z := e.X, e.Y, e.Z
-		switch axis {
-		case 0:
-			x += step
-		case 1:
-			y += step
-		case 2:
-			z += step
-		}
-		if s.itemCollides(x, y, z) {
-			return true
-		}
-		e.X, e.Y, e.Z = x, y, z
-	}
-	return false
+	return clipped != delta
 }
 
 // itemHazardAt 报告掉落物所在位置的破坏性方块（岩浆/火/灵魂火/仙人掌）。

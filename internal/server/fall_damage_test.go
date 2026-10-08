@@ -97,16 +97,18 @@ func TestFallDamageProtection(t *testing.T) {
 		}
 		setHealth(maxPlayerHealth)
 		player.resetFallState()
-		player.updateFallState(spawnX, spawnY+20, spawnZ)
-		player.updateFallState(spawnX, spawnY, spawnZ)
+		// 落点取支撑面的形状顶面（床顶 9/16 等），与真实客户端落地高度一致。
+		landY, _, ok := instance.world.SurfaceBelow(playerBox(spawnX, spawnY, spawnZ), 1.0)
+		if !ok {
+			t.Fatalf("%s: 落点没有支撑面", name)
+		}
+		player.updateFallState(spawnX, landY+20, spawnZ)
+		player.updateFallState(spawnX, landY, spawnZ)
 		health, _, _ := player.healthStatus()
 		if math.Abs(float64(health-wantHealth)) > 1e-3 {
 			t.Fatalf("%s: health = %v, want %v", name, health, wantHealth)
 		}
-	}
-
-	// 下落 20 格：基础伤害 17 点。
-	check("hay", registry.BlockStateIDs["minecraft:hay_block"], maxPlayerHealth-17*0.2)
+	} // 下落 20 格：基础伤害 17 点。	check("hay", registry.BlockStateIDs["minecraft:hay_block"], maxPlayerHealth-17*0.2)
 	check("bed", registry.BlockStateIDs["minecraft:red_bed"], maxPlayerHealth-17*0.5)
 	check("slime", registry.BlockStateIDs["minecraft:slime_block"], maxPlayerHealth)
 	check("honey", registry.BlockStateIDs["minecraft:honey_block"], maxPlayerHealth)
