@@ -1,6 +1,7 @@
 package server
 
 import (
+	"math"
 	"net"
 	"testing"
 
@@ -92,17 +93,41 @@ func expectBlockUpdate(t *testing.T, conn net.Conn, x, y, z int, state int32) {
 // findDigTarget 在出生点附近寻找一个可破坏的方块列（返回顶面方块坐标）。
 func findDigTarget(t *testing.T, instance *Server) (int, int, int) {
 	t.Helper()
-	for _, x := range []int{2, 3, 4, 5} {
-		for _, z := range []int{2, 3, 4, 5} {
-			state, y, ok := instance.world.TopBlock(x, z)
-			if !ok || state == world.WaterBlock || state == world.BedrockBlock {
-				continue
-			}
-			return x, y, z
-		}
+	return digTargetNearSpawn(t, instance)
+}
+
+// TestPlacementPushesPlayerUp 验证在玩家脚下放置方块时玩家被推到方块顶面
+// （原版 pushEntitiesUp 行为），不会嵌入方块而被反穿墙校验反复回拉。
+func TestPlacementPushesPlayerUp(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*64"}
+	instance, conn := joinServer(t, cfg, "Stacker")
+	player := findSession(t, instance, "Stacker")
+	x, y, z, _, _ := player.playerPosition()
+	baseX, baseY, baseZ := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+
+	// 往玩家脚下的格子放石头（点击下方方块的顶面）。
+	sendUseItemOn(t, conn, baseX, baseY-1, baseZ, 1)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDBlockUpdate)
+	if got := instance.world.BlockAt(baseX, baseY, baseZ); got != world.StoneBlock {
+		t.Fatalf("placed block = %d, want stone", got)
 	}
-	t.Fatal("出生点附近找不到可破坏的方块")
-	return 0, 0, 0
+	// 玩家应被推到石头顶面（y = baseY+1），水平位置不变。
+	_, gotY, _, _, _ := player.playerPosition()
+	if math.Abs(gotY-float64(baseY+1)) > 1e-9 {
+		t.Fatalf("player y = %v, want %v", gotY, baseY+1)
+	}
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSynchronizePlayerPos)
+	// 推起后的移动不应被回拉（不会卡在方块里）。/list 往返作为处理屏障。
+	sendPlayerPosition(t, conn, x+1, float64(baseY+1), z, true)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	gotX, _, gotZ, _, _ := player.playerPosition()
+	if math.Abs(gotX-(x+1)) > 1e-9 || math.Abs(gotZ-z) > 1e-9 {
+		t.Fatalf("move rejected after push-up: (%v,%v), want (%v,%v)", gotX, gotZ, x+1, z)
+	}
 }
 
 // TestCreativeBlockBreakAndPlace 验证创意模式的破坏与放置：

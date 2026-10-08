@@ -34,6 +34,15 @@ var (
 	WaterBlock     = mustBlockState("minecraft:water")
 	OakLogBlock    = mustBlockState("minecraft:oak_log")
 	OakLeavesBlock = mustBlockState("minecraft:oak_leaves")
+
+	SpruceLogBlock    = mustBlockState("minecraft:spruce_log")
+	SpruceLeavesBlock = mustBlockState("minecraft:spruce_leaves")
+	AcaciaLogBlock    = mustBlockState("minecraft:acacia_log")
+	AcaciaLeavesBlock = mustBlockState("minecraft:acacia_leaves")
+	CactusBlock       = mustBlockState("minecraft:cactus")
+	DeadBushBlock     = mustBlockState("minecraft:dead_bush")
+	ShortGrassBlock   = mustBlockState("minecraft:short_grass")
+	SnowLayerBlock    = mustBlockState("minecraft:snow")
 )
 
 // mustBlockState 查询方块默认状态 ID；生成数据缺少必需方块属于部署错误，立即失败。
@@ -60,6 +69,9 @@ type Chunk struct {
 	// 区块编码与保存等并发读取同时发生。
 	mu       sync.RWMutex
 	sections [SectionCount]*section
+	// biomes 是 4×4 列分辨率的群系 ID 网格（索引见 biomeCellIndex；
+	// gmcs 的群系在垂直方向不变）。默认平原。
+	biomes [16]uint16
 	// heights 是列高度缓存（惰性分配；SetBlockState 失效对应列）。
 	heights *columnHeights
 	// blockEntities 是方块实体数据（索引见 blockEntityIndex）；零值为空。
@@ -76,7 +88,11 @@ type columnHeights struct {
 // NewChunk 创建全空（空气）区块。
 // section 及其紧凑方块存储见 section.go。
 func NewChunk(x, z int) *Chunk {
-	return &Chunk{X: x, Z: z}
+	c := &Chunk{X: x, Z: z}
+	for i := range c.biomes {
+		c.biomes[i] = BiomePlains
+	}
+	return c
 }
 
 // SectionIndex 返回给定方块 Y 坐标所在的 section 下标；
@@ -133,7 +149,7 @@ func (c *Chunk) SetBlockState(x, y, z int, state uint16) {
 		if state == AirBlock {
 			return // 全空气 section 保持 nil
 		}
-		s = &section{biome: BiomePlains}
+		s = &section{}
 		c.sections[sectionIndex] = s
 	}
 	localY := y - (WorldMinY + sectionIndex*SectionSize)
@@ -163,7 +179,7 @@ func (c *Chunk) setBlockStateDirect(x, y, z int, state uint16) {
 		if state == AirBlock {
 			return
 		}
-		s = &section{biome: BiomePlains}
+		s = &section{}
 		c.sections[sectionIndex] = s
 	}
 	localY := y - (WorldMinY + sectionIndex*SectionSize)
@@ -263,34 +279,31 @@ func (c *Chunk) TopSolidY(x, z int) (int, bool) {
 	return column.SolidY, column.HasSolid
 }
 
-// SectionBiome 返回指定 section 的生物群系 ID。
-func (c *Chunk) SectionBiome(index int) uint16 {
-	if index < 0 || index >= SectionCount {
-		return BiomePlains
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.sections[index] == nil {
-		return BiomePlains
-	}
-	return c.sections[index].biome
+// biomeCellIndex 返回 4×4 群系网格的索引（x 最快），与网络区块数据的
+// 4×4×4 单元顺序（YZX：cell = y*16 + z*4 + x）中每层的16 项一致。
+func biomeCellIndex(x4, z4 int) int {
+	return z4*4 + x4
 }
 
-// SetSectionBiome 设置指定 section 的生物群系 ID。
-func (c *Chunk) SetSectionBiome(index int, biomeID uint16) {
-	if index < 0 || index >= SectionCount {
-		return
-	}
+// ColumnBiome 返回区块内方块列 (x, z)（0–15）处的群系 ID。
+func (c *Chunk) ColumnBiome(x, z int) uint16 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.biomes[biomeCellIndex(x>>2, z>>2)]
+}
+
+// BiomeGrid 返回 4×4 群系网格的副本。
+func (c *Chunk) BiomeGrid() [16]uint16 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.biomes
+}
+
+// SetBiomeGrid 设置整个 4×4 群系网格（生成器使用）。
+func (c *Chunk) SetBiomeGrid(grid [16]uint16) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.sections[index] == nil {
-		if biomeID == BiomePlains {
-			return // nil 已表示默认生物群系
-		}
-		c.sections[index] = &section{biome: biomeID}
-		return
-	}
-	c.sections[index].biome = biomeID
+	c.biomes = grid
 }
 
 // EncodeChunkDataPacket 按 1.21.11（协议 774）的格式序列化
@@ -352,7 +365,7 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 	scratch := chunkDataScratchPool.Get().(*[]byte)
 	data := (*scratch)[:0]
 	for index := range chunk.sections {
-		data = appendSection(data, chunk.sections[index])
+		data = appendSection(data, chunk.sections[index], chunk.biomes)
 	}
 	dst = protocol.AppendVarInt(dst, int32(len(data)))
 	dst = append(dst, data...)
@@ -419,24 +432,106 @@ func (c *Chunk) topHeightLocked(x, z int) uint16 {
 //
 // 注意：fluid count 是 26.1 才加入的字段，1.21.11 没有该字段
 // （参考 ViaVersion ChunkSectionType1_18 / ChunkSectionType26_1，并经实机验证）。
-func appendSection(dst []byte, s *section) []byte {
+func appendSection(dst []byte, s *section, biomes [16]uint16) []byte {
 	var (
 		blockCount uint16
-		biome      = uint16(BiomePlains)
 		storage    *sectionStorage
 	)
 	if s != nil {
 		blockCount = s.nonAir
-		biome = s.biome
 		storage = &s.storage
 	}
 	// Block count 为大端 short。
 	dst = append(dst, byte(blockCount>>8), byte(blockCount))
 
 	dst = appendBlockStates(dst, storage)
-	// 生物群系：单值调色板（BPE = 0 + VarInt 值，无数据数组）。
+	return appendBiomes(dst, biomes)
+}
+
+// appendBiomes 追加生物群系调色板容器：4×4×4=64 项（YZX 顺序，x 最快）。
+// gmcs 的群系在垂直方向不变，因此每层 16 项相同。
+// 单值调色板（BPE=0）或 1–3 位间接调色板（与原版 BIOME 策略的位宽上限一致）；
+// 单个 section 内超过 8 种群系时退化为多数群系的单值调色板。
+func appendBiomes(dst []byte, grid [16]uint16) []byte {
+	var palette [8]uint16
+	var counts [8]int
+	paletteSize := 0
+	for _, id := range grid {
+		index := -1
+		for i := 0; i < paletteSize; i++ {
+			if palette[i] == id {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			if paletteSize == len(palette) {
+				return appendBiomeUniform(dst, majorityBiome(grid))
+			}
+			index = paletteSize
+			palette[index] = id
+			paletteSize++
+		}
+		counts[index]++
+	}
+	if paletteSize == 1 {
+		return appendBiomeUniform(dst, palette[0])
+	}
+	bits := 1
+	for 1<<bits < paletteSize {
+		bits++
+	}
+	dst = append(dst, byte(bits))
+	dst = protocol.AppendVarInt(dst, int32(paletteSize))
+	for i := 0; i < paletteSize; i++ {
+		dst = protocol.AppendVarInt(dst, int32(palette[i]))
+	}
+	// 数据数组（1.21.5+ 无长度前缀）：条目不跨 long（valuesPerLong = 64/bits）。
+	valuesPerLong := 64 / bits
+	longCount := (64 + valuesPerLong - 1) / valuesPerLong
+	var longs [4]uint64
+	mask := uint64(1<<bits) - 1
+	for cell := 0; cell < 64; cell++ {
+		id := grid[cell&15] // 垂直不变：每层 16 项相同
+		index := 0
+		for i := 0; i < paletteSize; i++ {
+			if palette[i] == id {
+				index = i
+				break
+			}
+		}
+		longIndex := cell / valuesPerLong
+		bitPos := (cell % valuesPerLong) * bits
+		longs[longIndex] |= (uint64(index) & mask) << bitPos
+	}
+	for i := 0; i < longCount; i++ {
+		dst = protocol.AppendInt64(dst, int64(longs[i]))
+	}
+	return dst
+}
+
+// appendBiomeUniform 写入单值（BPE = 0）生物群系调色板容器。
+func appendBiomeUniform(dst []byte, biome uint16) []byte {
 	dst = append(dst, 0x00)
 	return protocol.AppendVarInt(dst, int32(biome))
+}
+
+// majorityBiome 返回网格中出现次数最多的群系（并列取先出现者）。
+func majorityBiome(grid [16]uint16) uint16 {
+	best, bestCount := grid[0], 0
+	for i, id := range grid {
+		count := 0
+		for _, other := range grid {
+			if other == id {
+				count++
+			}
+		}
+		if count > bestCount {
+			best, bestCount = id, count
+		}
+		_ = i
+	}
+	return best
 }
 
 // appendBlockStates 追加方块状态调色板容器。

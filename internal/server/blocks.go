@@ -164,11 +164,103 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		return
 	}
 	s.broadcastBlockUpdate(placeX, placeY, placeZ, int32(state))
+	// 方块落入实体体积时把实体推到方块顶面（原版 pushEntitiesUp 行为）：
+	// 否则站在其上的玩家会嵌入方块并被反穿墙校验反复回拉。
+	s.pushEntitiesUp(placeX, placeY, placeZ, state)
 	if player.gameModeID() != uint8(config.GameModeCreative) {
 		// 生存模式消耗一个物品并同步槽位（创意模式不消耗）。
 		stack.Count--
 		player.inventory.Set(player.selectedSlot, stack)
 		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(player.selectedSlot), stack.AppendSlot(nil)))
+	}
+}
+
+// pushEntitiesUp 把嵌入新放置方块 (x, y, z) 的实体向上推到方块顶面
+// （原版 Block.pushEntitiesUp 行为）。玩家/生物/掉落物都处理；
+// 上方被挡住时不推。被推起的玩家通过传送包同步客户端位置。
+// 仅由会话读循环（放置方块）调用；生物/掉落物字段在 entityMu 下修改。
+func (s *Server) pushEntitiesUp(x, y, z int, state uint16) {
+	boxes := registry.BlockStateShape(state)
+	if len(boxes) == 0 {
+		return
+	}
+	for _, p := range s.playerSnapshot() {
+		if !p.isJoined() {
+			continue
+		}
+		px, py, pz, yaw, pitch := p.playerPosition()
+		delta := pushUpDelta(playerBox(px, py, pz), x, y, z, boxes)
+		if delta <= 0 || s.world.Collides(playerBox(px, py+delta, pz)) {
+			continue // 不相交或上方被挡住
+		}
+		p.setPlayerPosition(px, py+delta, pz, yaw, pitch)
+		p.resyncPosition()
+	}
+	type pushMove struct {
+		packet []byte
+		x, z   float64
+	}
+	var moves []pushMove
+	s.entityMu.Lock()
+	for _, m := range s.mobs {
+		delta := pushUpDelta(mobBox(m.X, m.Y, m.Z), x, y, z, boxes)
+		if delta <= 0 || s.world.Collides(mobBox(m.X, m.Y+delta, m.Z)) {
+			continue
+		}
+		m.Y += delta
+		moves = append(moves, pushMove{
+			packet: protocol.EncodeEntityPositionSync(m.ID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch, true),
+			x:      m.X,
+			z:      m.Z,
+		})
+	}
+	for _, e := range s.items {
+		delta := pushUpDelta(itemBoxAt(e.X, e.Y, e.Z), x, y, z, boxes)
+		if delta <= 0 || s.world.Collides(itemBoxAt(e.X, e.Y+delta, e.Z)) {
+			continue
+		}
+		e.Y += delta
+		moves = append(moves, pushMove{
+			packet: protocol.EncodeEntityPositionSync(e.ID, e.X, e.Y, e.Z, e.VelX, e.VelY, e.VelZ, 0, 0, true),
+			x:      e.X,
+			z:      e.Z,
+		})
+	}
+	s.entityMu.Unlock()
+	for _, move := range moves {
+		s.writeToNearbyPlayers(move.packet, move.x, move.z, nil)
+	}
+}
+
+// pushUpDelta 返回把碰撞盒推离方块 (x, y, z) 的形状所需的最小向上位移；
+// 与形状不相交时返回 0。
+func pushUpDelta(box world.Box, x, y, z int, boxes []registry.ShapeBox) float64 {
+	delta := 0.0
+	for _, shape := range boxes {
+		sx1 := float64(x) + float64(shape.X1)/16
+		sy1 := float64(y) + float64(shape.Y1)/16
+		sz1 := float64(z) + float64(shape.Z1)/16
+		sx2 := float64(x) + float64(shape.X2)/16
+		sy2 := float64(y) + float64(shape.Y2)/16
+		sz2 := float64(z) + float64(shape.Z2)/16
+		if box.MinX >= sx2 || box.MaxX <= sx1 || box.MinZ >= sz2 || box.MaxZ <= sz1 {
+			continue
+		}
+		if box.MinY >= sy2 || box.MaxY <= sy1 {
+			continue
+		}
+		if d := sy2 - box.MinY; d > delta {
+			delta = d
+		}
+	}
+	return delta
+}
+
+// mobBox 返回生物碰撞盒（宽 0.6、高 1.95，僵尸尺寸）。
+func mobBox(x, y, z float64) world.Box {
+	return world.Box{
+		MinX: x - 0.3, MinY: y, MinZ: z - 0.3,
+		MaxX: x + 0.3, MaxY: y + 1.95, MaxZ: z + 0.3,
 	}
 }
 

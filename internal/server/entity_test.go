@@ -302,18 +302,25 @@ func TestMobAttackBlockedByWall(t *testing.T) {
 	player := findSession(t, instance, "Walled")
 
 	spawnX, spawnY, spawnZ := instance.spawnPosition()
+	// 铺平玩家与生物之间的通道（新地形可能起伏/有植被），保证视线判定确定性。
+	baseX, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))
+	floorY := int(math.Floor(spawnY)) - 1
+	for dx := -1; dx <= 1; dx++ {
+		for dz := -1; dz <= 3; dz++ {
+			instance.world.SetBlock(baseX+dx, floorY, baseZ+dz, world.StoneBlock)
+			for dy := 1; dy <= 3; dy++ {
+				instance.world.SetBlock(baseX+dx, floorY+dy, baseZ+dz, world.AirBlock)
+			}
+		}
+	}
 	instance.addMob(spawnX, spawnY, spawnZ+2.4)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 
 	// 在生物与玩家之间（z=1 列）的眼睛高度放置石头。
-	chunk, err := instance.world.Chunk(0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
 	eyeY := int(math.Floor(spawnY + mobEyeHeight))
-	blockX, blockZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))+1
-	chunk.SetBlockState(blockX, eyeY, blockZ, world.StoneBlock)
-
+	if !instance.world.SetBlock(baseX, eyeY, baseZ+1, world.StoneBlock) {
+		t.Fatal("无法放置遮挡方块")
+	}
 	// 20 tick 后玩家仍不应受伤。
 	for i := 0; i < 20; i++ {
 		instance.tick()
@@ -323,7 +330,7 @@ func TestMobAttackBlockedByWall(t *testing.T) {
 	}
 
 	// 移除遮挡后，抬手结束即可攻击。
-	chunk.SetBlockState(blockX, eyeY, blockZ, world.AirBlock)
+	instance.world.SetBlock(baseX, eyeY, baseZ+1, world.AirBlock)
 	for i := 0; i < mobAttackWindupTicks+4; i++ {
 		instance.tick()
 	}
@@ -337,7 +344,9 @@ func TestMobAttackBlockedByWall(t *testing.T) {
 func TestWorldBorderLimitsMobSpawn(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
-	cfg.WorldBorderSize = 128 // 半边长 64 格，大于生成距离（24–36）
+	// 边界半边长 256 格：出生点搜索会在边界内找陆地（默认 128 的边界内
+	// 可能全是海洋，导致玩家出生在海上、周围没有可刷怪的地面）。
+	cfg.WorldBorderSize = 512
 	cfg.SpawnMonsters = true
 	cfg.MaxMobs = 8
 	instance, conn := joinServer(t, cfg, "Borderer")

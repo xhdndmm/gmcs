@@ -8,7 +8,6 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
-	"gmcs/internal/world"
 )
 
 // placeFurnace 在玩家附近放置熔炉方块。
@@ -18,20 +17,11 @@ func placeFurnace(t *testing.T, instance *Server, blockName string) (int, int, i
 	if !ok {
 		t.Fatalf("缺少方块状态 %s", blockName)
 	}
-	for _, x := range []int{1, 2, 3} {
-		for _, z := range []int{1, 2, 3} {
-			blockState, y, ok := instance.world.TopBlock(x, z)
-			if !ok || blockState == world.WaterBlock || blockState == world.BedrockBlock {
-				continue
-			}
-			if !instance.world.SetBlock(x, y+1, z, state) {
-				t.Fatalf("无法放置 %s", blockName)
-			}
-			return x, y + 1, z
-		}
+	x, y, z := buildSpotNearSpawn(t, instance)
+	if !instance.world.SetBlock(x, y, z, state) {
+		t.Fatalf("无法放置 %s", blockName)
 	}
-	t.Fatalf("出生点附近找不到可放置 %s 的位置", blockName)
-	return 0, 0, 0
+	return x, y, z
 }
 
 // TestFurnaceSmeltsIronOre 验证熔炉熔炼主流程：

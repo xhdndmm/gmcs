@@ -43,18 +43,25 @@ func TestChunkBlockAccess(t *testing.T) {
 	}
 }
 
-func TestSectionBiome(t *testing.T) {
+func TestChunkBiomeGrid(t *testing.T) {
 	chunk := NewChunk(0, 0)
-	if got := chunk.SectionBiome(0); got != BiomePlains {
+	if got := chunk.ColumnBiome(0, 0); got != BiomePlains {
 		t.Fatalf("expected default biome plains, got %d", got)
 	}
-	chunk.SetSectionBiome(2, 7)
-	if got := chunk.SectionBiome(2); got != 7 {
-		t.Fatalf("expected biome 7, got %d", got)
+	var grid [16]uint16
+	for i := range grid {
+		grid[i] = 7
 	}
-	chunk.SetSectionBiome(SectionCount, 7) // 越界被忽略
-	if got := chunk.SectionBiome(1); got != BiomePlains {
-		t.Fatalf("expected untouched biome to stay plains, got %d", got)
+	grid[biomeCellIndex(1, 2)] = 42
+	chunk.SetBiomeGrid(grid)
+	if got := chunk.ColumnBiome(5, 9); got != 42 {
+		t.Fatalf("expected biome 42 at (5,9), got %d", got)
+	}
+	if got := chunk.ColumnBiome(0, 0); got != 7 {
+		t.Fatalf("expected biome 7 at (0,0), got %d", got)
+	}
+	if got := chunk.ColumnBiome(8, 9); got != 7 {
+		t.Fatalf("expected neighbouring cell to stay 7, got %d", got)
 	}
 }
 
@@ -190,6 +197,40 @@ func checkEmptySection(t *testing.T, index int, data []byte) []byte {
 	return data[1+size:]
 }
 
+// TestAppendBiomesMixed 验证混合群系走间接调色板（1–3 位、条目不跨 long）
+// 且 64 项的 YZX 顺序正确。
+func TestAppendBiomesMixed(t *testing.T) {
+	var grid [16]uint16
+	for i := range grid {
+		grid[i] = 1
+	}
+	grid[biomeCellIndex(0, 0)] = 2
+	data := appendBiomes(nil, grid)
+	if data[0] != 1 {
+		t.Fatalf("BPE = %d, want 1", data[0])
+	}
+	size, n, err := protocol.DecodeVarInt(data[1:])
+	if err != nil || size != 2 {
+		t.Fatalf("palette size = %d (err=%v), want 2", size, err)
+	}
+	offset := 1 + n
+	for _, want := range []int32{2, 1} {
+		got, n, err := protocol.DecodeVarInt(data[offset:])
+		if err != nil || got != want {
+			t.Fatalf("palette entry = %d (err=%v), want %d", got, err, want)
+		}
+		offset += n
+	}
+	// 64 项 × 1 位、条目不跨 long：每层 16 项相同（cell 0 =调色板 0，其余 =1）。
+	if len(data)-offset != 8 {
+		t.Fatalf("data array length = %d, want 8", len(data)-offset)
+	}
+	word := binary.BigEndian.Uint64(data[offset : offset+8])
+	if want := uint64(0xfffefffefffefffe); word != want {
+		t.Fatalf("packed long = %#x, want %#x", word, want)
+	}
+}
+
 // TestEncodeChunkDataPacketPalette 校验超平坦地形的 4 种方块走 4 位间接调色板，
 // 并解包校验每个方块位置。
 func TestEncodeChunkDataPacketPalette(t *testing.T) {
@@ -319,7 +360,7 @@ func TestAppendBlockStatesPacking(t *testing.T) {
 		for i := range blocks {
 			blocks[i] = palette[i%paletteSize]
 		}
-		section := &section{biome: BiomePlains}
+		section := &section{}
 		for i, state := range blocks {
 			section.setBlock(i, state)
 		}

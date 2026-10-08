@@ -9,8 +9,6 @@ package world
 
 // section 是一个 16×16×16 的方块段。
 type section struct {
-	// biome 是该 section 统一的生物群系 ID（暂不支持 4×4×4 逐格生物群系）。
-	biome uint16
 	// storage 是方块状态的紧凑存储；零值表示全空气（不分配任何数组）。
 	storage sectionStorage
 	// nonAir 是非空气方块数量（Chunk Data 包的 block count，增量维护）。

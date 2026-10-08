@@ -21,7 +21,12 @@ func compressedPayload(t *testing.T, chunk *Chunk) []byte {
 func TestChunkPayloadRoundTrip(t *testing.T) {
 	chunk := FlatGenerator{}.GenerateChunk(-5, 7)
 	chunk.SetBlockState(1, WorldMinY+100, 2, StoneBlock)
-	chunk.SetSectionBiome(3, 42)
+	var grid [16]uint16
+	for i := range grid {
+		grid[i] = BiomePlains
+	}
+	grid[biomeCellIndex(2, 1)] = 42
+	chunk.SetBiomeGrid(grid)
 
 	payload := encodeChunkPayload(chunk)
 	decoded, err := decodeChunkPayload(payload)
@@ -43,10 +48,10 @@ func TestChunkPayloadRoundTrip(t *testing.T) {
 	if got := decoded.GetBlockState(1, WorldMinY+101, 2); got != AirBlock {
 		t.Fatalf("unexpected block: %d", got)
 	}
-	if got := decoded.SectionBiome(3); got != 42 {
+	if got := decoded.ColumnBiome(9, 5); got != 42 {
 		t.Fatalf("biome lost: %d", got)
 	}
-	if got := decoded.SectionBiome(2); got != BiomePlains {
+	if got := decoded.ColumnBiome(0, 0); got != BiomePlains {
 		t.Fatalf("unexpected biome: %d", got)
 	}
 }

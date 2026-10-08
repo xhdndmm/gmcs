@@ -200,17 +200,7 @@ func placeChest(t *testing.T, instance *Server, x, y, z int) {
 // chestPositions 返回玩家附近可用的箱子位置（地面之上、交互距离内）。
 func chestPositions(t *testing.T, instance *Server) (int, int, int) {
 	t.Helper()
-	for _, x := range []int{1, 2, 3} {
-		for _, z := range []int{1, 2, 3} {
-			state, y, ok := instance.world.TopBlock(x, z)
-			if !ok || state == world.WaterBlock || state == world.BedrockBlock {
-				continue
-			}
-			return x, y + 1, z
-		}
-	}
-	t.Fatal("出生点附近找不到可放置箱子的位置")
-	return 0, 0, 0
+	return buildSpotNearSpawn(t, instance)
 }
 
 // TestContainerOpenAndMoveItem 验证容器交互主流程：

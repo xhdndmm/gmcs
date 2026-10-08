@@ -21,6 +21,7 @@ import (
 //
 //		magic "GMCS" (4B) | version u16 | x i32 | z i32 | 24 × section
 //		section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
+//		(version 4+) 16 × u16 群系网格（4×4 列分辨率，索引见 biomeCellIndex）
 //		(version 2+) blockEntityCount varint | 每项: packedXZ u8 | y i16 | type varint//     | slotCount varint | slotCount × (itemID varint, count varint)
 //	  (version 3+) 熔炉类方块实体追加: burnRemaining varint | burnTotal varint
 //	    | cookProgress varint | cookTotal varint//	                                          | itemCount varint | (itemID varint | count varint)*
@@ -32,8 +33,9 @@ const (
 	regionSize    = 1 << regionShift // 32 个区块
 	sectorSize    = 4096
 	headerSectors = 2
-	// chunkVersion 是当前存储负载版本：v2 追加方块实体，v3 追加熔炉进度。
-	chunkVersion = 3
+	// chunkVersion 是当前存储负载版本：v2 追加方块实体，v3 追加熔炉进度，
+	// v4 追加 4×4 群系网格（section 内的 biome 字段仅作兼容保留）。
+	chunkVersion = 4
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 )
@@ -301,7 +303,7 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 	chunk.mu.RLock()
 	defer chunk.mu.RUnlock()
 
-	size := 14 + SectionCount*3
+	size := 14 + SectionCount*3 + 16*2 // 32 字节群系网格
 	for _, s := range chunk.sections {
 		if s != nil && !s.storage.allAir() {
 			size += SectionVolume * 2
@@ -322,19 +324,21 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 	offset := 14
 	for _, s := range chunk.sections {
 		var flags byte
-		biome := uint16(BiomePlains)
-		if s != nil {
-			biome = s.biome
-			if !s.storage.allAir() {
-				flags = 1
-			}
+		if s != nil && !s.storage.allAir() {
+			flags = 1
 		}
 		payload[offset] = flags
-		binary.BigEndian.PutUint16(payload[offset+1:offset+3], biome)
+		// section 内的 biome 字段为 v1–v3 兼容保留（v4 读取方忽略）。
+		binary.BigEndian.PutUint16(payload[offset+1:offset+3], chunk.biomes[biomeCellIndex(2, 2)])
 		offset += 3
 		if flags&1 != 0 {
 			offset = writeSectionPayload(payload, offset, &s.storage)
 		}
+	}
+	// 群系网格（4×4 列分辨率）。
+	for i := 0; i < 16; i++ {
+		binary.BigEndian.PutUint16(payload[offset:offset+2], chunk.biomes[i])
+		offset += 2
 	}
 	offset = writeBlockEntities(payload, offset, chunk)
 	return payload[:offset]
@@ -427,19 +431,15 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 			return nil, fmt.Errorf("区块负载截断于 section %d", index)
 		}
 		flags := payload[offset]
-		biome := binary.BigEndian.Uint16(payload[offset+1 : offset+3])
 		offset += 3
 		if flags&1 == 0 {
-			if biome != BiomePlains {
-				chunk.sections[index] = &section{biome: biome}
-			}
 			continue
 		}
 		need := SectionVolume * 2
 		if offset+need > len(payload) {
 			return nil, fmt.Errorf("区块负载截断于 section %d 的方块数据", index)
 		}
-		s := &section{biome: biome}
+		s := &section{}
 		// 顺序解码为紧凑存储：全空气保持零值；其余方块走增量维护。
 		for i := 0; i < SectionVolume; i++ {
 			state := binary.BigEndian.Uint16(payload[offset+2*i : offset+2*i+2])
@@ -448,10 +448,20 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 			}
 		}
 		offset += need
-		if !s.storage.allAir() || biome != BiomePlains {
+		if !s.storage.allAir() {
 			chunk.sections[index] = s
 		}
 	}
+	if version >= 4 {
+		if offset+32 > len(payload) {
+			return nil, fmt.Errorf("区块负载截断于群系网格")
+		}
+		for i := 0; i < 16; i++ {
+			chunk.biomes[i] = binary.BigEndian.Uint16(payload[offset : offset+2])
+			offset += 2
+		}
+	}
+	// v1–v3 负载没有群系网格：旧生成器只产出平原，保持 NewChunk 默认值即可。
 	if version >= 2 {
 		var err error
 		offset, err = decodeBlockEntities(payload, offset, chunk, version)

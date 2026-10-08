@@ -397,6 +397,22 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 正确性验证：`go test ./...`、`go test -race ./...` 全部通过
 （含新增 `internal/world/collision_test.go`、`internal/registry/block_shapes_test.go`）。
 
+### 3.11 地形/群系生成与形状级掉落物碰撞（本批，实测）
+
+本批重写地形生成（大陆度/山脊/丘陵/细节噪声 + 群系与植被）并修复
+`ChunkLoaded` 坐标语义（掉落物在非原点区块被误判未加载而冻结）。
+
+| 基准 | 变化 |
+| --- | --- |
+| `BenchmarkGenerateChunk` | 213 → 231 µs/op，9.5 → 9.7 KB/op（多一层群系/装饰，约 +8%） |
+| `BenchmarkCollides` | 153 ns/op，0 alloc（与 3.10 持平） |
+| `BenchmarkItemTick`（128 掉落物） | ≈9.5 µs → ≈75 µs/op（形状级碰撞替换步进近似；
+  绝对成本仍 <0.2% CPU（128 掉落物 × 20 TPS ≈ 1.5 ms/s），暂不做微优化） |
+| `BenchmarkServerTick`（32 生物） | ≈5.0 µs/op（地形内容不同，与 3.9/3.10 同量级） |
+
+已知取舍：碰撞查询每次按格取区块（w.Chunk + chunk.RLock），比点采样多锁开销；
+如未来掉落物规模显著增大，可改为按区块批量查询摊薄锁成本（当前收益低于复杂度）。
+
 ## 4. 尚未覆盖
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家 loopback 压测（见 3.7），真实网络 / 更高并发 / 长时间运行仍待验证

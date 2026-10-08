@@ -1,6 +1,44 @@
 package world
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
+
+// TestSeededGeneratorTerrainVariety 验证大范围高度有明显起伏（海洋—丘陵—山地）。
+func TestSeededGeneratorTerrainVariety(t *testing.T) {
+	generator := SeededGenerator{Seed: 11}
+	minH, maxH := math.MaxInt, math.MinInt
+	for x := -1200; x <= 1200; x += 16 {
+		for z := -1200; z <= 1200; z += 16 {
+			h := generator.SurfaceY(x, z)
+			if h < minH {
+				minH = h
+			}
+			if h > maxH {
+				maxH = h
+			}
+		}
+	}
+	if maxH-minH < 30 {
+		t.Fatalf("terrain height range too small: [%d, %d]", minH, maxH)
+	}
+}
+
+// TestSeededGeneratorBiomeVariety 验证大范围出现多个生物群系。
+func TestSeededGeneratorBiomeVariety(t *testing.T) {
+	generator := SeededGenerator{Seed: 11}
+	seen := map[uint16]bool{}
+	for x := -1200; x <= 1200; x += 32 {
+		for z := -1200; z <= 1200; z += 32 {
+			h := generator.SurfaceY(x, z)
+			seen[generator.biomeAt(x, z, h)] = true
+		}
+	}
+	if len(seen) < 4 {
+		t.Fatalf("expected biome variety over 2400×2400 blocks, got %d kinds", len(seen))
+	}
+}
 
 // TestSeededGeneratorDeterministic 验证相同种子、相同坐标生成完全相同的区块。
 func TestSeededGeneratorDeterministic(t *testing.T) {
@@ -48,7 +86,7 @@ func TestSeededGeneratorStructure(t *testing.T) {
 					t.Fatalf("bottom block of chunk %v at (%d,%d) is %d, want bedrock", pos, x, z, state)
 				}
 				height := generator.SurfaceY(pos.X*SectionSize+x, pos.Z*SectionSize+z)
-				if height <= WorldMinY || height > SeaLevel+8 {
+				if height <= WorldMinY || height > landBaseHeight+mountainAmplitude+10 {
 					t.Fatalf("terrain height %d out of expected range", height)
 				}
 				if state := chunk.GetBlockState(x, SeaLevel+1, z); state == WaterBlock {
@@ -61,9 +99,11 @@ func TestSeededGeneratorStructure(t *testing.T) {
 							pos.X*SectionSize+x, pos.Z*SectionSize+z, pos, state)
 					}
 				} else if height > SeaLevel+1 {
-					// 高地：地表应是草方块。
-					if state := chunk.GetBlockState(x, height, z); state != GrassBlock {
-						t.Fatalf("expected grass at (%d,%d,%d) in chunk %v, got %d",
+					// 陆地：地表应是草方块或沙（沙漠/沙滩）。
+					switch state := chunk.GetBlockState(x, height, z); state {
+					case GrassBlock, SandBlock:
+					default:
+						t.Fatalf("expected grass or sand at (%d,%d,%d) in chunk %v, got %d",
 							pos.X*SectionSize+x, height, pos.Z*SectionSize+z, pos, state)
 					}
 				}
@@ -72,17 +112,19 @@ func TestSeededGeneratorStructure(t *testing.T) {
 	}
 }
 
-// TestSeededGeneratorTrees 验证橡树存在、树干立在草地上且遵守区块边缘留白。
+// TestSeededGeneratorTrees 验证树木存在、树干立在草地上且遵守区块边缘留白。
+// 种子 42 的原点区域为陆地且树木茂密（见 docs/TODO.md：地形为确定性纯函数）。
 func TestSeededGeneratorTrees(t *testing.T) {
-	generator := SeededGenerator{Seed: 7}
+	generator := SeededGenerator{Seed: 42}
 	logs := 0
-	for cx := 0; cx < 4; cx++ {
-		for cz := 0; cz < 4; cz++ {
+	for cx := -3; cx < 3; cx++ {
+		for cz := -3; cz < 3; cz++ {
 			chunk := generator.GenerateChunk(cx, cz)
 			for x := 0; x < SectionSize; x++ {
 				for z := 0; z < SectionSize; z++ {
 					for y := WorldMinY; y < WorldMinY+WorldHeight; y++ {
-						if chunk.GetBlockState(x, y, z) != OakLogBlock {
+						state := chunk.GetBlockState(x, y, z)
+						if state != OakLogBlock && state != SpruceLogBlock && state != AcaciaLogBlock {
 							continue
 						}
 						logs++
@@ -90,7 +132,7 @@ func TestSeededGeneratorTrees(t *testing.T) {
 						if x < 2 || x > SectionSize-3 || z < 2 || z > SectionSize-3 {
 							t.Fatalf("tree trunk at (%d,%d) in chunk (%d,%d) too close to the border", x, z, cx, cz)
 						}
-						if below := chunk.GetBlockState(x, y-1, z); below != OakLogBlock && below != GrassBlock {
+						if below := chunk.GetBlockState(x, y-1, z); below != state && below != GrassBlock {
 							t.Fatalf("log at (%d,%d,%d) in chunk (%d,%d) stands on block %d",
 								x, y, z, cx, cz, below)
 						}
@@ -100,7 +142,7 @@ func TestSeededGeneratorTrees(t *testing.T) {
 		}
 	}
 	if logs == 0 {
-		t.Fatal("expected at least one oak tree across 16 chunks")
+		t.Fatal("expected at least one tree across 36 chunks")
 	}
 }
 

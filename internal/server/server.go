@@ -134,7 +134,8 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	// 出生点：优先使用世界实际地形（已有存档可能与当前种子不同），
 	// 无法确定时回退到生成器的高度。
-	spawnY, found := gameWorld.GroundY(0, 0)
+	spawnX, spawnZ := findSpawnColumn(gameWorld, float64(cfg.WorldBorderSize)/2)
+	spawnY, found := gameWorld.GroundY(spawnX, spawnZ)
 	if !found {
 		spawnY = float64(gameWorld.SurfaceY(0, 0) + 1)
 	}
@@ -159,9 +160,9 @@ func New(cfg config.Config) (*Server, error) {
 		tickInterval:           defaultTickInterval,
 		chunkUnloadInterval:    defaultChunkUnloadInterval,
 		playerAutosaveInterval: defaultPlayerAutosaveInterval,
-		spawnX:                 0.5,
+		spawnX:                 float64(spawnX) + 0.5,
 		spawnY:                 spawnY,
-		spawnZ:                 0.5,
+		spawnZ:                 float64(spawnZ) + 0.5,
 		borderHalfSize:         float64(cfg.WorldBorderSize) / 2,
 		defaultGameMode:        uint8(gameMode),
 		rsaKey:                 rsaKey,
@@ -211,6 +212,40 @@ func (s *Server) spawnInfo(gameMode uint8) protocol.SpawnInfo {
 		PreviousGameMode: 0xFF, // 未定义
 		SeaLevel:         world.SeaLevel,
 	}
+}
+
+// findSpawnColumn 从原点开始螺旋搜索高于海平面的陆地列作为出生点，
+// 避免出生在海洋/深海里；启用世界边界时只在边界内搜索（出生点必须在
+// 边界内）。按 16 格步长粗扫（大陆度噪声周期为 256 格，足以覆盖多个
+// 大陆/海洋单元）；找不到时回退到原点。
+func findSpawnColumn(w *world.World, halfSize float64) (int, int) {
+	inside := func(x, z int) bool {
+		return halfSize <= 0 || (math.Abs(float64(x)+0.5) <= halfSize && math.Abs(float64(z)+0.5) <= halfSize)
+	}
+	if inside(0, 0) && w.SurfaceY(0, 0) > world.SeaLevel+1 {
+		return 0, 0
+	}
+	const (
+		step        = 16
+		maxDistance = 2048
+	)
+	for radius := step; radius <= maxDistance; radius += step {
+		for dx := -radius; dx <= radius; dx += step {
+			for _, dz := range [...]int{-radius, radius} {
+				if inside(dx, dz) && w.SurfaceY(dx, dz) > world.SeaLevel+1 {
+					return dx, dz
+				}
+			}
+		}
+		for dz := -radius + step; dz <= radius-step; dz += step {
+			for _, dx := range [...]int{-radius, radius} {
+				if inside(dx, dz) && w.SurfaceY(dx, dz) > world.SeaLevel+1 {
+					return dx, dz
+				}
+			}
+		}
+	}
+	return 0, 0
 }
 
 // spawnPosition 返回出生点（脚部）的世界坐标。

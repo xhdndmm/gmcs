@@ -6,7 +6,6 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
-	"gmcs/internal/world"
 )
 
 // placeEnderChest 在玩家附近放置末影箱方块。
@@ -16,20 +15,11 @@ func placeEnderChest(t *testing.T, instance *Server) (int, int, int) {
 	if !ok {
 		t.Fatal("缺少末影箱方块状态")
 	}
-	for _, x := range []int{1, 2, 3} {
-		for _, z := range []int{1, 2, 3} {
-			blockState, y, ok := instance.world.TopBlock(x, z)
-			if !ok || blockState == world.WaterBlock || blockState == world.BedrockBlock {
-				continue
-			}
-			if !instance.world.SetBlock(x, y+1, z, state) {
-				t.Fatal("无法放置末影箱")
-			}
-			return x, y + 1, z
-		}
+	x, y, z := buildSpotNearSpawn(t, instance)
+	if !instance.world.SetBlock(x, y, z, state) {
+		t.Fatal("无法放置末影箱")
 	}
-	t.Fatal("出生点附近找不到可放置末影箱的位置")
-	return 0, 0, 0
+	return x, y, z
 }
 
 // TestEnderChestOpenAndStore 验证末影箱打开、存入与按玩家隔离。
