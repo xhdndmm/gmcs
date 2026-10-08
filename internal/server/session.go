@@ -134,6 +134,10 @@ type session struct {
 	// 下落跟踪（摔落伤害）：以服务器端地面检测驱动，仅由会话读循环访问。
 	fallStartY float64
 	airborne   bool
+	// airRise 是本次腾空累计上升（方块）：悬空上升限制（防飞行）用，
+	// 落地/入水时清零。
+	airRise float64
+
 	// lastMoveTime 是上一个被接受的移动包时间（逐 tick 速度上限用）。
 	lastMoveTime time.Time
 
@@ -242,6 +246,76 @@ const (
 	moveSpeedPerTick = 10.0
 	moveTicksReset   = 20.0
 )
+
+// handleMove 处理玩家移动（位置或位置+朝向）：位移/速度、穿墙、悬空上升
+// （防飞行）与潜行边缘保护校验通过后更新位置并广播；否则回拉。
+// 仅由会话读循环调用。
+func (s *session) handleMove(x, y, z float64, yaw, pitch float32, rotate bool, now time.Time) {
+	prevX, prevY, prevZ, prevYaw, prevPitch := s.playerPosition()
+	if !rotate {
+		yaw, pitch = prevYaw, prevPitch
+	}
+	if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, now) || !s.server.positionClear(x, y, z) {
+		s.resyncPosition()
+		return
+	}
+	if !s.acceptRise(prevX, prevY, x, y, z) {
+		s.resyncPosition()
+		return
+	}
+	if s.sneaking {
+		x, z = s.sneakClamp(prevX, prevZ, x, y, z)
+	}
+	s.lastMoveTime = now
+	s.setPlayerPosition(x, y, z, yaw, pitch)
+	s.updateFallState(x, y, z)
+	s.addMovementExhaustion(math.Hypot(x-prevX, z-prevZ), y > prevY+0.5)
+	s.server.broadcastPlayerMove(s)
+	s.updateChunks(x, z)
+}
+
+// maxJumpRise 是一次腾空允许的累计上升（方块）：原版跳跃弧顶约 0.96，
+// 击退/活塞等留出余量；生存/冒险模式超过即视为飞行并回拉。
+const maxJumpRise = 1.2
+
+// acceptRise 校验悬空状态下的上升（简易飞行检测）：一次腾空累计上升
+// 不得超过 maxJumpRise。创造/旁观豁免；落地或入水时清零（游泳/跳跃合法）。
+// 注意：被回拉（resync）不清零——否则作弊者可“分段上升”绕过限制。
+func (s *session) acceptRise(prevX, prevY, x, y, z float64) bool {
+	switch s.gameModeID() {
+	case uint8(config.GameModeCreative), uint8(config.GameModeSpectator):
+		return true
+	}
+	if s.server.feetInWater(x, y, z) || s.server.feetInWater(prevX, prevY, z) {
+		s.airRise = 0
+		return true
+	}
+	if s.server.supportedAt(x, y, z) {
+		// 落到支撑面（落地/走上台阶）：本次腾空结束。
+		s.airRise = 0
+		return true
+	}
+	if y <= prevY {
+		return true // 悬空中的下降或水平移动
+	}
+	s.airRise += y - prevY
+	return s.airRise <= maxJumpRise
+}
+
+// sneakClamp 潜行边缘保护：目标位置没有支撑面时沿边缘滑动
+// （先试只改 X、再试只改 Z），都不行则保持原位。
+func (s *session) sneakClamp(prevX, prevZ float64, x, y, z float64) (float64, float64) {
+	if s.server.supportedAt(x, y, z) {
+		return x, z
+	}
+	if s.server.supportedAt(x, y, prevZ) && s.server.positionClear(x, y, prevZ) {
+		return x, prevZ
+	}
+	if s.server.supportedAt(prevX, y, z) && s.server.positionClear(prevX, y, z) {
+		return prevX, z
+	}
+	return prevX, prevZ
+}
 
 // acceptMove 报告目标位置是否在允许的位移与速度范围内。
 func (s *session) acceptMove(x, y, z float64, now time.Time) bool {
@@ -354,6 +428,8 @@ func (s *session) updateFallState(x, y, z float64) {
 }
 
 // resetFallState 清除下落跟踪（传送/重生/拉回后调用，避免误判摔落伤害）。
+// 腾空上升预算（airRise）不在此清零：它只在落地/入水时重置，
+// 否则被回拉后“分段上升”可绕过飞行检测。
 func (s *session) resetFallState() {
 	s.airborne = false
 }
@@ -1160,33 +1236,13 @@ func (s *session) playReadLoop() {
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
-			if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, time.Now()) || !s.server.positionClear(x, y, z) {
-				s.resyncPosition()
-				continue
-			}
-			s.lastMoveTime = time.Now()
-			prevX, prevY, prevZ, yaw, pitch := s.playerPosition()
-			s.setPlayerPosition(x, y, z, yaw, pitch)
-			s.updateFallState(x, y, z)
-			s.addMovementExhaustion(math.Hypot(x-prevX, z-prevZ), y > prevY+0.5)
-			s.server.broadcastPlayerMove(s)
-			s.updateChunks(x, z)
+			s.handleMove(x, y, z, 0, 0, false, time.Now())
 		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
 			x, y, z, yaw, pitch, _, err := protocol.ParsePlayerPositionRotation(packet)
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
-			if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, time.Now()) || !s.server.positionClear(x, y, z) {
-				s.resyncPosition()
-				continue
-			}
-			s.lastMoveTime = time.Now()
-			prevX, prevY, prevZ, _, _ := s.playerPosition()
-			s.setPlayerPosition(x, y, z, yaw, pitch)
-			s.updateFallState(x, y, z)
-			s.addMovementExhaustion(math.Hypot(x-prevX, z-prevZ), y > prevY+0.5)
-			s.server.broadcastPlayerMove(s)
-			s.updateChunks(x, z)
+			s.handleMove(x, y, z, yaw, pitch, true, time.Now())
 		case protocol.PlayServerboundPacketIDPlayerRotation:
 			yaw, pitch, err := protocol.ParsePlayerRotation(packet)
 			if err != nil {

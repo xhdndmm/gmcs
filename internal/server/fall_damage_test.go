@@ -42,7 +42,9 @@ func TestFallDamage(t *testing.T) {
 	sendPlayerPosition(t, conn, spawnX, spawnY, spawnZ, true)
 
 	// 从 6 格高处下落：伤害 = ceil(6-3) = 3。
-	sendPlayerPosition(t, conn, spawnX, spawnY+6, spawnZ, false)
+	// 起点高度直接写入服务器状态（网络上升会被悬空上升限制拒绝）。
+	player.setPlayerPosition(spawnX, spawnY+6, spawnZ, 0, 0)
+	player.updateFallState(spawnX, spawnY+6, spawnZ)
 	sendPlayerPosition(t, conn, spawnX, spawnY, spawnZ, true)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDDamageEvent)
 	healthPacket := expectPlayPacket(t, conn, protocol.PlayPacketIDUpdateHealth)
@@ -57,7 +59,8 @@ func TestFallDamage(t *testing.T) {
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSoundEffect)
 
 	// 从 2 格高处下落：无伤害（用 /list 响应确保服务器已处理完移动包）。
-	sendPlayerPosition(t, conn, spawnX, spawnY+2, spawnZ, false)
+	player.setPlayerPosition(spawnX, spawnY+2, spawnZ, 0, 0)
+	player.updateFallState(spawnX, spawnY+2, spawnZ)
 	sendPlayerPosition(t, conn, spawnX, spawnY, spawnZ, true)
 	sendChatCommand(t, conn, "/list")
 	expectSystemChat(t, conn, "当前有")

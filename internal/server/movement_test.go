@@ -162,7 +162,11 @@ func TestFallDamageFromServerPhysics(t *testing.T) {
 	x, y, z, _, _ := player.playerPosition()
 
 	// 从 5 格高处“下落”，客户端始终上报 onGround=false。
-	for _, height := range []float64{5, 4, 3, 2, 1, 0} {
+	// 起点高度直接写入服务器状态（正常客户端无法一包上升 5 格，
+	// 会被悬空上升限制拒绝）。
+	player.setPlayerPosition(x, y+5, z, 0, 0)
+	player.updateFallState(x, y+5, z)
+	for _, height := range []float64{4, 3, 2, 1, 0} {
 		if err := protocol.WritePacketWithCompression(conn,
 			encodePlayerPosition(x, y+height, z, false), compressionThreshold); err != nil {
 			t.Fatal(err)
@@ -177,5 +181,91 @@ func TestFallDamageFromServerPhysics(t *testing.T) {
 	health, _, err := protocol.DecodeFloat32(healthPacket, offset)
 	if err != nil || health != maxPlayerHealth-2 {
 		t.Fatalf("摔落伤害后生命 = %v (err=%v), want %v", health, err, maxPlayerHealth-2)
+	}
+}
+
+// TestSneakEdgeProtection 验证潜行边缘保护：潜行时不会走出支撑面边缘
+// （完全无支撑时保持原位；部分无支撑时沿边缘滑动）。
+func TestSneakEdgeProtection(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Sneaker")
+	player := findSession(t, instance, "Sneaker")
+	spawnX, spawnY, spawnZ := instance.spawnPosition()
+	baseX, baseY, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnY)), int(math.Floor(spawnZ))
+
+	// 铺平 3×3 石平台（Y=baseY），玩家站在平台中央顶面（baseY+1）。
+	for dx := -1; dx <= 1; dx++ {
+		for dz := -1; dz <= 1; dz++ {
+			instance.world.SetBlock(baseX+dx, baseY, baseZ+dz, world.StoneBlock)
+			for dy := 1; dy <= 2; dy++ {
+				instance.world.SetBlock(baseX+dx, baseY+dy, baseZ+dz, world.AirBlock)
+			}
+		}
+	}
+	player.setPlayerPosition(spawnX, float64(baseY+1), spawnZ, 0, 0)
+	player.resetFallState()
+	sendPlayerInput(t, conn, protocol.PlayerInputShift)
+
+	// 向平台外直线移动：完全无支撑，应保持原位。
+	sendPlayerPosition(t, conn, spawnX+2, float64(baseY+1), spawnZ, true)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	gotX, gotY, gotZ, _, _ := player.playerPosition()
+	if math.Abs(gotX-spawnX) > 1e-9 || math.Abs(gotZ-spawnZ) > 1e-9 || math.Abs(gotY-float64(baseY+1)) > 1e-9 {
+		t.Fatalf("潜行走出平台：(%v,%v,%v), want (%v,%v,%v)", gotX, gotY, gotZ, spawnX, baseY+1, spawnZ)
+	}
+
+	// 对角移动：只保留有支撑的分量（沿边缘滑动）。
+	sendPlayerPosition(t, conn, spawnX+2, float64(baseY+1), spawnZ+0.5, true)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	gotX, _, gotZ, _, _ = player.playerPosition()
+	if math.Abs(gotX-spawnX) > 1e-9 {
+		t.Fatalf("潜行滑出平台（x）：%v, want %v", gotX, spawnX)
+	}
+	if math.Abs(gotZ-(spawnZ+0.5)) > 1e-9 {
+		t.Fatalf("潜行沿边缘滑动被拒：%v, want %v", gotZ, spawnZ+0.5)
+	}
+}
+
+// TestJumpRiseLimit 验证悬空上升限制（防飞行）：一次腾空累计上升超过
+// maxJumpRise 后被拒绝并回拉；正常跳跃弧不受影响。
+func TestJumpRiseLimit(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Flyer")
+	player := findSession(t, instance, "Flyer")
+	x, y, z, _, _ := player.playerPosition()
+	baseX, baseY, baseZ := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+	// 清空起跳通道上方的装饰/树木，保证上升路径无碰撞。
+	for dx := -1; dx <= 1; dx++ {
+		for dz := -1; dz <= 1; dz++ {
+			for dy := 1; dy <= 3; dy++ {
+				instance.world.SetBlock(baseX+dx, baseY+dy, baseZ+dz, world.AirBlock)
+			}
+		}
+	}
+
+	// 正常跳跃弧：累计上升约 0.9（< maxJumpRise）应被接受。
+	sendPlayerPosition(t, conn, x, y+0.42, z, false)
+	sendPlayerPosition(t, conn, x, y+0.75, z, false)
+	sendPlayerPosition(t, conn, x, y+0.9, z, false)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	if _, gotY, _, _, _ := player.playerPosition(); math.Abs(gotY-(y+0.9)) > 1e-9 {
+		t.Fatalf("正常跳跃被拒绝：%v, want %v", gotY, y+0.9)
+	}
+
+	// 持续上升：超过预算后被拒绝并回拉。
+	for i := 0; i < 6; i++ {
+		sendPlayerPosition(t, conn, x, y+0.9+0.3*float64(i+1), z, false)
+	}
+	expectResyncPosition(t, conn)
+	_, gotY, _, _, _ := player.playerPosition()
+	if gotY > y+maxJumpRise+1e-9 {
+		t.Fatalf("飞行上升未被限制：%v", gotY)
 	}
 }
