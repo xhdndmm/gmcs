@@ -163,7 +163,9 @@ func TestFallDamageFromServerPhysics(t *testing.T) {
 
 	// 从 5 格高处“下落”，客户端始终上报 onGround=false。
 	// 起点高度直接写入服务器状态（正常客户端无法一包上升 5 格，
-	// 会被悬空上升限制拒绝）。
+	// 会被悬空上升限制拒绝）。/list 往返作为屏障，避免与读循环并发。
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
 	player.setPlayerPosition(x, y+5, z, 0, 0)
 	player.updateFallState(x, y+5, z)
 	for _, height := range []float64{4, 3, 2, 1, 0} {
@@ -204,10 +206,12 @@ func TestSneakEdgeProtection(t *testing.T) {
 			}
 		}
 	}
+	// /list 往返作为屏障：排空读循环后再直接写会话状态。
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
 	player.setPlayerPosition(spawnX, float64(baseY+1), spawnZ, 0, 0)
 	player.resetFallState()
 	sendPlayerInput(t, conn, protocol.PlayerInputShift)
-
 	// 向平台外直线移动：完全无支撑，应保持原位。
 	sendPlayerPosition(t, conn, spawnX+2, float64(baseY+1), spawnZ, true)
 	sendChatCommand(t, conn, "/list")

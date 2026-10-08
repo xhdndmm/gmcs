@@ -38,8 +38,11 @@ func TestFallDamage(t *testing.T) {
 	player := findSession(t, instance, "Faller")
 	spawnX, spawnY, spawnZ := instance.spawnPosition()
 
-	// 站立在出生点（着地）。
+	// 站立在出生点（着地）。/list 往返作为屏障：确保读循环已处理完
+	// 前面的移动包，再直接写会话状态（updateFallState 仅读循环安全）。
 	sendPlayerPosition(t, conn, spawnX, spawnY, spawnZ, true)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
 
 	// 从 6 格高处下落：伤害 = ceil(6-3) = 3。
 	// 起点高度直接写入服务器状态（网络上升会被悬空上升限制拒绝）。

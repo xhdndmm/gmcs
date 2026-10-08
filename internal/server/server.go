@@ -106,6 +106,13 @@ type Server struct {
 	// 用于破坏方块时的掉落判定。
 	blockNames map[uint16]string
 
+	// 配置阶段共享的预编码数据包（内容与玩家无关，只读共享）。
+	registryPackets [][]byte
+	tagsPacket      []byte
+
+	// chunkPackets 是跨玩家共享的区块数据包缓存（见 chunkPacket）。
+	chunkPackets chunkPacketCache
+
 	// rsaKey 用于正版登录的加密握手（仅在线模式生成）。
 	rsaKey *rsa.PrivateKey
 	// httpClient 用于访问会话服务器。
@@ -180,6 +187,9 @@ func New(cfg config.Config) (*Server, error) {
 	server.furnaces = make(map[[3]int]*furnaceState)
 	bucketItemID, bucketLavaItemID = initFurnaceItems()
 	server.blockNames = resolveBlockNames()
+	if server.registryPackets, server.tagsPacket, err = buildRegistryPackets(); err != nil {
+		return nil, fmt.Errorf("构造注册表数据包：%w", err)
+	}
 	if len(server.containerDefs) == 0 {
 		slog.Warn("容器交互已禁用：注册表数据缺失")
 	}

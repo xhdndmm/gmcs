@@ -80,8 +80,6 @@ type session struct {
 	inventory item.Inventory
 	// selectedSlot 是当前选中的快捷栏槽位（0–8），由会话串行访问。
 	selectedSlot int
-	// chunkSendBuf 是区块流式发送复用的编码缓冲，由会话 goroutine 串行访问。
-	chunkSendBuf []byte
 
 	// 容器窗口状态（由会话串行访问）：openContainer 是当前打开的容器，
 	// windowID 是窗口编号（0 保留给玩家物品栏），windowState 是槽位状态号，
@@ -137,6 +135,12 @@ type session struct {
 	// airRise 是本次腾空累计上升（方块）：悬空上升限制（防飞行）用，
 	// 落地/入水时清零。
 	airRise float64
+
+	// 高频包限流（令牌桶，仅读循环访问）：聊天/命令与移动都会转发给
+	// 其他玩家，防止单客户端包洪泛放大广播成本。
+	chatBudget   packetBudget
+	moveBudget   packetBudget
+	actionBudget packetBudget
 
 	// lastMoveTime 是上一个被接受的移动包时间（逐 tick 速度上限用）。
 	lastMoveTime time.Time
@@ -251,6 +255,9 @@ const (
 // （防飞行）与潜行边缘保护校验通过后更新位置并广播；否则回拉。
 // 仅由会话读循环调用。
 func (s *session) handleMove(x, y, z float64, yaw, pitch float32, rotate bool, now time.Time) {
+	if !s.moveBudget.allow(now, moveRate, moveBurst) {
+		return // 移动包洪泛：静默丢弃（服务器位置保持不变）
+	}
 	prevX, prevY, prevZ, prevYaw, prevPitch := s.playerPosition()
 	if !rotate {
 		yaw, pitch = prevYaw, prevPitch
@@ -277,6 +284,41 @@ func (s *session) handleMove(x, y, z float64, yaw, pitch float32, rotate bool, n
 // maxJumpRise 是一次腾空允许的累计上升（方块）：原版跳跃弧顶约 0.96，
 // 击退/活塞等留出余量；生存/冒险模式超过即视为飞行并回拉。
 const maxJumpRise = 1.2
+
+// packetBudget 是简单的令牌桶（每会话）：限制高频数据包的处理速率。
+// 仅由会话读循环访问，无需加锁。
+type packetBudget struct {
+	tokens float64
+	last   time.Time
+}
+
+// allow 消耗一个令牌；rate 为每秒补充速率、burst 为桶容量（首包自动满桶）。
+func (b *packetBudget) allow(now time.Time, rate, burst float64) bool {
+	if b.last.IsZero() {
+		b.last = now
+		b.tokens = burst
+	}
+	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
+		b.tokens = min(b.tokens+elapsed*rate, burst)
+		b.last = now
+	}
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+// 高频包限流参数：正常客户端约 20–30 移动包/秒、聊天远低于 2 条/秒；
+// 额度给突发（滞后追赶/粘贴）留出余量，超限静默丢弃。
+const (
+	chatRate    = 2.0
+	chatBurst   = 10.0
+	moveRate    = 60.0
+	moveBurst   = 80.0
+	actionRate  = 50.0
+	actionBurst = 100.0
+)
 
 // acceptRise 校验悬空状态下的上升（简易飞行检测）：一次腾空累计上升
 // 不得超过 maxJumpRise。创造/旁观豁免；落地或入水时清零（游泳/跳跃合法）。
@@ -708,6 +750,14 @@ func (s *session) writeRawPacket(packet []byte) error {
 	return protocol.WritePacket(s.writer, packet)
 }
 
+// writeFrame 写出已构造好的完整帧字节（CompressPacketFrame 的结果）；
+// 共享的广播包（区块数据/注册表）用它免去逐连接压缩。
+func (s *session) writeFrame(frame []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return protocol.WriteFrameBytes(s.writer, frame)
+}
+
 // writePacket 以启用的压缩发送单个数据包；可被多个 goroutine 并发调用。
 func (s *session) writePacket(packet []byte) error {
 	s.writeMu.Lock()
@@ -896,10 +946,7 @@ func (s *session) runConfiguration() bool {
 			if err := s.sendRegistries(); err != nil {
 				return false
 			}
-			if err := s.writePackets(
-				protocol.EncodeUpdateTags(registryTags()),
-				protocol.EncodeFinishConfiguration(),
-			); err != nil {
+			if err := s.writePacket(protocol.EncodeFinishConfiguration()); err != nil {
 				return false
 			}
 			return s.awaitConfigurationFinished()
@@ -913,20 +960,39 @@ func (s *session) runConfiguration() bool {
 	}
 }
 
-// sendRegistries 发送全部同步注册表的完整条目列表。
+// sendRegistries 发送全部同步注册表的完整条目列表与标签。
 // 客户端在配置阶段重建同步注册表：未发送的注册表会变为空（而不是回退内置数据），
 // 因此即使 Known Packs 已提供条目定义，也必须逐个完整发送。
+// 包内容对所有玩家一致，使用 New 时预编码的共享字节（只读），
+// 多玩家加入不再重复分配/编码。
 func (s *session) sendRegistries() error {
+	for _, frame := range s.server.registryPackets {
+		if err := s.writeFrame(frame); err != nil {
+			return err
+		}
+	}
+	return s.writeFrame(s.server.tagsPacket)
+}
+
+// buildRegistryPackets 预编码配置阶段的注册表与标签数据包（内容与会话无关）。
+// 返回压缩后的完整帧：所有玩家共享同一份只读字节，加入风暴免去重复编码/压缩。
+func buildRegistryPackets() (registryPackets [][]byte, tagsPacket []byte, err error) {
 	for _, reg := range registry.Synchronized() {
 		entries := make([]protocol.RegistryEntry, 0, len(reg.Entries))
 		for _, name := range reg.Entries {
 			entries = append(entries, protocol.RegistryEntry{Name: name})
 		}
-		if err := s.writePacket(protocol.EncodeRegistryData(reg.Name, entries)); err != nil {
-			return err
+		frame, err := protocol.CompressPacketFrame(protocol.EncodeRegistryData(reg.Name, entries), compressionThreshold)
+		if err != nil {
+			return nil, nil, err
 		}
+		registryPackets = append(registryPackets, frame)
 	}
-	return nil
+	tagsPacket, err = protocol.CompressPacketFrame(protocol.EncodeUpdateTags(registryTags()), compressionThreshold)
+	if err != nil {
+		return nil, nil, err
+	}
+	return registryPackets, tagsPacket, nil
 }
 
 // registryTags 把全部需要发送的注册表标签转换为 Update Tags 包数据。
@@ -1178,6 +1244,9 @@ func (s *session) playReadLoop() {
 				s.keepAliveMu.Unlock()
 			}
 		case protocol.PlayServerboundPacketIDChatMessage:
+			if !s.chatBudget.allow(time.Now(), chatRate, chatBurst) {
+				continue // 聊天洪泛：丢弃（防止广播放大）
+			}
 			message, err := protocol.ParseSignedChatMessage(packet)
 			if err != nil {
 				slog.Debug("malformed chat message", "name", s.name, "error", err)
@@ -1195,6 +1264,9 @@ func (s *session) playReadLoop() {
 			// 使客户端能够识别该玩家的聊天会话信息。
 			s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoChatSession(s.uuid, session), s)
 		case protocol.PlayServerboundPacketIDChatCommand, protocol.PlayServerboundPacketIDChatCommandSigned:
+			if !s.chatBudget.allow(time.Now(), chatRate, chatBurst) {
+				continue // 命令洪泛：与聊天同桶限流
+			}
 			command, err := protocol.ParseChatCommand(packet)
 			if err != nil {
 				slog.Debug("malformed chat command", "name", s.name, "error", err)
@@ -1248,6 +1320,9 @@ func (s *session) playReadLoop() {
 			if err != nil {
 				continue
 			}
+			if !s.moveBudget.allow(time.Now(), moveRate, moveBurst) {
+				continue
+			}
 			s.setPlayerRotation(yaw, pitch)
 			s.server.broadcastPlayerMove(s)
 		case protocol.PlayServerboundPacketIDPlayerAction:
@@ -1255,11 +1330,17 @@ func (s *session) playReadLoop() {
 			if err != nil {
 				continue
 			}
+			if !s.actionBudget.allow(time.Now(), actionRate, actionBurst) {
+				continue // 交互洪泛（挖掘/丢弃）
+			}
 			s.server.handlePlayerAction(s, action)
 		case protocol.PlayServerboundPacketIDUseItemOn:
 			use, err := protocol.ParseUseItemOn(packet)
 			if err != nil {
 				continue
+			}
+			if !s.actionBudget.allow(time.Now(), actionRate, actionBurst) {
+				continue // 交互洪泛（放置/使用）
 			}
 			s.server.handleUseItemOn(s, use)
 		case protocol.PlayServerboundPacketIDSetCarriedItem:

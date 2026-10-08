@@ -1,9 +1,12 @@
 package server
 
 import (
+	"container/list"
 	"context"
 	"log/slog"
 	"math"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"gmcs/internal/protocol"
@@ -50,9 +53,10 @@ func (s *session) syncChunks(centerX, centerZ int) error {
 						return err
 					}
 				}
-				// 复用编码缓冲：写出是同步的，下一区块可安全覆盖。
-				s.chunkSendBuf = world.AppendChunkDataPacket(s.chunkSendBuf[:0], chunk)
-				if err := s.writePacket(s.chunkSendBuf); err != nil {
+				// 共享压缩帧：同一批/跟随的多名玩家复用同一份只读字节，
+				// 免去逐连接重复编码与压缩。
+				frame := s.server.chunkPacket(pos, chunk)
+				if err := s.writeFrame(frame); err != nil {
 					return err
 				}
 				s.sentChunks[pos] = struct{}{}
@@ -100,6 +104,84 @@ func absInt(value int) int {
 		return -value
 	}
 	return value
+}
+
+// chunkPacketCache 是跨玩家共享的区块数据包缓存：多名玩家看到同一区块时
+// 只编码一次，后续直接复用同一份只读字节（并发读安全）。按 LRU 有界；
+// 条目同时记录来源 *Chunk 与修改计数（revision），区块卸载重载或内容
+// 修改后自动失效。
+type chunkPacketCache struct {
+	mu      sync.Mutex
+	entries map[world.ChunkPos]*list.Element
+	order   *list.List // 前端最新
+	hits    atomic.Uint64
+	misses  atomic.Uint64
+}
+
+// chunkEncodePool 复用区块编码缓冲（64 KiB/次），避免每次缓存未命中
+// 都分配大缓冲（加入风暴时的分配峰值）。
+var chunkEncodePool = sync.Pool{
+	New: func() any {
+		buffer := make([]byte, 0, 64*1024)
+		return &buffer
+	},
+}
+
+type chunkPacketEntry struct {
+	pos   world.ChunkPos
+	chunk *world.Chunk
+	rev   uint64
+	// frame 是压缩后的完整帧（只读共享，跨连接直接写出）。
+	frame []byte
+}
+
+// chunkPacketCacheMax 是缓存的区块包上限。压缩帧约 0.5–2 KiB/项，2048 项
+// 上限约 2–4 MiB，且能覆盖多名玩家的完整视距（加入风暴后近 100% 命中）；
+// 小于单个玩家的区块数会随移动反复失效重编码（实测显著劣化）。
+const chunkPacketCacheMax = 2048
+
+// chunkPacket 返回区块数据包：命中缓存时复用同一份只读字节，
+// 否则编码一次并缓存。
+func (s *Server) chunkPacket(pos world.ChunkPos, chunk *world.Chunk) []byte {
+	rev := chunk.Revision()
+	s.chunkPackets.mu.Lock()
+	if s.chunkPackets.order == nil {
+		s.chunkPackets.entries = make(map[world.ChunkPos]*list.Element)
+		s.chunkPackets.order = list.New()
+	}
+	if elem, ok := s.chunkPackets.entries[pos]; ok {
+		entry := elem.Value.(*chunkPacketEntry)
+		if entry.chunk == chunk && entry.rev == rev {
+			s.chunkPackets.order.MoveToFront(elem)
+			s.chunkPackets.mu.Unlock()
+			s.chunkPackets.hits.Add(1)
+			return entry.frame
+		}
+		s.chunkPackets.order.Remove(elem)
+		delete(s.chunkPackets.entries, pos)
+	}
+	s.chunkPackets.mu.Unlock()
+	s.chunkPackets.misses.Add(1)
+
+	buffer := chunkEncodePool.Get().(*[]byte)
+	packet := world.AppendChunkDataPacket((*buffer)[:0], chunk)
+	frame, err := protocol.CompressPacketFrame(packet, compressionThreshold)
+	chunkEncodePool.Put(buffer)
+	if err != nil {
+		// 构造失败只影响该次发送（帧长度受限，实际不可能发生）。
+		slog.Error("构造区块帧失败", "error", err)
+		return nil
+	}
+	entry := &chunkPacketEntry{pos: pos, chunk: chunk, rev: rev, frame: frame}
+	s.chunkPackets.mu.Lock()
+	s.chunkPackets.entries[pos] = s.chunkPackets.order.PushFront(entry)
+	if s.chunkPackets.order.Len() > chunkPacketCacheMax {
+		oldest := s.chunkPackets.order.Back()
+		s.chunkPackets.order.Remove(oldest)
+		delete(s.chunkPackets.entries, oldest.Value.(*chunkPacketEntry).pos)
+	}
+	s.chunkPackets.mu.Unlock()
+	return frame
 }
 
 // 区块内存卸载：长时间跑图会让世界内存缓存不断增长，服务器周期性地把

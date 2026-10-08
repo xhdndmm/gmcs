@@ -264,26 +264,40 @@ func (w *World) Flush() error {
 	defer w.saveMu.Unlock()
 
 	w.mu.Lock()
-	payloads := make(map[ChunkPos][]byte, len(w.dirty))
-	var encodeErr error
+	// 先快照待保存列表并释放世界锁：编码（zlib 压缩）在锁外进行，
+	// 避免保存期间阻塞方块查询/移动碰撞等读路径。
+	type saveItem struct {
+		pos   ChunkPos
+		chunk *Chunk
+	}
+	items := make([]saveItem, 0, len(w.dirty))
 	for pos := range w.dirty {
 		chunk, ok := w.chunks[pos]
 		if !ok {
 			delete(w.dirty, pos)
 			continue
 		}
-		compressed, err := encodeCompressedChunkPayload(chunk)
-		if err != nil {
-			// 保留为待保存，下一次 Flush 重试。
-			if encodeErr == nil {
-				encodeErr = fmt.Errorf("区块 (%d,%d) 编码失败：%w", pos.X, pos.Z, err)
-			}
-			continue
-		}
-		payloads[pos] = compressed
+		items = append(items, saveItem{pos: pos, chunk: chunk})
 		delete(w.dirty, pos)
 	}
 	w.mu.Unlock()
+
+	payloads := make(map[ChunkPos][]byte, len(items))
+	var encodeErr error
+	for _, item := range items {
+		compressed, err := encodeCompressedChunkPayload(item.chunk)
+		if err != nil {
+			// 保留为待保存，下一次 Flush 重试。
+			if encodeErr == nil {
+				encodeErr = fmt.Errorf("区块 (%d,%d) 编码失败：%w", item.pos.X, item.pos.Z, err)
+			}
+			w.mu.Lock()
+			w.dirty[item.pos] = struct{}{}
+			w.mu.Unlock()
+			continue
+		}
+		payloads[item.pos] = compressed
+	}
 
 	if len(payloads) > 0 {
 		if err := SavePayloads(w.dir, payloads); err != nil {

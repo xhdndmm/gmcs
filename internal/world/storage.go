@@ -3,6 +3,7 @@ package world
 import (
 	"bytes"
 	"compress/zlib"
+	"container/list"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -12,6 +13,65 @@ import (
 	"sync"
 	"time"
 )
+
+// regionFileCache 是打开的区域文件句柄缓存（磁盘缓存）：读路径反复
+// open/close 同一区域文件的系统调用开销可省；句柄按 LRU 有界。
+//
+// 句柄归还/淘汰时不立即 Close：可能有读者正持引用（ReadAt 并发安全），
+// 交由 GC 终结器回收，避免关闭正在使用的句柄。写入（重命名替换）后
+// 调用 dropRegion 丢弃缓存项，后续读取会重新打开新文件。
+type regionFileCache struct {
+	mu      sync.Mutex
+	entries map[string]*list.Element
+	order   *list.List // 前端最新
+}
+
+type regionFileEntry struct {
+	path string
+	file *os.File
+}
+
+// regionCacheMax 是缓存的区域文件句柄上限（每个句柄占一个 fd）。
+const regionCacheMax = 32
+
+var regionCache = &regionFileCache{
+	entries: make(map[string]*list.Element),
+	order:   list.New(),
+}
+
+// openRegion 返回区域文件句柄（缓存复用）；调用方不得 Close。
+func openRegion(path string) (*os.File, error) {
+	regionCache.mu.Lock()
+	defer regionCache.mu.Unlock()
+	if elem, ok := regionCache.entries[path]; ok {
+		regionCache.order.MoveToFront(elem)
+		return elem.Value.(*regionFileEntry).file, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	entry := &regionFileEntry{path: path, file: file}
+	regionCache.entries[path] = regionCache.order.PushFront(entry)
+	if regionCache.order.Len() > regionCacheMax {
+		oldest := regionCache.order.Back()
+		entry = oldest.Value.(*regionFileEntry)
+		regionCache.order.Remove(oldest)
+		delete(regionCache.entries, entry.path)
+		// 不立即 Close（可能有读者持有）；GC 终结器会回收。
+	}
+	return file, nil
+}
+
+// dropRegion 丢弃缓存的句柄（写入重命名后调用）。
+func dropRegion(path string) {
+	regionCache.mu.Lock()
+	defer regionCache.mu.Unlock()
+	if elem, ok := regionCache.entries[path]; ok {
+		regionCache.order.Remove(elem)
+		delete(regionCache.entries, path)
+	}
+}
 
 // 存储布局与 Minecraft 的区域文件一致：每个区域文件覆盖 32×32 个区块，
 // 文件头为 1024 个位置表项（4 字节：3 字节偏移扇区 + 1 字节长度扇区）
@@ -57,14 +117,13 @@ func regionPath(dir string, x, z int) string {
 // 对大区域文件产生“整区解压”的内存峰值。
 func loadChunkPayload(dir string, x, z int) ([]byte, error) {
 	path := regionPath(dir, x, z)
-	file, err := os.Open(path)
+	file, err := openRegion(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	defer file.Close()
 
 	slot := regionSlot(x, z)
 	var location [4]byte
@@ -108,15 +167,12 @@ func loadChunkPayload(dir string, x, z int) ([]byte, error) {
 // 再重命名，避免崩溃造成部分写入。
 // payloads 必须是 zlib 压缩后的区块负载。
 func saveRegion(path string, payloads map[int][]byte) error {
-	old, err := os.Open(path)
+	old, err := openRegion(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		old = nil
-	}
-	if old != nil {
-		defer old.Close()
 	}
 
 	const slotCount = regionSize * regionSize
@@ -244,6 +300,8 @@ func saveRegion(path string, payloads map[int][]byte) error {
 		_ = os.Remove(temp)
 		return err
 	}
+	// 重命名替换了文件：丢弃缓存的旧句柄，后续读取打开新文件。
+	dropRegion(path)
 	// 尽力同步目录项，保证重命名本身落盘；失败不影响正确性。
 	if dir, err := os.Open(filepath.Dir(path)); err == nil {
 		_ = dir.Sync()

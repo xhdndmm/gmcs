@@ -142,17 +142,29 @@ var (
 )
 
 func WritePacketWithCompression(writer io.Writer, packet []byte, threshold int32) error {
+	frame, err := CompressPacketFrame(packet, threshold)
+	if err != nil {
+		return err
+	}
+	return writeAll(writer, frame)
+}
+
+// CompressPacketFrame 构造 WritePacketWithCompression 将写出的完整帧字节
+// （帧长度 varint + 数据长度 varint + 包数据/压缩数据）。内容与玩家无关的
+// 广播包（区块数据、注册表）可构造一次、跨连接共享，免去重复压缩与拷贝；
+// 返回的切片只读共享，并发写出安全。
+func CompressPacketFrame(packet []byte, threshold int32) ([]byte, error) {
 	if threshold < 0 {
-		return fmt.Errorf("compression threshold must not be negative")
+		return nil, fmt.Errorf("compression threshold must not be negative")
 	}
 	if len(packet) > MaxPacketSize {
-		return fmt.Errorf("packet length %d exceeds the maximum %d", len(packet), MaxPacketSize)
+		return nil, fmt.Errorf("packet length %d exceeds the maximum %d", len(packet), MaxPacketSize)
 	}
 	if int64(len(packet)) < int64(threshold) {
-		// 预分配 5（数据长度 varint 上限）+ 包体，一次成型。
 		payload := AppendVarInt(make([]byte, 0, 5+len(packet)), 0)
 		payload = append(payload, packet...)
-		return writeFrame(writer, payload)
+		frame := AppendVarInt(make([]byte, 0, 5+len(payload)), int32(len(payload)))
+		return append(frame, payload...), nil
 	}
 
 	buffer := compressBufferPool.Get().(*bytes.Buffer)
@@ -166,28 +178,26 @@ func WritePacketWithCompression(writer io.Writer, packet []byte, threshold int32
 	compressWriterPool.Put(compressor)
 	if err != nil {
 		compressBufferPool.Put(buffer)
-		return fmt.Errorf("compress packet: %w", err)
+		return nil, fmt.Errorf("compress packet: %w", err)
 	}
 
 	// 帧格式：帧长度 varint | 数据长度 varint | 压缩数据。
-	// 分三次顺序写出（调用方持有写锁），避免把压缩数据再整段拷贝一次。
-	var frameLenBuf, dataLenBuf [5]byte
-	dataLen := AppendVarInt(dataLenBuf[:0], int32(len(packet)))
-	frameLen := AppendVarInt(frameLenBuf[:0], int32(len(dataLen)+buffer.Len()))
-	if err = writeAll(writer, frameLen); err != nil {
-		compressBufferPool.Put(buffer)
-		return err
-	}
-	if err = writeAll(writer, dataLen); err != nil {
-		compressBufferPool.Put(buffer)
-		return err
-	}
-	err = writeAll(writer, buffer.Bytes())
+	frame := make([]byte, 0, 10+buffer.Len())
+	frame = AppendVarInt(frame, int32(len(packet)))
+	compressed := buffer.Bytes()
 	compressBufferPool.Put(buffer)
-	return err
+	frameLen := AppendVarInt(make([]byte, 0, 5), int32(len(frame)+len(compressed)))
+	frameLen = append(frameLen, frame...)
+	return append(frameLen, compressed...), nil
 }
 
 // writeAll 写出全部字节，处理短写。
+// WriteFrameBytes 写出 CompressPacketFrame 返回的完整帧（处理短写）。
+// 共享广播包（只读）可跨连接直接写出，无需重复压缩。
+func WriteFrameBytes(writer io.Writer, frame []byte) error {
+	return writeAll(writer, frame)
+}
+
 func writeAll(writer io.Writer, data []byte) error {
 	for len(data) > 0 {
 		written, err := writer.Write(data)

@@ -67,7 +67,10 @@ type Chunk struct {
 
 	// mu 保护 sections：运行时方块修改（SetBlockState）会与方块查询、
 	// 区块编码与保存等并发读取同时发生。
-	mu       sync.RWMutex
+	mu sync.RWMutex
+	// revision 在每次内容修改（方块/群系）时递增；服务器用它失效共享的
+	// 区块数据包缓存（见 server.chunkPacket）。
+	revision uint64
 	sections [SectionCount]*section
 	// biomes 是 4×4 列分辨率的群系 ID 网格（索引见 biomeCellIndex；
 	// gmcs 的群系在垂直方向不变）。默认平原。
@@ -156,6 +159,7 @@ func (c *Chunk) SetBlockState(x, y, z int, state uint16) {
 	if !s.setBlock(blockIndex(x, localY, z), state) {
 		return
 	}
+	c.revision++
 	if c.heights != nil {
 		column := (z << 4) | x
 		c.heights.top[column] = 0
@@ -285,6 +289,14 @@ func biomeCellIndex(x4, z4 int) int {
 	return z4*4 + x4
 }
 
+// Revision 返回区块的修改计数（每次方块/群系修改递增），
+// 供区块包缓存判断失效；调用方需要自行保证与内容读取的一致性。
+func (c *Chunk) Revision() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.revision
+}
+
 // ColumnBiome 返回区块内方块列 (x, z)（0–15）处的群系 ID。
 func (c *Chunk) ColumnBiome(x, z int) uint16 {
 	c.mu.RLock()
@@ -304,6 +316,7 @@ func (c *Chunk) SetBiomeGrid(grid [16]uint16) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.biomes = grid
+	c.revision++
 }
 
 // EncodeChunkDataPacket 按 1.21.11（协议 774）的格式序列化
