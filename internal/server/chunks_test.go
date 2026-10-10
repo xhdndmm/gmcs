@@ -2,6 +2,7 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
@@ -130,5 +131,71 @@ func TestChunkUnloadEvictsPacketCache(t *testing.T) {
 	}
 	if reloaded == chunk {
 		t.Fatal("区块未被卸载（重新访问返回同一指针）")
+	}
+}
+
+// TestIdleServerReleasesChunks 验证所有玩家退出后，卸载扫描会释放全部维度的
+// 区块与区块帧缓存（空闲服务器不保留跑图积攒的内存）。
+func TestIdleServerReleasesChunks(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Leaver")
+	player := findSession(t, instance, "Leaver")
+	gameWorld := instance.testWorld()
+	dim := world.DimensionOverworld
+
+	// 额外加载一个区块并做修改，同时填充区块帧缓存。
+	pos := world.ChunkPos{X: 50, Z: 50}
+	chunk, err := gameWorld.Chunk(pos.X, pos.Z)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk.SetBlockState(0, 64, 0, world.StoneBlock)
+	gameWorld.MarkDirty(chunk)
+	if instance.chunkPacket(dim, pos, chunk) == nil {
+		t.Fatal("chunkPacket 返回 nil")
+	}
+	key := chunkPacketKey{dim: dim, pos: pos}
+	instance.chunkPackets.mu.Lock()
+	_, cached := instance.chunkPackets.entries[key]
+	instance.chunkPackets.mu.Unlock()
+	if !cached {
+		t.Fatal("帧缓存缺少测试区块条目")
+	}
+	if gameWorld.ChunkCount() == 0 {
+		t.Fatal("玩家在线时应已加载区块")
+	}
+
+	// 所有玩家退出：卸载循环被唤醒并释放全部区块（轮询等待异步释放完成）。
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitPlayerOffline(t, instance, player.uuid)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && gameWorld.ChunkCount() != 0 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := gameWorld.ChunkCount(); got != 0 {
+		t.Fatalf("空闲服务器未释放区块：ChunkCount() = %d", got)
+	}
+	instance.chunkPackets.mu.Lock()
+	remaining := len(instance.chunkPackets.entries)
+	instance.chunkPackets.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("空闲服务器区块帧缓存剩余 %d 条", remaining)
+	}
+
+	// 被释放的修改已写盘：重新加载可读回。
+	saved, err := world.LoadChunk(cfg.WorldDir, pos.X, pos.Z)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil {
+		t.Fatal("释放前未把脏区块写入磁盘")
+	}
+	if got := saved.GetBlockState(0, 64, 0); got != world.StoneBlock {
+		t.Fatalf("磁盘上的方块 = %d, want %d", got, world.StoneBlock)
 	}
 }

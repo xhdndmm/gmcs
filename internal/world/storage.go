@@ -73,6 +73,15 @@ func dropRegion(path string) {
 	}
 }
 
+// ReleaseRegionHandles 清空全部缓存句柄（服务器空闲时释放 fd 引用）；
+// 与淘汰一致不立即 Close（可能有读者持有），交由 GC 终结器回收。
+func ReleaseRegionHandles() {
+	regionCache.mu.Lock()
+	defer regionCache.mu.Unlock()
+	regionCache.entries = make(map[string]*list.Element)
+	regionCache.order.Init()
+}
+
 // 存储布局与 Minecraft 的区域文件一致：每个区域文件覆盖 32×32 个区块，
 // 文件头为 1024 个位置表项（4 字节：3 字节偏移扇区 + 1 字节长度扇区）
 // 与 1024 个时间戳（4 字节，Unix 秒），随后是 4KB 对齐的区块数据。

@@ -244,13 +244,18 @@ func (s *Server) chunkUnloadLoop(ctx context.Context) {
 			if err := s.unloadFarChunks(); err != nil {
 				slog.Error("区块卸载失败", "error", err)
 			}
+		case <-s.unloadNow:
+			// 最后一名玩家退出：立即释放区块资源，不必等下一个扫描周期。
+			if err := s.unloadFarChunks(); err != nil {
+				slog.Error("区块卸载失败", "error", err)
+			}
 		}
 	}
 }
 
 // unloadFarChunks 卸载距所有已加入玩家都超出 视距+chunkUnloadMargin 的区块
-// （按维度分别计算中心点）。服务器上没有玩家时不卸载（避免反复生成/读取
-// 刚探索过的区域）。
+// （按维度分别计算中心点）。服务器没有任何已加入玩家时，卸载全部维度的全部
+// 区块并驱逐区块帧缓存（释放内存；下次进入时按需从磁盘加载或重新生成）。
 func (s *Server) unloadFarChunks() error {
 	players := s.playerSnapshot()
 	centers := make(map[world.Dimension][]world.ChunkPos)
@@ -266,7 +271,9 @@ func (s *Server) unloadFarChunks() error {
 		})
 	}
 	if len(centers) == 0 {
-		return nil
+		// 服务器没有已加入玩家：释放全部区块（含区块帧缓存），
+		// 避免空闲服务器长期占用跑图积攒的区块内存。
+		return s.unloadAllChunks()
 	}
 	var firstErr error
 	for dim, dimCenters := range centers {
@@ -299,4 +306,35 @@ func (s *Server) evictChunkPacket(dim world.Dimension, pos world.ChunkPos) {
 		delete(s.chunkPackets.entries, key)
 	}
 	s.chunkPackets.mu.Unlock()
+}
+
+// unloadAllChunks 卸载所有已打开维度的全部区块并驱逐区块帧缓存；
+// 服务器没有玩家时由卸载循环调用（释放内存资源）。
+func (s *Server) unloadAllChunks() error {
+	s.worldMu.Lock()
+	worlds := make(map[world.Dimension]*world.World, len(s.worlds))
+	for dim, gameWorld := range s.worlds {
+		worlds[dim] = gameWorld
+	}
+	s.worldMu.Unlock()
+
+	var firstErr error
+	for dim, gameWorld := range worlds {
+		unloaded, err := gameWorld.UnloadAll()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, pos := range unloaded {
+			s.evictChunkPacket(dim, pos)
+		}
+		if len(unloaded) > 0 {
+			slog.Info("空闲服务器释放区块", "dimension", dim, "count", len(unloaded))
+		}
+	}
+	// 空闲服务器不再持有区域文件句柄（fd 交给 GC 回收）。
+	world.ReleaseRegionHandles()
+	return firstErr
 }

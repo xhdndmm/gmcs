@@ -164,3 +164,85 @@ func TestChunkConcurrentEditAndRead(t *testing.T) {
 	}
 	<-done
 }
+
+// TestUnloadAllReleasesEveryChunk 验证 UnloadAll 卸载全部区块并保存脏区块
+// （服务器没有任何玩家时用其释放区块内存）。
+func TestUnloadAllReleasesEveryChunk(t *testing.T) {
+	dir := t.TempDir()
+	instance, err := Open(dir, SeededGenerator{Seed: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+
+	for i := 0; i < 3; i++ {
+		if _, err := instance.Chunk(i, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chunk, err := instance.Chunk(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk.SetBlockState(0, 64, 0, StoneBlock)
+	instance.MarkDirty(chunk)
+
+	unloaded, err := instance.UnloadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unloaded) != 3 {
+		t.Fatalf("UnloadAll() 卸载 %d 个，want 3", len(unloaded))
+	}
+	if got := instance.ChunkCount(); got != 0 {
+		t.Fatalf("ChunkCount() = %d, want 0", got)
+	}
+
+	// 脏区块在卸载前写盘，可重新读回。
+	saved, err := LoadChunk(dir, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil {
+		t.Fatal("UnloadAll 未把脏区块写入磁盘")
+	}
+	if got := saved.GetBlockState(0, 64, 0); got != StoneBlock {
+		t.Fatalf("磁盘上的方块 = %d, want %d", got, StoneBlock)
+	}
+}
+
+// TestReleaseRegionHandles 验证空闲释放会清空区域文件句柄缓存。
+func TestReleaseRegionHandles(t *testing.T) {
+	dir := t.TempDir()
+	instance, err := Open(dir, SeededGenerator{Seed: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+
+	chunk, err := instance.Chunk(2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk.SetBlockState(0, 64, 0, StoneBlock)
+	instance.MarkDirty(chunk)
+	if _, err := instance.UnloadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadChunk(dir, 2, 2); err != nil {
+		t.Fatal(err)
+	}
+	regionCache.mu.Lock()
+	before := regionCache.order.Len()
+	regionCache.mu.Unlock()
+	if before == 0 {
+		t.Fatal("读取区块后应有缓存的区域文件句柄")
+	}
+	ReleaseRegionHandles()
+	regionCache.mu.Lock()
+	after := regionCache.order.Len()
+	regionCache.mu.Unlock()
+	if after != 0 {
+		t.Fatalf("ReleaseRegionHandles 后仍有 %d 个句柄缓存", after)
+	}
+}

@@ -466,10 +466,26 @@ func (w *World) Flush() error {
 // 待保存的区块会被先编码并在锁外写盘；保存失败时保留内存中的区块并重新
 // 标记为待保存（返回错误）。与 Chunk 并发调用是安全的：已由调用方持有的
 // *Chunk 指针仍然有效，后续访问同一位置会从磁盘或生成器重新加载。
+// 没有中心点时不做任何事（UnloadAll 用于释放全部区块）。
 func (w *World) UnloadFar(centers []ChunkPos, radius int) ([]ChunkPos, error) {
 	if len(centers) == 0 {
 		return nil, nil
 	}
+	return w.unloadChunks(func(pos ChunkPos) bool {
+		return withinAny(pos, centers, radius)
+	})
+}
+
+// UnloadAll 把所有区块移出内存缓存（服务器没有任何玩家时释放资源），
+// 返回被卸载的区块位置。未保存的区块会先写盘，重新访问时按需从磁盘加载
+// 或由生成器重新生成。
+func (w *World) UnloadAll() ([]ChunkPos, error) {
+	return w.unloadChunks(nil)
+}
+
+// unloadChunks 卸载 keep 返回 false 的全部区块；keep 为 nil 时卸载全部。
+// 与 Flush/Close 共用 unloadMu 保证不会在最终保存之后残留未保存数据。
+func (w *World) unloadChunks(keep func(ChunkPos) bool) ([]ChunkPos, error) {
 	w.unloadMu.Lock()
 	defer w.unloadMu.Unlock()
 
@@ -484,7 +500,7 @@ func (w *World) UnloadFar(centers []ChunkPos, radius int) ([]ChunkPos, error) {
 		encodeErr  error
 	)
 	for pos, chunk := range w.chunks {
-		if withinAny(pos, centers, radius) {
+		if keep != nil && keep(pos) {
 			continue
 		}
 		candidates = append(candidates, pos)

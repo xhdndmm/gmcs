@@ -69,6 +69,10 @@ type Server struct {
 	// （测试通过显式调用 unloadFarChunks 驱动，保证断言不被周期卸载干扰）。
 	chunkUnloadInterval time.Duration
 
+	// unloadNow 由最后一名玩家退出时唤醒（容量 1、non-blocking），
+	// 使空闲服务器立即释放区块资源而不必等待下一个扫描周期。
+	unloadNow chan struct{}
+
 	// playerAutosaveInterval 是玩家数据的周期保存间隔；<= 0 时禁用
 	// （测试可显式调用 saveAllPlayerData 驱动）。
 	playerAutosaveInterval time.Duration
@@ -334,6 +338,7 @@ func New(cfg config.Config) (*Server, error) {
 		items:                  make(map[int32]*itemEntity),
 		tickInterval:           defaultTickInterval,
 		chunkUnloadInterval:    defaultChunkUnloadInterval,
+		unloadNow:              make(chan struct{}, 1),
 		playerAutosaveInterval: defaultPlayerAutosaveInterval,
 		borderHalfSize:         float64(cfg.WorldBorderSize) / 2,
 		defaultGameMode:        uint8(gameMode),
@@ -528,17 +533,35 @@ func (s *Server) registerPlayer(player *session) []*session {
 
 // unregisterPlayer 从在线列表移除玩家，并通知其他玩家。
 // 仅当列表中的会话仍是本会话时才删除（避免快速重连时旧会话
-// 误删新会话的在线记录）。
+// 误删新会话的在线记录）。最后一名玩家退出时会唤醒卸载循环立即释放资源。
 func (s *Server) unregisterPlayer(player *session) {
 	s.mu.Lock()
+	removed := false
 	if current, ok := s.players[player.uuid]; ok && current == player {
 		delete(s.players, player.uuid)
+		removed = true
 	}
+	empty := removed && len(s.players) == 0
 	s.mu.Unlock()
+	if empty {
+		s.wakeChunkUnload()
+	}
 
 	s.broadcastPlayerRemove(player)
 	s.broadcastPacketExcluding(protocol.EncodePlayerInfoRemove([][16]byte{player.uuid}), player)
 	s.broadcastPacketExcluding(protocol.EncodeSystemChat(player.name+" left the game"), player)
+}
+
+// wakeChunkUnload 非阻塞地唤醒区块卸载循环（容量 1，重复信号会被合并）。
+// 直接构造的最小 Server（命令测试等）没有 unloadNow 通道，此时忽略。
+func (s *Server) wakeChunkUnload() {
+	if s.unloadNow == nil {
+		return
+	}
+	select {
+	case s.unloadNow <- struct{}{}:
+	default:
+	}
 }
 
 // broadcastPacket 向所有在线玩家发送数据包（忽略单个玩家的写失败）。
