@@ -7,7 +7,7 @@
 
 ## 1. 环境与复现
 
-- 环境：Linux amd64，12th Gen Intel(R) Core(TM) i7-12700F（20 逻辑核心），Go 1.27.1
+- 环境：Linux amd64，12th Gen Intel(R) Core(TM) i7-12700F（20 逻辑核心），Go 1.27
 - **更新于 2026-10-05**：第 2 节与第 3.3 节随最新代码全部复测；
   表中为 `-count=6` 中位数（压缩基准 `-count=3`）。
 - internal 包基准未启用 PGO（内置 PGO 配置 `cmd/gmcs/default.pgo` 仅影响
@@ -163,7 +163,7 @@ go test -count=3 -run '^$' -bench=BenchmarkWritePacketWithCompression -benchtime
 
 `cmd/gmcs/default.pgo` 由 `scripts/genpgo.sh` 从世界生成/编码、实体包、服务器
 Tick 的 benchmark 采样并合并生成（当前约 24 KB，随热路径变化重新生成后复测）。
-当前代码的对照如下（`-count=6` 中位数，Go 1.27.1，i7-12700F）：
+当前代码的对照如下（`-count=6` 中位数，Go 1.27，i7-12700F）：
 
 | Benchmark | `-pgo=off` | PGO | 变化 |
 | --- | --- | --- | --- |
@@ -225,7 +225,7 @@ WORLD_SURFACE（1）与 MOTION_BLOCKING（4）：9 位/列、每 long 7 个值�
 37 个 long，两份共用同一份打包数据。本世界的方块非固体即流体，两者取值
 一致（列最高非空气方块 y - WorldMinY + 1）。
 
-编码开销（同一台机器交叉复测的 `-count=8` 中位数，Go 1.27.1，i7-12700F；
+编码开销（同一台机器交叉复测的 `-count=8` 中位数，Go 1.27，i7-12700F；
 对比对象为引入 heightmap 前的提交 6cef070）：
 
 | 指标 | 引入前 | 引入后 | 变化 |
@@ -317,7 +317,7 @@ VmRSS ≈ 74 MB（与上表差异在 ±10% 以内，属单次运行波动）。
 - 生成器改为生成期无锁写入（区块在 `World.Chunk` 锁内生成、尚未发布），
   消除了旧实现每个方块一次加解锁的开销。
 
-**实测（同机 `-count=3` 中位数，Go 1.27.1，i7-12700F）**
+**实测（同机 `-count=3` 中位数，Go 1.27，i7-12700F）**
 
 | Benchmark | 优化前 | 优化后 | 变化 |
 | --- | --- | --- | --- |
