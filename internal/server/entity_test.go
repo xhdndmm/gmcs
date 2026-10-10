@@ -163,9 +163,7 @@ func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPack
 	// UpdateHealth 之后可能直接是经验条包。
 	for {
 		id, payload := readCompressedPacket(t, conn)
-		if observe != nil {
-			observe(id, payload)
-		}
+		observe(id, payload)
 		if id == 0x2B {
 			replyKeepAlive(t, conn, payload)
 			continue
