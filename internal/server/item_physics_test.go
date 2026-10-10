@@ -37,7 +37,7 @@ func TestItemPerAxisCollision(t *testing.T) {
 	// 在玩家东侧 3 格处建一堵两格高的墙。
 	wallX := baseX + 3
 	for _, dy := range []int{0, 1} {
-		if !instance.world.SetBlock(wallX, baseY+dy, baseZ, world.StoneBlock) {
+		if !instance.testWorld().SetBlock(wallX, baseY+dy, baseZ, world.StoneBlock) {
 			t.Fatal("建墙失败")
 		}
 	}
@@ -47,7 +47,7 @@ func TestItemPerAxisCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 从玩家位置以 0.4 格/tick 向东抛出。
-	e := instance.spawnItem(stone, x, float64(baseY)+1, z, 0.4, 0.1, 0, itemPickupDelayPlayer)
+	e := instance.spawnItem(world.DimensionOverworld, stone, x, float64(baseY)+1, z, 0.4, 0.1, 0, itemPickupDelayPlayer)
 	if e == nil {
 		t.Fatal("生成掉落物失败")
 	}
@@ -79,7 +79,7 @@ func TestItemFallsAndRests(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Dropper")
 	player := findSession(t, instance, "Dropper")
 	x, _, z, _, _ := player.playerPosition()
-	column, ok := instance.world.ColumnAt(int(math.Floor(x)), int(math.Floor(z)))
+	column, ok := instance.testWorld().ColumnAt(int(math.Floor(x)), int(math.Floor(z)))
 	if !ok || !column.HasSolid {
 		t.Fatal("出生点没有地面")
 	}
@@ -89,7 +89,7 @@ func TestItemFallsAndRests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := instance.spawnItem(stone, x, groundY+5, z, 0, 0, 0, itemPickupDelayPlayer*100)
+	e := instance.spawnItem(world.DimensionOverworld, stone, x, groundY+5, z, 0, 0, 0, itemPickupDelayPlayer*100)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
 
@@ -126,7 +126,7 @@ func TestItemDestroyedByHazards(t *testing.T) {
 			}
 			// 在玩家上方 2 格放置危险方块，并把掉落物生成在其中。
 			hazardY := baseY + 2
-			if !instance.world.SetBlock(baseX, hazardY, baseZ, state) {
+			if !instance.testWorld().SetBlock(baseX, hazardY, baseZ, state) {
 				t.Fatal("放置危险方块失败")
 			}
 
@@ -134,7 +134,7 @@ func TestItemDestroyedByHazards(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			e := instance.spawnItem(stone, x, float64(hazardY)+0.1, z, 0, 0, 0, itemPickupDelayPlayer)
+			e := instance.spawnItem(world.DimensionOverworld, stone, x, float64(hazardY)+0.1, z, 0, 0, 0, itemPickupDelayPlayer)
 			expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 			expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
 
@@ -159,14 +159,14 @@ func TestItemFloatsOnWater(t *testing.T) {
 
 	// 在玩家上方 3 格放一格水，掉落物从水底开始。
 	waterY := baseY + 3
-	if !instance.world.SetBlock(baseX, waterY, baseZ, world.WaterBlock) {
+	if !instance.testWorld().SetBlock(baseX, waterY, baseZ, world.WaterBlock) {
 		t.Fatal("放置水失败")
 	}
 	stone, err := item.FromName("minecraft:stone", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := instance.spawnItem(stone, x, float64(waterY), z, 0, 0, 0, itemPickupDelayPlayer)
+	e := instance.spawnItem(world.DimensionOverworld, stone, x, float64(waterY), z, 0, 0, 0, itemPickupDelayPlayer)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
 

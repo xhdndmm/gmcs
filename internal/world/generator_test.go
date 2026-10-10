@@ -75,7 +75,8 @@ func TestSeededGeneratorDiffersBySeed(t *testing.T) {
 	t.Fatal("different seeds produced identical terrain")
 }
 
-// TestSeededGeneratorStructure 验证基岩层、高度范围与水不超过海平面。
+// TestSeededGeneratorStructure 验证基岩层、高度范围、水不超过海平面与地表完整
+// （洞穴不破坏最高一格地表）。
 func TestSeededGeneratorStructure(t *testing.T) {
 	generator := SeededGenerator{Seed: 7}
 	for _, pos := range []ChunkPos{{0, 0}, {2, 3}, {-1, -2}} {
@@ -99,11 +100,11 @@ func TestSeededGeneratorStructure(t *testing.T) {
 							pos.X*SectionSize+x, pos.Z*SectionSize+z, pos, state)
 					}
 				} else if height > SeaLevel+1 {
-					// 陆地：地表应是草方块或沙（沙漠/沙滩）。
+					// 陆地：最高一格地表必须存在（洞穴保持顶部密封），
+					// 材质依群系而定（草/沙/红沙/石头/雪等）。
 					switch state := chunk.GetBlockState(x, height, z); state {
-					case GrassBlock, SandBlock:
-					default:
-						t.Fatalf("expected grass or sand at (%d,%d,%d) in chunk %v, got %d",
+					case AirBlock, WaterBlock, LavaBlock:
+						t.Fatalf("land surface missing at (%d,%d,%d) in chunk %v, got %d",
 							pos.X*SectionSize+x, height, pos.Z*SectionSize+z, pos, state)
 					}
 				}
@@ -112,7 +113,7 @@ func TestSeededGeneratorStructure(t *testing.T) {
 	}
 }
 
-// TestSeededGeneratorTrees 验证树木存在、树干立在草地上且遵守区块边缘留白。
+// TestSeededGeneratorTrees 验证树木存在、树干立在可生长方块上且遵守区块边缘留白。
 // 种子 42 的原点区域为陆地且树木茂密（见 docs/TODO.md：地形为确定性纯函数）。
 func TestSeededGeneratorTrees(t *testing.T) {
 	generator := SeededGenerator{Seed: 42}
@@ -124,15 +125,16 @@ func TestSeededGeneratorTrees(t *testing.T) {
 				for z := 0; z < SectionSize; z++ {
 					for y := WorldMinY; y < WorldMinY+WorldHeight; y++ {
 						state := chunk.GetBlockState(x, y, z)
-						if state != OakLogBlock && state != SpruceLogBlock && state != AcaciaLogBlock {
+						if !isLogBlock(state) {
 							continue
 						}
 						logs++
-						// 树只在距边缘 2 格以内的列生长。
+						// 树只在距边缘 2 格以内的列生长（黑橡树为 3 格，更严格）。
 						if x < 2 || x > SectionSize-3 || z < 2 || z > SectionSize-3 {
 							t.Fatalf("tree trunk at (%d,%d) in chunk (%d,%d) too close to the border", x, z, cx, cz)
 						}
-						if below := chunk.GetBlockState(x, y-1, z); below != state && below != GrassBlock {
+						below := chunk.GetBlockState(x, y-1, z)
+						if below != state && !isTreeGround(below) {
 							t.Fatalf("log at (%d,%d,%d) in chunk (%d,%d) stands on block %d",
 								x, y, z, cx, cz, below)
 						}
@@ -144,6 +146,17 @@ func TestSeededGeneratorTrees(t *testing.T) {
 	if logs == 0 {
 		t.Fatal("expected at least one tree across 36 chunks")
 	}
+}
+
+// isLogBlock 报告方块是否为树木原木。
+func isLogBlock(state uint16) bool {
+	return state == OakLogBlock || state == SpruceLogBlock || state == AcaciaLogBlock ||
+		state == BirchLogBlock || state == DarkOakLogBlock || state == JungleLogBlock
+}
+
+// isTreeGround 报告方块能否支撑树干（草/土/雪块）。
+func isTreeGround(state uint16) bool {
+	return state == GrassBlock || state == DirtBlock || state == SnowBlock
 }
 
 // TestFloorDivision 验证负坐标的向下取整除法与取模。

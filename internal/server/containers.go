@@ -42,9 +42,16 @@ type containerDef struct {
 	IsFurnace bool
 }
 
+// containerKey 是容器在某个维度中的方块坐标。
+type containerKey struct {
+	dim     world.Dimension
+	x, y, z int
+}
+
 // containerState 是一个已打开的容器内容；服务器侧权威状态。
 type containerState struct {
 	mu  sync.Mutex
+	dim world.Dimension
 	pos [3]int
 	def *containerDef
 	// furnace 非空时表示熔炉类容器：槽位与进度由 furnaceState 权威持有。
@@ -144,7 +151,8 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 		s.closeCrafting(player, false)
 	}
 
-	state, err := s.world.BlockEntityAt(x, y, z)
+	dim := player.dimensionID()
+	state, err := s.worldFor(dim).BlockEntityAt(x, y, z)
 	if err != nil {
 		slog.Debug("无法读取容器内容", "name", player.name, "error", err)
 		return
@@ -159,9 +167,9 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 		}
 	}
 
-	container := s.registerViewer(x, y, z, def, items, player)
+	container := s.registerViewer(dim, x, y, z, def, items, player)
 	if def.IsFurnace {
-		container.furnace = s.registerFurnace(x, y, z)
+		container.furnace = s.registerFurnace(dim, x, y, z)
 		if container.furnace != nil {
 			// 槽位统一由 furnaceState 持有（Tick 与窗口共用一份状态）。
 			container.slots = container.furnace.slots[:]
@@ -181,12 +189,12 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 }
 
 // registerViewer 把玩家加入容器的观察者集合；容器已在打开状态时复用同一状态。
-func (s *Server) registerViewer(x, y, z int, def *containerDef, items []item.Stack, player *session) *containerState {
-	key := [3]int{x, y, z}
+func (s *Server) registerViewer(dim world.Dimension, x, y, z int, def *containerDef, items []item.Stack, player *session) *containerState {
+	key := containerKey{dim: dim, x: x, y: y, z: z}
 	s.containerMu.Lock()
 	container := s.containers[key]
 	if container == nil {
-		container = &containerState{pos: key, def: def, slots: items, viewers: make(map[*session]struct{})}
+		container = &containerState{dim: dim, pos: [3]int{x, y, z}, def: def, slots: items, viewers: make(map[*session]struct{})}
 		s.containers[key] = container
 	}
 	s.containerMu.Unlock()
@@ -226,7 +234,7 @@ func (s *Server) closeContainer(player *session, sendClose bool) {
 		}
 	}
 	if empty {
-		key := container.pos
+		key := containerKey{dim: container.dim, x: container.pos[0], y: container.pos[1], z: container.pos[2]}
 		s.containerMu.Lock()
 		// 仅当映射仍指向同一状态时删除（避免与重新打开竞态）。
 		if s.containers[key] == container {
@@ -245,8 +253,8 @@ func (s *Server) closeContainer(player *session, sendClose bool) {
 // destroyContainer 处理容器方块被破坏：关闭所有观察窗口并把内容掉落到世界。
 // breaker 是破坏方块的会话（它的窗口在同一 goroutine 内同步关闭）。
 // 其他会话的窗口通过关闭包通知，其会话读循环会在下一次点击时清理状态。
-func (s *Server) destroyContainer(x, y, z int, breaker *session, def *containerDef) {
-	key := [3]int{x, y, z}
+func (s *Server) destroyContainer(dim world.Dimension, breaker *session, x, y, z int, def *containerDef) {
+	key := containerKey{dim: dim, x: x, y: y, z: z}
 	s.containerMu.Lock()
 	container := s.containers[key]
 	if s.containers[key] == container {
@@ -277,7 +285,7 @@ func (s *Server) destroyContainer(x, y, z int, breaker *session, def *containerD
 		}
 		s.broadcastContainerAction(container, false, nil)
 	}
-	s.dropContainerContents(x, y, z, def)
+	s.dropContainerContents(dim, x, y, z, def)
 }
 
 // broadcastContainerAction 向附近玩家广播箱子开合动画（Block Action）。
@@ -301,11 +309,11 @@ func (s *Server) broadcastContainerAction(container *containerState, open bool, 
 	}
 	paramB := uint8(min(viewers, 255))
 	packet := protocol.EncodeBlockAction(container.pos[0], container.pos[1], container.pos[2], paramA, paramB, blockID)
-	// 只发给附近玩家（距离与方块更新一致）。
+	// 只发给同维度附近的玩家（距离与方块更新一致）。
 	cx := float64(container.pos[0]) + 0.5
 	cz := float64(container.pos[2]) + 0.5
 	for _, other := range s.playerSnapshot() {
-		if other == except || !other.isJoined() {
+		if other == except || !other.isJoined() || other.dimensionID() != container.dim {
 			continue
 		}
 		px, _, pz, _, _ := other.playerPosition()
@@ -360,11 +368,12 @@ func (s *Server) flushContainer(container *containerState) {
 	for i, stack := range container.slots {
 		items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count}
 	}
+	dim := container.dim
 	pos := container.pos
 	typeID := container.def.BlockEntityTypeID
 	container.mu.Unlock()
 
-	if err := s.world.SetBlockEntity(pos[0], pos[1], pos[2], world.BlockEntity{
+	if err := s.worldFor(dim).SetBlockEntity(pos[0], pos[1], pos[2], world.BlockEntity{
 		TypeID: typeID,
 		Items:  items,
 	}); err != nil {
@@ -374,8 +383,9 @@ func (s *Server) flushContainer(container *containerState) {
 
 // dropContainerContents 把容器内容掉落到世界中并清空方块实体
 // （方块被破坏时调用）。由会话 goroutine 调用。
-func (s *Server) dropContainerContents(x, y, z int, def *containerDef) {
-	state, err := s.world.BlockEntityAt(x, y, z)
+func (s *Server) dropContainerContents(dim world.Dimension, x, y, z int, def *containerDef) {
+	w := s.worldFor(dim)
+	state, err := w.BlockEntityAt(x, y, z)
 	if err != nil || len(state.Items) == 0 {
 		return
 	}
@@ -386,9 +396,9 @@ func (s *Server) dropContainerContents(x, y, z int, def *containerDef) {
 		stack := item.Stack{ItemID: slot.ItemID, Count: slot.Count}
 		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-		s.spawnItem(stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayPlayer)
+		s.spawnItem(dim, stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayPlayer)
 	}
-	if err := s.world.RemoveBlockEntity(x, y, z); err != nil {
+	if err := w.RemoveBlockEntity(x, y, z); err != nil {
 		slog.Error("清除容器内容失败", "x", x, "y", y, "z", z, "error", err)
 	}
 }
@@ -943,5 +953,5 @@ func (s *Server) dropFromContainer(player *session, stack item.Stack) {
 	dirY := -math.Sin(pitchRad)
 	dirZ := math.Cos(pitchRad) * math.Cos(yawRad)
 	const throwSpeed = 0.3
-	s.spawnItem(stack, x, y+1.0, z, dirX*throwSpeed, dirY*throwSpeed+0.1, dirZ*throwSpeed, itemPickupDelayPlayer)
+	s.spawnItem(player.dimensionID(), stack, x, y+1.0, z, dirX*throwSpeed, dirY*throwSpeed+0.1, dirZ*throwSpeed, itemPickupDelayPlayer)
 }

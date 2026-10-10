@@ -33,6 +33,31 @@ func (s *session) viewDistance() int {
 // 回报的 chunksPerTick 暂停），重连/重生后的大量区块会一次性写出。
 func (s *session) syncChunks(centerX, centerZ int) error {
 	radius := s.viewDistance()
+	dim := s.dimensionID()
+	gameWorld := s.server.worldFor(dim)
+
+	// 先把视距内尚未发送的区块按由近到远提交给异步预生成 worker 池：
+	// 多个区块并行生成，随后逐环发送时依次等待各自结果（首个环通常
+	// 已经生成完毕，显著缩短进入世界的等待时间）。
+	prefetch := make([]world.ChunkPos, 0, (2*radius+1)*(2*radius+1))
+	for ring := 0; ring <= radius; ring++ {
+		for dx := -ring; dx <= ring; dx++ {
+			for dz := -ring; dz <= ring; dz++ {
+				if max(absInt(dx), absInt(dz)) != ring {
+					continue
+				}
+				pos := world.ChunkPos{X: centerX + dx, Z: centerZ + dz}
+				if _, ok := s.sentChunks[pos]; ok {
+					continue
+				}
+				prefetch = append(prefetch, pos)
+			}
+		}
+	}
+	if len(prefetch) > 0 {
+		gameWorld.Prefetch(prefetch)
+	}
+
 	batch := 0
 	for ring := 0; ring <= radius; ring++ {
 		for dx := -ring; dx <= ring; dx++ {
@@ -44,7 +69,7 @@ func (s *session) syncChunks(centerX, centerZ int) error {
 				if _, ok := s.sentChunks[pos]; ok {
 					continue
 				}
-				chunk, err := s.server.world.Chunk(pos.X, pos.Z)
+				chunk, err := gameWorld.Chunk(pos.X, pos.Z)
 				if err != nil {
 					return err
 				}
@@ -55,7 +80,7 @@ func (s *session) syncChunks(centerX, centerZ int) error {
 				}
 				// 共享压缩帧：同一批/跟随的多名玩家复用同一份只读字节，
 				// 免去逐连接重复编码与压缩。
-				frame := s.server.chunkPacket(pos, chunk)
+				frame := s.server.chunkPacket(dim, pos, chunk)
 				if err := s.writeFrame(frame); err != nil {
 					return err
 				}
@@ -106,13 +131,18 @@ func absInt(value int) int {
 	return value
 }
 
+type chunkPacketKey struct {
+	dim world.Dimension
+	pos world.ChunkPos
+}
+
 // chunkPacketCache 是跨玩家共享的区块数据包缓存：多名玩家看到同一区块时
 // 只编码一次，后续直接复用同一份只读字节（并发读安全）。按 LRU 有界；
 // 条目同时记录来源 *Chunk 与修改计数（revision），区块卸载重载或内容
-// 修改后自动失效。
+// 修改后自动失效。键包含维度（不同维度可能有相同区块坐标）。
 type chunkPacketCache struct {
 	mu      sync.Mutex
-	entries map[world.ChunkPos]*list.Element
+	entries map[chunkPacketKey]*list.Element
 	order   *list.List // 前端最新
 	hits    atomic.Uint64
 	misses  atomic.Uint64
@@ -128,7 +158,7 @@ var chunkEncodePool = sync.Pool{
 }
 
 type chunkPacketEntry struct {
-	pos   world.ChunkPos
+	key   chunkPacketKey
 	chunk *world.Chunk
 	rev   uint64
 	// frame 是压缩后的完整帧（只读共享，跨连接直接写出）。
@@ -142,14 +172,15 @@ const chunkPacketCacheMax = 2048
 
 // chunkPacket 返回区块数据包：命中缓存时复用同一份只读字节，
 // 否则编码一次并缓存。
-func (s *Server) chunkPacket(pos world.ChunkPos, chunk *world.Chunk) []byte {
+func (s *Server) chunkPacket(dim world.Dimension, pos world.ChunkPos, chunk *world.Chunk) []byte {
+	key := chunkPacketKey{dim: dim, pos: pos}
 	rev := chunk.Revision()
 	s.chunkPackets.mu.Lock()
 	if s.chunkPackets.order == nil {
-		s.chunkPackets.entries = make(map[world.ChunkPos]*list.Element)
+		s.chunkPackets.entries = make(map[chunkPacketKey]*list.Element)
 		s.chunkPackets.order = list.New()
 	}
-	if elem, ok := s.chunkPackets.entries[pos]; ok {
+	if elem, ok := s.chunkPackets.entries[key]; ok {
 		entry := elem.Value.(*chunkPacketEntry)
 		if entry.chunk == chunk && entry.rev == rev {
 			s.chunkPackets.order.MoveToFront(elem)
@@ -158,7 +189,7 @@ func (s *Server) chunkPacket(pos world.ChunkPos, chunk *world.Chunk) []byte {
 			return entry.frame
 		}
 		s.chunkPackets.order.Remove(elem)
-		delete(s.chunkPackets.entries, pos)
+		delete(s.chunkPackets.entries, key)
 	}
 	s.chunkPackets.mu.Unlock()
 	s.chunkPackets.misses.Add(1)
@@ -172,13 +203,13 @@ func (s *Server) chunkPacket(pos world.ChunkPos, chunk *world.Chunk) []byte {
 		slog.Error("构造区块帧失败", "error", err)
 		return nil
 	}
-	entry := &chunkPacketEntry{pos: pos, chunk: chunk, rev: rev, frame: frame}
+	entry := &chunkPacketEntry{key: key, chunk: chunk, rev: rev, frame: frame}
 	s.chunkPackets.mu.Lock()
-	s.chunkPackets.entries[pos] = s.chunkPackets.order.PushFront(entry)
+	s.chunkPackets.entries[key] = s.chunkPackets.order.PushFront(entry)
 	if s.chunkPackets.order.Len() > chunkPacketCacheMax {
 		oldest := s.chunkPackets.order.Back()
 		s.chunkPackets.order.Remove(oldest)
-		delete(s.chunkPackets.entries, oldest.Value.(*chunkPacketEntry).pos)
+		delete(s.chunkPackets.entries, oldest.Value.(*chunkPacketEntry).key)
 	}
 	s.chunkPackets.mu.Unlock()
 	return frame
@@ -217,17 +248,19 @@ func (s *Server) chunkUnloadLoop(ctx context.Context) {
 	}
 }
 
-// unloadFarChunks 卸载距所有已加入玩家都超出 视距+chunkUnloadMargin 的区块。
-// 服务器上没有玩家时不卸载（避免反复生成/读取刚探索过的区域）。
+// unloadFarChunks 卸载距所有已加入玩家都超出 视距+chunkUnloadMargin 的区块
+// （按维度分别计算中心点）。服务器上没有玩家时不卸载（避免反复生成/读取
+// 刚探索过的区域）。
 func (s *Server) unloadFarChunks() error {
 	players := s.playerSnapshot()
-	centers := make([]world.ChunkPos, 0, len(players))
+	centers := make(map[world.Dimension][]world.ChunkPos)
 	for _, player := range players {
 		if !player.isJoined() {
 			continue
 		}
 		x, _, z, _, _ := player.playerPosition()
-		centers = append(centers, world.ChunkPos{
+		dim := player.dimensionID()
+		centers[dim] = append(centers[dim], world.ChunkPos{
 			X: int(math.Floor(x)) >> 4,
 			Z: int(math.Floor(z)) >> 4,
 		})
@@ -235,12 +268,19 @@ func (s *Server) unloadFarChunks() error {
 	if len(centers) == 0 {
 		return nil
 	}
-	unloaded, err := s.world.UnloadFar(centers, s.config.ViewDistance+chunkUnloadMargin)
-	if err != nil {
-		return err
+	var firstErr error
+	for dim, dimCenters := range centers {
+		gameWorld := s.worldFor(dim)
+		unloaded, err := gameWorld.UnloadFar(dimCenters, s.config.ViewDistance+chunkUnloadMargin)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if unloaded > 0 {
+			slog.Debug("chunks unloaded", "dimension", dim, "count", unloaded)
+		}
 	}
-	if unloaded > 0 {
-		slog.Debug("chunks unloaded", "count", unloaded)
-	}
-	return nil
+	return firstErr
 }

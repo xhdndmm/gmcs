@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"gmcs/internal/config"
+	"gmcs/internal/logging"
 	"gmcs/internal/server"
 )
 
@@ -46,6 +47,15 @@ func run() error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("配置无效（%s）：%w", *configPath, err)
 	}
+
+	// 日志：控制台 + 可选文件（按大小轮转）。
+	maxBytes := int64(cfg.LogMaxSizeMB) << 20
+	logger, logCloser, err := logging.Setup(cfg.LogLevel, cfg.LogFile, maxBytes)
+	if err != nil {
+		return fmt.Errorf("初始化日志：%w", err)
+	}
+	slog.SetDefault(logger)
+	defer func() { _ = logCloser.Close() }()
 
 	instance, err := server.New(cfg)
 	if err != nil {

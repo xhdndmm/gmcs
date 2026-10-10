@@ -43,6 +43,64 @@ var (
 	DeadBushBlock     = mustBlockState("minecraft:dead_bush")
 	ShortGrassBlock   = mustBlockState("minecraft:short_grass")
 	SnowLayerBlock    = mustBlockState("minecraft:snow")
+
+	// 扩展地形与装饰使用的方块（1.21.11 默认状态）。
+	BirchLogBlock      = mustBlockState("minecraft:birch_log")
+	BirchLeavesBlock   = mustBlockState("minecraft:birch_leaves")
+	DarkOakLogBlock    = mustBlockState("minecraft:dark_oak_log")
+	DarkOakLeavesBlock = mustBlockState("minecraft:dark_oak_leaves")
+	JungleLogBlock     = mustBlockState("minecraft:jungle_log")
+	JungleLeavesBlock  = mustBlockState("minecraft:jungle_leaves")
+	DeepslateBlock     = mustBlockState("minecraft:deepslate")
+	GravelBlock        = mustBlockState("minecraft:gravel")
+	ClayBlock          = mustBlockState("minecraft:clay")
+	TerracottaBlock    = mustBlockState("minecraft:terracotta")
+	RedSandBlock       = mustBlockState("minecraft:red_sand")
+	IceBlock           = mustBlockState("minecraft:ice")
+	PackedIceBlock     = mustBlockState("minecraft:packed_ice")
+	SnowBlock          = mustBlockState("minecraft:snow_block")
+	DandelionBlock     = mustBlockState("minecraft:dandelion")
+	PoppyBlock         = mustBlockState("minecraft:poppy")
+	CornflowerBlock    = mustBlockState("minecraft:cornflower")
+
+	// 矿物（普通与深层变体）。
+	CoalOreBlock          = mustBlockState("minecraft:coal_ore")
+	DeepslateCoalOreBlock = mustBlockState("minecraft:deepslate_coal_ore")
+	IronOreBlock          = mustBlockState("minecraft:iron_ore")
+	DeepslateIronOreBlock = mustBlockState("minecraft:deepslate_iron_ore")
+	CopperOreBlock        = mustBlockState("minecraft:copper_ore")
+	DeepslateCopperOre    = mustBlockState("minecraft:deepslate_copper_ore")
+	GoldOreBlock          = mustBlockState("minecraft:gold_ore")
+	DeepslateGoldOreBlock = mustBlockState("minecraft:deepslate_gold_ore")
+	RedstoneOreBlock      = mustBlockState("minecraft:redstone_ore")
+	DeepslateRedstoneOre  = mustBlockState("minecraft:deepslate_redstone_ore")
+	DiamondOreBlock       = mustBlockState("minecraft:diamond_ore")
+	DeepslateDiamondOre   = mustBlockState("minecraft:deepslate_diamond_ore")
+	LapisOreBlock         = mustBlockState("minecraft:lapis_ore")
+	DeepslateLapisOre     = mustBlockState("minecraft:deepslate_lapis_ore")
+	EmeraldOreBlock       = mustBlockState("minecraft:emerald_ore")
+	DeepslateEmeraldOre   = mustBlockState("minecraft:deepslate_emerald_ore")
+
+	// 下界方块。
+	NetherrackBlock      = mustBlockState("minecraft:netherrack")
+	LavaBlock            = mustBlockState("minecraft:lava")
+	SoulSandBlock        = mustBlockState("minecraft:soul_sand")
+	GlowstoneBlock       = mustBlockState("minecraft:glowstone")
+	NetherQuartzOreBlock = mustBlockState("minecraft:nether_quartz_ore")
+	AncientDebrisBlock   = mustBlockState("minecraft:ancient_debris")
+	MagmaBlock           = mustBlockState("minecraft:magma_block")
+	BlackstoneBlock      = mustBlockState("minecraft:blackstone")
+	BasaltBlock          = mustBlockState("minecraft:basalt")
+	CryingObsidianBlock  = mustBlockState("minecraft:crying_obsidian")
+
+	// 末地方块。
+	EndStoneBlock = mustBlockState("minecraft:end_stone")
+	ObsidianBlock = mustBlockState("minecraft:obsidian")
+	PurpurBlock   = mustBlockState("minecraft:purpur_block")
+
+	// 植物与装饰。
+	SugarCaneBlock = mustBlockState("minecraft:sugar_cane")
+	TorchBlock     = mustBlockState("minecraft:torch")
 )
 
 // mustBlockState 查询方块默认状态 ID；生成数据缺少必需方块属于部署错误，立即失败。
@@ -64,6 +122,9 @@ const BiomePlains = registry.BiomePlainsID
 // Chunk 不做内部加锁：并发访问由上层（World）负责串行化。
 type Chunk struct {
 	X, Z int
+	// dim 是该区块所属维度。内存存储始终使用全局高度模型（-64 起、384 格），
+	// 但网络编码按维度裁剪 section 范围与 heightmap 基准（见 dimension.go）。
+	dim Dimension
 
 	// mu 保护 sections：运行时方块修改（SetBlockState）会与方块查询、
 	// 区块编码与保存等并发读取同时发生。
@@ -91,11 +152,28 @@ type columnHeights struct {
 // NewChunk 创建全空（空气）区块。
 // section 及其紧凑方块存储见 section.go。
 func NewChunk(x, z int) *Chunk {
-	c := &Chunk{X: x, Z: z}
+	return NewChunkDim(x, z, DimensionOverworld)
+}
+
+// NewChunkDim 创建指定维度的全空区块。
+func NewChunkDim(x, z int, dim Dimension) *Chunk {
+	c := &Chunk{X: x, Z: z, dim: dim}
 	for i := range c.biomes {
 		c.biomes[i] = BiomePlains
 	}
 	return c
+}
+
+// Dimension 返回区块所属维度。
+func (c *Chunk) Dimension() Dimension {
+	return c.dim
+}
+
+// SetDimension 设置区块所属维度（World 在加载/生成后统一赋值）。
+func (c *Chunk) SetDimension(dim Dimension) {
+	c.mu.Lock()
+	c.dim = dim
+	c.mu.Unlock()
 }
 
 // SectionIndex 返回给定方块 Y 坐标所在的 section 下标；
@@ -188,6 +266,27 @@ func (c *Chunk) setBlockStateDirect(x, y, z int, state uint16) {
 	}
 	localY := y - (WorldMinY + sectionIndex*SectionSize)
 	s.setBlock(blockIndex(x, localY, z), state)
+}
+
+// PrepareGenerationSection 为地形生成预分配 section 存储：按 2 位调色板
+// （4 项，1 KiB）初始化，调色板第 0 项为空气。生成器逐个写入地形方块时
+// 不需要从 uniform 开始逐级扩位，典型 section 最多重打包一次（矿物使其
+// 超过 4 项时升到 4 位）；未写入的位置读作空气。
+//
+// 仅用于生成阶段（区块尚未发布、无并发）；运行时修改仍走按需增长路径。
+func (c *Chunk) PrepareGenerationSection(sectionIndex int) {
+	if sectionIndex < 0 || sectionIndex >= SectionCount {
+		return
+	}
+	if c.sections[sectionIndex] != nil {
+		return
+	}
+	s := &section{}
+	s.storage.palette = make([]uint16, 1, 4)
+	s.storage.palette[0] = AirBlock
+	s.storage.bits = 2
+	s.storage.data = make([]uint64, SectionVolume*2/64)
+	c.sections[sectionIndex] = s
 }
 
 // Column 描述一列方块的高度信息：一次查询即可获得原先 TopBlock 与
@@ -353,11 +452,14 @@ var chunkDataScratchPool = sync.Pool{
 // AppendChunkDataPacket 把 Chunk Data 包追加到 dst 并返回。
 // dst 容量足够（≥ chunkDataPacketCapacity）时无额外分配；
 // 供区块流式发送复用同一缓冲区。
+// 网络编码按区块所属维度裁剪 section 范围与 heightmap 基准
+// （下界/末地只发送 y 0–255 的 16 个 section）。
 func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 	// 与运行时方块修改互斥：整个编码期间持有读锁。
 	chunk.mu.RLock()
 	defer chunk.mu.RUnlock()
 
+	dim := chunk.dim
 	dst = protocol.AppendVarInt(dst, protocol.PlayPacketIDChunkData)
 	dst = protocol.AppendInt32(dst, int32(chunk.X))
 	dst = protocol.AppendInt32(dst, int32(chunk.Z))
@@ -368,7 +470,7 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 	var heights [SectionSize * SectionSize]uint16
 	for columnZ := 0; columnZ < SectionSize; columnZ++ {
 		for columnX := 0; columnX < SectionSize; columnX++ {
-			heights[(columnZ<<4)|columnX] = chunk.topHeightLocked(columnX, columnZ)
+			heights[(columnZ<<4)|columnX] = chunk.topHeightLocked(columnX, columnZ, dim)
 		}
 	}
 	dst = protocol.AppendVarInt(dst, 2)
@@ -377,7 +479,8 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 
 	scratch := chunkDataScratchPool.Get().(*[]byte)
 	data := (*scratch)[:0]
-	for index := range chunk.sections {
+	lowSection, highSection := dim.SectionRange()
+	for index := lowSection; index < highSection; index++ {
 		data = appendSection(data, chunk.sections[index], chunk.biomes)
 	}
 	dst = protocol.AppendVarInt(dst, int32(len(data)))
@@ -387,7 +490,7 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 
 	dst = chunk.appendBlockEntityPacketData(dst)
 
-	return appendFullSkyLight(dst)
+	return appendFullSkyLight(dst, dim.SectionCount())
 }
 
 // heightmap 类型（1.21.11 的 mapper：0 world_surface_wg、1 world_surface、
@@ -422,18 +525,20 @@ func appendPackedHeightmap(dst []byte, kind int32, values []uint16, bits int) []
 	return dst
 }
 
-// topHeightLocked 返回列 (x, z) 的 heightmap 编码值：最高非空气方块的
-// y - WorldMinY + 1；全空列为 0。按 section 自上而下扫描并跳过未分配的
-// section（全空气）。调用方必须持有 c.mu（读或写）。
-func (c *Chunk) topHeightLocked(x, z int) uint16 {
-	for sectionIndex := SectionCount - 1; sectionIndex >= 0; sectionIndex-- {
+// topHeightLocked 返回列 (x, z) 的 heightmap 编码值（相对维度最低 Y）：
+// 最高非空气方块的 y - dim.MinY() + 1；全空列为 0。按 section 自上而下
+// 扫描并跳过未分配的 section（全空气）。调用方必须持有 c.mu（读或写）。
+func (c *Chunk) topHeightLocked(x, z int, dim Dimension) uint16 {
+	low, high := dim.SectionRange()
+	base := dim.MinY() - WorldMinY
+	for sectionIndex := high - 1; sectionIndex >= low; sectionIndex-- {
 		s := c.sections[sectionIndex]
 		if s == nil || s.storage.allAir() {
 			continue
 		}
 		for localY := SectionSize - 1; localY >= 0; localY-- {
 			if s.blockState(blockIndex(x, localY, z)) != AirBlock {
-				return uint16(sectionIndex*SectionSize + localY + 1)
+				return uint16(sectionIndex*SectionSize + localY + 1 - base)
 			}
 		}
 	}
@@ -596,6 +701,14 @@ func appendBlockStates(dst []byte, storage *sectionStorage) []byte {
 	for _, state := range palette {
 		dst = protocol.AppendVarInt(dst, int32(state))
 	}
+	// 位宽一致且为 2 的幂时（1/2/4/8），紧凑存储与网络紧密位流的布局相同
+	// （64 能被整除，条目不跨字），可直接复制数据数组（常见路径：4 位）。
+	if bits == int(storage.bits) && 64%bits == 0 {
+		for _, word := range storage.data {
+			dst = protocol.AppendInt64(dst, int64(word))
+		}
+		return dst
+	}
 	return appendPackedIndices(dst, storage, bits)
 }
 
@@ -682,10 +795,11 @@ var fullBrightSkyLight = func() []byte {
 	return buf
 }()
 
-// appendFullSkyLight 追加 Light Data：为全部 section（含上下边缘共 SectionCount+2 位）
-// 提供值为 15 的天空光，方块光与空掩码均为空。
-func appendFullSkyLight(dst []byte) []byte {
-	const lightSections = SectionCount + 2
+// appendFullSkyLight 追加 Light Data：为全部 section（含上下边缘共
+// sectionCount+2 位）提供值为 15 的天空光，方块光与空掩码均为空。
+// sectionCount 来自维度（主世界 24；下界/末地 16）。
+func appendFullSkyLight(dst []byte, sectionCount int) []byte {
+	lightSections := sectionCount + 2
 
 	// Sky Light Mask：全部位置位。
 	skyLightMask := int64(1)<<lightSections - 1
@@ -696,7 +810,7 @@ func appendFullSkyLight(dst []byte) []byte {
 	dst = protocol.AppendVarInt(dst, 0)
 	dst = protocol.AppendVarInt(dst, 0)
 	// 天空光数组：每个置位一个 2048 字节的数组。
-	dst = protocol.AppendVarInt(dst, lightSections)
+	dst = protocol.AppendVarInt(dst, int32(lightSections))
 	for i := 0; i < lightSections; i++ {
 		dst = protocol.AppendVarInt(dst, lightValuesPerSection)
 		dst = append(dst, fullBrightSkyLight...)

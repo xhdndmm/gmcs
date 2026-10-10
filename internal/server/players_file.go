@@ -16,6 +16,7 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/item"
 	"gmcs/internal/registry"
+	"gmcs/internal/world"
 )
 
 // 玩家数据持久化：世界目录下的 players.json。
@@ -41,8 +42,11 @@ type playerFile struct {
 // playerRecord 是一个玩家的持久化状态。死亡状态（Dead）会保存：
 // 重连后仍处于死亡状态，需要发送重生请求（与原版一致）。
 type playerRecord struct {
-	UUID       string  `json:"uuid"`
-	Name       string  `json:"name"`
+	UUID string `json:"uuid"`
+	Name string `json:"name"`
+	// Dimension 是玩家所在维度名（overworld/the_nether/the_end）；
+	// 旧记录缺省为空，按主世界处理。
+	Dimension  string  `json:"dimension"`
 	X          float64 `json:"x"`
 	Y          float64 `json:"y"`
 	Z          float64 `json:"z"`
@@ -216,6 +220,7 @@ func playerRecordFromSession(player *session) playerRecord {
 	return playerRecord{
 		UUID:       hex.EncodeToString(player.uuid[:]),
 		Name:       player.name,
+		Dimension:  player.dimensionID().Name(),
 		X:          x,
 		Y:          y,
 		Z:          z,
@@ -254,10 +259,14 @@ func enderItemsOf(player *session) []playerItem {
 // 等待重生请求）；非死亡记录的非法生命值按满生命处理；
 // 未知物品（例如来自其他版本的记录）会被跳过。
 func (s *session) applyPlayerRecord(record playerRecord) {
+	// 先恢复维度（位置回退需要知道所在维度的出生点）。
+	if dim, ok := world.ParseDimension(record.Dimension); ok {
+		s.setDimension(dim)
+	}
 	x, y, z := record.X, record.Y, record.Z
 	if math.IsNaN(x) || math.IsNaN(y) || math.IsNaN(z) ||
 		math.IsInf(x, 0) || math.IsInf(y, 0) || math.IsInf(z, 0) {
-		x, y, z = s.server.spawnPosition()
+		x, y, z = s.server.spawnPositionFor(s.dimensionID())
 	}
 	s.setPlayerPosition(x, y, z, record.Yaw, record.Pitch)
 

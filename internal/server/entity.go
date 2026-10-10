@@ -14,15 +14,11 @@ import (
 	"gmcs/internal/world"
 )
 
-// 生物与战斗参数。数值以“简单、可验证”为先，不追求与原版数值完全一致
-// （原版僵尸为 20 生命、2/3/4 点难度伤害；此处固定 2 点）。
+// 生物与战斗参数。数值以“简单、可验证”为先，不追求与原版数值完全一致。
 const (
-	zombieMaxHealth = 20
-	// zombieTypeName 是本服务器支持的生物类型（静态注册表 minecraft:entity_type）。
+	// zombieTypeName 是僵尸的类型名（兼容旧测试与持久化）。
 	zombieTypeName  = "minecraft:zombie"
-	zombieWalkSpeed = 0.055 // 方块/tick（约 1.1 格/秒）
 	mobWanderSpeed  = 0.03
-	mobFollowRange  = 32
 	mobDespawnRange = 64 // 存在玩家时，距离所有玩家都超过该距离的生物会被移除
 	mobAttackRange  = 1.9
 	// mobAttackVerticalRange 是攻击允许的高度差（超出则打不到）。
@@ -31,7 +27,6 @@ const (
 	// 避免“贴脸瞬间受伤”。
 	mobAttackWindupTicks = 10
 	mobAttackCooldown    = 20
-	mobAttackDamage      = 2
 	// mobHurtCooldownTicks 是生物受击后的无敌帧（0.5 秒）。
 	mobHurtCooldownTicks = 10
 	// mobKnockback 是生物被击中时沿攻击者反方向推开的距离（方块）。
@@ -39,6 +34,29 @@ const (
 	mobDeathTicks = 20
 	// mobEyeHeight 是近似眼睛高度（视线检查用）。
 	mobEyeHeight = 1.5
+
+	// 骷髅：保持距离射箭。
+	skeletonMinRange      = 3.0
+	skeletonMaxRange      = 16.0
+	skeletonShootCooldown = 40
+	skeletonArrowSpeed    = 1.6
+	skeletonArrowDamage   = 2
+
+	// 苦力怕：引信与爆炸。
+	creeperTriggerRange    = 3.0
+	creeperResetRange      = 6.0
+	creeperFuseTicks       = 30
+	creeperExplosionRadius = 3.0
+	// creeperExplosionPower 是爆心最大伤害（按距离线性衰减）。
+	creeperExplosionPower = 24
+	// creeperKnockback 是爆炸对玩家的水平击退速度。
+	creeperKnockback = 0.8
+
+	// 箭矢物理。
+	arrowGravityPerTick = 0.05
+	arrowDrag           = 0.99
+	arrowLifetimeTicks  = 200
+	arrowHitRadius      = 0.5
 
 	playerAttackDamage = 4
 	playerAttackRange  = 3.5
@@ -88,8 +106,6 @@ const (
 	// worldTimeBroadcastInterval 是时间同步包的发送间隔（tick）。
 	worldTimeBroadcastInterval = 20
 
-	// 经验值：击杀生物获得，死亡清空。
-	zombieExperience = 5
 	// mobDropPickupDelay 是生物掉落物的拾取延迟（与原版挖掘掉落一致）。
 	mobDropPickupDelay = 10
 	// mobRareDropChance 是稀有掉落（铁锭/胡萝卜/土豆）的概率（1/40，近似原版）。
@@ -99,12 +115,71 @@ const (
 	mobAutosaveInterval = 30 * time.Second
 )
 
+// mobKind 是服务器支持的生物种类。
+type mobKind uint8
+
+// 生物种类常量。
+const (
+	mobZombie mobKind = iota
+	mobSkeleton
+	mobCreeper
+	mobSpider
+)
+
+// mobStats 描述一种生物的基础数值与音效名。
+type mobStats struct {
+	// name 是静态注册表 minecraft:entity_type 的条目名。
+	name string
+	// health 是最大生命（也是生成时的生命值）。
+	health float32
+	// walkSpeed 是追击速度（方块/tick）。
+	walkSpeed float64
+	// followRange 是索敌半径（方块）。
+	followRange float64
+	// damage 是近战伤害（骷髅使用箭矢伤害）。
+	damage float32
+	// experience 是击杀获得的经验值。
+	experience int32
+	// hurtSound/deathSound 是受击/死亡音效的注册表条目名。
+	hurtSound  string
+	deathSound string
+	// spawnWeight 是生成权重（0 表示不参与自然生成）。
+	spawnWeight int
+}
+
+// mobKinds 是全部生物的基础数值（生命 20、伤害 2–3，与原版普通难度接近）。
+var mobKinds = map[mobKind]mobStats{
+	mobZombie: {
+		name: "minecraft:zombie", health: 20, walkSpeed: 0.055, followRange: 32, damage: 2,
+		experience: 5, hurtSound: "minecraft:entity.zombie.hurt", deathSound: "minecraft:entity.zombie.death",
+		spawnWeight: 40,
+	},
+	mobSkeleton: {
+		name: "minecraft:skeleton", health: 20, walkSpeed: 0.05, followRange: 24, damage: skeletonArrowDamage,
+		experience: 5, hurtSound: "minecraft:entity.skeleton.hurt", deathSound: "minecraft:entity.skeleton.death",
+		spawnWeight: 25,
+	},
+	mobCreeper: {
+		name: "minecraft:creeper", health: 20, walkSpeed: 0.05, followRange: 24, damage: 0,
+		experience: 5, hurtSound: "minecraft:entity.creeper.hurt", deathSound: "minecraft:entity.creeper.death",
+		spawnWeight: 25,
+	},
+	mobSpider: {
+		name: "minecraft:spider", health: 16, walkSpeed: 0.08, followRange: 24, damage: 2,
+		experience: 5, hurtSound: "minecraft:entity.spider.hurt", deathSound: "minecraft:entity.spider.death",
+		spawnWeight: 10,
+	},
+}
+
 // mob 是一只服务器控制的生物。字段由 Server.entityMu 保护，
 // 只在 Tick 与攻击处理中修改。
 type mob struct {
 	ID     int32
 	UUID   [16]byte
 	TypeID int32
+	Kind   mobKind
+	// Dim 是该生物所在维度（生成后不变）。
+	Dim world.Dimension
 
 	X, Y, Z    float64
 	Yaw, Pitch float32
@@ -126,12 +201,45 @@ type mob struct {
 	// WanderX/WanderZ 是游荡目标；WanderTicks 归零时重新选择。
 	WanderX, WanderZ float64
 	WanderTicks      int
+	// Fuse 是苦力怕引信剩余 tick（>0 表示已点燃）。
+	Fuse int
+	// ShootCooldown 是骷髅的射击冷却（tick）。
+	ShootCooldown int
 }
 
 // pendingAttack 是一次待结算的生物攻击（位置为判定时的快照）。
 type pendingAttack struct {
 	mobID   int32
+	dim     world.Dimension
 	player  *session
+	damage  float32
+	name    string
+	x, y, z float64
+}
+
+// pendingArrow 是一次待发射的骷髅箭矢（位置/目标为判定时的快照）。
+type pendingArrow struct {
+	mobID   int32
+	dim     world.Dimension
+	player  *session
+	x, y, z float64
+	targetX float64
+	targetY float64
+	targetZ float64
+	damage  float32
+}
+
+// pendingPriming 是苦力怕点燃引信时的事件（播放 priming 音效）。
+type pendingPriming struct {
+	mobID   int32
+	dim     world.Dimension
+	x, y, z float64
+}
+
+// pendingExplosion 是一次待结算的爆炸（苦力怕引信结束）。
+type pendingExplosion struct {
+	mobID   int32
+	dim     world.Dimension
 	x, y, z float64
 }
 
@@ -152,9 +260,11 @@ func (s *Server) tick() {
 	players := s.playerSnapshot()
 	s.tickHunger(players)
 	s.tickMobs(players)
+	s.tickArrows(players)
 	s.tickItems(players)
 	s.tickWorldTime(players)
 	s.tickFurnaces()
+	s.tickRedstone()
 	s.spawnTicks++
 	if s.spawnTicks >= spawnCheckInterval {
 		s.spawnTicks = 0
@@ -208,14 +318,18 @@ func (s *Server) tickMobs(players []*session) {
 	}
 	type pendingMove struct {
 		id         int32
+		dim        world.Dimension
 		x, y, z    float64
 		yaw, pitch float32
 	}
 	var (
-		attacks  []pendingAttack
-		moves    []pendingMove
-		heads    []pendingMove
-		removals []int32
+		attacks    []pendingAttack
+		arrows     []pendingArrow
+		priming    []pendingPriming
+		explosions []pendingExplosion
+		moves      []pendingMove
+		heads      []pendingMove
+		removals   []int32
 	)
 
 	s.entityMu.Lock()
@@ -230,6 +344,7 @@ func (s *Server) tickMobs(players []*session) {
 		}
 
 		// 寻找最近的玩家（含旁观者，用于反弃用检查）与最近的可攻击玩家（AI 目标）。
+		// 只有同维度的玩家可见/可攻击该生物。
 		var (
 			nearest         *session
 			nearestDistance = math.MaxFloat64
@@ -237,6 +352,9 @@ func (s *Server) tickMobs(players []*session) {
 			playerDistance  = math.MaxFloat64
 		)
 		for _, player := range players {
+			if player.dimensionID() != m.Dim {
+				continue
+			}
 			px, _, pz, _, _ := player.playerPosition()
 			distance := math.Hypot(px-m.X, pz-m.Z)
 			if distance < playerDistance {
@@ -258,24 +376,76 @@ func (s *Server) tickMobs(players []*session) {
 
 		attemptedMove := false
 		moved := false
-		if nearest != nil && nearestDistance <= mobFollowRange {
+		stats := mobKinds[m.Kind]
+		mobWorld := s.worldFor(m.Dim)
+		if nearest != nil && nearestDistance <= stats.followRange {
 			px, py, pz, _, _ := nearest.playerPosition()
-			// 只有距离、高度差与视线都满足时才攻击；被方块挡住则继续尝试靠近。
-			inAttack := nearestDistance <= mobAttackRange && math.Abs(py-m.Y) < mobAttackVerticalRange
-			clear := inAttack && s.attackPathClear(m.X, m.Y+mobEyeHeight, m.Z, px, py+mobEyeHeight, pz)
-			if clear && !m.WasInRange && m.AttackCooldown < mobAttackWindupTicks {
-				// 刚进入攻击距离：先抬手 0.5 秒再出手。
-				m.AttackCooldown = mobAttackWindupTicks
-			}
-			m.WasInRange = clear
-			if clear && m.AttackCooldown <= 0 {
-				m.AttackCooldown = mobAttackCooldown
-				attacks = append(attacks, pendingAttack{
-					mobID: m.ID, player: nearest, x: m.X, y: m.Y, z: m.Z,
-				})
-			} else if !clear {
-				attemptedMove = true
-				moved = s.moveMobToward(m, px, pz, zombieWalkSpeed)
+			switch m.Kind {
+			case mobSkeleton:
+				clear := attackPathClear(mobWorld, m.X, m.Y+mobEyeHeight, m.Z, px, py+mobEyeHeight, pz)
+				switch {
+				case clear && nearestDistance >= skeletonMinRange && nearestDistance <= skeletonMaxRange:
+					// 在射程内且视线通畅：站定射击（转向目标）。
+					m.Yaw = float32(math.Atan2(-(px-m.X), pz-m.Z) * 180 / math.Pi)
+					if m.ShootCooldown > 0 {
+						m.ShootCooldown--
+					}
+					if m.ShootCooldown <= 0 {
+						m.ShootCooldown = skeletonShootCooldown
+						arrows = append(arrows, pendingArrow{
+							mobID: m.ID, dim: m.Dim, player: nearest,
+							x: m.X, y: m.Y + mobEyeHeight, z: m.Z,
+							targetX: px, targetY: py + 1.0, targetZ: pz, damage: stats.damage,
+						})
+					}
+				case clear && nearestDistance < skeletonMinRange:
+					// 玩家贴脸：后退保持距离。
+					attemptedMove = true
+					moved = s.moveMobAway(mobWorld, m, px, pz, stats.walkSpeed)
+				default:
+					attemptedMove = true
+					moved = s.moveMobToward(mobWorld, m, px, pz, stats.walkSpeed)
+				}
+			case mobCreeper:
+				clear := nearestDistance <= creeperResetRange && math.Abs(py-m.Y) < 3 &&
+					attackPathClear(mobWorld, m.X, m.Y+mobEyeHeight, m.Z, px, py+mobEyeHeight, pz)
+				if clear && nearestDistance <= creeperTriggerRange {
+					if m.Fuse == 0 {
+						priming = append(priming, pendingPriming{mobID: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z})
+					}
+					m.Fuse++
+					if m.Fuse >= creeperFuseTicks {
+						// 引信结束：从表中移除并在锁外结算爆炸。
+						delete(s.mobs, id)
+						removals = append(removals, id)
+						explosions = append(explosions, pendingExplosion{
+							mobID: m.ID, dim: m.Dim, x: m.X, y: m.Y + 0.5, z: m.Z,
+						})
+					}
+				} else {
+					m.Fuse = 0
+					attemptedMove = true
+					moved = s.moveMobToward(mobWorld, m, px, pz, stats.walkSpeed)
+				}
+			default:
+				// 僵尸/蜘蛛：抬手近战。
+				inAttack := nearestDistance <= mobAttackRange && math.Abs(py-m.Y) < mobAttackVerticalRange
+				clear := inAttack && attackPathClear(mobWorld, m.X, m.Y+mobEyeHeight, m.Z, px, py+mobEyeHeight, pz)
+				if clear && !m.WasInRange && m.AttackCooldown < mobAttackWindupTicks {
+					// 刚进入攻击距离：先抬手 0.5 秒再出手。
+					m.AttackCooldown = mobAttackWindupTicks
+				}
+				m.WasInRange = clear
+				if clear && m.AttackCooldown <= 0 {
+					m.AttackCooldown = mobAttackCooldown
+					attacks = append(attacks, pendingAttack{
+						mobID: m.ID, dim: m.Dim, player: nearest, damage: stats.damage,
+						name: stats.name, x: m.X, y: m.Y, z: m.Z,
+					})
+				} else if !clear {
+					attemptedMove = true
+					moved = s.moveMobToward(mobWorld, m, px, pz, stats.walkSpeed)
+				}
 			}
 		} else {
 			m.WanderTicks--
@@ -286,7 +456,7 @@ func (s *Server) tickMobs(players []*session) {
 				m.WanderZ = m.Z + math.Sin(angle)*6
 			}
 			attemptedMove = true
-			moved = s.moveMobToward(m, m.WanderX, m.WanderZ, mobWanderSpeed)
+			moved = s.moveMobToward(mobWorld, m, m.WanderX, m.WanderZ, mobWanderSpeed)
 		}
 
 		if moved {
@@ -296,7 +466,7 @@ func (s *Server) tickMobs(players []*session) {
 			m.StuckTicks++
 			if m.StuckTicks >= mobStuckTicks {
 				m.StuckTicks = 0
-				moved = s.trySideStep(m)
+				moved = s.trySideStep(mobWorld, m)
 			}
 		}
 
@@ -307,10 +477,10 @@ func (s *Server) tickMobs(players []*session) {
 			m.AttackCooldown--
 		}
 		if moved {
-			moves = append(moves, pendingMove{id: m.ID, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
+			moves = append(moves, pendingMove{id: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
 			if absAngleDelta(m.Yaw, m.HeadYaw) >= mobHeadYawThreshold {
 				m.HeadYaw = m.Yaw
-				heads = append(heads, pendingMove{id: m.ID, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
+				heads = append(heads, pendingMove{id: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
 			}
 		}
 	}
@@ -322,25 +492,38 @@ func (s *Server) tickMobs(players []*session) {
 		packet := protocol.AppendEntityPositionSync((*buf)[:0],
 			move.id, move.x, move.y, move.z, 0, 0, 0, move.yaw, move.pitch, true)
 		*buf = packet
-		s.broadcastToNearby(packet, move.x, move.z, players)
+		s.broadcastToNearby(move.dim, packet, move.x, move.z, players)
 	}
 	for _, head := range heads {
 		packet := protocol.AppendEntityHeadRotation((*buf)[:0], head.id, head.yaw)
 		*buf = packet
-		s.broadcastToNearby(packet, head.x, head.z, players)
+		s.broadcastToNearby(head.dim, packet, head.x, head.z, players)
 	}
 	packetBufferPool.Put(buf)
 	if len(removals) > 0 {
 		s.broadcastPacket(protocol.EncodeEntityDestroy(removals))
 	}
+	for _, prime := range priming {
+		s.broadcastPacket(protocol.EncodeEntitySoundEffect(s.soundCreeperPrime, protocol.SoundCategoryHostile, prime.mobID, 1, 1, 0))
+	}
 	for _, attack := range attacks {
 		s.performMobAttack(attack)
 	}
+	for _, arrow := range arrows {
+		s.fireArrow(arrow)
+	}
+	for _, explosion := range explosions {
+		s.explode(explosion.dim, explosion.x, explosion.y, explosion.z, creeperExplosionRadius, creeperExplosionPower, "Creeper")
+	}
 }
 
-// broadcastToNearby 把数据包发送给 (x, z) 半径 mobMoveBroadcastRange 内的玩家。
-func (s *Server) broadcastToNearby(packet []byte, x, z float64, players []*session) {
+// broadcastToNearby 把数据包发送给指定维度内 (x, z) 半径
+// mobMoveBroadcastRange 内的玩家。
+func (s *Server) broadcastToNearby(dim world.Dimension, packet []byte, x, z float64, players []*session) {
 	for _, player := range players {
+		if player.dimensionID() != dim {
+			continue
+		}
 		px, _, pz, _, _ := player.playerPosition()
 		if math.Hypot(px-x, pz-z) <= mobMoveBroadcastRange {
 			player.tryWrite(packet)
@@ -352,9 +535,9 @@ func (s *Server) broadcastToNearby(packet []byte, x, z float64, players []*sessi
 // 使玩家能看到攻击动作而不是“凭空掉血”。位置取攻击判定时的快照，
 // 不在锁外修改生物状态（避免与读循环的攻击处理并发）。
 func (s *Server) performMobAttack(attack pendingAttack) {
-	s.broadcastPacket(protocol.EncodeAnimate(attack.mobID, 0))
+	s.broadcastToNearby(attack.dim, protocol.EncodeAnimate(attack.mobID, 0), attack.x, attack.z, s.playerSnapshot())
 	position := [3]float64{attack.x, attack.y + 1, attack.z}
-	s.damagePlayer(attack.player, mobAttackDamage, "Zombie", attack.mobID, s.mobAttackDamageTypeID, &position)
+	s.damagePlayer(attack.player, attack.damage, attack.name, attack.mobID, s.mobAttackDamageTypeID, &position)
 }
 
 // absAngleDelta 返回两个角度（度）之间的最小差值（0–180）。
@@ -371,7 +554,7 @@ func absAngleDelta(a, b float32) float32 {
 
 // moveMobToward 让生物朝目标水平移动一步；路径被水或高低差挡住时返回 false。
 // 会同步更新朝向。调用方必须持有 entityMu。
-func (s *Server) moveMobToward(m *mob, targetX, targetZ, speed float64) bool {
+func (s *Server) moveMobToward(w *world.World, m *mob, targetX, targetZ, speed float64) bool {
 	dx, dz := targetX-m.X, targetZ-m.Z
 	distance := math.Hypot(dx, dz)
 	if distance < 0.05 {
@@ -386,7 +569,7 @@ func (s *Server) moveMobToward(m *mob, targetX, targetZ, speed float64) bool {
 		if offsetX == 0 && offsetZ == 0 {
 			return false
 		}
-		if !s.tryMoveMob(m, m.X+offsetX, m.Z+offsetZ) {
+		if !s.tryMoveMob(w, m, m.X+offsetX, m.Z+offsetZ) {
 			return false
 		}
 		m.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
@@ -401,12 +584,12 @@ func (s *Server) moveMobToward(m *mob, targetX, targetZ, speed float64) bool {
 
 // tryMoveMob 尝试把生物移动到指定位置：校验边界、水面与地面高度差，
 // 成功时更新位置。调用方必须持有 entityMu。
-func (s *Server) tryMoveMob(m *mob, newX, newZ float64) bool {
+func (s *Server) tryMoveMob(w *world.World, m *mob, newX, newZ float64) bool {
 	if !s.insideBorder(newX, newZ) {
 		return false
 	}
 	blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
-	column, ok := s.world.ColumnAt(blockX, blockZ)
+	column, ok := w.ColumnAt(blockX, blockZ)
 	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
 		return false
 	}
@@ -420,14 +603,14 @@ func (s *Server) tryMoveMob(m *mob, newX, newZ float64) bool {
 
 // trySideStep 让被挡住的生物随机侧移一步（简单避障，无寻路）。
 // 调用方必须持有 entityMu。
-func (s *Server) trySideStep(m *mob) bool {
+func (s *Server) trySideStep(w *world.World, m *mob) bool {
 	offsets := [4][2]float64{
 		{mobSideStep, 0}, {-mobSideStep, 0}, {0, mobSideStep}, {0, -mobSideStep},
 	}
 	start := int(s.nextRandom() % 4)
 	for i := 0; i < len(offsets); i++ {
 		offset := offsets[(start+i)%len(offsets)]
-		if s.tryMoveMob(m, m.X+offset[0], m.Z+offset[1]) {
+		if s.tryMoveMob(w, m, m.X+offset[0], m.Z+offset[1]) {
 			m.Yaw = float32(math.Atan2(-offset[0], offset[1]) * 180 / math.Pi)
 			return true
 		}
@@ -438,12 +621,12 @@ func (s *Server) trySideStep(m *mob) bool {
 // attackPathClear 粗略检查两点（眼睛高度）之间是否被方块挡住：
 // 采样 35% 与 70% 处的方块，空气与水视为可穿过。
 // 用于避免隔墙攻击（生物打玩家与玩家打生物共用）。
-func (s *Server) attackPathClear(fromX, fromY, fromZ, toX, toY, toZ float64) bool {
+func attackPathClear(w *world.World, fromX, fromY, fromZ, toX, toY, toZ float64) bool {
 	for _, t := range []float64{0.35, 0.7} {
 		x := int(math.Floor(fromX + (toX-fromX)*t))
 		y := int(math.Floor(fromY + (toY-fromY)*t))
 		z := int(math.Floor(fromZ + (toZ-fromZ)*t))
-		state := s.world.BlockAt(x, y, z)
+		state := w.BlockAt(x, y, z)
 		if state != world.AirBlock && state != world.WaterBlock {
 			return false
 		}
@@ -464,8 +647,9 @@ func (s *Server) knockbackMob(m *mob, fromX, fromZ float64) []byte {
 	if !s.insideBorder(newX, newZ) {
 		return nil
 	}
+	w := s.worldFor(m.Dim)
 	blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
-	column, ok := s.world.ColumnAt(blockX, blockZ)
+	column, ok := w.ColumnAt(blockX, blockZ)
 	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
 		return nil
 	}
@@ -479,7 +663,7 @@ func (s *Server) knockbackMob(m *mob, fromX, fromZ float64) []byte {
 
 // trySpawnMob 在随机玩家附近尝试生成一只生物。
 // 与原版一致：敌对生物只在夜晚生成（本服务器无光照引擎，因此不区分亮度），
-// 且不在玩家附近近距离生成。
+// 且不在玩家附近近距离生成。末地不生成（无末影人实现）；下界与主世界相同。
 func (s *Server) trySpawnMob(players []*session) {
 	if !s.mobsEnabled || !s.config.SpawnMonsters || s.config.MaxMobs <= 0 || len(players) == 0 {
 		return
@@ -495,6 +679,14 @@ func (s *Server) trySpawnMob(players []*session) {
 	}
 
 	player := players[s.nextRandom()%uint64(len(players))]
+	dim := player.dimensionID()
+	if dim == world.DimensionEnd {
+		return // 末地没有可生成的敌对生物（待末影人实现）
+	}
+	kind, ok := s.pickSpawnKind()
+	if !ok {
+		return
+	}
 	px, _, pz, _, _ := player.playerPosition()
 	angle := float64(s.nextRandom()%6283185) / 1000000
 	// 与原版一致：距玩家 24 格外生成。
@@ -505,48 +697,100 @@ func (s *Server) trySpawnMob(players []*session) {
 		return
 	}
 
-	column, ok := s.world.ColumnAt(blockX, blockZ)
+	w := s.worldFor(dim)
+	column, ok := w.ColumnAt(blockX, blockZ)
 	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
 		return
 	}
-	s.addMob(float64(blockX)+0.5, float64(column.SolidY+1), float64(blockZ)+0.5)
+	if column.TopState == world.LavaBlock || column.TopState == world.MagmaBlock {
+		return
+	}
+	s.addMob(dim, kind, float64(blockX)+0.5, float64(column.SolidY+1), float64(blockZ)+0.5)
 }
 
-// addMob 生成一只僵尸并把 Add Entity 广播给全部玩家。
-func (s *Server) addMob(x, y, z float64) *mob {
+// pickSpawnKind 按权重挑选一种可生成的生物（僵尸/骷髅/苦力怕/蜘蛛）；
+// 无可用种类时返回 false。
+func (s *Server) pickSpawnKind() (mobKind, bool) {
+	kinds := []mobKind{mobZombie, mobSkeleton, mobCreeper, mobSpider}
+	total := 0
+	for _, kind := range kinds {
+		if _, ok := s.mobTypeIDs[kind]; !ok {
+			continue
+		}
+		total += mobKinds[kind].spawnWeight
+	}
+	if total <= 0 {
+		return mobZombie, false
+	}
+	roll := int(s.nextRandom() % uint64(total))
+	for _, kind := range kinds {
+		if _, ok := s.mobTypeIDs[kind]; !ok {
+			continue
+		}
+		weight := mobKinds[kind].spawnWeight
+		if roll < weight {
+			return kind, true
+		}
+		roll -= weight
+	}
+	return mobZombie, false
+}
+
+// addMob 生成一只指定种类的生物并把 Add Entity 广播给同维度的附近玩家。
+func (s *Server) addMob(dim world.Dimension, kind mobKind, x, y, z float64) *mob {
+	stats, ok := mobKinds[kind]
+	typeID, typeOK := s.mobTypeIDs[kind]
+	if !ok || !typeOK {
+		return nil
+	}
 	m := &mob{
 		ID:     s.entityIDs.Add(1),
 		UUID:   newEntityUUID(),
-		TypeID: s.zombieTypeID,
+		TypeID: typeID,
+		Kind:   kind,
+		Dim:    dim,
 		X:      x,
 		Y:      y,
 		Z:      z,
-		Health: zombieMaxHealth,
+		Health: stats.health,
 	}
 	s.entityMu.Lock()
 	s.mobs[m.ID] = m
 	s.entityMu.Unlock()
-	s.broadcastPacket(protocol.EncodeAddEntity(m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch))
-	slog.Debug("mob spawned", "id", m.ID, "x", m.X, "y", m.Y, "z", m.Z)
+	s.broadcastToNearby(dim, protocol.EncodeAddEntity(m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch), m.X, m.Z, s.playerSnapshot())
+	slog.Debug("mob spawned", "id", m.ID, "kind", stats.name, "x", m.X, "y", m.Y, "z", m.Z)
 	return m
 }
 
-// sendExistingEntities 把世界中已有的生物与掉落物发送给新加入的玩家。
+// sendExistingEntities 把同维度中已有的生物与掉落物发送给新加入的玩家。
 func (s *Server) sendExistingEntities(player *session) error {
+	dim := player.dimensionID()
 	s.entityMu.Lock()
 	packets := make([][]byte, 0, len(s.mobs)+2*len(s.items))
 	for _, m := range s.mobs {
-		if m.Dead {
+		if m.Dead || m.Dim != dim {
 			continue
 		}
 		packets = append(packets, protocol.EncodeAddEntity(
 			m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch))
 	}
 	for _, e := range s.items {
+		if e.Dim != dim {
+			continue
+		}
 		packets = append(packets,
 			protocol.EncodeAddEntity(e.ID, e.UUID, s.itemTypeID, e.X, e.Y, e.Z, e.VelX, e.VelY, e.VelZ, 0, 0),
 			protocol.EncodeEntityMetadataItem(e.ID, e.Stack.AppendSlot(nil)),
 		)
+	}
+	if s.arrowsEnabled {
+		for _, a := range s.arrows {
+			if a.Dim != dim {
+				continue
+			}
+			packets = append(packets, protocol.EncodeAddEntity(
+				a.ID, a.UUID, s.arrowTypeID, a.X, a.Y, a.Z, a.VelX, a.VelY, a.VelZ, 0, 0))
+		}
 	}
 	s.entityMu.Unlock()
 	for _, packet := range packets {
@@ -575,11 +819,15 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 		s.handlePlayerAttack(player, targetID, px, py, pz)
 		return
 	}
+	if m.Dim != player.dimensionID() {
+		s.entityMu.Unlock()
+		return // 不同维度：忽略。
+	}
 	if math.Hypot(px-m.X, pz-m.Z) > playerAttackRange || math.Abs(py-m.Y) > 3 {
 		s.entityMu.Unlock()
 		return // 超出攻击距离：忽略（简单的服务端校验）。
 	}
-	if !s.attackPathClear(px, py+mobEyeHeight, pz, m.X, m.Y+mobEyeHeight, m.Z) {
+	if !attackPathClear(s.worldFor(m.Dim), px, py+mobEyeHeight, pz, m.X, m.Y+mobEyeHeight, m.Z) {
 		s.entityMu.Unlock()
 		return // 隔墙攻击：忽略。
 	}
@@ -594,12 +842,13 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 		damage *= playerCritMultiplier
 	}
 	m.Health -= damage
+	kind := m.Kind
 	m.Yaw = float32(math.Atan2(-(px-m.X), pz-m.Z) * 180 / math.Pi)
 	position := [3]float64{m.X, m.Y + 1, m.Z}
 	packets := [][]byte{
 		protocol.EncodeHurtAnimation(m.ID, m.Yaw),
 		protocol.EncodeDamageEvent(m.ID, s.playerAttackDamageTypeID, player.entityID, player.entityID, &position),
-		protocol.EncodeEntitySoundEffect(s.soundMobHurt, protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
+		protocol.EncodeEntitySoundEffect(s.mobHurtSound(kind), protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
 	}
 	died := m.Health <= 0
 	if died {
@@ -608,31 +857,47 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 		m.DeadTicks = 0
 		packets = append(packets,
 			protocol.EncodeEntityEvent(m.ID, protocol.EntityEventDeath),
-			protocol.EncodeEntitySoundEffect(s.soundMobDeath, protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
+			protocol.EncodeEntitySoundEffect(s.mobDeathSound(kind), protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
 		)
 	} else if packet := s.knockbackMob(m, px, pz); packet != nil {
 		// 未死亡：沿攻击者反方向击退一小段。
 		packets = append(packets, packet)
 	}
 	x, y, z := m.X, m.Y, m.Z
+	dim := m.Dim
 	s.entityMu.Unlock()
 
 	for _, packet := range packets {
-		s.broadcastPacket(packet)
+		s.broadcastToNearby(dim, packet, x, z, s.playerSnapshot())
 	}
 	// 攻击消耗疲劳度（与原版一致）。
 	player.addExhaustion(playerExhaustionAttack)
 	if died {
 		slog.Info("mob killed", "id", m.ID, "player", player.name)
-		s.dropMobLoot(x, y, z)
-		bar, level, total := player.addExperience(zombieExperience)
+		s.dropMobLoot(kind, dim, x, y, z)
+		bar, level, total := player.addExperience(mobKinds[kind].experience)
 		player.tryWrite(protocol.EncodeSetExperience(bar, level, total))
 	}
 }
 
-// dropMobLoot 生成僵尸的掉落物（与原版一致：0–2 个腐肉；
-// 稀有掉落铁锭/胡萝卜/土豆，概率 1/40 的近似值）。
-func (s *Server) dropMobLoot(x, y, z float64) {
+// mobHurtSound/mobDeathSound 返回受击/死亡音效 ID（缺失时回退到僵尸音效）。
+func (s *Server) mobHurtSound(kind mobKind) int32 {
+	if id, ok := s.mobHurtSounds[kind]; ok {
+		return id
+	}
+	return s.soundMobHurt
+}
+
+func (s *Server) mobDeathSound(kind mobKind) int32 {
+	if id, ok := s.mobDeathSounds[kind]; ok {
+		return id
+	}
+	return s.soundMobDeath
+}
+
+// dropMobLoot 生成生物的掉落物（与原版大致一致：0–2 个常规掉落；
+// 僵尸的稀有掉落铁锭/胡萝卜/土豆概率 1/40；蜘蛛 1/3 掉落蜘蛛眼）。
+func (s *Server) dropMobLoot(kind mobKind, dim world.Dimension, x, y, z float64) {
 	spawn := func(name string, count int32) {
 		if count <= 0 {
 			return
@@ -643,12 +908,25 @@ func (s *Server) dropMobLoot(x, y, z float64) {
 		}
 		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-		s.spawnItem(stack, x, y+0.5, z, vx, 0.2, vz, mobDropPickupDelay)
+		s.spawnItem(dim, stack, x, y+0.5, z, vx, 0.2, vz, mobDropPickupDelay)
 	}
-	spawn("minecraft:rotten_flesh", int32(s.nextRandom()%3))
-	if s.nextRandom()%mobRareDropChance == 0 {
-		rare := []string{"minecraft:iron_ingot", "minecraft:carrot", "minecraft:potato"}
-		spawn(rare[s.nextRandom()%uint64(len(rare))], 1)
+	switch kind {
+	case mobZombie:
+		spawn("minecraft:rotten_flesh", int32(s.nextRandom()%3))
+		if s.nextRandom()%mobRareDropChance == 0 {
+			rare := []string{"minecraft:iron_ingot", "minecraft:carrot", "minecraft:potato"}
+			spawn(rare[s.nextRandom()%uint64(len(rare))], 1)
+		}
+	case mobSkeleton:
+		spawn("minecraft:bone", int32(s.nextRandom()%3))
+		spawn("minecraft:arrow", int32(s.nextRandom()%3))
+	case mobCreeper:
+		spawn("minecraft:gunpowder", int32(s.nextRandom()%3))
+	case mobSpider:
+		spawn("minecraft:string", int32(s.nextRandom()%3))
+		if s.nextRandom()%3 == 0 {
+			spawn("minecraft:spider_eye", 1)
+		}
 	}
 }
 
@@ -685,8 +963,10 @@ func (s *Server) respawnPlayer(player *session) {
 	if !player.markRespawned() {
 		return // 未死亡或已在重生中。
 	}
+	dim := player.dimensionID()
 	gameMode := player.gameModeID()
-	spawn := s.spawnInfo(gameMode)
+	spawn := s.spawnInfo(dim, gameMode)
+	spawnX, _, spawnZ := s.spawnPositionFor(dim)
 	if err := player.writePacket(protocol.EncodeRespawn(spawn, 0)); err != nil {
 		return
 	}
@@ -697,11 +977,13 @@ func (s *Server) respawnPlayer(player *session) {
 		return
 	}
 	// 重生后客户端会清空世界：重置区块记录并重发出生点视距内的区块。
+	centerX := int(math.Floor(spawnX)) >> 4
+	centerZ := int(math.Floor(spawnZ)) >> 4
 	player.sentChunks = make(map[world.ChunkPos]struct{})
-	if err := player.writePacket(protocol.EncodeSetCenterChunk(0, 0)); err != nil {
+	if err := player.writePacket(protocol.EncodeSetCenterChunk(int32(centerX), int32(centerZ))); err != nil {
 		return
 	}
-	if err := player.syncChunks(0, 0); err != nil {
+	if err := player.syncChunks(centerX, centerZ); err != nil {
 		slog.Error("failed to send chunks after respawn", "name", player.name, "error", err)
 		return
 	}
@@ -757,40 +1039,111 @@ func (s *Server) tickLoop(ctx context.Context) {
 	}
 }
 
-// resolveMobRegistryIDs 查询生物与伤害系统需要的注册表 ID。
+// moveMobAway 让生物朝远离目标的方向移动一步（骷髅保持射程）。
+// 会同步更新朝向。调用方必须持有 entityMu。
+func (s *Server) moveMobAway(w *world.World, m *mob, fromX, fromZ, speed float64) bool {
+	dx, dz := m.X-fromX, m.Z-fromZ
+	distance := math.Hypot(dx, dz)
+	if distance < 1e-3 {
+		return false
+	}
+	stepX := dx / distance * speed
+	stepZ := dz / distance * speed
+	m.Yaw = float32(math.Atan2(-(fromX-m.X), fromZ-m.Z) * 180 / math.Pi)
+	if s.tryMoveMob(w, m, m.X+stepX, m.Z+stepZ) {
+		return true
+	}
+	return s.tryMoveMob(w, m, m.X+stepX, m.Z) || s.tryMoveMob(w, m, m.X, m.Z+stepZ)
+}
+
+// resolveMobRegistryIDs 查询生物/箭矢/伤害系统需要的注册表 ID。
 // 任何条目缺失都会禁用生物系统，而不是用错误的 ID 发送协议数据。
 func (s *Server) resolveMobRegistryIDs() {
-	type lookup struct {
+	staticLookup := func(registryName, entry string) (int32, bool) {
+		return registry.StaticEntryID(registryName, entry)
+	}
+	s.mobTypeIDs = make(map[mobKind]int32, len(mobKinds))
+	s.mobHurtSounds = make(map[mobKind]int32, len(mobKinds))
+	s.mobDeathSounds = make(map[mobKind]int32, len(mobKinds))
+	s.arrows = make(map[int32]*arrowEntity)
+
+	s.mobsEnabled = true
+	for kind, stats := range mobKinds {
+		typeID, ok := staticLookup("minecraft:entity_type", stats.name)
+		if !ok {
+			slog.Error("缺少实体类型注册表条目，生物系统将被禁用", "entry", stats.name)
+			s.mobsEnabled = false
+			return
+		}
+		hurt, ok := staticLookup("minecraft:sound_event", stats.hurtSound)
+		if !ok {
+			slog.Error("缺少音效注册表条目，生物系统将被禁用", "entry", stats.hurtSound)
+			s.mobsEnabled = false
+			return
+		}
+		death, ok := staticLookup("minecraft:sound_event", stats.deathSound)
+		if !ok {
+			slog.Error("缺少音效注册表条目，生物系统将被禁用", "entry", stats.deathSound)
+			s.mobsEnabled = false
+			return
+		}
+		s.mobTypeIDs[kind] = typeID
+		s.mobHurtSounds[kind] = hurt
+		s.mobDeathSounds[kind] = death
+	}
+
+	syncLookup := func(registryName, entry string) (int32, bool) {
+		return registry.SyncEntryID(registryName, entry)
+	}
+	for _, item := range []struct {
 		registry string
 		entry    string
-		static   bool
 		target   *int32
-	}
-	lookups := []lookup{
-		{"minecraft:entity_type", zombieTypeName, true, &s.zombieTypeID},
-		{"minecraft:damage_type", "minecraft:mob_attack", false, &s.mobAttackDamageTypeID},
-		{"minecraft:damage_type", "minecraft:player_attack", false, &s.playerAttackDamageTypeID},
-		{"minecraft:damage_type", "minecraft:fall", false, &s.fallDamageTypeID},
-		{"minecraft:sound_event", "minecraft:entity.zombie.hurt", true, &s.soundMobHurt},
-		{"minecraft:sound_event", "minecraft:entity.zombie.death", true, &s.soundMobDeath},
-		{"minecraft:sound_event", "minecraft:entity.player.hurt", true, &s.soundPlayerHurt},
-	}
-	s.mobsEnabled = true
-	for _, item := range lookups {
-		var (
-			id int32
-			ok bool
-		)
-		if item.static {
-			id, ok = registry.StaticEntryID(item.registry, item.entry)
-		} else {
-			id, ok = registry.SyncEntryID(item.registry, item.entry)
-		}
+	}{
+		{"minecraft:damage_type", "minecraft:mob_attack", &s.mobAttackDamageTypeID},
+		{"minecraft:damage_type", "minecraft:player_attack", &s.playerAttackDamageTypeID},
+		{"minecraft:damage_type", "minecraft:fall", &s.fallDamageTypeID},
+		{"minecraft:damage_type", "minecraft:arrow", &s.arrowDamageTypeID},
+		{"minecraft:damage_type", "minecraft:explosion", &s.explosionDamageTypeID},
+	} {
+		id, ok := syncLookup(item.registry, item.entry)
 		if !ok {
+			slog.Error("缺少伤害类型注册表条目，生物系统将被禁用", "entry", item.entry)
 			s.mobsEnabled = false
-			slog.Error("缺少注册表条目，生物系统将被禁用", "registry", item.registry, "entry", item.entry)
 			return
 		}
 		*item.target = id
 	}
+
+	// 箭矢与相关音效。
+	arrowType, ok := staticLookup("minecraft:entity_type", "minecraft:arrow")
+	if !ok {
+		slog.Error("缺少箭矢实体类型，生物系统将被禁用")
+		s.mobsEnabled = false
+		return
+	}
+	s.arrowTypeID = arrowType
+	for _, item := range []struct {
+		entry  string
+		target *int32
+	}{
+		{"minecraft:entity.arrow.shoot", &s.soundArrowShoot},
+		{"minecraft:entity.arrow.hit", &s.soundArrowHit},
+		{"minecraft:entity.arrow.hit", &s.soundArrowHitBlock},
+		{"minecraft:entity.creeper.primed", &s.soundCreeperPrime},
+		{"minecraft:entity.player.hurt", &s.soundPlayerHurt},
+	} {
+		id, ok := staticLookup("minecraft:sound_event", item.entry)
+		if !ok {
+			slog.Error("缺少音效注册表条目，生物系统将被禁用", "entry", item.entry)
+			s.mobsEnabled = false
+			return
+		}
+		*item.target = id
+	}
+	s.arrowsEnabled = s.mobsEnabled
+	// 兼容字段：soundMobHurt/soundMobDeath 是僵尸音效（回退用）。
+	s.soundMobHurt = s.mobHurtSounds[mobZombie]
+	s.soundMobDeath = s.mobDeathSounds[mobZombie]
+	s.zombieTypeID = s.mobTypeIDs[mobZombie]
 }

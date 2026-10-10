@@ -63,6 +63,8 @@ type itemEntity struct {
 	ID    int32
 	UUID  [16]byte
 	Stack item.Stack
+	// Dim 是该掉落物所在维度（生成后不变）。
+	Dim world.Dimension
 
 	X, Y, Z          float64
 	VelX, VelY, VelZ float64
@@ -91,10 +93,9 @@ func (s *Server) resolveItemRegistryIDs() {
 	s.itemsEnabled = true
 }
 
-// spawnItem 生成一个掉落物：广播 Add Entity 与 Item 元数据，并立即尝试与
-// 附近的同类堆叠合并（原版在生成后由周期合并处理；这里首帧不合并，
-// 由 tickItems 的周期合并统一负责）。pickupDelay 为可拾取延迟（tick）。
-func (s *Server) spawnItem(stack item.Stack, x, y, z, vx, vy, vz float64, pickupDelay int) *itemEntity {
+// spawnItem 生成一个掉落物：向所在维度的玩家广播 Add Entity 与 Item 元数据。
+// pickupDelay 为可拾取延迟（tick）。dim 是掉落物所在维度。
+func (s *Server) spawnItem(dim world.Dimension, stack item.Stack, x, y, z, vx, vy, vz float64, pickupDelay int) *itemEntity {
 	if !s.itemsEnabled || stack.IsEmpty() {
 		return nil
 	}
@@ -105,6 +106,7 @@ func (s *Server) spawnItem(stack item.Stack, x, y, z, vx, vy, vz float64, pickup
 		ID:               s.entityIDs.Add(1),
 		UUID:             newEntityUUID(),
 		Stack:            stack,
+		Dim:              dim,
 		X:                x,
 		Y:                y,
 		Z:                z,
@@ -120,8 +122,8 @@ func (s *Server) spawnItem(stack item.Stack, x, y, z, vx, vy, vz float64, pickup
 	s.entityMu.Lock()
 	s.items[e.ID] = e
 	s.entityMu.Unlock()
-	s.broadcastPacket(add)
-	s.broadcastPacket(meta)
+	s.writeToNearbyPlayers(add, dim, x, z, nil)
+	s.writeToNearbyPlayers(meta, dim, x, z, nil)
 	return e
 }
 
@@ -156,7 +158,7 @@ func (s *Server) dropItemFromPlayer(player *session, dropStack bool) {
 	dirY := -math.Sin(pitchRad)
 	dirZ := math.Cos(pitchRad) * math.Cos(yawRad)
 	const throwSpeed = 0.3
-	s.spawnItem(dropped, x, y+1.0, z, dirX*throwSpeed, dirY*throwSpeed+0.1, dirZ*throwSpeed, itemPickupDelayPlayer)
+	s.spawnItem(player.dimensionID(), dropped, x, y+1.0, z, dirX*throwSpeed, dirY*throwSpeed+0.1, dirZ*throwSpeed, itemPickupDelayPlayer)
 }
 
 // dropPlayerInventory 在玩家死亡时把整个物品栏（含护甲与副手）掉落为掉落物，
@@ -173,7 +175,7 @@ func (s *Server) dropPlayerInventory(player *session) {
 		// 小幅随机速度让掉落物散开。
 		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-		s.spawnItem(stack, px, py+0.5, pz, vx, 0.2, vz, itemPickupDelayPlayer)
+		s.spawnItem(player.dimensionID(), stack, px, py+0.5, pz, vx, 0.2, vz, itemPickupDelayPlayer)
 	}
 }
 
@@ -187,14 +189,14 @@ func itemBoxAt(x, y, z float64) world.Box {
 
 // itemCollides 报告掉落物碰撞盒是否与方块碰撞形状相交（形状级 AABB，
 // 支持半砖/台阶/栅栏等非完整碰撞体）。
-func (s *Server) itemCollides(x, y, z float64) bool {
-	return s.world.Collides(itemBoxAt(x, y, z))
+func itemCollides(w *world.World, x, y, z float64) bool {
+	return w.Collides(itemBoxAt(x, y, z))
 }
 
 // moveItemAxis 沿单轴推进掉落物，被碰撞形状裁剪（扫描式逐轴碰撞，
 // 与原版 ItemEntity 一致）。返回是否发生碰撞。仅由 tickItems 调用。
-func (s *Server) moveItemAxis(e *itemEntity, axis int, delta float64) bool {
-	clipped := s.world.ClipMove(itemBoxAt(e.X, e.Y, e.Z), axis, delta)
+func moveItemAxis(w *world.World, e *itemEntity, axis int, delta float64) bool {
+	clipped := w.ClipMove(itemBoxAt(e.X, e.Y, e.Z), axis, delta)
 	switch axis {
 	case 0:
 		e.X += clipped
@@ -207,8 +209,8 @@ func (s *Server) moveItemAxis(e *itemEntity, axis int, delta float64) bool {
 }
 
 // itemHazardAt 报告掉落物所在位置的破坏性方块（岩浆/火/灵魂火/仙人掌）。
-func (s *Server) itemHazardAt(x, y, z float64) bool {
-	name, ok := s.blockNames[s.world.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z)))]
+func (s *Server) itemHazardAt(w *world.World, x, y, z float64) bool {
+	name, ok := s.blockNames[w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z)))]
 	if !ok {
 		return false
 	}
@@ -220,8 +222,8 @@ func (s *Server) itemHazardAt(x, y, z float64) bool {
 }
 
 // itemInWater 报告掉落物是否位于水中（漂浮：不受重力、缓慢上浮）。
-func (s *Server) itemInWater(x, y, z float64) bool {
-	return s.world.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))) == world.WaterBlock
+func itemInWater(w *world.World, x, y, z float64) bool {
+	return w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))) == world.WaterBlock
 }
 
 // mergeItems 执行一次周期合并：把同类型、0.5 格内且视线可通的掉落物
@@ -234,7 +236,7 @@ func (s *Server) mergeItems(e *itemEntity) (updates [][]byte, removals []int32) 
 	}
 	changed := false
 	for id, other := range s.items {
-		if other == e || other.Stack.ItemID != e.Stack.ItemID {
+		if other == e || other.Stack.ItemID != e.Stack.ItemID || other.Dim != e.Dim {
 			continue
 		}
 		if math.Abs(other.X-e.X) > itemMergeRange || math.Abs(other.Y-e.Y) > itemMergeRange ||
@@ -244,7 +246,7 @@ func (s *Server) mergeItems(e *itemEntity) (updates [][]byte, removals []int32) 
 		if other.Stack.Count >= limit {
 			continue
 		}
-		if !s.attackPathClear(e.X, e.Y+0.1, e.Z, other.X, other.Y+0.1, other.Z) {
+		if !attackPathClear(s.worldFor(e.Dim), e.X, e.Y+0.1, e.Z, other.X, other.Y+0.1, other.Z) {
 			continue // 隔墙不合并（与原版 Paper 的修复一致）
 		}
 		total := e.Stack.Count + other.Stack.Count
@@ -285,6 +287,7 @@ func (s *Server) tickItems(players []*session) {
 		return
 	}
 	type itemMove struct {
+		dim    world.Dimension
 		packet []byte
 		x, z   float64
 	}
@@ -307,11 +310,12 @@ func (s *Server) tickItems(players []*session) {
 			e.PickupDelayTicks--
 		}
 		// 区块未加载时冻结：不推进物理，也不强制重新加载区块。
-		if !s.world.ChunkLoaded(int(math.Floor(e.X)), int(math.Floor(e.Z))) {
+		w := s.worldFor(e.Dim)
+		if !w.ChunkLoaded(int(math.Floor(e.X)), int(math.Floor(e.Z))) {
 			continue
 		}
 		// 破坏性方块（岩浆/火/仙人掌）销毁掉落物。
-		if s.itemHazardAt(e.X, e.Y, e.Z) {
+		if s.itemHazardAt(w, e.X, e.Y, e.Z) {
 			delete(s.items, id)
 			removals = append(removals, id)
 			continue
@@ -324,7 +328,7 @@ func (s *Server) tickItems(players []*session) {
 		}
 
 		startX, startY, startZ := e.X, e.Y, e.Z
-		inWater := s.itemInWater(e.X, e.Y, e.Z)
+		inWater := itemInWater(w, e.X, e.Y, e.Z)
 		if inWater {
 			// 漂浮：缓慢上浮 + 强阻力。
 			e.VelY += itemWaterBuoyancy
@@ -340,21 +344,21 @@ func (s *Server) tickItems(players []*session) {
 			}
 		}
 		// 逐轴移动（Y → X → Z，与原版一致）：碰撞时沿该轴停下。
-		if s.moveItemAxis(e, 1, e.VelY) {
+		if moveItemAxis(w, e, 1, e.VelY) {
 			e.VelY = 0
 		}
 		if math.Abs(e.VelX) > itemMinVelocity {
-			if !s.insideBorder(e.X+e.VelX, e.Z) || s.moveItemAxis(e, 0, e.VelX) {
+			if !s.insideBorder(e.X+e.VelX, e.Z) || moveItemAxis(w, e, 0, e.VelX) {
 				e.VelX = 0
 			}
 		}
 		if math.Abs(e.VelZ) > itemMinVelocity {
-			if !s.insideBorder(e.X, e.Z+e.VelZ) || s.moveItemAxis(e, 2, e.VelZ) {
+			if !s.insideBorder(e.X, e.Z+e.VelZ) || moveItemAxis(w, e, 2, e.VelZ) {
 				e.VelZ = 0
 			}
 		}
 		// 速度衰减：空中弱阻尼，落地/水中强摩擦。
-		if !inWater && !s.itemCollides(e.X, e.Y-0.05, e.Z) {
+		if !inWater && !itemCollides(w, e.X, e.Y-0.05, e.Z) {
 			e.VelX *= itemAirDrag
 			e.VelZ *= itemAirDrag
 		} else {
@@ -374,13 +378,14 @@ func (s *Server) tickItems(players []*session) {
 		}
 		if e.X != startX || e.Y != startY || e.Z != startZ {
 			moves = append(moves, itemMove{
+				dim:    e.Dim,
 				packet: protocol.EncodeEntityPositionSync(e.ID, e.X, e.Y, e.Z, e.VelX, e.VelY, e.VelZ, 0, 0, true),
 				x:      e.X,
 				z:      e.Z,
 			})
 		}
 	}
-	// 拾取检查：每个存活玩家一帧内可拾取多个掉落物。
+	// 拾取检查：每个存活玩家一帧内可拾取多个掉落物（仅同维度）。
 	if len(s.items) > 0 {
 		for _, player := range players {
 			if !player.isJoined() || player.isDead() {
@@ -391,9 +396,10 @@ func (s *Server) tickItems(players []*session) {
 			default:
 				continue // 旁观/冒险模式不拾取。
 			}
+			playerDim := player.dimensionID()
 			px, py, pz, _, _ := player.playerPosition()
 			for id, e := range s.items {
-				if e.PickupDelayTicks > 0 {
+				if e.PickupDelayTicks > 0 || e.Dim != playerDim {
 					continue
 				}
 				if math.Abs(e.X-px) > itemPickupRange || math.Abs(e.Z-pz) > itemPickupRange {
@@ -423,7 +429,7 @@ func (s *Server) tickItems(players []*session) {
 	s.entityMu.Unlock()
 
 	for _, move := range moves {
-		s.broadcastToNearby(move.packet, move.x, move.z, players)
+		s.broadcastToNearby(move.dim, move.packet, move.x, move.z, players)
 	}
 	for _, packet := range updates {
 		s.broadcastPacket(packet)
@@ -433,8 +439,9 @@ func (s *Server) tickItems(players []*session) {
 		for _, slot := range pickup.slots {
 			pickup.player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), pickup.player.inventory.Get(slot).AppendSlot(nil)))
 		}
-		s.writeToNearbyPlayers(protocol.EncodeCollect(pickup.entityID, pickup.player.entityID, pickup.added), pickup.x, pickup.z, nil)
-		s.writeToNearbyPlayers(protocol.EncodeSoundEffect(s.soundItemPickup, protocol.SoundCategoryPlayer, pickup.x, pickup.y, pickup.z, 0.2, 2.0, 0), pickup.x, pickup.z, nil)
+		dim := pickup.player.dimensionID()
+		s.writeToNearbyPlayers(protocol.EncodeCollect(pickup.entityID, pickup.player.entityID, pickup.added), dim, pickup.x, pickup.z, nil)
+		s.writeToNearbyPlayers(protocol.EncodeSoundEffect(s.soundItemPickup, protocol.SoundCategoryPlayer, pickup.x, pickup.y, pickup.z, 0.2, 2.0, 0), dim, pickup.x, pickup.z, nil)
 	}
 	if len(removals) > 0 {
 		s.broadcastPacket(protocol.EncodeEntityDestroy(removals))

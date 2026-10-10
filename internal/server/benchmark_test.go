@@ -6,6 +6,7 @@ import (
 
 	"gmcs/internal/config"
 	"gmcs/internal/item"
+	"gmcs/internal/world"
 )
 
 // BenchmarkServerTick 衡量实体 Tick 的成本（32 只生物的移动、避障与广播判定）。
@@ -17,18 +18,19 @@ func BenchmarkServerTick(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer instance.world.Close()
+	defer instance.worldFor(world.DimensionOverworld).Close()
 
-	spawnX, spawnY, spawnZ := instance.spawnPosition()
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	_ = spawnY
+	gameWorld := instance.worldFor(world.DimensionOverworld)
 	for i := 0; i < 32; i++ {
 		x := int(math.Floor(spawnX)) + i%8
 		z := int(math.Floor(spawnZ)) + i/8
-		groundY, ok := instance.world.GroundY(x, z)
+		groundY, ok := gameWorld.GroundY(x, z)
 		if !ok {
 			b.Fatal("no ground at spawn area")
 		}
-		instance.addMob(float64(x)+0.5, groundY, float64(z)+0.5)
+		instance.addMob(world.DimensionOverworld, mobZombie, float64(x)+0.5, groundY, float64(z)+0.5)
 	}
 
 	b.ReportAllocs()
@@ -56,21 +58,22 @@ func BenchmarkItemTick(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer instance.world.Close()
+	defer instance.worldFor(world.DimensionOverworld).Close()
 
 	stack, err := item.FromName("minecraft:stone", 1)
 	if err != nil {
 		b.Fatal(err)
 	}
-	spawnX, _, spawnZ := instance.spawnPosition()
+	spawnX, _, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	gameWorld := instance.worldFor(world.DimensionOverworld)
 	for i := 0; i < 128; i++ {
 		x := float64(int(math.Floor(spawnX))+i%8*2) + 0.5
 		z := float64(int(math.Floor(spawnZ))+i/8) + 0.5
-		groundY, ok := instance.world.GroundY(int(x), int(z))
+		groundY, ok := gameWorld.GroundY(int(x), int(z))
 		if !ok {
 			b.Fatal("no ground at spawn area")
 		}
-		e := instance.spawnItem(stack, x, groundY+1, z, 0, 0, 0, itemPickupDelayMining)
+		e := instance.spawnItem(world.DimensionOverworld, stack, x, groundY+1, z, 0, 0, 0, itemPickupDelayMining)
 		if e == nil {
 			b.Fatal("spawnItem returned nil")
 		}

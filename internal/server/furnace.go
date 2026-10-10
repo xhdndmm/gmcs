@@ -30,6 +30,7 @@ import (
 // furnaceState 是一个熔炉方块的运行时状态（含槽位与进度）。
 type furnaceState struct {
 	mu     sync.Mutex
+	dim    world.Dimension
 	pos    [3]int
 	typeID int32
 	kind   registry.CookingKind
@@ -57,20 +58,22 @@ func (s *Server) furnaceTypeIDs() map[int32]bool {
 
 // registerFurnace 注册（或返回已有的）熔炉运行时状态。
 // 方块实体已带内容/进度时载入状态。由会话 goroutine 与 Tick 调用。
-func (s *Server) registerFurnace(x, y, z int) *furnaceState {
+func (s *Server) registerFurnace(dim world.Dimension, x, y, z int) *furnaceState {
+	key := containerKey{dim: dim, x: x, y: y, z: z}
 	s.furnaceMu.Lock()
-	if state, ok := s.furnaces[[3]int{x, y, z}]; ok {
+	if state, ok := s.furnaces[key]; ok {
 		s.furnaceMu.Unlock()
 		return state
 	}
 	s.furnaceMu.Unlock()
 
-	entity, err := s.world.BlockEntityAt(x, y, z)
+	w := s.worldFor(dim)
+	entity, err := w.BlockEntityAt(x, y, z)
 	if err != nil {
 		return nil
 	}
 	// 优先按方块名解析类型（空方块实体的 TypeID 零值会与 furnace 的 ID 0 混淆）。
-	blockState := s.world.BlockAt(x, y, z)
+	blockState := w.BlockAt(x, y, z)
 	blockName, nameOK := s.blockNames[blockState]
 	var typeID int32
 	if nameOK {
@@ -84,6 +87,7 @@ func (s *Server) registerFurnace(x, y, z int) *furnaceState {
 		}
 	}
 	state := &furnaceState{
+		dim:           dim,
 		pos:           [3]int{x, y, z},
 		typeID:        typeID,
 		kind:          s.cookKindOf(typeID),
@@ -101,10 +105,10 @@ func (s *Server) registerFurnace(x, y, z int) *furnaceState {
 
 	s.furnaceMu.Lock()
 	defer s.furnaceMu.Unlock()
-	if existing, ok := s.furnaces[[3]int{x, y, z}]; ok {
+	if existing, ok := s.furnaces[key]; ok {
 		return existing
 	}
-	s.furnaces[[3]int{x, y, z}] = state
+	s.furnaces[key] = state
 	return state
 }
 
@@ -153,8 +157,9 @@ func (s *Server) tickFurnaces() {
 		if s.tickFurnace(state) {
 			s.flushFurnace(state)
 			// 有玩家查看窗口时同步进度条与槽位。
+			key := containerKey{dim: state.dim, x: state.pos[0], y: state.pos[1], z: state.pos[2]}
 			s.containerMu.Lock()
-			container := s.containers[state.pos]
+			container := s.containers[key]
 			s.containerMu.Unlock()
 			if container != nil && container.furnace == state {
 				s.broadcastFurnaceUpdate(container)
@@ -163,11 +168,23 @@ func (s *Server) tickFurnaces() {
 	}
 }
 
-// scanFurnaces 把已加载区块中的熔炉类方块实体注册到运行时表。
+// scanFurnaces 把已加载区块中的熔炉类方块实体注册到运行时表（全部已加载维度）。
 func (s *Server) scanFurnaces() {
-	positions := s.world.FurnaceBlockPositions(s.furnaceTypeIDs())
-	for _, pos := range positions {
-		s.registerFurnace(pos[0], pos[1], pos[2])
+	typeIDs := s.furnaceTypeIDs()
+	s.worldMu.Lock()
+	type loadedWorld struct {
+		dim   world.Dimension
+		world *world.World
+	}
+	worlds := make([]loadedWorld, 0, len(s.worlds))
+	for dim, w := range s.worlds {
+		worlds = append(worlds, loadedWorld{dim: dim, world: w})
+	}
+	s.worldMu.Unlock()
+	for _, item := range worlds {
+		for _, pos := range item.world.FurnaceBlockPositions(typeIDs) {
+			s.registerFurnace(item.dim, pos[0], pos[1], pos[2])
+		}
 	}
 }
 
@@ -341,21 +358,22 @@ func (s *Server) flushFurnace(state *furnaceState) {
 	state.dirty = false
 	state.mu.Unlock()
 
-	if err := s.world.SetBlockEntity(state.pos[0], state.pos[1], state.pos[2], entity); err != nil {
+	if err := s.worldFor(state.dim).SetBlockEntity(state.pos[0], state.pos[1], state.pos[2], entity); err != nil {
 		slog.Error("写回熔炉状态失败", "x", state.pos[0], "y", state.pos[1], "z", state.pos[2], "error", err)
 	}
 }
 
 // destroyFurnace 处理熔炉方块被破坏：写回状态后按普通容器掉落内容。
-func (s *Server) destroyFurnace(x, y, z int, def *containerDef, breaker *session) {
+func (s *Server) destroyFurnace(dim world.Dimension, breaker *session, x, y, z int, def *containerDef) {
+	key := containerKey{dim: dim, x: x, y: y, z: z}
 	s.furnaceMu.Lock()
-	state := s.furnaces[[3]int{x, y, z}]
-	delete(s.furnaces, [3]int{x, y, z})
+	state := s.furnaces[key]
+	delete(s.furnaces, key)
 	s.furnaceMu.Unlock()
 	if state != nil {
 		s.flushFurnace(state)
 	}
-	s.destroyContainer(x, y, z, breaker, def)
+	s.destroyContainer(dim, breaker, x, y, z, def)
 }
 
 // awardFurnaceXP 把熔炉累积的经验发放给取走产物的玩家（原版行为）。

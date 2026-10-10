@@ -127,7 +127,10 @@ type session struct {
 	experienceBar float32
 	dead          bool
 	gameMode      uint8
-	lastHurt      time.Time
+	// dimension 是玩家当前所在维度（维度切换时在读循环内更新；
+	// 其他 goroutine 经 accessor 读取）。
+	dimension world.Dimension
+	lastHurt  time.Time
 
 	// 下落跟踪（摔落伤害）：以服务器端地面检测驱动，仅由会话读循环访问。
 	fallStartY float64
@@ -193,8 +196,28 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		food:            maxPlayerFood,
 		saturation:      playerSaturation,
 		gameMode:        server.defaultGameMode,
+		dimension:       world.DimensionOverworld,
 		sentChunks:      make(map[world.ChunkPos]struct{}),
 	}
+}
+
+// dimensionID 返回玩家所在维度。
+func (s *session) dimensionID() world.Dimension {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.dimension
+}
+
+// setDimension 设置玩家所在维度。
+func (s *session) setDimension(dimension world.Dimension) {
+	s.stateMu.Lock()
+	s.dimension = dimension
+	s.stateMu.Unlock()
+}
+
+// playerWorld 返回玩家当前维度的世界。
+func (s *session) playerWorld() *world.World {
+	return s.server.worldFor(s.dimensionID())
 }
 
 // playerPosition 返回玩家的最新位置与朝向。
@@ -262,20 +285,21 @@ func (s *session) handleMove(x, y, z float64, yaw, pitch float32, rotate bool, n
 	if !rotate {
 		yaw, pitch = prevYaw, prevPitch
 	}
-	if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, now) || !s.server.positionClear(x, y, z) {
+	w := s.playerWorld()
+	if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, now) || !positionClear(w, x, y, z) {
 		s.resyncPosition()
 		return
 	}
-	if !s.acceptRise(prevX, prevY, x, y, z) {
+	if !s.acceptRise(w, prevX, prevY, x, y, z) {
 		s.resyncPosition()
 		return
 	}
 	if s.sneaking {
-		x, z = s.sneakClamp(prevX, prevZ, x, y, z)
+		x, z = sneakClamp(w, prevX, prevZ, x, y, z)
 	}
 	s.lastMoveTime = now
 	s.setPlayerPosition(x, y, z, yaw, pitch)
-	s.updateFallState(x, y, z)
+	s.updateFallState(w, x, y, z)
 	s.addMovementExhaustion(math.Hypot(x-prevX, z-prevZ), y > prevY+0.5)
 	s.server.broadcastPlayerMove(s)
 	s.updateChunks(x, z)
@@ -323,16 +347,16 @@ const (
 // acceptRise 校验悬空状态下的上升（简易飞行检测）：一次腾空累计上升
 // 不得超过 maxJumpRise。创造/旁观豁免；落地或入水时清零（游泳/跳跃合法）。
 // 注意：被回拉（resync）不清零——否则作弊者可“分段上升”绕过限制。
-func (s *session) acceptRise(prevX, prevY, x, y, z float64) bool {
+func (s *session) acceptRise(w *world.World, prevX, prevY, x, y, z float64) bool {
 	switch s.gameModeID() {
 	case uint8(config.GameModeCreative), uint8(config.GameModeSpectator):
 		return true
 	}
-	if s.server.feetInWater(x, y, z) || s.server.feetInWater(prevX, prevY, z) {
+	if feetInWater(w, x, y, z) || feetInWater(w, prevX, prevY, z) {
 		s.airRise = 0
 		return true
 	}
-	if s.server.supportedAt(x, y, z) {
+	if supportedAt(w, x, y, z) {
 		// 落到支撑面（落地/走上台阶）：本次腾空结束。
 		s.airRise = 0
 		return true
@@ -346,14 +370,14 @@ func (s *session) acceptRise(prevX, prevY, x, y, z float64) bool {
 
 // sneakClamp 潜行边缘保护：目标位置没有支撑面时沿边缘滑动
 // （先试只改 X、再试只改 Z），都不行则保持原位。
-func (s *session) sneakClamp(prevX, prevZ float64, x, y, z float64) (float64, float64) {
-	if s.server.supportedAt(x, y, z) {
+func sneakClamp(w *world.World, prevX, prevZ, x, y, z float64) (float64, float64) {
+	if supportedAt(w, x, y, z) {
 		return x, z
 	}
-	if s.server.supportedAt(x, y, prevZ) && s.server.positionClear(x, y, prevZ) {
+	if supportedAt(w, x, y, prevZ) && positionClear(w, x, y, prevZ) {
 		return x, prevZ
 	}
-	if s.server.supportedAt(prevX, y, z) && s.server.positionClear(prevX, y, z) {
+	if supportedAt(w, prevX, y, z) && positionClear(w, prevX, y, z) {
 		return prevX, z
 	}
 	return prevX, prevZ
@@ -380,8 +404,8 @@ func (s *session) acceptMove(x, y, z float64, now time.Time) bool {
 
 // isSolidBlock 报告世界坐标处是否为固体方块（非空气、非水）。
 // 仅用于视线遮挡等粗略判定；移动碰撞请使用 positionClear（形状级 AABB）。
-func (s *Server) isSolidBlock(x, y, z int) bool {
-	state := s.world.BlockAt(x, y, z)
+func isSolidBlock(w *world.World, x, y, z int) bool {
+	state := w.BlockAt(x, y, z)
 	return state != world.AirBlock && state != world.WaterBlock
 }
 
@@ -397,21 +421,21 @@ func playerBox(x, y, z float64) world.Box {
 // 用于检测穿墙（no-clip）式移动：客户端自身的碰撞不允许进入方块形状，
 // 因此“终点嵌在形状里”只可能来自作弊或状态错乱。查询为形状级 AABB
 // （支持半砖/台阶/栅栏/门等非完整碰撞体），相触不算相交。
-func (s *Server) positionClear(x, y, z float64) bool {
-	return !s.world.Collides(playerBox(x, y, z))
+func positionClear(w *world.World, x, y, z float64) bool {
+	return !w.Collides(playerBox(x, y, z))
 }
 
 // supportedAt 报告玩家脚下是否有可站立的碰撞面（服务器端重力模拟）。
 // 形状级判定：脚底 0.1 格以内存在水平相交的碰撞面顶面即视为支撑
 // （半砖/台阶/雪层/栅栏顶面等均正确）。
-func (s *Server) supportedAt(x, y, z float64) bool {
-	_, _, ok := s.world.SurfaceBelow(playerBox(x, y, z), 0.1)
+func supportedAt(w *world.World, x, y, z float64) bool {
+	_, _, ok := w.SurfaceBelow(playerBox(x, y, z), 0.1)
 	return ok
 }
 
 // feetInWater 报告玩家脚部是否位于水中（落水重置下落高度）。
-func (s *Server) feetInWater(x, y, z float64) bool {
-	return s.world.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))) == world.WaterBlock
+func feetInWater(w *world.World, x, y, z float64) bool {
+	return w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))) == world.WaterBlock
 }
 
 // resyncPosition 把客户端拉回服务器记录的位置（拒绝越界或无效移动）。
@@ -437,10 +461,10 @@ const fallDamageThreshold = 3.0
 // 摔落伤害，不依赖客户端上报的着地标志。落点是水时不受伤害；
 // 减伤按提供支撑面的方块计算（干草堆/床/粘液块/蜂蜜块/细雪）。
 // 创造/旁观模式由 applyDamage 直接忽略。仅由会话读循环调用。
-func (s *session) updateFallState(x, y, z float64) {
-	top, surface, supported := s.server.world.SurfaceBelow(playerBox(x, y, z), 0.1)
+func (s *session) updateFallState(w *world.World, x, y, z float64) {
+	top, surface, supported := w.SurfaceBelow(playerBox(x, y, z), 0.1)
 	if !supported {
-		if s.server.feetInWater(x, y, z) {
+		if feetInWater(w, x, y, z) {
 			// 落水/游泳中断下落，避免把“高处落水再上岸”算成摔落。
 			s.airborne = false
 			s.fallStartY = y
@@ -1038,30 +1062,95 @@ func (s *session) awaitConfigurationFinished() bool {
 	}
 }
 
+// dimensionNames 返回 Login Play 声明的维度名列表（全部可用维度）。
+func dimensionNames() []string {
+	return []string{
+		world.DimensionOverworld.Name(),
+		world.DimensionNether.Name(),
+		world.DimensionEnd.Name(),
+	}
+}
+
+// teleportTo 把玩家传送到目标维度的指定位置（/tp、/dimension、传送门共用）。
+// 同维度：仅发送同步位置；跨维度：发送 Respawn + 等待区块 + 区块数据 + 位置，
+// 并在新旧维度间同步玩家实体的可见性。传送后重置区块记录与下落状态。
+// 仅由会话读循环调用（与读循环共享 teleportID 与区块流状态）。
+func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch float32) error {
+	previous := s.dimensionID()
+	s.teleportID++
+	s.setPlayerPosition(x, y, z, yaw, pitch)
+	s.resetFallState()
+
+	if previous != dim {
+		// 旧维度的玩家实体隐藏。
+		s.server.broadcastPlayerRemoveFrom(s, previous)
+		s.setDimension(dim)
+	}
+
+	centerX := int(math.Floor(x)) >> 4
+	centerZ := int(math.Floor(z)) >> 4
+	s.sentChunks = make(map[world.ChunkPos]struct{})
+
+	packets := make([][]byte, 0, 3)
+	if previous != dim {
+		packets = append(packets,
+			protocol.EncodeRespawn(s.server.spawnInfo(dim, s.gameModeID()), 0),
+			// 1.20.2+ 协议：Respawn 后必须重发“开始等待区块”。
+			protocol.EncodeGameEvent(13, 0),
+		)
+	}
+	packets = append(packets, protocol.EncodeSetCenterChunk(int32(centerX), int32(centerZ)))
+	if err := s.writePackets(packets...); err != nil {
+		return err
+	}
+	if err := s.syncChunks(centerX, centerZ); err != nil {
+		return err
+	}
+	if err := s.writePacket(protocol.EncodeSynchronizePlayerPosition(s.teleportID, x, y, z, 0, 0, 0, yaw, pitch)); err != nil {
+		return err
+	}
+	if previous != dim {
+		// 下界/末地为固定时间；进入主世界时同步时间。
+		if dim == world.DimensionOverworld {
+			s.tryWrite(protocol.EncodeUpdateTime(s.server.worldAge.Load(), s.server.worldAge.Load()%worldDayLength, true))
+		}
+		// 新维度的玩家实体注册给附近玩家。
+		s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), dim, x, z, s)
+		s.server.writeToNearbyPlayers(s.server.playerSkinPacket(s), dim, x, z, s)
+	}
+	s.server.broadcastPlayerMove(s)
+	health, food, saturation := s.healthStatus()
+	s.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))
+	slog.Info("player teleported", "name", s.name, "dimension", dim, "x", x, "y", y, "z", z)
+	return nil
+}
+
 // runPlay 发送进入世界所需的初始数据包，注册到玩家列表，并进入游戏主循环。
 func (s *session) runPlay() {
 	s.teleportID = 1
-	spawnX, spawnY, spawnZ := s.server.spawnPosition()
 	// 恢复上次退出时的玩家数据（位置/生命/饥饿/游戏模式/物品栏）；
 	// 没有记录时按新玩家处理（出生点 + 初始物品）。
 	restored := false
 	if record, ok := s.server.playerDataSnapshot(s.uuid); ok {
 		s.applyPlayerRecord(record)
 		restored = true
-	} else {
+	}
+	dim := s.dimensionID()
+	spawnX, spawnY, spawnZ := s.server.spawnPositionFor(dim)
+	if !restored {
 		s.setPlayerPosition(spawnX, spawnY, spawnZ, 0, 0)
 	}
 	x, y, z, yaw, pitch := s.playerPosition()
 
 	login := protocol.LoginPlayData{
 		EntityID:            s.entityID,
-		DimensionNames:      []string{"minecraft:overworld"},
+		DimensionNames:      dimensionNames(),
 		MaxPlayers:          int32(s.server.config.MaxPlayers),
 		ViewDistance:        int32(s.server.config.ViewDistance),
 		SimulationDistance:  int32(s.server.config.ViewDistance),
 		EnableRespawnScreen: true,
 		EnforcesSecureChat:  s.server.config.OnlineMode,
-		Spawn:               s.server.spawnInfo(s.gameMode),
+		Spawn:               s.server.spawnInfo(dim, s.gameMode),
 	}
 
 	// 注册到玩家列表；离开时（任何返回路径）保存玩家数据并注销。
@@ -1072,7 +1161,7 @@ func (s *session) runPlay() {
 	// 进入世界的前置包。
 	packets := [][]byte{
 		protocol.EncodeLoginPlay(login),
-		protocol.EncodeSetDefaultSpawnPosition("minecraft:overworld",
+		protocol.EncodeSetDefaultSpawnPosition(dim.Name(),
 			int(math.Floor(spawnX)), int(math.Floor(spawnY)), int(math.Floor(spawnZ)), 0, 0),
 	}
 	if s.server.borderHalfSize > 0 {
@@ -1110,7 +1199,10 @@ func (s *session) runPlay() {
 	}
 	for _, other := range others {
 		// 其他玩家已在世界中的实体（皮肤来自上面的玩家列表档案属性，
-		// 皮肤层显示掩码来自实体元数据）。
+		// 皮肤层显示掩码来自实体元数据）；只有同维度的玩家可见。
+		if other.dimensionID() != dim {
+			continue
+		}
 		packets = append(packets, s.server.playerSpawnPacket(other))
 		packets = append(packets, s.server.playerSkinPacket(other))
 	}
@@ -1123,10 +1215,12 @@ func (s *session) runPlay() {
 	}
 	health, food, saturation := s.healthStatus()
 	packets = append(packets, protocol.EncodeUpdateHealth(health, food, saturation))
-	// 世界时间与经验条。
-	packets = append(packets,
-		protocol.EncodeUpdateTime(s.server.worldAge.Load(), s.server.worldAge.Load()%worldDayLength, true),
-	)
+	// 世界时间（下界/末地为固定时间，不发送时间更新包）与经验条。
+	if dim == world.DimensionOverworld {
+		packets = append(packets,
+			protocol.EncodeUpdateTime(s.server.worldAge.Load(), s.server.worldAge.Load()%worldDayLength, true),
+		)
+	}
 	experienceBar, experienceLevel, experienceTotal := s.experienceStatus()
 	packets = append(packets, protocol.EncodeSetExperience(experienceBar, experienceLevel, experienceTotal))
 	if err := s.writePackets(packets...); err != nil {
@@ -1139,9 +1233,10 @@ func (s *session) runPlay() {
 	s.markJoined()
 	// 通知其他玩家：新玩家加入（档案属性 + 实体）。
 	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name, s.profileProperties), s)
-	s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), x, z, s)
-	s.server.writeToNearbyPlayers(s.server.playerSkinPacket(s), x, z, s)
+	s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), dim, x, z, s)
+	s.server.writeToNearbyPlayers(s.server.playerSkinPacket(s), dim, x, z, s)
 	s.server.broadcastPacketExcluding(protocol.EncodeSystemChat(s.name+" joined the game"), s)
+	s.server.auditLog("join", "player", s.name, "uuid", uuidString(s.uuid), "dimension", dim.Name())
 	slog.Info("player joined the world", "name", s.name, "entityId", s.entityID)
 
 	stop := make(chan struct{})
@@ -1159,6 +1254,7 @@ func (s *session) runPlay() {
 	s.server.closeCrafting(s, false)
 	s.server.closeEnderChest(s, false)
 	s.server.returnInventoryCraft(s)
+	s.server.auditLog("leave", "player", s.name, "uuid", uuidString(s.uuid))
 	slog.Info("player disconnected", "name", s.name)
 }
 
@@ -1390,11 +1486,11 @@ func (s *session) playReadLoop() {
 		case protocol.PlayServerboundPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
 				oldInfo := s.setClientInfo(info)
-				// 皮肤层掩码变化时同步给附近玩家（Entity Metadata 索引 16）。
+				// 皮肤层掩码变化时同步给同维度附近玩家（Entity Metadata 索引 16）。
 				if oldInfo.SkinParts != info.SkinParts {
 					x, _, z, _, _ := s.playerPosition()
 					s.server.writeToNearbyPlayers(
-						protocol.EncodeEntityMetadataSkinParts(s.entityID, info.SkinParts), x, z, s)
+						protocol.EncodeEntityMetadataSkinParts(s.entityID, info.SkinParts), s.dimensionID(), x, z, s)
 				}
 			}
 		default:

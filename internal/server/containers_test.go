@@ -192,7 +192,7 @@ func placeChest(t *testing.T, instance *Server, x, y, z int) {
 	if !ok {
 		t.Fatal("缺少箱子方块状态")
 	}
-	if !instance.world.SetBlock(x, y, z, state) {
+	if !instance.testWorld().SetBlock(x, y, z, state) {
 		t.Fatal("无法放置箱子")
 	}
 }
@@ -264,7 +264,7 @@ func TestContainerOpenAndMoveItem(t *testing.T) {
 	}
 	// 等待服务器处理（发送任意包以确认顺序）：直接轮询世界状态。
 	waitFor(t, func() bool {
-		entity, err := instance.world.BlockEntityAt(cx, cy, cz)
+		entity, err := instance.testWorld().BlockEntityAt(cx, cy, cz)
 		if err != nil || len(entity.Items) == 0 {
 			return false
 		}
@@ -324,7 +324,7 @@ func TestChestBreakDropsContents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := instance.world.SetBlockEntity(cx, cy, cz, world.BlockEntity{
+	if err := instance.testWorld().SetBlockEntity(cx, cy, cz, world.BlockEntity{
 		TypeID: 1, // minecraft:chest 的方块实体类型（由 resolveContainerDefs 校验）
 		Items:  []world.ContainerItem{{ItemID: diamondID, Count: 3}},
 	}); err != nil {
@@ -356,7 +356,7 @@ func TestChestBreakDropsContents(t *testing.T) {
 // countBlockEntities 返回指定位置区块中的方块实体数量。
 func countBlockEntities(t *testing.T, instance *Server, x, y, z int) int {
 	t.Helper()
-	chunk, err := instance.world.Chunk(x>>4, z>>4)
+	chunk, err := instance.testWorld().Chunk(x>>4, z>>4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestContainerSneakPlaceInsteadOfOpen(t *testing.T) {
 	sendUseItemOn(t, conn, cx, cy, cz, 1)
 	expectBlockUpdate(t, conn, cx, cy+1, cz, int32(world.StoneBlock))
 	instance.containerMu.Lock()
-	opened := instance.containers[[3]int{cx, cy, cz}] != nil
+	opened := instance.containers[containerKey{dim: world.DimensionOverworld, x: cx, y: cy, z: cz}] != nil
 	instance.containerMu.Unlock()
 	if opened {
 		t.Fatal("潜行时右键箱子不应打开容器窗口")

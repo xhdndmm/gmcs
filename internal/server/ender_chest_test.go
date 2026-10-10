@@ -16,7 +16,7 @@ func placeEnderChest(t *testing.T, instance *Server) (int, int, int) {
 		t.Fatal("缺少末影箱方块状态")
 	}
 	x, y, z := buildSpotNearSpawn(t, instance)
-	if !instance.world.SetBlock(x, y, z, state) {
+	if !instance.testWorld().SetBlock(x, y, z, state) {
 		t.Fatal("无法放置末影箱")
 	}
 	return x, y, z

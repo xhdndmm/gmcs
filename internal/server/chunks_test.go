@@ -5,6 +5,8 @@ import (
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
+
+	"gmcs/internal/world"
 )
 
 // TestChunkStreamingOnMovement 验证玩家跨越区块边界后服务器增量发送新区块
@@ -14,7 +16,7 @@ func TestChunkStreamingOnMovement(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Walker")
-	_, _, spawnZ := instance.spawnPosition()
+	_, _, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 
 	// 移动到区块 (10, 0)：距原中心 10 > 视距 2+2，区块 (0,0) 等应被卸载。
 	// 逐 tick 速度上限为 10 格/包，这里按 8 格一步分步移动。
@@ -50,30 +52,30 @@ func TestChunkUnloadFarFromPlayers(t *testing.T) {
 	cfg.SpawnMonsters = false
 	instance, _ := joinServer(t, cfg, "Explorer")
 
-	nearCount := instance.world.ChunkCount()
+	nearCount := instance.testWorld().ChunkCount()
 	if nearCount == 0 {
 		t.Fatal("玩家附近应已加载区块")
 	}
 
 	// 模拟跑图：加载一组远离出生点的区块（如玩家绕了一圈后离开）。
 	for i := 0; i < 500; i++ {
-		if _, err := instance.world.Chunk(100+i%50, 100+i/50); err != nil {
+		if _, err := instance.testWorld().Chunk(100+i%50, 100+i/50); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := instance.world.ChunkCount(); got != nearCount+500 {
+	if got := instance.testWorld().ChunkCount(); got != nearCount+500 {
 		t.Fatalf("加载跑图区块后 ChunkCount() = %d, want %d", got, nearCount+500)
 	}
 
 	if err := instance.unloadFarChunks(); err != nil {
 		t.Fatal(err)
 	}
-	if got := instance.world.ChunkCount(); got != nearCount {
+	if got := instance.testWorld().ChunkCount(); got != nearCount {
 		t.Fatalf("卸载后 ChunkCount() = %d, want %d（跑图区块应被移出内存）", got, nearCount)
 	}
 
 	// 被卸载的区块在再次访问时应能从磁盘恢复。
-	chunk, err := instance.world.Chunk(100, 100)
+	chunk, err := instance.testWorld().Chunk(100, 100)
 	if err != nil {
 		t.Fatal(err)
 	}

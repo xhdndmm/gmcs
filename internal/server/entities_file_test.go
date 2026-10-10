@@ -8,6 +8,8 @@ import (
 
 	"gmcs/internal/config"
 	"gmcs/internal/item"
+
+	"gmcs/internal/world"
 )
 
 // TestMobPersistence 验证生物保存到 entities.json 并在重启后恢复。
@@ -18,8 +20,8 @@ func TestMobPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spawnX, spawnY, spawnZ := first.spawnPosition()
-	savedMob := first.addMob(spawnX+1, spawnY, spawnZ+1)
+	spawnX, spawnY, spawnZ := first.spawnPositionFor(world.DimensionOverworld)
+	savedMob := first.addMob(world.DimensionOverworld, mobZombie, spawnX+1, spawnY, spawnZ+1)
 	savedMob.Health = 7
 
 	if err := first.saveEntities(); err != nil {
@@ -28,7 +30,7 @@ func TestMobPersistence(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cfg.WorldDir, entityFileName)); err != nil {
 		t.Fatalf("expected %s to be written: %v", entityFileName, err)
 	}
-	if err := first.world.Close(); err != nil {
+	if err := first.testWorld().Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -37,7 +39,7 @@ func TestMobPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.world.Close()
+	defer second.testWorld().Close()
 	second.entityMu.Lock()
 	restored := make([]*mob, 0, len(second.mobs))
 	for _, restoredMob := range second.mobs {
@@ -68,7 +70,7 @@ func TestMobPersistenceSkipsUnknownType(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	content := []byte(`{"mobs":[
-		{"type":"minecraft:creeper","x":1,"y":64,"z":1,"health":20},
+		{"type":"minecraft:enderman","x":1,"y":64,"z":1,"health":20},
 		{"type":"minecraft:zombie","x":2,"y":64,"z":2,"yaw":90,"pitch":0,"health":5}
 	]}`)
 	if err := os.WriteFile(filepath.Join(cfg.WorldDir, entityFileName), content, 0o644); err != nil {
@@ -78,7 +80,7 @@ func TestMobPersistenceSkipsUnknownType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer instance.world.Close()
+	defer instance.testWorld().Close()
 	instance.entityMu.Lock()
 	count := len(instance.mobs)
 	instance.entityMu.Unlock()
@@ -96,18 +98,18 @@ func TestItemPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spawnX, spawnY, spawnZ := first.spawnPosition()
+	spawnX, spawnY, spawnZ := first.spawnPositionFor(world.DimensionOverworld)
 	stack, err := item.FromName("minecraft:stone", 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.spawnItem(stack, spawnX+1, spawnY, spawnZ+1, 0.1, 0, 0, 0) == nil {
+	if first.spawnItem(world.DimensionOverworld, stack, spawnX+1, spawnY, spawnZ+1, 0.1, 0, 0, 0) == nil {
 		t.Fatal("spawnItem returned nil")
 	}
 	if err := first.saveEntities(); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.world.Close(); err != nil {
+	if err := first.testWorld().Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,7 +118,7 @@ func TestItemPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.world.Close()
+	defer second.testWorld().Close()
 	second.entityMu.Lock()
 	restored := make([]*itemEntity, 0, len(second.items))
 	for _, e := range second.items {

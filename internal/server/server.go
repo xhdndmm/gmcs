@@ -4,18 +4,22 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"gmcs/internal/config"
+	"gmcs/internal/logging"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 	"gmcs/internal/world"
@@ -28,8 +32,16 @@ const defaultTickInterval = 50 * time.Millisecond
 
 type Server struct {
 	config  config.Config
-	world   *world.World
 	clients chan struct{}
+
+	// worlds 是各维度的世界（惰性创建）；worldMu 保护 worlds 与 spawns。
+	worldMu sync.Mutex
+	worlds  map[world.Dimension]*world.World
+	spawns  map[world.Dimension]spawnPoint
+
+	// 实体数据按维度惰性加载（维度世界首次创建时加载该维度的 entities.json）。
+	entityLoadMu   sync.Mutex
+	entitiesLoaded map[world.Dimension]bool
 
 	mu      sync.Mutex
 	conns   map[net.Conn]struct{}
@@ -61,8 +73,7 @@ type Server struct {
 	// （测试可显式调用 saveAllPlayerData 驱动）。
 	playerAutosaveInterval time.Duration
 
-	// 出生点（世界坐标，脚部位置）。
-	spawnX, spawnY, spawnZ float64
+	// 出生点（世界坐标，脚部位置）；按维度惰性计算。
 	// borderHalfSize 是世界边界的半边长（方块）；0 表示未启用边界。
 	borderHalfSize float64
 	// defaultGameMode 是新玩家的游戏模式。
@@ -72,14 +83,29 @@ type Server struct {
 	// 玩家实体同步（注册表缺少玩家实体类型时禁用）。
 	playerTypeID          int32
 	playerEntitiesEnabled bool
-	// 生物/伤害系统使用的注册表 ID。
+	// 生物/伤害系统使用的注册表 ID（按种类索引）。
 	zombieTypeID             int32
+	mobTypeIDs               map[mobKind]int32
+	mobHurtSounds            map[mobKind]int32
+	mobDeathSounds           map[mobKind]int32
 	mobAttackDamageTypeID    int32
 	playerAttackDamageTypeID int32
 	fallDamageTypeID         int32
+	arrowDamageTypeID        int32
+	explosionDamageTypeID    int32
 	soundMobHurt             int32
 	soundMobDeath            int32
 	soundPlayerHurt          int32
+
+	// 箭矢系统（骷髅的远程攻击；与生物系统一同启用/禁用）。
+	arrowTypeID        int32
+	soundArrowShoot    int32
+	soundArrowHit      int32
+	soundArrowHitBlock int32
+	soundCreeperPrime  int32
+	arrowsEnabled      bool
+	// arrows 是飞行中的箭矢（受 entityMu 保护）。
+	arrows map[int32]*arrowEntity
 
 	// 掉落物系统（注册表缺少物品实体类型或拾取音效时禁用）。
 	itemTypeID      int32
@@ -87,15 +113,19 @@ type Server struct {
 	itemsEnabled    bool
 
 	// 容器系统：containerDefs 是方块名 → 容器定义（注册表数据缺失时为空）；
-	// containers 是已打开容器（按方块坐标索引），受 containerMu 保护。
+	// 红石：已按下按钮的剩余 tick（受 redstoneMu 保护）。
+	redstoneMu      sync.Mutex
+	redstoneButtons map[containerKey]int
+
+	// containers 是已打开容器（按维度 + 方块坐标索引），受 containerMu 保护。
 	containerDefs map[string]*containerDef
 	containerMu   sync.Mutex
-	containers    map[[3]int]*containerState
+	containers    map[containerKey]*containerState
 
-	// 熔炉系统：furnaces 是已注册的熔炉运行时状态（按方块坐标索引），
+	// 熔炉系统：furnaces 是已注册的熔炉运行时状态（按维度 + 方块坐标索引），
 	// 受 furnaceMu 保护；cookKinds 是方块实体类型 → 烹饪类型映射。
 	furnaceMu          sync.Mutex
-	furnaces           map[[3]int]*furnaceState
+	furnaces           map[containerKey]*furnaceState
 	cookKinds          map[int32]registry.CookingKind
 	furnaceScanCounter int
 
@@ -125,6 +155,140 @@ type Server struct {
 	// permissionIndex 是 players → 权限节点的索引（玩家名小写；
 	// "*" 条目对所有玩家生效）。在 New 中从配置构建。
 	permissionIndex map[string][]string
+
+	// audit 是审计日志（聊天/命令/玩家进出，JSONL 格式）；
+	// auditClose 在服务器关闭时关闭文件。
+	audit      *slog.Logger
+	auditClose io.Closer
+}
+
+// spawnPoint 是一个维度的出生点（脚部世界坐标）。
+type spawnPoint struct {
+	x, y, z float64
+}
+
+// worldFor 返回维度对应的世界；未创建时惰性创建（下界/末地按需加载，
+// 避免不进入这些维度的服务器/测试承担启动成本）。无法创建时回退主世界。
+// 首次创建维度时加载该维度的实体数据。
+func (s *Server) worldFor(dim world.Dimension) *world.World {
+	s.worldMu.Lock()
+	_, existed := s.worlds[dim]
+	gameWorld := s.worldForLocked(dim)
+	s.worldMu.Unlock()
+	if !existed && gameWorld != nil && s.config.WorldDir != "" && gameWorld.Dimension() == dim {
+		s.ensureEntitiesLoaded(dim)
+	}
+	return gameWorld
+}
+
+// ensureEntitiesLoaded 首次访问维度时加载该维度的持久化实体（幂等）。
+func (s *Server) ensureEntitiesLoaded(dim world.Dimension) {
+	if !s.mobsEnabled && !s.itemsEnabled {
+		return
+	}
+	s.entityLoadMu.Lock()
+	defer s.entityLoadMu.Unlock()
+	if s.entitiesLoaded == nil {
+		s.entitiesLoaded = make(map[world.Dimension]bool, 3)
+	}
+	if s.entitiesLoaded[dim] {
+		return
+	}
+	s.entitiesLoaded[dim] = true
+	if err := s.loadEntitiesFor(dim); err != nil {
+		slog.Error("加载实体数据失败", "dimension", dim, "error", err)
+	}
+}
+
+// worldForLocked 在持有 worldMu 时获取/创建维度世界。
+// 世界目录为空（测试中的轻量服务器）或创建失败时返回 nil / 已加载的主世界。
+func (s *Server) worldForLocked(dim world.Dimension) *world.World {
+	if existing, ok := s.worlds[dim]; ok {
+		return existing
+	}
+	if s.config.WorldDir == "" {
+		return nil // 未配置世界目录（仅命令/权限测试的轻量服务器）
+	}
+	if s.worlds == nil {
+		s.worlds = make(map[world.Dimension]*world.World)
+	}
+	dir := s.config.WorldDir
+	if sub := world.DimensionDir(dim); sub != "" {
+		dir = filepath.Join(dir, sub)
+	}
+	gameWorld, err := world.OpenDimension(dir, world.NewGenerator(dim, s.config.WorldSeed), dim)
+	if err != nil {
+		slog.Error("打开维度世界失败，回退到主世界", "dimension", dim, "error", err)
+		return s.worlds[world.DimensionOverworld]
+	}
+	s.worlds[dim] = gameWorld
+	slog.Info("dimension loaded", "dimension", dim, "dir", dir)
+	return gameWorld
+}
+
+// spawnPositionFor 返回维度出生点（脚部世界坐标），惰性计算并缓存。
+func (s *Server) spawnPositionFor(dim world.Dimension) (x, y, z float64) {
+	s.worldMu.Lock()
+	defer s.worldMu.Unlock()
+	if point, ok := s.spawns[dim]; ok {
+		return point.x, point.y, point.z
+	}
+	if s.spawns == nil {
+		s.spawns = make(map[world.Dimension]spawnPoint)
+	}
+	gameWorld := s.worldForLocked(dim)
+	if gameWorld == nil {
+		return 0, world.FlatSpawnY, 0
+	}
+	x, y, z, ok := gameWorld.FindSpawn(s.borderHalfSize)
+	if !ok {
+		// 搜索范围内没有可用地势：回退到原点上方（生成器给出的高度）。
+		x, y, z = 0.5, float64(gameWorld.SurfaceY(0, 0)+1), 0.5
+		slog.Warn("未在搜索范围内找到出生点，回退到原点", "dimension", dim)
+	}
+	s.spawns[dim] = spawnPoint{x: x, y: y, z: z}
+	return x, y, z
+}
+
+// closeWorlds 关闭全部已加载的维度世界（保存区块）。
+func (s *Server) closeWorlds() error {
+	s.worldMu.Lock()
+	worlds := make([]*world.World, 0, len(s.worlds))
+	for _, gameWorld := range s.worlds {
+		worlds = append(worlds, gameWorld)
+	}
+	s.worldMu.Unlock()
+	var firstErr error
+	for _, gameWorld := range worlds {
+		if err := gameWorld.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// autosaveLoop 周期保存全部已加载维度世界，直到 ctx 取消。
+func (s *Server) autosaveLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.worldMu.Lock()
+			worlds := make([]*world.World, 0, len(s.worlds))
+			for _, gameWorld := range s.worlds {
+				worlds = append(worlds, gameWorld)
+			}
+			s.worldMu.Unlock()
+			for _, gameWorld := range worlds {
+				if err := gameWorld.Flush(); err != nil {
+					slog.Error("autosave failed", "error", err)
+				}
+			}
+		}
+	}
 }
 
 func New(cfg config.Config) (*Server, error) {
@@ -135,16 +299,9 @@ func New(cfg config.Config) (*Server, error) {
 	if !ok {
 		return nil, fmt.Errorf("未知游戏模式 %q", cfg.GameMode)
 	}
-	gameWorld, err := world.Open(cfg.WorldDir, world.SeededGenerator{Seed: cfg.WorldSeed})
+	gameWorld, err := world.OpenDimension(cfg.WorldDir, world.NewGenerator(world.DimensionOverworld, cfg.WorldSeed), world.DimensionOverworld)
 	if err != nil {
 		return nil, err
-	}
-	// 出生点：优先使用世界实际地形（已有存档可能与当前种子不同），
-	// 无法确定时回退到生成器的高度。
-	spawnX, spawnZ := findSpawnColumn(gameWorld, float64(cfg.WorldBorderSize)/2)
-	spawnY, found := gameWorld.GroundY(spawnX, spawnZ)
-	if !found {
-		spawnY = float64(gameWorld.SurfaceY(0, 0) + 1)
 	}
 	// 在线模式：为加密握手生成服务器密钥对（1024 位，与客户端兼容）。
 	var rsaKey *rsa.PrivateKey
@@ -157,7 +314,6 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	server := &Server{
 		config:                 cfg,
-		world:                  gameWorld,
 		clients:                make(chan struct{}, cfg.MaxConnections),
 		conns:                  make(map[net.Conn]struct{}),
 		players:                make(map[[16]byte]*session),
@@ -167,24 +323,25 @@ func New(cfg config.Config) (*Server, error) {
 		tickInterval:           defaultTickInterval,
 		chunkUnloadInterval:    defaultChunkUnloadInterval,
 		playerAutosaveInterval: defaultPlayerAutosaveInterval,
-		spawnX:                 float64(spawnX) + 0.5,
-		spawnY:                 spawnY,
-		spawnZ:                 float64(spawnZ) + 0.5,
 		borderHalfSize:         float64(cfg.WorldBorderSize) / 2,
 		defaultGameMode:        uint8(gameMode),
 		rsaKey:                 rsaKey,
 		httpClient:             &http.Client{Timeout: 10 * time.Second},
 		playerData:             make(map[[16]byte]playerRecord),
-		containers:             make(map[[3]int]*containerState),
+		containers:             make(map[containerKey]*containerState),
 		permissionIndex:        buildPermissionIndex(cfg),
+		worlds:                 map[world.Dimension]*world.World{world.DimensionOverworld: gameWorld},
+		spawns:                 make(map[world.Dimension]spawnPoint),
 	}
+	// 预计算主世界出生点（进入世界的第一个玩家必须立即得到可用坐标）。
+	server.spawnPositionFor(world.DimensionOverworld)
 	server.resolveMobRegistryIDs()
 	server.resolvePlayerEntityType()
 	server.resolveItemRegistryIDs()
 	server.resolveFallDamageBlocks()
 	server.resolveContainerDefs()
 	server.initFurnaceKinds()
-	server.furnaces = make(map[[3]int]*furnaceState)
+	server.furnaces = make(map[containerKey]*furnaceState)
 	bucketItemID, bucketLavaItemID = initFurnaceItems()
 	server.blockNames = resolveBlockNames()
 	if server.registryPackets, server.tagsPacket, err = buildRegistryPackets(); err != nil {
@@ -199,68 +356,47 @@ func New(cfg config.Config) (*Server, error) {
 	if !server.itemsEnabled {
 		slog.Warn("掉落物系统已禁用：注册表数据缺失")
 	}
-	// 恢复上次保存的生物与掉落物（entities.json；不存在时不做任何事）。
-	if server.mobsEnabled || server.itemsEnabled {
-		if err := server.loadEntities(); err != nil {
-			slog.Error("加载实体数据失败", "error", err)
-		}
-	}
+	// 恢复上次保存的生物与掉落物（各维度的 entities.json；不存在时不做任何事）。
+	// 下界/末地在对应维度第一次被访问时加载（见 worldFor/ensureEntitiesLoaded）。
+	server.ensureEntitiesLoaded(world.DimensionOverworld)
 	// 恢复已保存的玩家数据（players.json；不存在时按新玩家处理）。
 	if err := server.loadPlayerData(); err != nil {
 		slog.Error("加载玩家数据失败", "error", err)
 	}
+	// 审计日志（聊天/命令/玩家事件）；初始化失败不阻止启动。
+	auditLogger, auditCloser, err := logging.NewAuditLogger(cfg.AuditLogFile, int64(cfg.LogMaxSizeMB)<<20)
+	if err != nil {
+		slog.Error("初始化审计日志失败，已禁用", "error", err)
+	} else {
+		server.audit = auditLogger
+		server.auditClose = auditCloser
+	}
 	return server, nil
 }
 
+// auditLog 写一条审计日志（event 为事件类型：chat/command/join/leave/kick 等）。
+func (s *Server) auditLog(event string, attrs ...any) {
+	if s.audit == nil {
+		return
+	}
+	s.audit.Info(event, attrs...)
+}
+
+// uuidString 返回 UUID 的十六进制字符串形式（审计日志与持久化用）。
+func uuidString(uuid [16]byte) string {
+	return hex.EncodeToString(uuid[:])
+}
+
 // spawnInfo 构造带出生点信息的世界状态（Login 与 Respawn 共用）。
-func (s *Server) spawnInfo(gameMode uint8) protocol.SpawnInfo {
+func (s *Server) spawnInfo(dim world.Dimension, gameMode uint8) protocol.SpawnInfo {
 	return protocol.SpawnInfo{
-		DimensionTypeID:  registry.DimensionTypeOverworldID,
-		DimensionName:    "minecraft:overworld",
+		DimensionTypeID:  dim.TypeID(),
+		DimensionName:    dim.Name(),
 		HashedSeed:       s.config.WorldSeed,
 		GameMode:         gameMode,
 		PreviousGameMode: 0xFF, // 未定义
 		SeaLevel:         world.SeaLevel,
 	}
-}
-
-// findSpawnColumn 从原点开始螺旋搜索高于海平面的陆地列作为出生点，
-// 避免出生在海洋/深海里；启用世界边界时只在边界内搜索（出生点必须在
-// 边界内）。按 16 格步长粗扫（大陆度噪声周期为 256 格，足以覆盖多个
-// 大陆/海洋单元）；找不到时回退到原点。
-func findSpawnColumn(w *world.World, halfSize float64) (int, int) {
-	inside := func(x, z int) bool {
-		return halfSize <= 0 || (math.Abs(float64(x)+0.5) <= halfSize && math.Abs(float64(z)+0.5) <= halfSize)
-	}
-	if inside(0, 0) && w.SurfaceY(0, 0) > world.SeaLevel+1 {
-		return 0, 0
-	}
-	const (
-		step        = 16
-		maxDistance = 2048
-	)
-	for radius := step; radius <= maxDistance; radius += step {
-		for dx := -radius; dx <= radius; dx += step {
-			for _, dz := range [...]int{-radius, radius} {
-				if inside(dx, dz) && w.SurfaceY(dx, dz) > world.SeaLevel+1 {
-					return dx, dz
-				}
-			}
-		}
-		for dz := -radius + step; dz <= radius-step; dz += step {
-			for _, dx := range [...]int{-radius, radius} {
-				if inside(dx, dz) && w.SurfaceY(dx, dz) > world.SeaLevel+1 {
-					return dx, dz
-				}
-			}
-		}
-	}
-	return 0, 0
-}
-
-// spawnPosition 返回出生点（脚部）的世界坐标。
-func (s *Server) spawnPosition() (x, y, z float64) {
-	return s.spawnX, s.spawnY, s.spawnZ
 }
 
 // insideBorder 报告坐标是否位于世界边界内（未启用边界时恒为 true）。
@@ -290,7 +426,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 
 	// 自动保存循环：ctx 取消（服务器关闭）时退出；最终的保存由 Serve 结尾执行。
 	if interval := s.config.AutosaveSeconds; interval > 0 {
-		go s.world.Autosave(ctx, time.Duration(interval)*time.Second)
+		go s.autosaveLoop(ctx, time.Duration(interval)*time.Second)
 	}
 
 	// 实体 Tick 循环：推进生物 AI 并提供确定性测试入口（tickInterval <= 0 时禁用）。
@@ -347,12 +483,15 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	}
 	<-shutdownDone
 	s.wg.Wait()
-	// 全部会话结束：保存世界。
-	if err := s.world.Close(); err != nil {
+	// 全部会话结束：保存全部已加载维度世界。
+	if err := s.closeWorlds(); err != nil {
 		slog.Error("failed to save the world", "error", err)
 		if serveErr == nil {
 			serveErr = err
 		}
+	}
+	if s.auditClose != nil {
+		_ = s.auditClose.Close()
 	}
 	// 保存实体数据（生物与掉落物；与世界的保存相互独立）。
 	if s.mobsEnabled || s.itemsEnabled {
@@ -423,6 +562,7 @@ func (s *Server) broadcastChat(sender *session, message string) {
 	}
 	s.broadcastPacket(protocol.EncodePlayerChatMessage(chat))
 	slog.Info("chat", "name", sender.name, "message", message)
+	s.auditLog("chat", "player", sender.name, "message", message)
 }
 
 func (s *Server) serveClient(conn net.Conn) {

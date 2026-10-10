@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -102,6 +103,16 @@ type Config struct {
 	// 空值表示不启用。启用后在该地址上提供 /debug/pprof/*（CPU/内存/
 	// goroutine 分析）。仅用于本地诊断，不要暴露到公网。
 	PprofAddress string `json:"pprof_address"`
+	// LogFile 是服务器日志文件路径（相对路径基于工作目录）；
+	// 空表示只输出到标准错误。日志按 LogMaxSizeMB 轮转（备份为 <路径>.1）。
+	LogFile string `json:"log_file"`
+	// LogLevel 是日志级别（debug、info、warn、error）。
+	LogLevel string `json:"log_level"`
+	// LogMaxSizeMB 是单个日志文件的大小上限（MiB；0 表示默认 16）。
+	LogMaxSizeMB int `json:"log_max_size_mb"`
+	// AuditLogFile 是审计日志路径（聊天/命令/玩家进出，JSONL 格式）；
+	// 空表示禁用审计日志。
+	AuditLogFile string `json:"audit_log_file"`
 }
 
 // Default 返回默认配置。
@@ -122,6 +133,8 @@ func Default() Config {
 		MaxMobs:         8,
 		AutosaveSeconds: 300, OnlineMode: false,
 		SessionServerURL: "https://sessionserver.mojang.com", StartingItems: StringList{"minecraft:stone"},
+		LogFile: "logs/gmcs.log", LogLevel: "info", LogMaxSizeMB: 16,
+		AuditLogFile: "logs/audit.jsonl",
 	}
 }
 
@@ -211,6 +224,15 @@ func (c Config) Validate() error {
 	}
 	if c.OnlineMode && c.SessionServerURL == "" {
 		return fmt.Errorf("session server URL must not be empty in online mode")
+	}
+	if c.LogLevel != "" {
+		var level slog.Level
+		if err := level.UnmarshalText([]byte(c.LogLevel)); err != nil {
+			return fmt.Errorf("unknown log level %q", c.LogLevel)
+		}
+	}
+	if c.LogMaxSizeMB < 0 {
+		return fmt.Errorf("log max size must not be negative")
 	}
 	return nil
 }

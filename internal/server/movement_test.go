@@ -134,7 +134,7 @@ func TestMoveIntoBlockRejected(t *testing.T) {
 	wallX := int(math.Floor(x)) + 1
 	baseY := int(math.Floor(y))
 	for _, dy := range []int{0, 1} {
-		if !instance.world.SetBlock(wallX, baseY+dy, int(math.Floor(z)), world.StoneBlock) {
+		if !instance.testWorld().SetBlock(wallX, baseY+dy, int(math.Floor(z)), world.StoneBlock) {
 			t.Fatal("无法设置测试方块")
 		}
 	}
@@ -167,7 +167,7 @@ func TestFallDamageFromServerPhysics(t *testing.T) {
 	sendChatCommand(t, conn, "/list")
 	expectSystemChat(t, conn, "当前有")
 	player.setPlayerPosition(x, y+5, z, 0, 0)
-	player.updateFallState(x, y+5, z)
+	player.updateFallState(player.playerWorld(), x, y+5, z)
 	for _, height := range []float64{4, 3, 2, 1, 0} {
 		if err := protocol.WritePacketWithCompression(conn,
 			encodePlayerPosition(x, y+height, z, false), compressionThreshold); err != nil {
@@ -194,15 +194,15 @@ func TestSneakEdgeProtection(t *testing.T) {
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Sneaker")
 	player := findSession(t, instance, "Sneaker")
-	spawnX, spawnY, spawnZ := instance.spawnPosition()
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	baseX, baseY, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnY)), int(math.Floor(spawnZ))
 
 	// 铺平 3×3 石平台（Y=baseY），玩家站在平台中央顶面（baseY+1）。
 	for dx := -1; dx <= 1; dx++ {
 		for dz := -1; dz <= 1; dz++ {
-			instance.world.SetBlock(baseX+dx, baseY, baseZ+dz, world.StoneBlock)
+			instance.testWorld().SetBlock(baseX+dx, baseY, baseZ+dz, world.StoneBlock)
 			for dy := 1; dy <= 2; dy++ {
-				instance.world.SetBlock(baseX+dx, baseY+dy, baseZ+dz, world.AirBlock)
+				instance.testWorld().SetBlock(baseX+dx, baseY+dy, baseZ+dz, world.AirBlock)
 			}
 		}
 	}
@@ -248,7 +248,7 @@ func TestJumpRiseLimit(t *testing.T) {
 	for dx := -1; dx <= 1; dx++ {
 		for dz := -1; dz <= 1; dz++ {
 			for dy := 1; dy <= 3; dy++ {
-				instance.world.SetBlock(baseX+dx, baseY+dy, baseZ+dz, world.AirBlock)
+				instance.testWorld().SetBlock(baseX+dx, baseY+dy, baseZ+dz, world.AirBlock)
 			}
 		}
 	}

@@ -69,40 +69,40 @@ func TestChunkPacketCache(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Cacher")
 	_ = conn
 
-	chunk, err := instance.world.Chunk(0, 0)
+	chunk, err := instance.testWorld().Chunk(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pos := world.ChunkPos{X: 0, Z: 0}
-	first := instance.chunkPacket(pos, chunk)
-	second := instance.chunkPacket(pos, chunk)
+	first := instance.chunkPacket(world.DimensionOverworld, pos, chunk)
+	second := instance.chunkPacket(world.DimensionOverworld, pos, chunk)
 	if &first[0] != &second[0] {
 		t.Fatal("expected cache hit to share the same packet bytes")
 	}
 
 	// 修改内容（石头 → 空气，确保状态变化）→ 修订号递增 → 缓存失效并重新编码。
-	if !instance.world.SetBlock(1, world.WorldMinY+40, 1, world.AirBlock) {
+	if !instance.testWorld().SetBlock(1, world.WorldMinY+40, 1, world.AirBlock) {
 		t.Fatal("SetBlock failed")
 	}
-	third := instance.chunkPacket(pos, chunk)
+	third := instance.chunkPacket(world.DimensionOverworld, pos, chunk)
 	if &third[0] == &first[0] {
 		t.Fatal("expected cache invalidation after block change")
 	}
 
 	// 卸载并重新加载（新的 *Chunk）→ 指针不同 → 缓存失效。
 	// 先保存再清空缓存（走真实卸载路径）。
-	if err := instance.world.Flush(); err != nil {
+	if err := instance.testWorld().Flush(); err != nil {
 		t.Fatal(err)
 	}
-	instance.world.UnloadFar([]world.ChunkPos{{X: 1000, Z: 1000}}, 0)
-	reloaded, err := instance.world.Chunk(0, 0)
+	instance.testWorld().UnloadFar([]world.ChunkPos{{X: 1000, Z: 1000}}, 0)
+	reloaded, err := instance.testWorld().Chunk(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reloaded == chunk {
 		t.Fatal("expected a fresh chunk instance after unload")
 	}
-	fourth := instance.chunkPacket(pos, reloaded)
+	fourth := instance.chunkPacket(world.DimensionOverworld, pos, reloaded)
 	if &fourth[0] == &third[0] {
 		t.Fatal("expected cache invalidation after chunk reload")
 	}
@@ -117,18 +117,18 @@ func TestChunkPacketCacheHitRate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bx, _, bz := instance.spawnPosition()
+	bx, _, bz := instance.spawnPositionFor(world.DimensionOverworld)
 	centerX, centerZ := int(bx)>>4, int(bz)>>4
 	const players, radius = 10, 10
 	for player := 0; player < players; player++ {
 		for dx := -radius; dx <= radius; dx++ {
 			for dz := -radius; dz <= radius; dz++ {
 				pos := world.ChunkPos{X: centerX + dx, Z: centerZ + dz}
-				chunk, err := instance.world.Chunk(pos.X, pos.Z)
+				chunk, err := instance.testWorld().Chunk(pos.X, pos.Z)
 				if err != nil {
 					t.Fatal(err)
 				}
-				_ = instance.chunkPacket(pos, chunk)
+				_ = instance.chunkPacket(world.DimensionOverworld, pos, chunk)
 			}
 		}
 	}
@@ -198,15 +198,15 @@ func BenchmarkChunkPacketCacheHit(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	chunk, err := instance.world.Chunk(0, 0)
+	chunk, err := instance.testWorld().Chunk(0, 0)
 	if err != nil {
 		b.Fatal(err)
 	}
 	pos := world.ChunkPos{X: 0, Z: 0}
-	instance.chunkPacket(pos, chunk) // 预热
+	instance.chunkPacket(world.DimensionOverworld, pos, chunk) // 预热
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		_ = instance.chunkPacket(pos, chunk)
+		_ = instance.chunkPacket(world.DimensionOverworld, pos, chunk)
 	}
 }

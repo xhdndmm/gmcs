@@ -8,6 +8,8 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
+
+	"gmcs/internal/world"
 )
 
 // placeFurnace 在玩家附近放置熔炉方块。
@@ -18,7 +20,7 @@ func placeFurnace(t *testing.T, instance *Server, blockName string) (int, int, i
 		t.Fatalf("缺少方块状态 %s", blockName)
 	}
 	x, y, z := buildSpotNearSpawn(t, instance)
-	if !instance.world.SetBlock(x, y, z, state) {
+	if !instance.testWorld().SetBlock(x, y, z, state) {
 		t.Fatalf("无法放置 %s", blockName)
 	}
 	return x, y, z
@@ -46,7 +48,7 @@ func TestFurnaceSmeltsIronOre(t *testing.T) {
 	}
 
 	x, y, z := placeFurnace(t, instance, "minecraft:furnace")
-	state := instance.registerFurnace(x, y, z)
+	state := instance.registerFurnace(world.DimensionOverworld, x, y, z)
 	if state == nil {
 		t.Fatal("熔炉状态注册失败")
 	}
@@ -78,7 +80,7 @@ func TestFurnaceSmeltsIronOre(t *testing.T) {
 
 	// 状态写回方块实体并可恢复（模拟重启）。
 	instance.flushFurnace(state)
-	entity, err := instance.world.BlockEntityAt(x, y, z)
+	entity, err := instance.testWorld().BlockEntityAt(x, y, z)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +101,7 @@ func TestFurnaceFuelConsumption(t *testing.T) {
 	coal, _ := registry.ItemID("minecraft:coal")
 
 	x, y, z := placeFurnace(t, instance, "minecraft:furnace")
-	state := instance.registerFurnace(x, y, z)
+	state := instance.registerFurnace(world.DimensionOverworld, x, y, z)
 	state.mu.Lock()
 	state.slots[0] = itemStackFor(ironOre, 1)
 	state.slots[1] = itemStackFor(coal, 2)
@@ -130,7 +132,7 @@ func TestBlastFurnaceHalvesBurnTime(t *testing.T) {
 	coal, _ := registry.ItemID("minecraft:coal")
 
 	x, y, z := placeFurnace(t, instance, "minecraft:blast_furnace")
-	state := instance.registerFurnace(x, y, z)
+	state := instance.registerFurnace(world.DimensionOverworld, x, y, z)
 	state.mu.Lock()
 	state.slots[0] = itemStackFor(ironOre, 1)
 	state.slots[1] = itemStackFor(coal, 1)
@@ -161,7 +163,7 @@ func TestSmokerRejectsOre(t *testing.T) {
 	coal, _ := registry.ItemID("minecraft:coal")
 
 	x, y, z := placeFurnace(t, instance, "minecraft:smoker")
-	state := instance.registerFurnace(x, y, z)
+	state := instance.registerFurnace(world.DimensionOverworld, x, y, z)
 	state.mu.Lock()
 	state.slots[0] = itemStackFor(ironOre, 1)
 	state.slots[1] = itemStackFor(coal, 1)

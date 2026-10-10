@@ -41,3 +41,6 @@ dist/
 
 # 本地构建的生成器二进制
 /genregistries
+
+# 服务器运行日志（默认 logs/；测试在包目录下也会创建）
+logs/

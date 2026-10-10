@@ -259,7 +259,7 @@ func TestLoadPlayerDataRejectsCorruptFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer instance.world.Close()
+	defer instance.testWorld().Close()
 	if err := os.WriteFile(filepath.Join(cfg.WorldDir, playerFileName), []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}

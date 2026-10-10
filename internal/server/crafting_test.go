@@ -18,7 +18,7 @@ func placeCraftingTable(t *testing.T, instance *Server) (int, int, int) {
 		t.Fatal("缺少工作台方块状态")
 	}
 	x, y, z := buildSpotNearSpawn(t, instance)
-	if !instance.world.SetBlock(x, y, z, state) {
+	if !instance.testWorld().SetBlock(x, y, z, state) {
 		t.Fatal("无法放置工作台")
 	}
 	return x, y, z

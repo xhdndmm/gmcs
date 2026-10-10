@@ -116,13 +116,14 @@ func main() {
 	itemsPath := flag.String("items", "", "服务端数据生成器输出的 reports/items.json 路径（食物与堆叠上限；可选）")
 	outPath := flag.String("out", "internal/registry/data_generated.go", "输出 Go 文件路径")
 	version := flag.String("version", "1.21.11", "Minecraft 版本（写入文件注释）")
+	statesOnly := flag.Bool("states-only", false, "仅从 -blocks 生成方块状态相关表（碰撞形状与属性状态），不需要 -jar 与 -reports")
 	flag.Parse()
-	if *jarPath == "" {
+	if *jarPath == "" && !*statesOnly {
 		fmt.Fprintln(os.Stderr, "错误：必须提供 -jar 参数（客户端 jar 路径）")
 		flag.Usage()
 		os.Exit(2)
 	}
-	if *reportsPath == "" {
+	if *reportsPath == "" && !*statesOnly {
 		fmt.Fprintln(os.Stderr, "错误：必须提供 -reports 参数（reports/registries.json 路径）")
 		flag.Usage()
 		os.Exit(2)
@@ -131,6 +132,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "错误：必须提供 -blocks 参数（reports/blocks.json 路径）")
 		flag.Usage()
 		os.Exit(2)
+	}
+
+	if *statesOnly {
+		stateData, err := loadBlockShapeData(*blocksPath)
+		if err != nil {
+			fatal("读取 blocks 形状数据：%v", err)
+		}
+		if err := writeBlockShapes(filepath.Dir(*outPath), *version, stateData); err != nil {
+			fatal("写入碰撞形状表：%v", err)
+		}
+		fmt.Printf("已生成碰撞形状表（%d 个方块）\n", len(stateData))
+		if err := writeBlockPropertyStates(filepath.Dir(*outPath), *version, stateData); err != nil {
+			fatal("写入方块属性状态表：%v", err)
+		}
+		return
 	}
 
 	reports, err := loadReports(*reportsPath)
@@ -170,6 +186,9 @@ func main() {
 		fatal("写入碰撞形状表：%v", err)
 	}
 	fmt.Printf("已生成碰撞形状表（%d 个方块）\n", len(blockShapeData))
+	if err := writeBlockPropertyStates(filepath.Dir(*outPath), *version, blockShapeData); err != nil {
+		fatal("写入方块属性状态表：%v", err)
+	}
 	if err := writeStaticIDs(filepath.Dir(*outPath), *version, generated.staticIDs); err != nil {
 		fatal("写入静态 ID 表：%v", err)
 	}

@@ -159,9 +159,26 @@ func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPack
 		expectPlayPacketObserved(t, conn, protocol.PlayPacketIDSetPlayerInventory, observe)
 	}
 	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDUpdateHealth, observe)
-	// 世界时间与经验条。
-	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDUpdateTime, observe)
-	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDSetExperience, observe)
+	// 世界时间与经验条：下界/末地为固定时间，不发送时间更新包，因此
+	// UpdateHealth 之后可能直接是经验条包。
+	for {
+		id, payload := readCompressedPacket(t, conn)
+		if observe != nil {
+			observe(id, payload)
+		}
+		if id == 0x2B {
+			replyKeepAlive(t, conn, payload)
+			continue
+		}
+		if id == protocol.PlayPacketIDUpdateTime {
+			expectPlayPacketObserved(t, conn, protocol.PlayPacketIDSetExperience, observe)
+			break
+		}
+		if id == protocol.PlayPacketIDSetExperience {
+			break
+		}
+		t.Fatalf("expected update time or experience packet, got %#x", id)
+	}
 	// 确认传送
 	confirm := protocol.AppendVarInt(nil, 0x00)
 	confirm = protocol.AppendVarInt(confirm, 1)
@@ -217,8 +234,8 @@ func TestMobCombatFlow(t *testing.T) {
 	player := findSession(t, instance, "Fighter")
 
 	// 在玩家旁边生成僵尸（1 格距离，在攻击范围内）。
-	spawnX, spawnY, spawnZ := instance.spawnPosition()
-	mob := instance.addMob(spawnX, spawnY, spawnZ+1)
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	mob := instance.addMob(world.DimensionOverworld, mobZombie, spawnX, spawnY, spawnZ+1)
 
 	spawnPacket := expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	_, offset, err := protocol.DecodeVarInt(spawnPacket)
@@ -264,7 +281,7 @@ func TestMobCombatFlow(t *testing.T) {
 	expectPlayPacket(t, conn, protocol.PlayPacketIDUpdateHealth)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSoundEffect)
 	health, _, _ := player.healthStatus()
-	if want := float32(maxPlayerHealth - mobAttackDamage); health != want {
+	if want := float32(maxPlayerHealth - mobKinds[mobZombie].damage); health != want {
 		t.Fatalf("player health = %v, want %v", health, want)
 	}
 
@@ -301,24 +318,24 @@ func TestMobAttackBlockedByWall(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Walled")
 	player := findSession(t, instance, "Walled")
 
-	spawnX, spawnY, spawnZ := instance.spawnPosition()
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	// 铺平玩家与生物之间的通道（新地形可能起伏/有植被），保证视线判定确定性。
 	baseX, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))
 	floorY := int(math.Floor(spawnY)) - 1
 	for dx := -1; dx <= 1; dx++ {
 		for dz := -1; dz <= 3; dz++ {
-			instance.world.SetBlock(baseX+dx, floorY, baseZ+dz, world.StoneBlock)
+			instance.testWorld().SetBlock(baseX+dx, floorY, baseZ+dz, world.StoneBlock)
 			for dy := 1; dy <= 3; dy++ {
-				instance.world.SetBlock(baseX+dx, floorY+dy, baseZ+dz, world.AirBlock)
+				instance.testWorld().SetBlock(baseX+dx, floorY+dy, baseZ+dz, world.AirBlock)
 			}
 		}
 	}
-	instance.addMob(spawnX, spawnY, spawnZ+2.4)
+	instance.addMob(world.DimensionOverworld, mobZombie, spawnX, spawnY, spawnZ+2.4)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 
 	// 在生物与玩家之间（z=1 列）的眼睛高度放置石头。
 	eyeY := int(math.Floor(spawnY + mobEyeHeight))
-	if !instance.world.SetBlock(baseX, eyeY, baseZ+1, world.StoneBlock) {
+	if !instance.testWorld().SetBlock(baseX, eyeY, baseZ+1, world.StoneBlock) {
 		t.Fatal("无法放置遮挡方块")
 	}
 	// 20 tick 后玩家仍不应受伤。
@@ -330,12 +347,12 @@ func TestMobAttackBlockedByWall(t *testing.T) {
 	}
 
 	// 移除遮挡后，抬手结束即可攻击。
-	instance.world.SetBlock(baseX, eyeY, baseZ+1, world.AirBlock)
+	instance.testWorld().SetBlock(baseX, eyeY, baseZ+1, world.AirBlock)
 	for i := 0; i < mobAttackWindupTicks+4; i++ {
 		instance.tick()
 	}
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAnimate)
-	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-mobAttackDamage {
+	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-mobKinds[mobZombie].damage {
 		t.Fatalf("player health = %v after removing the wall", health)
 	}
 }

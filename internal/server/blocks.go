@@ -82,30 +82,38 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	if _, ok := world.SectionIndex(action.Y); !ok {
 		return
 	}
-	current := s.world.BlockAt(action.X, action.Y, action.Z)
+	dim := player.dimensionID()
+	w := s.worldFor(dim)
+	current := w.BlockAt(action.X, action.Y, action.Z)
 	if current == world.AirBlock || current == world.WaterBlock || current == world.BedrockBlock {
 		return // 空气/水/基岩不可破坏
 	}
 	// 破坏容器方块：先关闭观察窗口，再把内容物掉落到世界中（与原版一致）。
 	if def, _, ok := s.containerForState(current); ok {
 		if def.IsFurnace {
-			s.destroyFurnace(action.X, action.Y, action.Z, def, player)
+			s.destroyFurnace(dim, player, action.X, action.Y, action.Z, def)
 		} else {
-			s.destroyContainer(action.X, action.Y, action.Z, player, def)
+			s.destroyContainer(dim, player, action.X, action.Y, action.Z, def)
 		}
 	}
-	if !s.world.SetBlock(action.X, action.Y, action.Z, world.AirBlock) {
+	if !w.SetBlock(action.X, action.Y, action.Z, world.AirBlock) {
 		return
 	}
-	s.broadcastBlockUpdate(action.X, action.Y, action.Z, int32(world.AirBlock))
+	s.broadcastBlockUpdate(dim, action.X, action.Y, action.Z, int32(world.AirBlock))
+	s.updateRedstoneAround(dim, action.X, action.Y, action.Z)
 	if player.gameModeID() != uint8(config.GameModeCreative) {
 		// 生存模式掉落（创意模式破坏不掉落物品，与原版一致）。
-		s.dropBlockItem(current, action.X, action.Y, action.Z)
+		s.dropBlockItem(dim, current, action.X, action.Y, action.Z)
 	}
 }
 
 // blockFaceOffsets 是 Use Item On 的六个朝向对应的放置偏移（-Y、+Y、-Z、+Z、-X、+X）。
 var blockFaceOffsets = [6][3]int{{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}}
+
+// itemBlockOverrides 是物品名 → 方块名的特例表（物品放置出的方块名不同）。
+var itemBlockOverrides = map[string]string{
+	"minecraft:redstone": "minecraft:redstone_wire",
+}
 
 // handleUseItemOn 处理 Use Item On（block_place）包：打开容器或放置方块。
 func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
@@ -119,8 +127,14 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		return
 	}
 	// 右键容器方块：打开窗口（潜行时改为放置，与原版一致）。
+	dim := player.dimensionID()
+	w := s.worldFor(dim)
 	if !player.sneaking {
-		current := s.world.BlockAt(use.X, use.Y, use.Z)
+		current := w.BlockAt(use.X, use.Y, use.Z)
+		// 拉杆/按钮：切换红石状态。
+		if s.handleRedstoneUse(w, use.X, use.Y, use.Z, current) {
+			return
+		}
 		if def, blockName, ok := s.containerForState(current); ok {
 			s.openContainer(player, use.X, use.Y, use.Z, def, blockName)
 			return
@@ -144,7 +158,7 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if _, ok := world.SectionIndex(placeY); !ok {
 		return
 	}
-	existing := s.world.BlockAt(placeX, placeY, placeZ)
+	existing := w.BlockAt(placeX, placeY, placeZ)
 	if existing != world.AirBlock && existing != world.WaterBlock {
 		return // 目标位置不可替换
 	}
@@ -158,15 +172,22 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	}
 	state, ok := registry.BlockStateIDs[name]
 	if !ok {
+		// 少数物品对应不同名的方块（如红石粉 → 红石线）。
+		if blockName, exists := itemBlockOverrides[name]; exists {
+			state, ok = registry.BlockStateIDs[blockName]
+		}
+	}
+	if !ok {
 		return // 手持物品不是可放置的方块
 	}
-	if !s.world.SetBlock(placeX, placeY, placeZ, state) {
+	if !w.SetBlock(placeX, placeY, placeZ, state) {
 		return
 	}
-	s.broadcastBlockUpdate(placeX, placeY, placeZ, int32(state))
+	s.broadcastBlockUpdate(dim, placeX, placeY, placeZ, int32(state))
+	s.updateRedstoneAround(dim, placeX, placeY, placeZ)
 	// 方块落入实体体积时把实体推到方块顶面（原版 pushEntitiesUp 行为）：
 	// 否则站在其上的玩家会嵌入方块并被反穿墙校验反复回拉。
-	s.pushEntitiesUp(placeX, placeY, placeZ, state)
+	s.pushEntitiesUp(dim, w, placeX, placeY, placeZ, state)
 	if player.gameModeID() != uint8(config.GameModeCreative) {
 		// 生存模式消耗一个物品并同步槽位（创意模式不消耗）。
 		stack.Count--
@@ -176,21 +197,21 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 }
 
 // pushEntitiesUp 把嵌入新放置方块 (x, y, z) 的实体向上推到方块顶面
-// （原版 Block.pushEntitiesUp 行为）。玩家/生物/掉落物都处理；
+// （原版 Block.pushEntitiesUp 行为）。玩家/生物/掉落物都处理（仅同维度）；
 // 上方被挡住时不推。被推起的玩家通过传送包同步客户端位置。
 // 仅由会话读循环（放置方块）调用；生物/掉落物字段在 entityMu 下修改。
-func (s *Server) pushEntitiesUp(x, y, z int, state uint16) {
+func (s *Server) pushEntitiesUp(dim world.Dimension, w *world.World, x, y, z int, state uint16) {
 	boxes := registry.BlockStateShape(state)
 	if len(boxes) == 0 {
 		return
 	}
 	for _, p := range s.playerSnapshot() {
-		if !p.isJoined() {
+		if !p.isJoined() || p.dimensionID() != dim {
 			continue
 		}
 		px, py, pz, yaw, pitch := p.playerPosition()
 		delta := pushUpDelta(playerBox(px, py, pz), x, y, z, boxes)
-		if delta <= 0 || s.world.Collides(playerBox(px, py+delta, pz)) {
+		if delta <= 0 || w.Collides(playerBox(px, py+delta, pz)) {
 			continue // 不相交或上方被挡住
 		}
 		p.setPlayerPosition(px, py+delta, pz, yaw, pitch)
@@ -203,8 +224,11 @@ func (s *Server) pushEntitiesUp(x, y, z int, state uint16) {
 	var moves []pushMove
 	s.entityMu.Lock()
 	for _, m := range s.mobs {
+		if m.Dim != dim {
+			continue
+		}
 		delta := pushUpDelta(mobBox(m.X, m.Y, m.Z), x, y, z, boxes)
-		if delta <= 0 || s.world.Collides(mobBox(m.X, m.Y+delta, m.Z)) {
+		if delta <= 0 || w.Collides(mobBox(m.X, m.Y+delta, m.Z)) {
 			continue
 		}
 		m.Y += delta
@@ -215,8 +239,11 @@ func (s *Server) pushEntitiesUp(x, y, z int, state uint16) {
 		})
 	}
 	for _, e := range s.items {
+		if e.Dim != dim {
+			continue
+		}
 		delta := pushUpDelta(itemBoxAt(e.X, e.Y, e.Z), x, y, z, boxes)
-		if delta <= 0 || s.world.Collides(itemBoxAt(e.X, e.Y+delta, e.Z)) {
+		if delta <= 0 || w.Collides(itemBoxAt(e.X, e.Y+delta, e.Z)) {
 			continue
 		}
 		e.Y += delta
@@ -228,7 +255,7 @@ func (s *Server) pushEntitiesUp(x, y, z int, state uint16) {
 	}
 	s.entityMu.Unlock()
 	for _, move := range moves {
-		s.writeToNearbyPlayers(move.packet, move.x, move.z, nil)
+		s.writeToNearbyPlayers(move.packet, dim, move.x, move.z, nil)
 	}
 }
 
@@ -299,13 +326,13 @@ func (s *Server) handleSetCreativeSlot(player *session, slot int, itemID int32, 
 	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
 }
 
-// broadcastBlockUpdate 把方块更新发送给附近已完成进入世界的玩家。
-func (s *Server) broadcastBlockUpdate(x, y, z int, state int32) {
+// broadcastBlockUpdate 把方块更新发送给指定维度内附近的玩家。
+func (s *Server) broadcastBlockUpdate(dim world.Dimension, x, y, z int, state int32) {
 	packet := protocol.EncodeBlockUpdate(x, y, z, state)
 	bx := float64(x) + 0.5
 	bz := float64(z) + 0.5
 	for _, player := range s.playerSnapshot() {
-		if !player.isJoined() {
+		if !player.isJoined() || player.dimensionID() != dim {
 			continue
 		}
 		px, _, pz, _, _ := player.playerPosition()

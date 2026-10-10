@@ -111,15 +111,17 @@ func TestPlacementPushesPlayerUp(t *testing.T) {
 	// 往玩家脚下的格子放石头（点击下方方块的顶面）。
 	sendUseItemOn(t, conn, baseX, baseY-1, baseZ, 1)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDBlockUpdate)
-	if got := instance.world.BlockAt(baseX, baseY, baseZ); got != world.StoneBlock {
+	if got := instance.testWorld().BlockAt(baseX, baseY, baseZ); got != world.StoneBlock {
 		t.Fatalf("placed block = %d, want stone", got)
 	}
 	// 玩家应被推到石头顶面（y = baseY+1），水平位置不变。
+	// 位置包在方块更新之后发送，等待它到达再断言服务器侧位置（避免与推起
+	// 执行时序竞争）。
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSynchronizePlayerPos)
 	_, gotY, _, _, _ := player.playerPosition()
 	if math.Abs(gotY-float64(baseY+1)) > 1e-9 {
 		t.Fatalf("player y = %v, want %v", gotY, baseY+1)
 	}
-	expectPlayPacket(t, conn, protocol.PlayPacketIDSynchronizePlayerPos)
 	// 推起后的移动不应被回拉（不会卡在方块里）。/list 往返作为处理屏障。
 	sendPlayerPosition(t, conn, x+1, float64(baseY+1), z, true)
 	sendChatCommand(t, conn, "/list")
@@ -140,27 +142,27 @@ func TestCreativeBlockBreakAndPlace(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Builder")
 
 	x, y, z := findDigTarget(t, instance)
-	original := instance.world.BlockAt(x, y, z)
+	original := instance.testWorld().BlockAt(x, y, z)
 
 	// 破坏：创意模式在 START_DESTROY_BLOCK 立即生效。
 	sendPlayerAction(t, conn, 0, x, y, z, 1)
 	expectBlockUpdate(t, conn, x, y, z, int32(world.AirBlock))
-	if got := instance.world.BlockAt(x, y, z); got != world.AirBlock {
+	if got := instance.testWorld().BlockAt(x, y, z); got != world.AirBlock {
 		t.Fatalf("破坏后方块 = %d, want 空气", got)
 	}
 
 	// 放置：点击下方方块的顶面，把石头放回刚挖掉的位置（快捷栏 0 槽的初始石头）。
 	sendUseItemOn(t, conn, x, y-1, z, 1)
 	expectBlockUpdate(t, conn, x, y, z, int32(world.StoneBlock))
-	if got := instance.world.BlockAt(x, y, z); got != world.StoneBlock {
+	if got := instance.testWorld().BlockAt(x, y, z); got != world.StoneBlock {
 		t.Fatalf("放置后方块 = %d, want 石头（原方块 %d）", got, original)
 	}
 
 	// 距离校验：远处的破坏请求被忽略。
 	fx, fy, fz := x+100, y, z+100
-	before := instance.world.BlockAt(fx, fy, fz)
+	before := instance.testWorld().BlockAt(fx, fy, fz)
 	sendPlayerAction(t, conn, 0, fx, fy, fz, 1)
-	if got := instance.world.BlockAt(fx, fy, fz); got != before {
+	if got := instance.testWorld().BlockAt(fx, fy, fz); got != before {
 		t.Fatal("超出距离的破坏不应生效")
 	}
 }
@@ -189,7 +191,7 @@ func TestCreativeInventoryAndPlace(t *testing.T) {
 
 	sendUseItemOn(t, conn, x, y-1, z, 1)
 	expectBlockUpdate(t, conn, x, y, z, int32(world.DirtBlock))
-	if got := instance.world.BlockAt(x, y, z); got != world.DirtBlock {
+	if got := instance.testWorld().BlockAt(x, y, z); got != world.DirtBlock {
 		t.Fatalf("放置后方块 = %d, want 泥土", got)
 	}
 }
@@ -216,7 +218,7 @@ func TestSurvivalBlockPlaceConsumesItem(t *testing.T) {
 	// 第二个目标列：物品已耗尽，放置不应生效。
 	x2, y2, z2 := 0, 0, 0
 	for _, cx := range []int{x + 1, x + 2, x + 3} {
-		if state, cy, ok := instance.world.TopBlock(cx, z); ok && state != world.WaterBlock {
+		if state, cy, ok := instance.testWorld().TopBlock(cx, z); ok && state != world.WaterBlock {
 			x2, y2, z2 = cx, cy, z
 			break
 		}
@@ -227,7 +229,7 @@ func TestSurvivalBlockPlaceConsumesItem(t *testing.T) {
 	sendPlayerAction(t, conn, 2, x2, y2, z2, 1)
 	expectBlockUpdate(t, conn, x2, y2, z2, int32(world.AirBlock))
 	sendUseItemOn(t, conn, x2, y2-1, z2, 1)
-	if got := instance.world.BlockAt(x2, y2, z2); got != world.AirBlock {
+	if got := instance.testWorld().BlockAt(x2, y2, z2); got != world.AirBlock {
 		t.Fatalf("物品耗尽后不应能放置方块（方块 = %d）", got)
 	}
 }

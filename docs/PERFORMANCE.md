@@ -31,16 +31,20 @@ go test -run=^$ -bench=. -benchmem ./...
 
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | world | ≈223 µs/op | 9,444 B/op | 33 allocs/op |
-| `BenchmarkEncodeChunkDataPacket` | world | ≈40.5 µs/op | 65,870 B/op | 1 allocs/op |
-| `BenchmarkAppendChunkDataPacketReuse` | world | ≈30.3 µs/op | 0 B/op | 0 allocs/op |
-| `BenchmarkEncodeChunkPayload` | world | ≈50.4 µs/op | 81,920 B/op | 1 allocs/op |
-| `BenchmarkEncodeCompressedChunkPayload` | world | ≈190 µs/op | ≈126 KB/op | 2–3 allocs/op |
+| `BenchmarkGenerateChunk` | world | ≈466 µs/op | 22,615 B/op | 46 allocs/op |
+| `BenchmarkEncodeChunkDataPacket` | world | ≈81.9 µs/op | 159,676 B/op | 2 allocs/op |
+| `BenchmarkAppendChunkDataPacketReuse` | world | ≈49.0 µs/op | 6 B/op | 0 allocs/op |
+| `BenchmarkEncodeChunkPayload` | world | ≈65.1 µs/op | 98,304 B/op | 1 allocs/op |
+| `BenchmarkEncodeCompressedChunkPayload` | world | ≈267 µs/op | ≈112 KB/op | 2 allocs/op |
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈6.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈53.7 ns/op | 80 B/op | 1 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈70–75 µs/op | 17–250 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈6.2 µs/op | 1,277 B/op | 5 allocs/op |
-| `BenchmarkItemTick`（128 掉落物） | server | ≈9.5 µs/op | 1 B/op | 0 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈7.3 µs/op | 2,574 B/op | 6 allocs/op |
+| `BenchmarkItemTick`（128 掉落物） | server | ≈80 µs/op | 129 B/op | 2 allocs/op |
+
+注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
+增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
+实体包与压缩路径与上一批持平。
 
 各基准覆盖的内容：
 
@@ -63,7 +67,7 @@ go test -run=^$ -bench=. -benchmem ./...
   重力与摩擦、合并扫描与拾取判定；场景中无玩家（走不拾取分支）。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
-按编码 30 µs/区块计算约 13 ms 纯编码时间（不含地形生成与网络 IO）。
+按编码 49 µs/区块计算约 22 ms 纯编码时间（不含地形生成与网络 IO）。
 
 ## 3. 优化记录
 
@@ -277,7 +281,8 @@ go run ./cmd/gmcsload -addr 127.0.0.1:25599 -players 50 -duration 20s -ramp 20ms
 - 进入世界几乎瞬时（视距 6 共 169 区块），未出现登录风暴拥塞；此结论**不适用**于
 更大的视距与更多并发（区块发送仍为同步批量，见已知限制）。
 - 本数据为**单机 loopback** 结果，客户端与服务端共享同一台机器的 CPU/内存，
-不代表真实网络环境；未测长期运行、真实客户端渲染与更多玩家数（仍见第 4 节）。
+不代表真实网络环境；长期运行与更多玩家数已在本批补测（100 玩家 5 分钟，
+见 3.13），真实客户端渲染仍未验证（仍见第 4 节）。
 - 复跑（同一命令、当前构建含新 PGO）：117,349 个包 / 487 MiB、服务器 CPU 2.22 s/20 s、
 VmRSS ≈ 74 MB（与上表差异在 ±10% 以内，属单次运行波动）。
 
@@ -438,9 +443,52 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 正确性验证：`go test ./...`、`go test -race ./...` 全部通过（新增缓存共享/失效、
 命中率、限流与注册表共享测试）。
 
+### 3.13 地形/维度批次与异步预生成（本批，实测）
+
+本批大幅扩展了游戏内容（洞穴/矿物/24 群系/河流/深板岩、下界与末地、四种生物、
+红石、命令与日志），因此分为“内容量驱动的变化”与“结构性优化”两类记录。
+
+**1. 异步区块预生成（internal/world）**
+
+进入世界/跨区块发送前，`syncChunks` 先把待发送区块坐标交给预生成队列：
+
+- 8 个 worker（上限 `AsyncPrefetchWorkers`，受 GOMAXPROCS 限制）；
+- 请求去重：同一坐标只排队/生成一次（`pending map[ChunkPos]*chunkFuture`）；
+- 主流程对每个区块等待 future 后取回，异步与同步生成结果逐格一致（有单测断言）；
+- `Close` 会解析悬挂请求，避免关闭时等待死锁。
+
+效果：区块生成从发送临界路径旁移（并发填满多核），首次进入大地形世界
+不再串行等待；50/100 玩家压测中进入世界耗时保持 1 ms（p95 1 ms）。
+
+**2. 区块编码快路径（内容量增长后的回归修复）**
+
+洞穴/矿物/深板岩使用大量新方块状态，调色板变深、位宽变大。编码器新增快路径：
+当 section 存储位宽与网络位宽一致且 64%bits == 0 时直接按 word 复制，
+避免逐格 unpack→pack（此时编码输出从 158 KB 量级回到 ≈82 µs/op、2 allocs/op）。
+
+**3. 单机压测（loopback，视距默认 10）**
+
+| 场景 | CPU 时间 | VmHWM | VmRSS | 流量 | 收包 |
+| --- | --- | --- | --- | --- | --- |
+| 优化前基线 50 玩家 60 s（旧地形） | 3.47 s | 55.4 MB | 44.9 MB | 1353.9 MiB | 885,737 |
+| 本批 50 玩家 60 s | 4.05 s | 59.6 MB | 59.6 MB | 1614.6 MiB | 933,109 |
+| 本批 100 玩家 5 分钟 | 88.6 s | 63.0 MB | 56.1 MB | 4050.5 MiB | 32,871,919 |
+
+说明：
+
+- 50 玩家场景流量 +19%（区块内容变大，属内容量驱动）；CPU +17%（编码/压缩
+  数据量变大 + 生物/红石 tick），内存 +7.6%（区块存储内容变多）。
+- 100 玩家 5 分钟：全部 100 个客户端成功进入世界（平均 1 ms、p95 1 ms），
+  无失败断开；服务器平均 CPU ≈0.30 核（88.6 s / 300 s），峰值内存 63 MB，
+  常驻 56 MB、线程 35；流量 4.0 GiB（约 13.8 MB/s）。
+- 包类型（字节）：ChunkData 75.9%、EntityPositionSync 22.6%；包数上实体同步
+  与头部朝向占 99%。
+- 仍为单机 loopback（客户端与服务端共享 CPU/内存），不代表真实网络环境。
+
 ## 4. 尚未覆盖
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
-  ——已用 `cmd/gmcsload` 做单机 50 玩家 loopback 压测（见 3.7），真实网络 / 更高并发 / 长时间运行仍待验证
+  ——已用 `cmd/gmcsload` 做单机 50 玩家与 100 玩家 × 5 分钟 loopback 压测
+  （见 3.7、3.13），真实网络 / 真实客户端渲染仍待验证
 - `go tool trace` 调度与阻塞分析
 - 区块保存/加载（区域文件读写）路径的 benchmark
 - 端到端连接压测（真实 socket + 加密 + 多包交织；当前仅覆盖编解码与压缩）

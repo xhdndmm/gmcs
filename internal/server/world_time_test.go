@@ -6,6 +6,8 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
+
+	"gmcs/internal/world"
 )
 
 // TestWorldTimeBroadcast 验证世界时间推进与 Update Time 同步包。
@@ -88,7 +90,7 @@ func TestMobKillRewardsExperience(t *testing.T) {
 	x, y, z, _, _ := player.playerPosition()
 
 	// 在玩家面前生成一只僵尸，并把生命降到一次攻击即可击杀。
-	mob := instance.addMob(x+1, y, z)
+	mob := instance.addMob(world.DimensionOverworld, mobZombie, x+1, y, z)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	instance.entityMu.Lock()
 	mob.Health = playerAttackDamage
@@ -120,8 +122,8 @@ func TestMobKillRewardsExperience(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != zombieExperience || level != 0 {
-		t.Fatalf("experience total/level = %d/%d, want %d/0", total, level, zombieExperience)
+	if total != mobKinds[mobZombie].experience || level != 0 {
+		t.Fatalf("experience total/level = %d/%d, want %d/0", total, level, mobKinds[mobZombie].experience)
 	}
 
 	// 掉落物：腐肉数量 0–2（外加可能的稀有掉落）。

@@ -6,6 +6,8 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
+
+	"gmcs/internal/world"
 )
 
 // slotCount 解析 Set Player Inventory 包中的堆叠数量（字段：包 ID、槽位、数量）。
@@ -99,7 +101,7 @@ func TestItemPickup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if instance.spawnItem(stone, x, y, z, 0, 0, 0, 0) == nil {
+	if instance.spawnItem(world.DimensionOverworld, stone, x, y, z, 0, 0, 0, 0) == nil {
 		t.Fatal("spawnItem returned nil")
 	}
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
@@ -146,10 +148,10 @@ func TestItemMergeOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance.spawnItem(first, x, y, z, 0, 0, 0, itemPickupDelayPlayer)
+	instance.spawnItem(world.DimensionOverworld, first, x, y, z, 0, 0, 0, itemPickupDelayPlayer)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
-	instance.spawnItem(second, x, y, z, 0, 0, 0, itemPickupDelayPlayer)
+	instance.spawnItem(world.DimensionOverworld, second, x, y, z, 0, 0, 0, itemPickupDelayPlayer)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
 
@@ -185,7 +187,7 @@ func TestItemDespawnAndVoid(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 即将过期：下一帧移除。
-	e := instance.spawnItem(stack, x, y+3, z, 0, 0, 0, 0)
+	e := instance.spawnItem(world.DimensionOverworld, stack, x, y+3, z, 0, 0, 0, 0)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
 	instance.entityMu.Lock()
@@ -195,7 +197,7 @@ func TestItemDespawnAndVoid(t *testing.T) {
 	expectPlayPacket(t, conn, protocol.PlayPacketIDRemoveEntities)
 
 	// 掉入虚空：位置低于世界底部，直接移除。
-	if instance.spawnItem(stack, x, float64(-96), z, 0, -1, 0, 0) == nil {
+	if instance.spawnItem(world.DimensionOverworld, stack, x, float64(-96), z, 0, -1, 0, 0) == nil {
 		t.Fatal("spawnItem returned nil for void item")
 	}
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)

@@ -13,17 +13,27 @@ import (
 
 	"gmcs/internal/item"
 	"gmcs/internal/registry"
+	"gmcs/internal/world"
 )
 
-// 实体持久化：世界目录下的 entities.json（生物 + 掉落物）。
+// 实体持久化：各维度世界目录下的 entities.json（生物 + 掉落物）。
 //
 // 说明：gmcs 的区块存储是自定义格式（不含实体），因此实体单独保存在
-// 世界目录的 entities.json 中；文件采用“临时文件 + 重命名”的原子写入。
-// 恢复时保留类型、位置、朝向、生命、物品堆叠与 UUID（实体 ID 重新分配）；
-// 掉落物的速度不保存（重启后停在保存位置）。
+// 维度目录的 entities.json 中（主世界为世界目录，下界/末地为其子目录）；
+// 文件采用“临时文件 + 重命名”的原子写入。恢复时保留类型、位置、朝向、
+// 生命、物品堆叠与 UUID（实体 ID 重新分配）；掉落物的速度不保存。
 
 // entityFileName 是世界目录中实体数据的文件名。
 const entityFileName = "entities.json"
+
+// entityFilePath 返回维度实体数据的文件路径。
+func (s *Server) entityFilePath(dim world.Dimension) string {
+	dir := s.config.WorldDir
+	if sub := world.DimensionDir(dim); sub != "" {
+		dir = filepath.Join(dir, sub)
+	}
+	return filepath.Join(dir, entityFileName)
+}
 
 type entityFile struct {
 	Mobs  []mobRecord  `json:"mobs"`
@@ -51,16 +61,31 @@ type mobRecord struct {
 	Health float32 `json:"health"`
 }
 
-// saveEntities 把世界中的生物与掉落物写入世界目录（原子写入）。
+// saveEntities 把全部维度中的生物与掉落物写入各自目录（原子写入）。
 func (s *Server) saveEntities() error {
+	type dimFile struct {
+		dim   world.Dimension
+		mobs  []mobRecord
+		items []itemRecord
+	}
+	files := make(map[world.Dimension]*dimFile, 3)
+	get := func(dim world.Dimension) *dimFile {
+		file := files[dim]
+		if file == nil {
+			file = &dimFile{dim: dim}
+			files[dim] = file
+		}
+		return file
+	}
+
 	s.entityMu.Lock()
-	records := make([]mobRecord, 0, len(s.mobs))
 	for _, m := range s.mobs {
 		if m.Dead {
 			continue
 		}
-		records = append(records, mobRecord{
-			Type:   zombieTypeName,
+		file := get(m.Dim)
+		file.mobs = append(file.mobs, mobRecord{
+			Type:   mobKinds[m.Kind].name,
 			UUID:   hex.EncodeToString(m.UUID[:]),
 			X:      m.X,
 			Y:      m.Y,
@@ -70,13 +95,13 @@ func (s *Server) saveEntities() error {
 			Health: m.Health,
 		})
 	}
-	items := make([]itemRecord, 0, len(s.items))
 	for _, e := range s.items {
 		name, ok := registry.ItemName(e.Stack.ItemID)
 		if !ok {
 			continue
 		}
-		items = append(items, itemRecord{
+		file := get(e.Dim)
+		file.items = append(file.items, itemRecord{
 			Item:  name,
 			Count: e.Stack.Count,
 			UUID:  hex.EncodeToString(e.UUID[:]),
@@ -87,27 +112,38 @@ func (s *Server) saveEntities() error {
 	}
 	s.entityMu.Unlock()
 
-	content, err := json.MarshalIndent(entityFile{Mobs: records, Items: items}, "", "  ")
-	if err != nil {
-		return err
+	var firstErr error
+	for _, file := range files {
+		content, err := json.MarshalIndent(entityFile{Mobs: file.mobs, Items: file.items}, "", "  ")
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		content = append(content, '\n')
+		path := s.entityFilePath(file.dim)
+		temp := path + ".tmp"
+		if err := os.WriteFile(temp, content, 0o644); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("写入 %s：%w", temp, err)
+			}
+			continue
+		}
+		if err := os.Rename(temp, path); err != nil {
+			_ = os.Remove(temp)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("重命名 %s：%w", path, err)
+			}
+		}
 	}
-	content = append(content, '\n')
-	path := filepath.Join(s.config.WorldDir, entityFileName)
-	temp := path + ".tmp"
-	if err := os.WriteFile(temp, content, 0o644); err != nil {
-		return fmt.Errorf("写入 %s：%w", temp, err)
-	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
-		return fmt.Errorf("重命名 %s：%w", path, err)
-	}
-	return nil
+	return firstErr
 }
 
-// loadEntities 从世界目录恢复生物与掉落物。文件不存在时不做任何事；
+// loadEntitiesFor 从维度的实体文件恢复生物与掉落物。文件不存在时不做任何事；
 // 未知类型与损坏的条目会被跳过（只记录警告）。
-func (s *Server) loadEntities() error {
-	path := filepath.Join(s.config.WorldDir, entityFileName)
+func (s *Server) loadEntitiesFor(dim world.Dimension) error {
+	path := s.entityFilePath(dim)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -120,12 +156,23 @@ func (s *Server) loadEntities() error {
 		return fmt.Errorf("解析 %s：%w", path, err)
 	}
 
+	kindByName := make(map[string]mobKind, len(mobKinds))
+	for kind, stats := range mobKinds {
+		kindByName[stats.name] = kind
+	}
+
 	restored := 0
 	restoredItems := 0
 	s.entityMu.Lock()
 	for _, record := range file.Mobs {
-		if record.Type != zombieTypeName {
+		kind, ok := kindByName[record.Type]
+		if !ok {
 			slog.Warn("跳过不支持的生物类型", "type", record.Type)
+			continue
+		}
+		typeID, ok := s.mobTypeIDs[kind]
+		if !ok {
+			slog.Warn("生物类型注册表缺失，跳过", "type", record.Type)
 			continue
 		}
 		uuid, uuidErr := parseMobUUID(record.UUID)
@@ -133,14 +180,17 @@ func (s *Server) loadEntities() error {
 			slog.Warn("生物的 UUID 无效，重新生成", "uuid", record.UUID, "error", uuidErr)
 			uuid = newEntityUUID()
 		}
+		stats := mobKinds[kind]
 		health := record.Health
 		if health <= 0 {
-			health = zombieMaxHealth
+			health = stats.health
 		}
 		m := &mob{
 			ID:     s.entityIDs.Add(1),
 			UUID:   uuid,
-			TypeID: s.zombieTypeID,
+			TypeID: typeID,
+			Kind:   kind,
+			Dim:    dim,
 			X:      record.X,
 			Y:      record.Y,
 			Z:      record.Z,
@@ -168,6 +218,7 @@ func (s *Server) loadEntities() error {
 			ID:               s.entityIDs.Add(1),
 			UUID:             uuid,
 			Stack:            stack,
+			Dim:              dim,
 			X:                record.X,
 			Y:                record.Y,
 			Z:                record.Z,
@@ -178,10 +229,10 @@ func (s *Server) loadEntities() error {
 	}
 	s.entityMu.Unlock()
 	if restored > 0 {
-		slog.Info("restored mobs from disk", "count", restored)
+		slog.Info("restored mobs from disk", "dimension", dim, "count", restored)
 	}
 	if restoredItems > 0 {
-		slog.Info("restored items from disk", "count", restoredItems)
+		slog.Info("restored items from disk", "dimension", dim, "count", restoredItems)
 	}
 	return nil
 }

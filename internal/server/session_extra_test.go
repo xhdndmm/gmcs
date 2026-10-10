@@ -167,8 +167,8 @@ func TestMobSideStepAvoidance(t *testing.T) {
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Blocked")
 
-	spawnX, spawnY, spawnZ := instance.spawnPosition()
-	mob := instance.addMob(spawnX, spawnY, spawnZ+1.9)
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	mob := instance.addMob(world.DimensionOverworld, mobZombie, spawnX, spawnY, spawnZ+1.9)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 
 	// 铺平生物周围（新地形可能起伏/有植被），再立一道两格高的墙。
@@ -177,18 +177,18 @@ func TestMobSideStepAvoidance(t *testing.T) {
 	baseY := int(math.Floor(spawnY)) - 1
 	for dx := -2; dx <= 2; dx++ {
 		for dz := -2; dz <= 3; dz++ {
-			instance.world.SetBlock(blockX+dx, baseY, blockZ+dz, world.StoneBlock)
+			instance.testWorld().SetBlock(blockX+dx, baseY, blockZ+dz, world.StoneBlock)
 			for dy := 1; dy <= 3; dy++ {
-				instance.world.SetBlock(blockX+dx, baseY+dy, blockZ+dz, world.AirBlock)
+				instance.testWorld().SetBlock(blockX+dx, baseY+dy, blockZ+dz, world.AirBlock)
 			}
 		}
 	}
-	instance.world.SetBlock(blockX, baseY+1, blockZ+1, world.StoneBlock)
-	instance.world.SetBlock(blockX, baseY+2, blockZ+1, world.StoneBlock)
+	instance.testWorld().SetBlock(blockX, baseY+1, blockZ+1, world.StoneBlock)
+	instance.testWorld().SetBlock(blockX, baseY+2, blockZ+1, world.StoneBlock)
 
 	// 直接调用侧移：应能找到合法落点并移动。
 	instance.entityMu.Lock()
-	moved := instance.trySideStep(mob)
+	moved := instance.trySideStep(instance.testWorld(), mob)
 	instance.entityMu.Unlock()
 	if !moved {
 		t.Fatal("expected side step to find a valid position")

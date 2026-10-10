@@ -3,12 +3,16 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
 
 	"gmcs/internal/config"
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
+	"gmcs/internal/registry"
+	"gmcs/internal/world"
 )
 
 // 命令系统：命令表（名称、参数、权限等级与权限节点）、权限判定、
@@ -37,10 +41,19 @@ type commandSpec struct {
 var commands = []commandSpec{
 	{Name: "help"},
 	{Name: "list"},
+	{Name: "spawn"},
+	{Name: "seed", Level: 2, Node: "gmcs.command.seed"},
 	{Name: "say", ArgName: "message", Level: 2, Node: "gmcs.command.say"},
 	{Name: "gamemode", ArgName: "mode", ArgParser: protocol.GameModeParser, Level: 2, Node: "gmcs.command.gamemode"},
+	{Name: "tp", ArgName: "target", Level: 2, Node: "gmcs.command.tp"},
+	{Name: "give", ArgName: "item", Level: 2, Node: "gmcs.command.give"},
+	{Name: "time", ArgName: "value", Level: 2, Node: "gmcs.command.time"},
+	{Name: "xp", ArgName: "amount", Level: 2, Node: "gmcs.command.xp"},
+	{Name: "clear", ArgName: "target", Level: 2, Node: "gmcs.command.clear"},
 	{Name: "kick", ArgName: "player", Level: 3, Node: "gmcs.command.kick"},
-	{Name: "spawn"},
+	{Name: "kill", ArgName: "target", Level: 3, Node: "gmcs.command.kill"},
+	{Name: "dimension", ArgName: "name", Level: 3, Node: "gmcs.command.dimension"},
+	{Name: "save-all", Level: 3, Node: "gmcs.command.save-all"},
 }
 
 // commandByName 按名查找命令。
@@ -176,6 +189,7 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 		player.tryWrite(protocol.EncodeSystemChat(permissionDeniedMessage(command)))
 		return
 	}
+	s.auditLog("command", "player", player.name, "command", commandLine)
 	switch name {
 	case "help":
 		player.tryWrite(protocol.EncodeSystemChat(s.helpText(player)))
@@ -183,8 +197,10 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 		names := s.onlineNames()
 		player.tryWrite(protocol.EncodeSystemChat(fmt.Sprintf(
 			"当前有 %d/%d 名玩家在线：%s", len(names), s.config.MaxPlayers, strings.Join(names, ", "))))
+	case "seed":
+		player.tryWrite(protocol.EncodeSystemChat(fmt.Sprintf("世界种子：%d", s.config.WorldSeed)))
 	case "say":
-		message := strings.TrimSpace(strings.TrimPrefix(commandLine, fields[0]))
+		message := commandArgument(commandLine, fields)
 		if message == "" {
 			player.tryWrite(protocol.EncodeSystemChat("用法：/say <消息>"))
 			return
@@ -194,7 +210,7 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 	case "spawn":
 		player.teleportToSpawn()
 	case "gamemode":
-		argument := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(commandLine, fields[0])))
+		argument := strings.ToLower(commandArgument(commandLine, fields))
 		if argument == "" {
 			player.tryWrite(protocol.EncodeSystemChat("用法：/gamemode <survival|creative|adventure|spectator>"))
 			return
@@ -209,8 +225,29 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 		player.tryWrite(protocol.EncodeGameEvent(3, float32(mode)))
 		player.tryWrite(protocol.EncodeSystemChat("已将你的游戏模式设为 " + argument))
 		slog.Info("game mode changed", "name", player.name, "mode", argument)
+	case "tp":
+		s.handleTeleportCommand(player, commandArgument(commandLine, fields))
+	case "give":
+		s.handleGiveCommand(player, commandArgument(commandLine, fields))
+	case "time":
+		s.handleTimeCommand(player, commandArgument(commandLine, fields))
+	case "xp":
+		s.handleXPCommand(player, commandArgument(commandLine, fields))
+	case "clear":
+		s.handleClearCommand(player, commandArgument(commandLine, fields))
+	case "kill":
+		s.handleKillCommand(player, commandArgument(commandLine, fields))
+	case "dimension":
+		s.handleDimensionCommand(player, commandArgument(commandLine, fields))
+	case "save-all":
+		if err := s.saveAllWorlds(); err != nil {
+			player.tryWrite(protocol.EncodeSystemChat("保存失败：" + err.Error()))
+			return
+		}
+		player.tryWrite(protocol.EncodeSystemChat("已保存全部世界。"))
+		slog.Info("worlds saved", "by", player.name)
 	case "kick":
-		targetName := strings.TrimSpace(strings.TrimPrefix(commandLine, fields[0]))
+		targetName := commandArgument(commandLine, fields)
 		if targetName == "" {
 			player.tryWrite(protocol.EncodeSystemChat("用法：/kick <玩家名>"))
 			return
@@ -225,7 +262,278 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 		_ = victim.conn.Close()
 		s.broadcastPacket(protocol.EncodeSystemChat(victim.name + " was kicked by " + player.name))
 		slog.Info("player kicked", "name", victim.name, "by", player.name)
+		s.auditLog("kick", "player", victim.name, "by", player.name)
 	}
+}
+
+// commandArgument 返回命令文本中第一个空格之后的全部内容（去掉首尾空白）。
+func commandArgument(commandLine string, fields []string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(commandLine), fields[0]))
+}
+
+// handleTeleportCommand 实现 /tp：
+//
+//	/tp <x> <y> <z>       传送到坐标（当前维度）
+//	/tp <玩家>            传送到该玩家所在位置与维度
+func (s *Server) handleTeleportCommand(player *session, argument string) {
+	if argument == "" {
+		player.tryWrite(protocol.EncodeSystemChat("用法：/tp <x> <y> <z> 或 /tp <玩家>"))
+		return
+	}
+	fields := strings.Fields(argument)
+	if len(fields) == 3 {
+		x, errX := strconv.ParseFloat(fields[0], 64)
+		y, errY := strconv.ParseFloat(fields[1], 64)
+		z, errZ := strconv.ParseFloat(fields[2], 64)
+		if errX != nil || errY != nil || errZ != nil || math.IsNaN(x) || math.IsNaN(y) || math.IsNaN(z) {
+			player.tryWrite(protocol.EncodeSystemChat("坐标无效：/tp <x> <y> <z>"))
+			return
+		}
+		dim := player.dimensionID()
+		if !s.insideBorder(x, z) {
+			x = math.Max(-s.borderHalfSize, math.Min(s.borderHalfSize, x))
+			z = math.Max(-s.borderHalfSize, math.Min(s.borderHalfSize, z))
+		}
+		y = math.Max(float64(world.WorldMinY), math.Min(float64(world.WorldMinY+world.WorldHeight-2), y))
+		if err := player.teleportTo(dim, x, y, z, 0, 0); err != nil {
+			player.tryWrite(protocol.EncodeSystemChat("传送失败。"))
+		}
+		return
+	}
+	if len(fields) == 1 {
+		target := s.findJoinedPlayer(fields[0])
+		if target == nil {
+			player.tryWrite(protocol.EncodeSystemChat("玩家不在线：" + fields[0]))
+			return
+		}
+		tx, ty, tz, yaw, pitch := target.playerPosition()
+		if err := player.teleportTo(target.dimensionID(), tx, ty, tz, yaw, pitch); err != nil {
+			player.tryWrite(protocol.EncodeSystemChat("传送失败。"))
+		}
+		return
+	}
+	player.tryWrite(protocol.EncodeSystemChat("用法：/tp <x> <y> <z> 或 /tp <玩家>"))
+}
+
+// resolveItemName 解析命令中的物品名：接受带前缀（minecraft:stone）或
+// 不带前缀（stone）的写法；返回注册表物品 ID。
+func resolveItemName(name string) (int32, string, bool) {
+	trimmed := strings.TrimSpace(strings.ToLower(name))
+	if trimmed == "" {
+		return 0, "", false
+	}
+	candidates := []string{trimmed}
+	if !strings.Contains(trimmed, ":") {
+		candidates = append(candidates, "minecraft:"+trimmed)
+	}
+	for _, candidate := range candidates {
+		if id, err := registry.ItemID(candidate); err == nil {
+			return id, candidate, true
+		}
+	}
+	return 0, "", false
+}
+
+// handleGiveCommand 实现 /give <物品> [数量]：把物品放入物品栏，
+// 放不下的部分掉落在脚下。
+func (s *Server) handleGiveCommand(player *session, argument string) {
+	fields := strings.Fields(argument)
+	if len(fields) == 0 || len(fields) > 2 {
+		player.tryWrite(protocol.EncodeSystemChat("用法：/give <物品> [数量]"))
+		return
+	}
+	count := int32(1)
+	if len(fields) == 2 {
+		parsed, err := strconv.ParseInt(fields[1], 10, 32)
+		if err != nil || parsed < 1 || parsed > 6400 {
+			player.tryWrite(protocol.EncodeSystemChat("数量无效（1–6400）。"))
+			return
+		}
+		count = int32(parsed)
+	}
+	_, name, ok := resolveItemName(fields[0])
+	if !ok {
+		player.tryWrite(protocol.EncodeSystemChat("未知物品：" + fields[0]))
+		return
+	}
+	stack, err := item.FromName(name, count)
+	if err != nil {
+		player.tryWrite(protocol.EncodeSystemChat("无法创建物品：" + err.Error()))
+		return
+	}
+	remaining, changed := player.inventory.Add(stack)
+	for _, slot := range changed {
+		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), player.inventory.Get(slot).AppendSlot(nil)))
+	}
+	if remaining > 0 {
+		x, y, z, _, _ := player.playerPosition()
+		stack.Count = remaining
+		s.spawnItem(player.dimensionID(), stack, x, y+0.5, z, 0, 0, 0, itemPickupDelayPlayer)
+	}
+}
+
+// handleTimeCommand 实现 /time set <day|night|noon|midnight|<tick>>、
+// /time add <tick> 与 /time query。
+func (s *Server) handleTimeCommand(player *session, argument string) {
+	fields := strings.Fields(strings.ToLower(argument))
+	if len(fields) == 0 {
+		player.tryWrite(protocol.EncodeSystemChat("用法：/time set <day|night|noon|midnight|tick> | /time add <tick> | /time query"))
+		return
+	}
+	switch fields[0] {
+	case "query":
+		dayTime := s.worldAge.Load() % worldDayLength
+		player.tryWrite(protocol.EncodeSystemChat(fmt.Sprintf(
+			"世界时间：%d tick（%d 天 %02d:%02d）", dayTime, s.worldAge.Load()/worldDayLength, dayTime/1000, (dayTime%1000)*60/1000)))
+	case "set":
+		if len(fields) != 2 {
+			player.tryWrite(protocol.EncodeSystemChat("用法：/time set <day|night|noon|midnight|tick>"))
+			return
+		}
+		var target int64
+		switch fields[1] {
+		case "day":
+			target = 1000
+		case "noon":
+			target = 6000
+		case "night":
+			target = 13000
+		case "midnight":
+			target = 18000
+		default:
+			parsed, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil || parsed < 0 {
+				player.tryWrite(protocol.EncodeSystemChat("时间值无效。"))
+				return
+			}
+			target = parsed % worldDayLength
+		}
+		s.setWorldTime(target)
+		s.broadcastTime()
+	case "add":
+		if len(fields) != 2 {
+			player.tryWrite(protocol.EncodeSystemChat("用法：/time add <tick>"))
+			return
+		}
+		parsed, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || parsed == 0 {
+			player.tryWrite(protocol.EncodeSystemChat("时间值无效。"))
+			return
+		}
+		s.worldAge.Add(parsed)
+		s.broadcastTime()
+	default:
+		player.tryWrite(protocol.EncodeSystemChat("用法：/time set … | /time add <tick> | /time query"))
+	}
+}
+
+// handleXPCommand 实现 /xp add <数量>：增加经验值。
+func (s *Server) handleXPCommand(player *session, argument string) {
+	fields := strings.Fields(strings.ToLower(argument))
+	if len(fields) != 2 || fields[0] != "add" {
+		player.tryWrite(protocol.EncodeSystemChat("用法：/xp add <数量>"))
+		return
+	}
+	amount, err := strconv.ParseInt(fields[1], 10, 32)
+	if err != nil || amount <= 0 || amount > 1000000 {
+		player.tryWrite(protocol.EncodeSystemChat("数量无效（1–1000000）。"))
+		return
+	}
+	bar, level, total := player.addExperience(int32(amount))
+	player.tryWrite(protocol.EncodeSetExperience(bar, level, total))
+}
+
+// handleClearCommand 实现 /clear：清空玩家物品栏（含光标）。
+func (s *Server) handleClearCommand(player *session, argument string) {
+	target := player
+	if argument != "" {
+		target = s.findJoinedPlayer(argument)
+		if target == nil {
+			player.tryWrite(protocol.EncodeSystemChat("玩家不在线：" + argument))
+			return
+		}
+	}
+	for slot := 0; slot < item.InventorySlots; slot++ {
+		if target.inventory.Get(slot).IsEmpty() {
+			continue
+		}
+		target.inventory.Set(slot, item.Empty())
+		target.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), item.Empty().AppendSlot(nil)))
+	}
+	target.setCursor(item.Empty())
+	target.tryWrite(protocol.EncodeSystemChat("物品栏已清空。"))
+}
+
+// handleKillCommand 实现 /kill [玩家]：对目标造成致命伤害（应用正常死亡流程）。
+func (s *Server) handleKillCommand(player *session, argument string) {
+	target := player
+	if argument != "" {
+		target = s.findJoinedPlayer(argument)
+		if target == nil {
+			player.tryWrite(protocol.EncodeSystemChat("玩家不在线：" + argument))
+			return
+		}
+	}
+	if target.isDead() {
+		player.tryWrite(protocol.EncodeSystemChat(target.name + " 已经死亡。"))
+		return
+	}
+	position := [3]float64{}
+	x, y, z, _, _ := target.playerPosition()
+	position = [3]float64{x, y, z}
+	if s.damagePlayer(target, 1e6, "an operator", 0, s.mobAttackDamageTypeID, &position) {
+		slog.Info("player killed by command", "name", target.name, "by", player.name)
+	}
+}
+
+// handleDimensionCommand 实现 /dimension <overworld|the_nether|the_end>：
+// 传送到目标维度的出生点（管理员命令；下界传送门见 portals.go）。
+func (s *Server) handleDimensionCommand(player *session, argument string) {
+	dim, ok := world.ParseDimension(strings.TrimSpace(argument))
+	if !ok {
+		player.tryWrite(protocol.EncodeSystemChat("未知维度（可用：overworld、the_nether、the_end）"))
+		return
+	}
+	x, y, z := s.spawnPositionFor(dim)
+	if err := player.teleportTo(dim, x, y, z, 0, 0); err != nil {
+		player.tryWrite(protocol.EncodeSystemChat("传送失败。"))
+	}
+}
+
+// setWorldTime 把世界时间调整为指定时刻（保留天数）。
+func (s *Server) setWorldTime(dayTime int64) {
+	age := s.worldAge.Load()
+	s.worldAge.Store(age - age%worldDayLength + dayTime)
+}
+
+// broadcastTime 立即把世界时间同步给主世界玩家（时间命令使用）。
+func (s *Server) broadcastTime() {
+	packet := protocol.EncodeUpdateTime(s.worldAge.Load(), s.worldAge.Load()%worldDayLength, true)
+	for _, other := range s.playerSnapshot() {
+		if other.isJoined() && other.dimensionID() == world.DimensionOverworld {
+			other.tryWrite(packet)
+		}
+	}
+}
+
+// saveAllWorlds 保存全部已加载维度世界。
+func (s *Server) saveAllWorlds() error {
+	s.worldMu.Lock()
+	worlds := make([]*world.World, 0, len(s.worlds))
+	for _, gameWorld := range s.worlds {
+		worlds = append(worlds, gameWorld)
+	}
+	s.worldMu.Unlock()
+	var firstErr error
+	for _, gameWorld := range worlds {
+		if err := gameWorld.Flush(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // permissionDeniedMessage 返回权限不足的提示（含等级与可选节点信息）。
@@ -238,24 +546,30 @@ func permissionDeniedMessage(command commandSpec) string {
 
 // helpText 生成 /help 的帮助文本（只列出玩家有权限使用的命令）。
 func (s *Server) helpText(player *session) string {
+	descriptions := map[string]string{
+		"help":      "/help — 显示此帮助",
+		"list":      "/list — 列出在线玩家",
+		"spawn":     "/spawn — 传送到出生点",
+		"seed":      "/seed — 显示世界种子",
+		"say":       "/say <消息> — 向所有玩家广播消息",
+		"gamemode":  "/gamemode <模式> — 切换游戏模式（survival/creative/adventure/spectator）",
+		"tp":        "/tp <x> <y> <z> 或 /tp <玩家> — 传送",
+		"give":      "/give <物品> [数量] — 给予物品",
+		"time":      "/time set|add|query — 查看/修改世界时间",
+		"xp":        "/xp add <数量> — 增加经验值",
+		"clear":     "/clear [玩家] — 清空物品栏",
+		"kick":      "/kick <玩家> — 踢出玩家",
+		"kill":      "/kill [玩家] — 杀死玩家",
+		"dimension": "/dimension <overworld|the_nether|the_end> — 切换维度",
+		"save-all":  "/save-all — 立即保存全部世界",
+	}
 	lines := []string{"可用命令："}
 	for _, command := range commands {
 		if !s.canUseCommand(player, command) {
 			continue
 		}
-		switch command.Name {
-		case "help":
-			lines = append(lines, "/help — 显示此帮助")
-		case "list":
-			lines = append(lines, "/list — 列出在线玩家")
-		case "say":
-			lines = append(lines, "/say <消息> — 向所有玩家广播消息")
-		case "spawn":
-			lines = append(lines, "/spawn — 传送到出生点")
-		case "gamemode":
-			lines = append(lines, "/gamemode <模式> — 切换游戏模式（survival/creative/adventure/spectator）")
-		case "kick":
-			lines = append(lines, "/kick <玩家> — 踢出玩家")
+		if description, ok := descriptions[command.Name]; ok {
+			lines = append(lines, description)
 		}
 	}
 	lines = append(lines, "权限：管理员在 gmcs.json 的 ops 中配置（name 或 name:等级）；",
@@ -320,10 +634,24 @@ func (s *Server) commandSuggestions(player *session, text string) (matches []str
 			}
 		}
 		return matches, space + 2, len(argument)
-	case "kick":
+	case "kick", "tp", "clear", "kill":
 		for _, name := range s.onlineNames() {
 			if strings.HasPrefix(strings.ToLower(name), prefix) {
 				matches = append(matches, name)
+			}
+		}
+		return matches, space + 2, len(argument)
+	case "dimension":
+		for _, name := range dimensionNames() {
+			if strings.HasPrefix(name, prefix) || strings.HasPrefix(strings.TrimPrefix(name, "minecraft:"), prefix) {
+				matches = append(matches, strings.TrimPrefix(name, "minecraft:"))
+			}
+		}
+		return matches, space + 2, len(argument)
+	case "time":
+		for _, word := range []string{"set", "add", "query"} {
+			if strings.HasPrefix(word, prefix) {
+				matches = append(matches, word)
 			}
 		}
 		return matches, space + 2, len(argument)
@@ -359,10 +687,10 @@ func (s *Server) onlineNames() []string {
 	return names
 }
 
-// teleportToSpawn 把玩家传送回出生点。
+// teleportToSpawn 把玩家传送回其当前维度的出生点。
 // 由会话读循环调用，与读循环共享 teleportID。
 func (s *session) teleportToSpawn() {
-	x, y, z := s.server.spawnPosition()
+	x, y, z := s.server.spawnPositionFor(s.dimensionID())
 	s.teleportID++
 	s.setPlayerPosition(x, y, z, 0, 0)
 	s.resetFallState()

@@ -6,6 +6,7 @@ import (
 
 	"gmcs/internal/item"
 	"gmcs/internal/registry"
+	"gmcs/internal/world"
 )
 
 // 方块破坏掉落表。
@@ -111,7 +112,7 @@ func (s *Server) blockDrop(state uint16) (string, int32) {
 
 // dropBlockItem 在方块中心生成挖掘掉落物（仅生存模式调用）。
 // 掉落物带原版风格的小幅随机水平速度与 0.2 的向上速度。
-func (s *Server) dropBlockItem(state uint16, x, y, z int) {
+func (s *Server) dropBlockItem(dim world.Dimension, state uint16, x, y, z int) {
 	name, count := s.blockDrop(state)
 	if count <= 0 {
 		return
@@ -123,5 +124,5 @@ func (s *Server) dropBlockItem(state uint16, x, y, z int) {
 	}
 	vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 	vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-	s.spawnItem(stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayMining)
+	s.spawnItem(dim, stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayMining)
 }

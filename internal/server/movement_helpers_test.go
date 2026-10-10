@@ -12,7 +12,7 @@ import (
 // （y 取生成器地形高度的上方：树木/雪层等装饰不计入，避免触发穿墙校验）。
 func sendGroundMove(t *testing.T, conn net.Conn, instance *Server, x, z float64) {
 	t.Helper()
-	sendPlayerPosition(t, conn, x, float64(instance.world.SurfaceY(int(math.Floor(x)), int(math.Floor(z)))+1), z, true)
+	sendPlayerPosition(t, conn, x, float64(instance.testWorld().SurfaceY(int(math.Floor(x)), int(math.Floor(z)))+1), z, true)
 }
 
 // walkTo 以小步长沿直线走向目标点（4 格/步，3D 位移远低于逐 tick 速度上限
@@ -35,11 +35,11 @@ func walkTo(t *testing.T, conn net.Conn, instance *Server, targetX, targetZ floa
 // 雪层/草丛等装饰会被放置替换，不作为排除条件），距离玩家较近以满足交互校验。
 func buildSpotNearSpawn(t *testing.T, instance *Server) (int, int, int) {
 	t.Helper()
-	bx, _, bz := instance.spawnPosition()
+	bx, _, bz := instance.spawnPositionFor(world.DimensionOverworld)
 	baseX, baseZ := int(math.Floor(bx)), int(math.Floor(bz))
 	for _, off := range spawnNearOffsets {
 		x, z := baseX+off[0], baseZ+off[1]
-		surface := instance.world.SurfaceY(x, z)
+		surface := instance.testWorld().SurfaceY(x, z)
 		if surface <= world.SeaLevel {
 			continue
 		}
@@ -53,16 +53,16 @@ func buildSpotNearSpawn(t *testing.T, instance *Server) (int, int, int) {
 // 顶层被挖空的列下探一层，便于重复选取）。
 func digTargetNearSpawn(t *testing.T, instance *Server) (int, int, int) {
 	t.Helper()
-	bx, _, bz := instance.spawnPosition()
+	bx, _, bz := instance.spawnPositionFor(world.DimensionOverworld)
 	baseX, baseZ := int(math.Floor(bx)), int(math.Floor(bz))
 	for _, off := range spawnNearOffsets {
 		x, z := baseX+off[0], baseZ+off[1]
-		surface := instance.world.SurfaceY(x, z)
+		surface := instance.testWorld().SurfaceY(x, z)
 		if surface <= world.SeaLevel {
 			continue
 		}
 		for y := surface; y > surface-3; y-- {
-			if state := instance.world.BlockAt(x, y, z); state != world.AirBlock {
+			if state := instance.testWorld().BlockAt(x, y, z); state != world.AirBlock {
 				return x, y, z
 			}
 		}

@@ -9,6 +9,8 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
+
+	"gmcs/internal/world"
 )
 
 // sendPlayerPosition 发送 Player Position 包（含着地标志）。
@@ -36,7 +38,7 @@ func TestFallDamage(t *testing.T) {
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Faller")
 	player := findSession(t, instance, "Faller")
-	spawnX, spawnY, spawnZ := instance.spawnPosition()
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 
 	// 站立在出生点（着地）。/list 往返作为屏障：确保读循环已处理完
 	// 前面的移动包，再直接写会话状态（updateFallState 仅读循环安全）。
@@ -47,7 +49,7 @@ func TestFallDamage(t *testing.T) {
 	// 从 6 格高处下落：伤害 = ceil(6-3) = 3。
 	// 起点高度直接写入服务器状态（网络上升会被悬空上升限制拒绝）。
 	player.setPlayerPosition(spawnX, spawnY+6, spawnZ, 0, 0)
-	player.updateFallState(spawnX, spawnY+6, spawnZ)
+	player.updateFallState(player.playerWorld(), spawnX, spawnY+6, spawnZ)
 	sendPlayerPosition(t, conn, spawnX, spawnY, spawnZ, true)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDDamageEvent)
 	healthPacket := expectPlayPacket(t, conn, protocol.PlayPacketIDUpdateHealth)
@@ -63,7 +65,7 @@ func TestFallDamage(t *testing.T) {
 
 	// 从 2 格高处下落：无伤害（用 /list 响应确保服务器已处理完移动包）。
 	player.setPlayerPosition(spawnX, spawnY+2, spawnZ, 0, 0)
-	player.updateFallState(spawnX, spawnY+2, spawnZ)
+	player.updateFallState(player.playerWorld(), spawnX, spawnY+2, spawnZ)
 	sendPlayerPosition(t, conn, spawnX, spawnY, spawnZ, true)
 	sendChatCommand(t, conn, "/list")
 	expectSystemChat(t, conn, "当前有")
@@ -81,7 +83,7 @@ func TestFallDamageProtection(t *testing.T) {
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Cushioned")
 	player := findSession(t, instance, "Cushioned")
-	spawnX, spawnY, spawnZ := instance.spawnPosition()
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	sendPlayerPosition(t, conn, spawnX, spawnY, spawnZ, true)
 	sendChatCommand(t, conn, "/list")
 	expectSystemChat(t, conn, "当前有")
@@ -98,18 +100,18 @@ func TestFallDamageProtection(t *testing.T) {
 	}
 	check := func(name string, state uint16, wantHealth float32) {
 		t.Helper()
-		if !instance.world.SetBlock(surfaceX, surfaceY, surfaceZ, state) {
+		if !instance.testWorld().SetBlock(surfaceX, surfaceY, surfaceZ, state) {
 			t.Fatalf("%s: SetBlock failed", name)
 		}
 		setHealth(maxPlayerHealth)
 		player.resetFallState()
 		// 落点取支撑面的形状顶面（床顶 9/16 等），与真实客户端落地高度一致。
-		landY, _, ok := instance.world.SurfaceBelow(playerBox(spawnX, spawnY, spawnZ), 1.0)
+		landY, _, ok := instance.testWorld().SurfaceBelow(playerBox(spawnX, spawnY, spawnZ), 1.0)
 		if !ok {
 			t.Fatalf("%s: 落点没有支撑面", name)
 		}
-		player.updateFallState(spawnX, landY+20, spawnZ)
-		player.updateFallState(spawnX, landY, spawnZ)
+		player.updateFallState(player.playerWorld(), spawnX, landY+20, spawnZ)
+		player.updateFallState(player.playerWorld(), spawnX, landY, spawnZ)
 		health, _, _ := player.healthStatus()
 		if math.Abs(float64(health-wantHealth)) > 1e-3 {
 			t.Fatalf("%s: health = %v, want %v", name, health, wantHealth)

@@ -18,7 +18,7 @@ func TestBlockDropTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer instance.world.Close()
+	defer instance.testWorld().Close()
 
 	blockState := func(name string) uint16 {
 		state, err := registry.BlockStateID(name)
@@ -90,7 +90,7 @@ func TestSurvivalBlockBreakDrops(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Miner")
 
 	x, y, z := findDigTarget(t, instance)
-	state := instance.world.BlockAt(x, y, z)
+	state := instance.testWorld().BlockAt(x, y, z)
 	wantName := ""
 	switch state {
 	case world.GrassBlock:

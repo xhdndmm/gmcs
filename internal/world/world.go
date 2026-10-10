@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -22,11 +23,21 @@ type ChunkPos struct {
 type World struct {
 	dir       string
 	generator Generator
+	// dimension 是该世界所属维度（区块加载/生成后统一赋给 Chunk，
+	// 网络编码按维度裁剪 section 范围）。
+	dimension Dimension
 
 	mu     sync.Mutex
 	chunks map[ChunkPos]*Chunk
 	dirty  map[ChunkPos]struct{}
 	closed bool
+
+	// 异步预生成：pending 记录进行中的区块请求（去重）；genQueue 是待生成
+	// 队列；quit 在 Close 时关闭以停止 worker。
+	pending       map[ChunkPos]*chunkFuture
+	genQueue      chan ChunkPos
+	quit          chan struct{}
+	closeQuitOnce sync.Once
 
 	// saveMu 串行化磁盘写入，防止并发 Flush 互相覆盖区域文件。
 	saveMu sync.Mutex
@@ -35,17 +46,135 @@ type World struct {
 	unloadMu sync.Mutex
 }
 
-// Open 打开（或创建）世界目录。
+// chunkFuture 表示一次进行中的区块加载/生成；done 关闭后可从 chunks 读取
+// 结果（失败时读 future.err）。
+type chunkFuture struct {
+	done chan struct{}
+	err  error
+}
+
+// AsyncPrefetchWorkers 是异步预生成的 worker 数量上限。
+// 生成是 CPU 密集型纯函数（只读种子），可以安全并行。
+const AsyncPrefetchWorkers = 8
+
+// prefetchQueueLimit 是预生成队列长度上限；队列满时丢弃请求（调用方
+// 回退到同步生成）。
+const prefetchQueueLimit = 4096
+
+// Open 打开（或创建）主世界目录。
 func Open(dir string, generator Generator) (*World, error) {
+	return OpenDimension(dir, generator, DimensionOverworld)
+}
+
+// OpenDimension 打开（或创建）指定维度的世界目录。
+func OpenDimension(dir string, generator Generator, dimension Dimension) (*World, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("创建世界目录：%w", err)
 	}
-	return &World{
+	workers := min(AsyncPrefetchWorkers, max(1, runtime.GOMAXPROCS(0)))
+	w := &World{
 		dir:       dir,
 		generator: generator,
+		dimension: dimension,
 		chunks:    make(map[ChunkPos]*Chunk),
 		dirty:     make(map[ChunkPos]struct{}),
-	}, nil
+		pending:   make(map[ChunkPos]*chunkFuture),
+		genQueue:  make(chan ChunkPos, prefetchQueueLimit),
+		quit:      make(chan struct{}),
+	}
+	for i := 0; i < workers; i++ {
+		go w.prefetchWorker()
+	}
+	return w, nil
+}
+
+// Prefetch 请求在后台加载/生成给定区块（不阻塞）。重复请求与已缓存区块
+// 会被跳过；队列满时静默丢弃（调用方随后同步加载）。
+// 生成结果与同步路径一致：写入内存缓存并标记为待保存。
+func (w *World) Prefetch(positions []ChunkPos) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.mu.Unlock()
+	for _, pos := range positions {
+		w.mu.Lock()
+		_, cached := w.chunks[pos]
+		_, inFlight := w.pending[pos]
+		if !cached && !inFlight {
+			w.pending[pos] = &chunkFuture{done: make(chan struct{})}
+		}
+		w.mu.Unlock()
+		if cached || inFlight {
+			continue
+		}
+		select {
+		case w.genQueue <- pos:
+		default:
+			// 队列已满：撤销请求（同步路径会处理）。
+			w.mu.Lock()
+			if future, ok := w.pending[pos]; ok {
+				future.err = fmt.Errorf("预生成队列已满")
+				close(future.done)
+				delete(w.pending, pos)
+			}
+			w.mu.Unlock()
+		}
+	}
+}
+
+// prefetchWorker 消费预生成队列：加载磁盘区块或调用生成器，然后发布结果。
+// quit 关闭后退会出（未处理的请求由 Close 统一解决）。
+func (w *World) prefetchWorker() {
+	for {
+		var pos ChunkPos
+		select {
+		case <-w.quit:
+			return
+		case pos = <-w.genQueue:
+		}
+
+		w.mu.Lock()
+		future, stillPending := w.pending[pos]
+		closed := w.closed
+		w.mu.Unlock()
+		if !stillPending || closed {
+			continue
+		}
+
+		chunk, err := LoadChunk(w.dir, pos.X, pos.Z)
+		generated := false
+		if err == nil && chunk == nil {
+			chunk = w.generator.GenerateChunk(pos.X, pos.Z)
+			generated = true
+		}
+
+		w.mu.Lock()
+		// 发布前重新检查：Close 可能已解决并删除该请求。
+		if future, stillPending = w.pending[pos]; stillPending && !w.closed && err == nil {
+			if chunk.Dimension() != w.dimension {
+				chunk.SetDimension(w.dimension)
+			}
+			w.chunks[pos] = chunk
+			if generated {
+				w.dirty[pos] = struct{}{}
+			}
+			delete(w.pending, pos)
+			future.err = nil
+			close(future.done)
+		} else if stillPending {
+			delete(w.pending, pos)
+			future.err = err
+			close(future.done)
+		}
+		w.mu.Unlock()
+	}
+}
+
+// Dimension 返回世界所属维度。
+func (w *World) Dimension() Dimension {
+	return w.dimension
 }
 
 // Dir 返回世界目录。
@@ -177,30 +306,48 @@ func floorMod(a, b int) int {
 	return m
 }
 
-// Chunk 返回区块：依次尝试内存缓存与磁盘文件，最后调用生成器生成。
-// 新生成的区块会被标记为需要保存。
+// Chunk 返回区块：依次尝试内存缓存、进行中的异步请求、磁盘文件，
+// 最后调用生成器生成。新生成的区块会被标记为需要保存。
 func (w *World) Chunk(x, z int) (*Chunk, error) {
 	pos := ChunkPos{X: x, Z: z}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.closed {
-		return nil, fmt.Errorf("世界已关闭")
+	for {
+		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return nil, fmt.Errorf("世界已关闭")
+		}
+		if chunk, ok := w.chunks[pos]; ok {
+			w.mu.Unlock()
+			return chunk, nil
+		}
+		future, pending := w.pending[pos]
+		if !pending {
+			// 同步加载/生成：磁盘 IO 在锁内执行（调用频率低时以简单正确
+			// 为先；大视距批量加载走 Prefetch 的异步路径）。
+			chunk, err := LoadChunk(w.dir, x, z)
+			if err != nil {
+				w.mu.Unlock()
+				return nil, err
+			}
+			if chunk == nil {
+				chunk = w.generator.GenerateChunk(x, z)
+				w.dirty[pos] = struct{}{}
+			}
+			// 统一维度标记：从磁盘恢复的区块与生成器输出的区块都按本世界维度编码。
+			if chunk.Dimension() != w.dimension {
+				chunk.SetDimension(w.dimension)
+			}
+			w.chunks[pos] = chunk
+			w.mu.Unlock()
+			return chunk, nil
+		}
+		w.mu.Unlock()
+		// 等待进行中的异步加载/生成，然后重新读取结果。
+		<-future.done
+		if future.err != nil {
+			return nil, future.err
+		}
 	}
-	if chunk, ok := w.chunks[pos]; ok {
-		return chunk, nil
-	}
-	// 磁盘 IO 在锁内执行会阻塞其他调用者。当前阶段调用频率低（玩家进入
-	// 世界时加载出生区块），以简单正确为先；未成为瓶颈前不引入异步加载。
-	chunk, err := LoadChunk(w.dir, x, z)
-	if err != nil {
-		return nil, err
-	}
-	if chunk == nil {
-		chunk = w.generator.GenerateChunk(x, z)
-		w.dirty[pos] = struct{}{}
-	}
-	w.chunks[pos] = chunk
-	return chunk, nil
 }
 
 // MarkDirty 标记区块需要保存。
@@ -415,12 +562,19 @@ func (w *World) Autosave(ctx context.Context, interval time.Duration) {
 
 // Close 保存全部待保存区块并停止接受新的区块加载。
 // 与 UnloadFar 互斥，保证卸载不会在最终保存之后残留未保存数据。
+// 进行中的异步预生成请求会被解决为“世界已关闭”错误。
 func (w *World) Close() error {
 	w.unloadMu.Lock()
 	defer w.unloadMu.Unlock()
 	err := w.Flush()
 	w.mu.Lock()
 	w.closed = true
+	for pos, future := range w.pending {
+		future.err = fmt.Errorf("世界已关闭")
+		close(future.done)
+		delete(w.pending, pos)
+	}
 	w.mu.Unlock()
+	w.closeQuitOnce.Do(func() { close(w.quit) })
 	return err
 }

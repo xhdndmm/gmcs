@@ -5,6 +5,8 @@ import (
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
+
+	"gmcs/internal/world"
 )
 
 // TestPlayerEntitySyncBetweenPlayers 验证多人可见性：
@@ -26,7 +28,7 @@ func TestPlayerEntitySyncBetweenPlayers(t *testing.T) {
 	observer := findSession(t, instance, "Observer")
 
 	// Mover 移动（保持与其他玩家 1 格距离，便于后续攻击）：Observer 收到位置同步。
-	_, spawnY, _ := instance.spawnPosition()
+	_, spawnY, _ := instance.spawnPositionFor(world.DimensionOverworld)
 	move := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDPlayerPosition)
 	move = protocol.AppendFloat64(move, 1.5)
 	move = protocol.AppendFloat64(move, spawnY)
