@@ -8,7 +8,7 @@ import (
 // BenchmarkEncodeEntityPositionSync 衡量实体位置同步包（高频生物移动）的编码成本。
 func BenchmarkEncodeEntityPositionSync(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = EncodeEntityPositionSync(1, 1.5, 64, 2.5, 0, 0, 0, 90, 0, true)
 	}
 }
@@ -17,7 +17,7 @@ func BenchmarkEncodeEntityPositionSync(b *testing.B) {
 func BenchmarkEncodeAddEntity(b *testing.B) {
 	uuid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = EncodeAddEntity(1, uuid, 150, 1.5, 64, 2.5, 0.01, 0, -0.02, 90, 0)
 	}
 }
@@ -32,7 +32,7 @@ func BenchmarkWritePacketWithCompression(b *testing.B) {
 	b.SetBytes(int64(len(packet)))
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if err := WritePacketWithCompression(io.Discard, packet, 256); err != nil {
 			b.Fatal(err)
 		}

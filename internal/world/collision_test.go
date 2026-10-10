@@ -161,7 +161,7 @@ func BenchmarkCollides(b *testing.B) {
 	box := testBox(0.5, 100.5, 0.5)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = w.Collides(box)
 	}
 }
@@ -175,7 +175,7 @@ func BenchmarkClipMove(b *testing.B) {
 	box := testBox(0.5, 100.5, 0.5)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = w.ClipMove(box, 0, 0.2)
 	}
 }

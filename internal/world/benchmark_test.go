@@ -11,7 +11,7 @@ func BenchmarkGenerateChunk(b *testing.B) {
 	chunkX := 0
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = generator.GenerateChunk(chunkX, 0)
 		chunkX++ // 变换坐标，避免重复测量同一区块
 	}
@@ -22,7 +22,7 @@ func BenchmarkEncodeChunkDataPacket(b *testing.B) {
 	chunk := SeededGenerator{Seed: 42}.GenerateChunk(0, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		benchSink = EncodeChunkDataPacket(chunk)
 	}
 }
@@ -34,7 +34,7 @@ func BenchmarkAppendChunkDataPacketReuse(b *testing.B) {
 	buffer := make([]byte, 0, chunkDataPacketCapacity)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		buffer = AppendChunkDataPacket(buffer[:0], chunk)
 	}
 	benchSink = buffer
@@ -46,7 +46,7 @@ func BenchmarkEncodeChunkPayload(b *testing.B) {
 	chunk := SeededGenerator{Seed: 42}.GenerateChunk(0, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = encodeChunkPayload(chunk)
 	}
 }
@@ -57,7 +57,7 @@ func BenchmarkEncodeCompressedChunkPayload(b *testing.B) {
 	chunk := SeededGenerator{Seed: 42}.GenerateChunk(0, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := encodeCompressedChunkPayload(chunk); err != nil {
 			b.Fatal(err)
 		}

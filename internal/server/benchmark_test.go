@@ -77,7 +77,7 @@ func BenchmarkItemTick(b *testing.B) {
 		if e == nil {
 			b.Fatal("spawnItem returned nil")
 		}
-		// 基准期间不允许到期消失（b.N 可能远超 6000 tick）。
+		// 基准期间不允许到期消失（迭代次数可能远超 6000 tick）。
 		e.AgeTicks = -1 << 30
 	}
 
