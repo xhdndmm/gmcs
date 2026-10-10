@@ -76,6 +76,17 @@ type session struct {
 	// 每 tick 区块数（仅记录，当前不做节流）。
 	desiredChunksPerTick float32
 
+	// 进食状态（1.6 秒过程，仅由读循环访问）：eating 为进行中标志，
+	// eatDeadline 是完成时刻，eatingSlot/eatingItemID 用于校验物品未变。
+	eating       bool
+	eatingSlot   int
+	eatingItemID int32
+	eatDeadline  time.Time
+
+	// portalCooldown 是传送门冷却剩余 tick（传送后 300 tick）：
+	// 读循环在传送后设置，服务器 Tick 线程递减。
+	portalCooldown atomic.Int32
+
 	// inventory 是玩家物品栏，由会话串行访问。
 	inventory item.Inventory
 	// selectedSlot 是当前选中的快捷栏槽位（0–8），由会话串行访问。
@@ -303,6 +314,8 @@ func (s *session) handleMove(x, y, z float64, yaw, pitch float32, rotate bool, n
 	s.addMovementExhaustion(math.Hypot(x-prevX, z-prevZ), y > prevY+0.5)
 	s.server.broadcastPlayerMove(s)
 	s.updateChunks(x, z)
+	// 进入传送门方块时立即传送（带冷却防回环）。
+	s.server.checkPortalTravel(s)
 }
 
 // maxJumpRise 是一次腾空允许的累计上升（方块）：原版跳跃弧顶约 0.96，
@@ -1480,8 +1493,7 @@ func (s *session) playReadLoop() {
 				s.setSprinting(flags&protocol.PlayerInputSprint != 0)
 			}
 		case protocol.PlayServerboundPacketIDUseItem:
-			// 使用物品（进食等）：手持食物且未满饥饿时立即食用。
-			// 说明：未实现原版 1.6 秒的进食过程（无进度条与中断处理）。
+			// 使用物品（进食等）：手持食物且未满饥饿时开始 1.6 秒的进食过程。
 			s.server.handleUseItem(s)
 		case protocol.PlayServerboundPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
@@ -1496,6 +1508,9 @@ func (s *session) playReadLoop() {
 		default:
 			// 其他数据包（输入、快捷栏切换等）暂未实现，忽略。
 		}
+		// 进食进度按时间推进（每个数据包到达时检查；客户端每 tick 发送
+		// Client Tick End，因此实际接近逐 tick 检查）。
+		s.updateEating()
 	}
 }
 

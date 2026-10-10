@@ -61,7 +61,12 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 		statusStopDestroy  = 2
 		statusDropStack    = 3 // Ctrl+Q：丢弃整组。
 		statusDropItem     = 4 // Q：丢弃 1 个。
+		statusReleaseUse   = 5 // 释放使用键：取消进食等使用中的动作。
 	)
+	if action.Status == statusReleaseUse {
+		player.cancelEating()
+		return
+	}
 	if action.Status == statusDropStack || action.Status == statusDropItem {
 		s.dropItemFromPlayer(player, action.Status == statusDropStack)
 		return
@@ -101,6 +106,10 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	}
 	s.broadcastBlockUpdate(dim, action.X, action.Y, action.Z, int32(world.AirBlock))
 	s.updateRedstoneAround(dim, action.X, action.Y, action.Z)
+	if current == world.ObsidianBlock {
+		// 破坏黑曜石框后与之相连的传送门熄灭（近似原版行为）。
+		s.clearPortalsNear(dim, action.X, action.Y, action.Z)
+	}
 	if player.gameModeID() != uint8(config.GameModeCreative) {
 		// 生存模式掉落（创意模式破坏不掉落物品，与原版一致）。
 		s.dropBlockItem(dim, current, action.X, action.Y, action.Z)
@@ -129,8 +138,23 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	// 右键容器方块：打开窗口（潜行时改为放置，与原版一致）。
 	dim := player.dimensionID()
 	w := s.worldFor(dim)
+	// 打火石点燃下界传送门 / 末影之眼填充末地传送门框（不受潜行影响）。
+	current := w.BlockAt(use.X, use.Y, use.Z)
+	if held := player.inventory.Get(player.selectedSlot); !held.IsEmpty() {
+		if heldName, ok := registry.ItemName(held.ItemID); ok {
+			switch heldName {
+			case flintAndSteelName:
+				if s.tryUseFlintAndSteel(player, w, use.X, use.Y, use.Z, current) {
+					return
+				}
+			case enderEyeName:
+				if s.tryPlaceEnderEye(player, w, use.X, use.Y, use.Z, current) {
+					return
+				}
+			}
+		}
+	}
 	if !player.sneaking {
-		current := w.BlockAt(use.X, use.Y, use.Z)
 		// 拉杆/按钮：切换红石状态。
 		if s.handleRedstoneUse(w, use.X, use.Y, use.Z, current) {
 			return
@@ -180,6 +204,9 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if !ok {
 		return // 手持物品不是可放置的方块
 	}
+	// 红石类方向方块（中继器/侦测器）按玩家视线方向设置 facing。
+	_, _, _, placeYaw, _ := player.playerPosition()
+	state = orientPlacementState(state, placeYaw)
 	if !w.SetBlock(placeX, placeY, placeZ, state) {
 		return
 	}
@@ -328,6 +355,8 @@ func (s *Server) handleSetCreativeSlot(player *session, slot int, itemID int32, 
 
 // broadcastBlockUpdate 把方块更新发送给指定维度内附近的玩家。
 func (s *Server) broadcastBlockUpdate(dim world.Dimension, x, y, z int, state int32) {
+	// 方块变化通知观察该位置的侦测器（脉冲输出）。
+	s.notifyObservers(dim, x, y, z)
 	packet := protocol.EncodeBlockUpdate(x, y, z, state)
 	bx := float64(x) + 0.5
 	bz := float64(z) + 0.5

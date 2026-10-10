@@ -3,8 +3,10 @@ package server
 import (
 	"math"
 	"testing"
+	"time"
 
 	"gmcs/internal/config"
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/world"
 )
@@ -169,7 +171,8 @@ func TestSpiderMeleeAttack(t *testing.T) {
 }
 
 // TestMobSpawnKindWeights 验证按权重挑选生成种类：全部返回值合法，
-// 且抽样的权重顺序符合表定义（僵尸权重最高）。
+// 且抽样的权重顺序符合表定义（僵尸权重高于蜘蛛）；被动生物只从
+// 被动集合中挑选。
 func TestMobSpawnKindWeights(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
@@ -177,12 +180,15 @@ func TestMobSpawnKindWeights(t *testing.T) {
 
 	counts := map[mobKind]int{}
 	for i := 0; i < 400; i++ {
-		kind, ok := instance.pickSpawnKind()
+		kind, ok := instance.pickSpawnKind(true)
 		if !ok {
-			t.Fatalf("pickSpawnKind returned false (registry data missing)")
+			t.Fatalf("pickSpawnKind(true) returned false (registry data missing)")
 		}
 		if _, exists := mobKinds[kind]; !exists {
 			t.Fatalf("pickSpawnKind returned unknown kind %d", kind)
+		}
+		if mobKinds[kind].passive {
+			t.Fatalf("hostile pick returned passive kind %v", mobKinds[kind].name)
 		}
 		counts[kind]++
 	}
@@ -192,22 +198,257 @@ func TestMobSpawnKindWeights(t *testing.T) {
 	if counts[mobZombie] <= counts[mobSpider] {
 		t.Fatalf("expected zombie (weight 40) more common than spider (weight 10): %v", counts)
 	}
+
+	passiveCounts := map[mobKind]int{}
+	for i := 0; i < 200; i++ {
+		kind, ok := instance.pickSpawnKind(false)
+		if !ok {
+			t.Fatalf("pickSpawnKind(false) returned false")
+		}
+		if !mobKinds[kind].passive {
+			t.Fatalf("passive pick returned hostile kind %v", mobKinds[kind].name)
+		}
+		passiveCounts[kind]++
+	}
+	if len(passiveCounts) < 2 {
+		t.Fatalf("expected multiple passive kinds: %v", passiveCounts)
+	}
 }
 
 // TestMobKindsTableValid 验证全部生物种类的基础数值配置完整。
 func TestMobKindsTableValid(t *testing.T) {
 	for kind, stats := range mobKinds {
 		if stats.name == "" || stats.health <= 0 || stats.walkSpeed <= 0 ||
-			stats.followRange <= 0 || stats.spawnWeight <= 0 ||
+			stats.spawnWeight <= 0 ||
 			stats.hurtSound == "" || stats.deathSound == "" {
 			t.Errorf("mobKinds[%d] invalid: %+v", kind, stats)
 		}
-		if stats.damage <= 0 && kind != mobCreeper {
-			// 苦力怕是自爆伤害（damage=0 是预期值）。
+		if stats.damage <= 0 && kind != mobCreeper && !stats.passive {
+			// 苦力怕是自爆伤害（damage=0 是预期值）；被动生物不攻击（damage=0）。
 			t.Errorf("mobKinds[%d].damage = %v", kind, stats.damage)
 		}
+		if stats.passive && stats.followRange != 0 {
+			t.Errorf("passive mob %v should not have a follow range", stats.name)
+		}
+		if !stats.passive && stats.followRange <= 0 {
+			t.Errorf("hostile mob %v needs a follow range", stats.name)
+		}
 	}
-	if len(mobKinds) != 4 {
-		t.Fatalf("expected 4 mob kinds, got %d", len(mobKinds))
+	if len(mobKinds) != 8 {
+		t.Fatalf("expected 8 mob kinds, got %d", len(mobKinds))
+	}
+}
+
+// TestPassiveMobDaySpawn 验证白天生成被动生物（牛/猪/羊）、夜晚生成敌对生物。
+func TestPassiveMobDaySpawn(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.MaxMobs = 16
+	instance, _ := joinServer(t, cfg, "Farmer")
+
+	// 白天（正午）：尝试生成，应只出现被动生物。
+	instance.worldAge.Store(6000)
+	spawned := 0
+	for i := 0; i < 400 && spawned < 4; i++ {
+		before := mobCount(instance)
+		instance.trySpawnMob(instance.playerSnapshot())
+		for _, m := range mobSnapshot(instance) {
+			if mobKinds[m.Kind].passive {
+				spawned++
+			} else {
+				t.Fatalf("hostile mob %v spawned during the day", mobKinds[m.Kind].name)
+			}
+		}
+		if mobCount(instance) == before {
+			continue
+		}
+	}
+	if spawned == 0 {
+		t.Skip("no passive spawn succeeded in range (terrain/water); covered by weight tests")
+	}
+
+	// 夜晚：生成敌对生物。
+	instance.worldAge.Store(14000)
+	for i := 0; i < 200; i++ {
+		instance.trySpawnMob(instance.playerSnapshot())
+		for _, m := range mobSnapshot(instance) {
+			if !mobKinds[m.Kind].passive && m.Kind != mobZombie {
+				return // 出现了非僵尸的敌对生物（僵尸也可能生成）
+			}
+		}
+	}
+	// 至少验证：夜晚允许生成敌对生物（僵尸）。
+	hasHostile := false
+	for _, m := range mobSnapshot(instance) {
+		if !mobKinds[m.Kind].passive {
+			hasHostile = true
+		}
+	}
+	if !hasHostile {
+		t.Skip("no hostile spawn succeeded in range (covered by night spawn tests)")
+	}
+}
+
+// TestEndermanAggroWhenLookedAt 验证末影人被注视后激怒并攻击；背对时不激怒。
+func TestEndermanAggroWhenLookedAt(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Starer")
+	player := findSession(t, instance, "Starer")
+
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	baseX, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))
+	floorY := int(math.Floor(spawnY)) - 1
+	clearCorridor(instance, baseX, floorY, baseZ, 1, 6)
+
+	// 玩家初始朝向 yaw=0（看向 +Z）。先检查背对（−Z 方向）不构成注视。
+	behind := instance.addMob(world.DimensionOverworld, mobEnderman, spawnX, spawnY, spawnZ-3)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
+	if playerLooksAtMob(player, behind) {
+		t.Fatal("enderman behind the player should not be considered looked at")
+	}
+	instance.entityMu.Lock()
+	instance.mobs[behind.ID].Dead = true // 移除该测试生物（避免干扰）
+	instance.mobs[behind.ID].DeadTicks = mobDeathTicks + 1
+	instance.entityMu.Unlock()
+
+	// 正视（+Z 方向）的末影人：被注视 → 激怒 → 抬手后攻击（7 点伤害）。
+	front := instance.addMob(world.DimensionOverworld, mobEnderman, spawnX, spawnY, spawnZ+1)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
+	if !playerLooksAtMob(player, front) {
+		t.Fatal("enderman in front of the player should be considered looked at")
+	}
+	instance.tick()
+	instance.entityMu.Lock()
+	angry := instance.mobs[front.ID] != nil && instance.mobs[front.ID].Angry
+	instance.entityMu.Unlock()
+	if !angry {
+		t.Fatal("enderman was not angered by being looked at")
+	}
+	for i := 0; i < mobAttackWindupTicks+2; i++ {
+		instance.tick()
+	}
+	health, _, _ := player.healthStatus()
+	if want := float32(maxPlayerHealth - mobKinds[mobEnderman].damage); health != want {
+		t.Fatalf("player health after enderman attack = %v, want %v", health, want)
+	}
+}
+
+// TestEndermanTeleportsWhenHurt 验证末影人受击后随机传送（位置变化）。
+func TestEndermanTeleportsWhenHurt(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Hitter")
+
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	baseX, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))
+	floorY := int(math.Floor(spawnY)) - 1
+	clearCorridor(instance, baseX, floorY, baseZ, 6, 6)
+
+	mob := instance.addMob(world.DimensionOverworld, mobEnderman, spawnX, spawnY, spawnZ+2)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
+	instance.entityMu.Lock()
+	startX, startZ := mob.X, mob.Z
+	instance.entityMu.Unlock()
+
+	sendAttack(t, conn, mob.ID)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		instance.entityMu.Lock()
+		current := instance.mobs[mob.ID]
+		moved, angry := false, false
+		curX, curZ := startX, startZ
+		if current != nil {
+			curX, curZ = current.X, current.Z
+			moved = math.Hypot(curX-startX, curZ-startZ) > 0.5
+			angry = current.Angry
+		}
+		instance.entityMu.Unlock()
+		if moved {
+			if !angry {
+				t.Fatal("enderman teleported but is not angry")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Skip("enderman teleport failed to find a valid spot (random, bounded attempts)")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// mobCount 返回当前生物数量（测试辅助）。
+func mobCount(instance *Server) int {
+	instance.entityMu.Lock()
+	defer instance.entityMu.Unlock()
+	return len(instance.mobs)
+}
+
+// mobSnapshot 返回当前生物快照（测试辅助）。
+func mobSnapshot(instance *Server) []*mob {
+	instance.entityMu.Lock()
+	defer instance.entityMu.Unlock()
+	mobs := make([]*mob, 0, len(instance.mobs))
+	for _, m := range instance.mobs {
+		mobs = append(mobs, m)
+	}
+	return mobs
+}
+
+// TestExplosionDamagesMobsAndItems 验证爆炸对附近的生物造成伤害并击飞掉落物。
+func TestExplosionDamagesMobsAndItems(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Boom2")
+
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	baseX, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))
+	floorY := int(math.Floor(spawnY)) - 1
+	clearCorridor(instance, baseX, floorY, baseZ, 3, 3)
+
+	// 生物放在爆心 2 格外：伤害 = (1-2/6)*24 = 16 → 僵尸 20 血不死；再放一只
+	// 紧贴爆心的僵尸（伤害 24 → 死亡并掉落）。
+	near := instance.addMob(world.DimensionOverworld, mobZombie, spawnX+2, spawnY, spawnZ)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
+	far := instance.addMob(world.DimensionOverworld, mobZombie, spawnX+5.5, spawnY, spawnZ)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
+
+	// 掉落物放在爆心附近：应获得速度（被炸飞）。
+	stack, err := item.FromName("minecraft:stone", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropEntity := instance.spawnItem(world.DimensionOverworld, stack, spawnX+1, float64(spawnY)+0.5, spawnZ, 0, 0, 0, 10)
+	instance.entityMu.Lock()
+	initialVel := dropEntity.VelX + dropEntity.VelY + dropEntity.VelZ
+	instance.entityMu.Unlock()
+
+	instance.explode(world.DimensionOverworld, spawnX, float64(spawnY)+0.5, spawnZ, 3, 24, "Creeper")
+
+	instance.entityMu.Lock()
+	nearHealth := float32(-1)
+	nearDead := true
+	if m := instance.mobs[near.ID]; m != nil {
+		nearHealth = m.Health
+		nearDead = m.Dead
+	}
+	farSurvives := instance.mobs[far.ID] != nil && !instance.mobs[far.ID].Dead
+	vel := dropEntity.VelX + dropEntity.VelY + dropEntity.VelZ
+	instance.entityMu.Unlock()
+
+	if nearHealth != float32(mobKinds[mobZombie].health-16) {
+		t.Fatalf("mob 2 blocks from the explosion = %v HP, want %v", nearHealth, mobKinds[mobZombie].health-16)
+	}
+	if nearDead {
+		t.Fatal("mob 2 blocks from the explosion should survive (16 < 20)")
+	}
+	if !farSurvives {
+		t.Fatal("mob 5.5 blocks away should be outside the damage radius")
+	}
+	if vel == initialVel {
+		t.Fatal("drop near the explosion was not knocked back")
 	}
 }

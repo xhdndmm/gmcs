@@ -80,6 +80,11 @@ func redstoneSourcePower(state uint16) int {
 		}
 	case redstoneBlockName:
 		return 15
+	case repeaterName, observerName:
+		// 已通电的中继器/侦测器向输出侧供电 15。
+		if props["powered"] == "true" {
+			return 15
+		}
 	}
 	return 0
 }
@@ -114,6 +119,16 @@ func (s *Server) handleRedstoneUse(w *world.World, x, y, z int, state uint16) bo
 			next["powered"] = "true"
 		}
 		s.setRedstoneBlock(w, x, y, z, leverName, next)
+		return true
+	case repeaterName:
+		// 右键循环调整延迟（1 → 2 → 3 → 4 → 1），与原版一致。
+		delay, err := strconv.Atoi(props["delay"])
+		if err != nil || delay < 1 || delay > 4 {
+			delay = 1
+		}
+		next := cloneProps(props)
+		next["delay"] = strconv.Itoa(delay%4 + 1)
+		s.setRedstoneBlock(w, x, y, z, repeaterName, next)
 		return true
 	case stoneButtonName, oakButtonName:
 		if props["powered"] == "true" {
@@ -186,6 +201,8 @@ func (s *Server) tickRedstone() {
 		next["powered"] = "false"
 		s.setRedstoneBlock(w, key.x, key.y, key.z, name, next)
 	}
+	// 中继器延迟切换与侦测器脉冲。
+	s.tickRedstoneExtra()
 }
 
 // neighborOffsets6 是六个正交方向的偏移。
@@ -329,11 +346,17 @@ func (s *Server) wireStateFor(w *world.World, pos [3]int, power int) uint16 {
 	return state
 }
 
-// refreshRedstoneConsumers 刷新 (x, y, z) 及其六邻域中的红石灯亮灭。
+// refreshRedstoneConsumers 刷新 (x, y, z) 及其六邻域中的红石灯亮灭与
+// 中继器输入评估。
 func (s *Server) refreshRedstoneConsumers(w *world.World, pos [3]int) {
 	candidates := append([][3]int{pos}, neighborsOf(pos)...)
 	for _, candidate := range candidates {
 		state := w.BlockAt(candidate[0], candidate[1], candidate[2])
+		if isRepeaterState(state) {
+			// 中继器：输入侧变化时安排延迟切换。
+			s.evaluateRepeater(w, candidate, state)
+			continue
+		}
 		if !isLampState(state) {
 			continue
 		}

@@ -106,6 +106,8 @@ func spawnGroundY(chunk *Chunk, x, z int, dimension Dimension) (int, bool) {
 	}
 	switch groundState {
 	case LavaBlock, MagmaBlock, CactusBlock, OakLeavesBlock, SpruceLeavesBlock,
+		// 传送门方块不可作为出生点地面（避免出生在传送门结构中）。
+		EndPortalBlock, EndPortalFrameBlock, NetherPortalBlock,
 		AcaciaLeavesBlock, BirchLeavesBlock, DarkOakLeavesBlock, JungleLeavesBlock,
 		OakLogBlock, SpruceLogBlock, AcaciaLogBlock, BirchLogBlock, DarkOakLogBlock, JungleLogBlock:
 		return 0, false

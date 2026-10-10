@@ -124,6 +124,10 @@ const (
 	mobSkeleton
 	mobCreeper
 	mobSpider
+	mobEnderman
+	mobCow
+	mobPig
+	mobSheep
 )
 
 // mobStats 描述一种生物的基础数值与音效名。
@@ -145,6 +149,8 @@ type mobStats struct {
 	deathSound string
 	// spawnWeight 是生成权重（0 表示不参与自然生成）。
 	spawnWeight int
+	// passive 为 true 表示被动生物（不索敌，仅游荡；白天生成）。
+	passive bool
 }
 
 // mobKinds 是全部生物的基础数值（生命 20、伤害 2–3，与原版普通难度接近）。
@@ -168,6 +174,26 @@ var mobKinds = map[mobKind]mobStats{
 		name: "minecraft:spider", health: 16, walkSpeed: 0.08, followRange: 24, damage: 2,
 		experience: 5, hurtSound: "minecraft:entity.spider.hurt", deathSound: "minecraft:entity.spider.death",
 		spawnWeight: 10,
+	},
+	mobEnderman: {
+		name: "minecraft:enderman", health: 40, walkSpeed: 0.06, followRange: 16, damage: 7,
+		experience: 5, hurtSound: "minecraft:entity.enderman.hurt", deathSound: "minecraft:entity.enderman.death",
+		spawnWeight: 10,
+	},
+	mobCow: {
+		name: "minecraft:cow", health: 10, walkSpeed: 0.05, followRange: 0, damage: 0,
+		experience: 2, hurtSound: "minecraft:entity.cow.hurt", deathSound: "minecraft:entity.cow.death",
+		spawnWeight: 8, passive: true,
+	},
+	mobPig: {
+		name: "minecraft:pig", health: 10, walkSpeed: 0.05, followRange: 0, damage: 0,
+		experience: 2, hurtSound: "minecraft:entity.pig.hurt", deathSound: "minecraft:entity.pig.death",
+		spawnWeight: 10, passive: true,
+	},
+	mobSheep: {
+		name: "minecraft:sheep", health: 8, walkSpeed: 0.05, followRange: 0, damage: 0,
+		experience: 2, hurtSound: "minecraft:entity.sheep.hurt", deathSound: "minecraft:entity.sheep.death",
+		spawnWeight: 12, passive: true,
 	},
 }
 
@@ -205,6 +231,8 @@ type mob struct {
 	Fuse int
 	// ShootCooldown 是骷髅的射击冷却（tick）。
 	ShootCooldown int
+	// Angry 标记末影人是否已被激怒（被注视或受击后敌视玩家）。
+	Angry bool
 }
 
 // pendingAttack 是一次待结算的生物攻击（位置为判定时的快照）。
@@ -265,10 +293,23 @@ func (s *Server) tick() {
 	s.tickWorldTime(players)
 	s.tickFurnaces()
 	s.tickRedstone()
+	s.tickPortals(players)
 	s.spawnTicks++
 	if s.spawnTicks >= spawnCheckInterval {
 		s.spawnTicks = 0
 		s.trySpawnMob(players)
+	}
+}
+
+// tickPortals 递减玩家的传送门冷却（传送后 300 tick 内不响应传送门方块）。
+func (s *Server) tickPortals(players []*session) {
+	for _, player := range players {
+		if !player.isJoined() {
+			continue
+		}
+		if cooldown := player.portalCooldown.Load(); cooldown > 0 {
+			player.portalCooldown.Add(-1)
+		}
 	}
 }
 
@@ -374,9 +415,20 @@ func (s *Server) tickMobs(players []*session) {
 			continue
 		}
 
+		stats := mobKinds[m.Kind]
+		// 被动生物只游荡；末影人未被激怒（被注视/受击）时同样不索敌。
+		if stats.passive {
+			nearest = nil
+		}
+		if m.Kind == mobEnderman && !m.Angry {
+			if nearest != nil && playerLooksAtMob(nearest, m) {
+				m.Angry = true
+			} else {
+				nearest = nil
+			}
+		}
 		attemptedMove := false
 		moved := false
-		stats := mobKinds[m.Kind]
 		mobWorld := s.worldFor(m.Dim)
 		if nearest != nil && nearestDistance <= stats.followRange {
 			px, py, pz, _, _ := nearest.playerPosition()
@@ -661,14 +713,60 @@ func (s *Server) knockbackMob(m *mob, fromX, fromZ float64) []byte {
 	return protocol.EncodeEntityPositionSync(m.ID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch, true)
 }
 
+// playerLooksAtMob 报告玩家视线（yaw/pitch）是否对准生物：用于末影人的
+// “被注视”判定（近似原版：视线夹角小于约 8°，距离 ≤ 24 格，视线无遮挡）。
+func playerLooksAtMob(player *session, m *mob) bool {
+	px, py, pz, yaw, pitch := player.playerPosition()
+	dx := m.X - px
+	dy := (m.Y + mobEyeHeight) - (py + playerEyeHeight)
+	dz := m.Z - pz
+	distance := math.Sqrt(dx*dx + dy*dy + dz*dz)
+	if distance < 1e-3 || distance > 24 {
+		return false
+	}
+	yawRad := float64(yaw) * math.Pi / 180
+	pitchRad := float64(pitch) * math.Pi / 180
+	lookX := -math.Sin(yawRad) * math.Cos(pitchRad)
+	lookY := -math.Sin(pitchRad)
+	lookZ := math.Cos(yawRad) * math.Cos(pitchRad)
+	dot := (dx*lookX + dy*lookY + dz*lookZ) / distance
+	if dot < 0.99 {
+		return false
+	}
+	return attackPathClear(player.server.worldFor(player.dimensionID()),
+		px, py+mobEyeHeight, pz, m.X, m.Y+mobEyeHeight, m.Z)
+}
+
+// teleportEnderman 尝试把末影人随机传送到附近的合法位置；失败时返回 nil。
+// 调用方必须持有 entityMu。
+func (s *Server) teleportEnderman(m *mob) []byte {
+	w := s.worldFor(m.Dim)
+	for attempt := 0; attempt < 16; attempt++ {
+		dx := int(s.nextRandom()%33) - 16
+		dz := int(s.nextRandom()%33) - 16
+		newX, newZ := m.X+float64(dx), m.Z+float64(dz)
+		if !s.insideBorder(newX, newZ) {
+			continue
+		}
+		column, ok := w.ColumnAt(int(math.Floor(newX)), int(math.Floor(newZ)))
+		if !ok || !column.HasTop || !column.HasSolid || column.TopState == world.WaterBlock {
+			continue
+		}
+		groundY := float64(column.SolidY + 1)
+		if math.Abs(groundY-m.Y) > 12 {
+			continue
+		}
+		m.X, m.Y, m.Z = newX, groundY, newZ
+		return protocol.EncodeEntityPositionSync(m.ID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch, true)
+	}
+	return nil
+}
+
 // trySpawnMob 在随机玩家附近尝试生成一只生物。
-// 与原版一致：敌对生物只在夜晚生成（本服务器无光照引擎，因此不区分亮度），
-// 且不在玩家附近近距离生成。末地不生成（无末影人实现）；下界与主世界相同。
+// 与原版一致：敌对生物只在夜晚生成（下界与末地不区分昼夜），被动生物在
+// 白天生成且需要草方块；末地只生成末影人。无光照引擎，因此不区分亮度。
 func (s *Server) trySpawnMob(players []*session) {
 	if !s.mobsEnabled || !s.config.SpawnMonsters || s.config.MaxMobs <= 0 || len(players) == 0 {
-		return
-	}
-	if !s.isNight() {
 		return
 	}
 	s.entityMu.Lock()
@@ -680,10 +778,19 @@ func (s *Server) trySpawnMob(players []*session) {
 
 	player := players[s.nextRandom()%uint64(len(players))]
 	dim := player.dimensionID()
+	var (
+		kind mobKind
+		ok   bool
+	)
 	if dim == world.DimensionEnd {
-		return // 末地没有可生成的敌对生物（待末影人实现）
+		// 末地只生成末影人（近似原版）。
+		if _, exists := s.mobTypeIDs[mobEnderman]; exists {
+			kind, ok = mobEnderman, true
+		}
+	} else {
+		hostile := s.isNight() || dim == world.DimensionNether
+		kind, ok = s.pickSpawnKind(hostile)
 	}
-	kind, ok := s.pickSpawnKind()
 	if !ok {
 		return
 	}
@@ -705,13 +812,21 @@ func (s *Server) trySpawnMob(players []*session) {
 	if column.TopState == world.LavaBlock || column.TopState == world.MagmaBlock {
 		return
 	}
+	// 被动生物只在主世界的草方块上生成（近似原版）。
+	if mobKinds[kind].passive && column.TopState != world.GrassBlock {
+		return
+	}
 	s.addMob(dim, kind, float64(blockX)+0.5, float64(column.SolidY+1), float64(blockZ)+0.5)
 }
 
-// pickSpawnKind 按权重挑选一种可生成的生物（僵尸/骷髅/苦力怕/蜘蛛）；
+// pickSpawnKind 按权重挑选一种可生成的生物：hostile 为 true 时挑选敌对
+// 生物（僵尸/骷髅/苦力怕/蜘蛛/末影人），否则挑选被动生物（牛/猪/羊）。
 // 无可用种类时返回 false。
-func (s *Server) pickSpawnKind() (mobKind, bool) {
-	kinds := []mobKind{mobZombie, mobSkeleton, mobCreeper, mobSpider}
+func (s *Server) pickSpawnKind(hostile bool) (mobKind, bool) {
+	kinds := []mobKind{mobCow, mobPig, mobSheep}
+	if hostile {
+		kinds = []mobKind{mobZombie, mobSkeleton, mobCreeper, mobSpider, mobEnderman}
+	}
 	total := 0
 	for _, kind := range kinds {
 		if _, ok := s.mobTypeIDs[kind]; !ok {
@@ -851,6 +966,17 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 		protocol.EncodeEntitySoundEffect(s.mobHurtSound(kind), protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
 	}
 	died := m.Health <= 0
+	// 末影人受击：激怒并随机传送（近似原版；未死亡时）。
+	if kind == mobEnderman {
+		m.Angry = true
+		if !died {
+			if movePacket := s.teleportEnderman(m); movePacket != nil {
+				packets = append(packets, movePacket)
+				packets = append(packets, protocol.EncodeEntitySoundEffect(s.soundEndermanTeleport,
+					protocol.SoundCategoryHostile, m.ID, 1, 1, 0))
+			}
+		}
+	}
 	if died {
 		m.Health = 0
 		m.Dead = true
@@ -927,11 +1053,21 @@ func (s *Server) dropMobLoot(kind mobKind, dim world.Dimension, x, y, z float64)
 		if s.nextRandom()%3 == 0 {
 			spawn("minecraft:spider_eye", 1)
 		}
+	case mobEnderman:
+		if s.nextRandom()%2 == 0 {
+			spawn("minecraft:ender_pearl", 1)
+		}
+	case mobCow:
+		spawn("minecraft:leather", int32(s.nextRandom()%3))
+		spawn("minecraft:beef", 1+int32(s.nextRandom()%3))
+	case mobPig:
+		spawn("minecraft:porkchop", 1+int32(s.nextRandom()%3))
+	case mobSheep:
+		spawn("minecraft:white_wool", 1)
+		spawn("minecraft:mutton", 1+int32(s.nextRandom()%2))
 	}
 }
 
-// damagePlayer 对玩家造成伤害并发送伤害事件、生命值与音效；
-// 冷却期内、死亡后或创造/旁观模式不生效。返回是否实际造成伤害。
 // damagePlayer 对玩家应用伤害：扣血、发送受伤动画与事件、播放音效，
 // 濒死时广播死亡消息。damageTypeID 是伤害类型注册表同步 ID（如
 // mob_attack/player_attack/fall）。返回伤害是否实际生效。
@@ -1132,6 +1268,10 @@ func (s *Server) resolveMobRegistryIDs() {
 		{"minecraft:entity.arrow.hit", &s.soundArrowHitBlock},
 		{"minecraft:entity.creeper.primed", &s.soundCreeperPrime},
 		{"minecraft:entity.player.hurt", &s.soundPlayerHurt},
+		{"minecraft:item.flintandsteel.use", &s.soundFlintUse},
+		{"minecraft:block.end_portal_frame.fill", &s.soundEndPortalFrameFill},
+		{"minecraft:block.end_portal.spawn", &s.soundEndPortalSpawn},
+		{"minecraft:block.portal.travel", &s.soundPortalTravel},
 	} {
 		id, ok := staticLookup("minecraft:sound_event", item.entry)
 		if !ok {
@@ -1146,4 +1286,8 @@ func (s *Server) resolveMobRegistryIDs() {
 	s.soundMobHurt = s.mobHurtSounds[mobZombie]
 	s.soundMobDeath = s.mobDeathSounds[mobZombie]
 	s.zombieTypeID = s.mobTypeIDs[mobZombie]
+	// 末影人传送音效：可选（缺失时仅不播放音效）。
+	if teleport, ok := staticLookup("minecraft:sound_event", "minecraft:entity.enderman.teleport"); ok {
+		s.soundEndermanTeleport = teleport
+	}
 }

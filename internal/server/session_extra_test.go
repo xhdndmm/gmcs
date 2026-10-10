@@ -4,6 +4,7 @@ import (
 	"math"
 	"net"
 	"testing"
+	"time"
 
 	"gmcs/internal/config"
 	"gmcs/internal/item"
@@ -123,6 +124,13 @@ func TestEatingRestoresHunger(t *testing.T) {
 	player.stateMu.Unlock()
 
 	sendUseItem(t, conn)
+	// 1.6 秒进食过程：开始时立即检查不消耗。
+	time.Sleep(100 * time.Millisecond)
+	if stack := player.inventory.Get(item.SlotHotbarStart); stack.Count != 2 {
+		t.Fatalf("apple consumed before the eating duration: %+v", stack)
+	}
+	time.Sleep(1600 * time.Millisecond)
+	sendUseItem(t, conn) // 再发一个数据包驱动进度检查。
 	// 期望：槽位数量 2 → 1，然后 Update Health（饥饿值 +4）。
 	slotPacket := expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
 	if count := slotCount(t, slotPacket); count != 1 {

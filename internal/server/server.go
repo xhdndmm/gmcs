@@ -107,6 +107,14 @@ type Server struct {
 	// arrows 是飞行中的箭矢（受 entityMu 保护）。
 	arrows map[int32]*arrowEntity
 
+	// 传送门音效（点燃/激活/传送；New 中解析）。
+	soundFlintUse           int32
+	soundEndPortalFrameFill int32
+	soundEndPortalSpawn     int32
+	soundPortalTravel       int32
+	// soundEndermanTeleport 是末影人传送音效（缺失时静默跳过）。
+	soundEndermanTeleport int32
+
 	// 掉落物系统（注册表缺少物品实体类型或拾取音效时禁用）。
 	itemTypeID      int32
 	soundItemPickup int32
@@ -116,6 +124,10 @@ type Server struct {
 	// 红石：已按下按钮的剩余 tick（受 redstoneMu 保护）。
 	redstoneMu      sync.Mutex
 	redstoneButtons map[containerKey]int
+	// repeaters/observers 是红石计时（中继器延迟切换与侦测器脉冲），
+	// 同样受 redstoneMu 保护。
+	repeaters map[containerKey]repeaterPending
+	observers map[containerKey]int
 
 	// containers 是已打开容器（按维度 + 方块坐标索引），受 containerMu 保护。
 	containerDefs map[string]*containerDef

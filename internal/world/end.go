@@ -1,6 +1,10 @@
 package world
 
-import "math"
+import (
+	"math"
+
+	"gmcs/internal/registry"
+)
 
 // 末地生成器：主岛（原点周围）+ 外部岛屿（192 格网格）+ 黑曜石柱。
 //
@@ -115,6 +119,10 @@ func (g EndGenerator) GenerateChunk(chunkX, chunkZ int) *Chunk {
 	if chunkX >= -3 && chunkX <= 3 && chunkZ >= -3 && chunkZ <= 3 {
 		g.placePillars(chunk, baseX, baseZ)
 	}
+	// 出口传送门：主岛中心（0,0）所在区块生成（返回主世界的通道）。
+	if chunkX == 0 && chunkZ == 0 {
+		g.placeExitPortal(chunk, baseX, baseZ)
+	}
 	return chunk
 }
 
@@ -138,6 +146,57 @@ func (g EndGenerator) placePillars(chunk *Chunk, baseX, baseZ int) {
 		// 柱顶放置火把（原版为铁栏杆 + 末地水晶座；此处简化为柱顶照明）。
 		if top+height+1 < 250 {
 			chunk.setBlockStateDirect(localX, top+height+1, localZ, TorchBlock)
+		}
+	}
+}
+
+// endExitPortalOffsets 是出口传送门框相对中心的 12 个位置（框架环半径 2，
+// 不含四角；与服务器端末地传送门激活判定一致）。
+var endExitPortalOffsets = [12][2]int{
+	{-2, -1}, {-2, 0}, {-2, 1},
+	{2, -1}, {2, 0}, {2, 1},
+	{-1, -2}, {0, -2}, {1, -2},
+	{-1, 2}, {0, 2}, {1, 2},
+}
+
+// placeExitPortal 在主岛中心生成出口传送门（12 个填有眼睛的末地传送门框 +
+// 中心 3×3 末地传送门），作为末地返回主世界的通道。
+//
+// 与原版差异：原版出口传送门在击败末影龙后生成（4 格基岩 + 传送门，处于
+// (0,75,0)）；gmcs 未实现末影龙，因此在主岛生成时直接构建简化结构。
+func (g EndGenerator) placeExitPortal(chunk *Chunk, baseX, baseZ int) {
+	frame, frameOK := registry.BlockStateWithProps("minecraft:end_portal_frame",
+		map[string]string{"eye": "true", "facing": "north"})
+	endPortal, portalOK := registry.BlockStateIDs["minecraft:end_portal"]
+	if !frameOK || !portalOK {
+		return
+	}
+	// 取中心附近最高列，避免结构埋在岛面下。
+	maxTop := g.mainIslandTop(0, 0)
+	for dx := -3; dx <= 3; dx++ {
+		for dz := -3; dz <= 3; dz++ {
+			if top := g.mainIslandTop(dx, dz); top > maxTop {
+				maxTop = top
+			}
+		}
+	}
+	portalY := maxTop + 1
+	set := func(worldX, y, worldZ int, state uint16) {
+		localX, localZ := worldX-baseX, worldZ-baseZ
+		if localX < 0 || localX >= SectionSize || localZ < 0 || localZ >= SectionSize {
+			return
+		}
+		chunk.setBlockStateDirect(localX, y, localZ, state)
+	}
+	for _, offset := range endExitPortalOffsets {
+		x, z := offset[0], offset[1]
+		// 框架下方垫一层末地石（悬空位置更自然，避开水面上方）。
+		set(x, portalY-1, z, EndStoneBlock)
+		set(x, portalY, z, frame)
+	}
+	for dx := -1; dx <= 1; dx++ {
+		for dz := -1; dz <= 1; dz++ {
+			set(dx, portalY, dz, endPortal)
 		}
 	}
 }

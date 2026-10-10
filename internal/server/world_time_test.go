@@ -54,15 +54,20 @@ func TestMonstersOnlySpawnAtNight(t *testing.T) {
 	instance, _ := joinServer(t, cfg, "DayWalker")
 	players := instance.playerSnapshot()
 
-	// 白天：不生成。
+	// 白天：不生成敌对生物（被动生物允许在白天生成）。
 	for i := 0; i < 50; i++ {
 		instance.trySpawnMob(players)
 	}
 	instance.entityMu.Lock()
-	count := len(instance.mobs)
+	hostiles := 0
+	for _, m := range instance.mobs {
+		if !mobKinds[m.Kind].passive {
+			hostiles++
+		}
+	}
 	instance.entityMu.Unlock()
-	if count != 0 {
-		t.Fatalf("mobs spawned during the day: %d", count)
+	if hostiles != 0 {
+		t.Fatalf("hostile mobs spawned during the day: %d", hostiles)
 	}
 
 	// 夜晚：可以生成。

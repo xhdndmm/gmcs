@@ -289,4 +289,85 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 		player.tryWrite(protocol.EncodeEntityVelocity(player.entityID,
 			float64(knockX/norm)*float64(scale), float64(scale)*0.5, float64(knockZ/norm)*float64(scale)))
 	}
+	// 范围内的生物同样受到爆炸伤害；掉落物被炸飞（不销毁）。
+	s.damageMobsInExplosion(dim, x, y, z, float32(damageRadius), power)
+	s.knockbackItemsInExplosion(dim, x, y, z, float32(damageRadius))
+}
+
+// damageMobsInExplosion 对爆炸范围内的生物结算伤害（按距离线性衰减），
+// 死亡时走正常的死亡动画与掉落流程。
+func (s *Server) damageMobsInExplosion(dim world.Dimension, x, y, z float64, damageRadius, power float32) {
+	type result struct {
+		dim     world.Dimension
+		kind    mobKind
+		packets [][]byte
+		drop    bool
+		lootX   float64
+		lootY   float64
+		lootZ   float64
+	}
+	var results []result
+	s.entityMu.Lock()
+	for _, m := range s.mobs {
+		if m.Dim != dim || m.Dead {
+			continue
+		}
+		distance := math.Hypot(math.Hypot(m.X-x, m.Y-(y-0.5)), m.Z-z)
+		if distance > float64(damageRadius) {
+			continue
+		}
+		damage := float32(1-distance/float64(damageRadius)) * power
+		if damage < 1 {
+			continue
+		}
+		position := [3]float64{x, y, z}
+		m.Health -= damage
+		packets := [][]byte{
+			protocol.EncodeHurtAnimation(m.ID, m.Yaw),
+			protocol.EncodeDamageEvent(m.ID, s.explosionDamageTypeID, 0, 0, &position),
+			protocol.EncodeEntitySoundEffect(s.mobHurtSound(m.Kind), protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
+		}
+		entry := result{dim: m.Dim, kind: m.Kind, packets: packets}
+		if m.Health <= 0 {
+			m.Health = 0
+			m.Dead = true
+			m.DeadTicks = 0
+			entry.packets = append(entry.packets,
+				protocol.EncodeEntityEvent(m.ID, protocol.EntityEventDeath),
+				protocol.EncodeEntitySoundEffect(s.mobDeathSound(m.Kind), protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
+			)
+			entry.drop = true
+			entry.lootX, entry.lootY, entry.lootZ = m.X, m.Y, m.Z
+		}
+		results = append(results, entry)
+	}
+	s.entityMu.Unlock()
+	for _, entry := range results {
+		for _, packet := range entry.packets {
+			s.broadcastToNearby(entry.dim, packet, x, z, s.playerSnapshot())
+		}
+		if entry.drop {
+			s.dropMobLoot(entry.kind, entry.dim, entry.lootX, entry.lootY, entry.lootZ)
+		}
+	}
+}
+
+// knockbackItemsInExplosion 对爆炸范围内的掉落物施加击飞速度（不销毁物品）。
+func (s *Server) knockbackItemsInExplosion(dim world.Dimension, x, y, z float64, damageRadius float32) {
+	s.entityMu.Lock()
+	defer s.entityMu.Unlock()
+	for _, e := range s.items {
+		if e.Dim != dim {
+			continue
+		}
+		dx, dy, dz := e.X-x, e.Y-y, e.Z-z
+		distance := math.Hypot(math.Hypot(dx, dy), dz)
+		if distance > float64(damageRadius) || distance < 1e-3 {
+			continue
+		}
+		scale := 0.4 * (1 - distance/float64(damageRadius))
+		e.VelX += dx / distance * scale
+		e.VelY += scale * 0.8
+		e.VelZ += dz / distance * scale
+	}
 }
