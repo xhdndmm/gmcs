@@ -461,14 +461,14 @@ func (w *World) Flush() error {
 }
 
 // UnloadFar 把距所有中心点都超过 radius 的区块移出内存缓存
-// （切比雪夫距离，单位：区块），返回卸载数量。
+// （切比雪夫距离，单位：区块），返回被卸载的区块位置。
 //
 // 待保存的区块会被先编码并在锁外写盘；保存失败时保留内存中的区块并重新
 // 标记为待保存（返回错误）。与 Chunk 并发调用是安全的：已由调用方持有的
 // *Chunk 指针仍然有效，后续访问同一位置会从磁盘或生成器重新加载。
-func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
+func (w *World) UnloadFar(centers []ChunkPos, radius int) ([]ChunkPos, error) {
 	if len(centers) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	w.unloadMu.Lock()
 	defer w.unloadMu.Unlock()
@@ -476,7 +476,7 @@ func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
-		return 0, fmt.Errorf("世界已关闭")
+		return nil, fmt.Errorf("世界已关闭")
 	}
 	var (
 		candidates []ChunkPos
@@ -513,12 +513,12 @@ func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
 				w.dirty[pos] = struct{}{}
 			}
 			w.mu.Unlock()
-			return 0, err
+			return nil, err
 		}
 	}
 
 	w.mu.Lock()
-	unloaded := 0
+	unloaded := make([]ChunkPos, 0, len(candidates))
 	for _, pos := range candidates {
 		if _, dirty := w.dirty[pos]; dirty {
 			// 编码后又发生修改（或编码失败）：保留在内存中，等待下一次卸载/保存。
@@ -526,7 +526,7 @@ func (w *World) UnloadFar(centers []ChunkPos, radius int) (int, error) {
 		}
 		if _, ok := w.chunks[pos]; ok {
 			delete(w.chunks, pos)
-			unloaded++
+			unloaded = append(unloaded, pos)
 		}
 	}
 	w.mu.Unlock()

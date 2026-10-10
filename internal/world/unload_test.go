@@ -28,8 +28,8 @@ func TestUnloadFarUnloadsDistantChunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := size*size - 9; unloaded != want {
-		t.Fatalf("UnloadFar() = %d, want %d", unloaded, want)
+	if want := size*size - 9; len(unloaded) != want {
+		t.Fatalf("UnloadFar() 卸载 %d 个，want %d", len(unloaded), want)
 	}
 	if got := instance.ChunkCount(); got != 9 {
 		t.Fatalf("卸载后 ChunkCount() = %d, want 9", got)
@@ -73,8 +73,8 @@ func TestUnloadFarSavesDirtyChunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unloaded != 1 {
-		t.Fatalf("UnloadFar() = %d, want 1", unloaded)
+	if len(unloaded) != 1 || unloaded[0] != (ChunkPos{X: 0, Z: 0}) {
+		t.Fatalf("UnloadFar() = %v, want [（0,0）]", unloaded)
 	}
 	if got := instance.ChunkCount(); got != 0 {
 		t.Fatalf("ChunkCount() = %d, want 0", got)
@@ -105,8 +105,8 @@ func TestUnloadFarWithoutCentersIsNoop(t *testing.T) {
 	if _, err := instance.Chunk(0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if unloaded, err := instance.UnloadFar(nil, 4); err != nil || unloaded != 0 {
-		t.Fatalf("UnloadFar(nil) = (%d, %v), want (0, nil)", unloaded, err)
+	if unloaded, err := instance.UnloadFar(nil, 4); err != nil || len(unloaded) != 0 {
+		t.Fatalf("UnloadFar(nil) = (%v, %v), want (nil, nil)", unloaded, err)
 	}
 	if got := instance.ChunkCount(); got != 1 {
 		t.Fatalf("ChunkCount() = %d, want 1", got)

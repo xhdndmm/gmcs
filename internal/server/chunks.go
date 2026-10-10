@@ -278,9 +278,25 @@ func (s *Server) unloadFarChunks() error {
 			}
 			continue
 		}
-		if unloaded > 0 {
-			slog.Debug("chunks unloaded", "dimension", dim, "count", unloaded)
+		// 区块帧缓存持有 *world.Chunk 指针；卸载后必须同步驱逐，
+		// 否则缓存会阻止已卸载区块被 GC（内存随探索持续增长）。
+		for _, pos := range unloaded {
+			s.evictChunkPacket(dim, pos)
+		}
+		if len(unloaded) > 0 {
+			slog.Debug("chunks unloaded", "dimension", dim, "count", len(unloaded))
 		}
 	}
 	return firstErr
+}
+
+// evictChunkPacket 从区块帧缓存移除指定位置（区块卸载时调用）。
+func (s *Server) evictChunkPacket(dim world.Dimension, pos world.ChunkPos) {
+	key := chunkPacketKey{dim: dim, pos: pos}
+	s.chunkPackets.mu.Lock()
+	if elem, ok := s.chunkPackets.entries[key]; ok {
+		s.chunkPackets.order.Remove(elem)
+		delete(s.chunkPackets.entries, key)
+	}
+	s.chunkPackets.mu.Unlock()
 }

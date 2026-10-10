@@ -44,5 +44,5 @@ func TestChunkMemoryDemo(t *testing.T) {
 	var after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&after)
-	t.Logf("卸载 %d 个区块后：HeapAlloc=%.1f MiB（缓存区块=%d）", unloaded, float64(after.HeapAlloc)/1024/1024, instance.ChunkCount())
+	t.Logf("卸载 %d 个区块后：HeapAlloc=%.1f MiB（缓存区块=%d）", len(unloaded), float64(after.HeapAlloc)/1024/1024, instance.ChunkCount())
 }

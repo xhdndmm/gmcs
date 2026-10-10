@@ -1,11 +1,9 @@
 package server
 
 import (
-	"net"
 	"testing"
 
 	"gmcs/internal/config"
-	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 )
@@ -25,15 +23,8 @@ func placeCraftingTable(t *testing.T, instance *Server) (int, int, int) {
 }
 
 // setCreativeSlot 发送 Set Creative Mode Slot 把物品放进玩家快捷栏。
-func setCreativeSlot(t *testing.T, conn net.Conn, slot int16, itemID, count int32) {
-	t.Helper()
-	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDSetCreativeSlot)
-	packet = append(packet, byte(slot>>8), byte(slot))
-	packet = item.Stack{ItemID: itemID, Count: count}.AppendSlot(packet)
-	if err := protocol.WritePacketWithCompression(conn, packet, compressionThreshold); err != nil {
-		t.Fatal(err)
-	}
-}
+// setCreativeSlot 已由 interaction_test.go 的 sendSetCreativeSlot 替代：
+// 后者按物品栏内部槽位发送并映射为线上菜单槽位号。
 
 // TestCraftingTableOpen 验证右键工作台打开 3×3 合成窗口。
 func TestCraftingTableOpen(t *testing.T) {
@@ -84,7 +75,7 @@ func TestCraftingTableCraftStick(t *testing.T) {
 
 	x, y, z := placeCraftingTable(t, instance)
 	// 把木板放进快捷栏槽 0。
-	setCreativeSlot(t, conn, 0, plankID, 2)
+	sendSetCreativeSlot(t, conn, 0, plankID, 2)
 
 	sendUseItemOn(t, conn, x, y, z, 1)
 	windowID, _ := openScreen(t, conn)
@@ -142,7 +133,7 @@ func TestPlayerInventoryCraft2x2(t *testing.T) {
 	}
 
 	// 2×2 全放木板 → 工作台。
-	setCreativeSlot(t, conn, 0, plankID, 4)
+	sendSetCreativeSlot(t, conn, 0, plankID, 4)
 	// 窗口 0：快捷栏槽 0 的槽位 = 36。
 	sendContainerClick(t, conn, 0, 0, 36, 0, protocol.ClickModePickup)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 背包清空
@@ -188,7 +179,7 @@ func TestCraftingGridReturnedOnClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	x, y, z := placeCraftingTable(t, instance)
-	setCreativeSlot(t, conn, 0, plankID, 2)
+	sendSetCreativeSlot(t, conn, 0, plankID, 2)
 	sendUseItemOn(t, conn, x, y, z, 1)
 	windowID, _ := openScreen(t, conn)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDContainerSetContent)

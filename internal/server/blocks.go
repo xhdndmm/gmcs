@@ -324,17 +324,29 @@ func (s *Server) handleSetCarriedItem(player *session, slot int32) {
 }
 
 // handleSetCreativeSlot 处理创造模式物品栏设置（Set Creative Mode Slot）。
+//
+// 线上槽位号是“玩家物品栏菜单”编号（与 vanilla handleSetCreativeModeSlot
+// 经 inventoryMenu 写入一致）：1–4 合成格、5–8 盔甲（头/胸/腿/脚）、9–35 主背包、
+// 36–44 快捷栏、45 副手；需要映射到物品栏内部槽位后再存储与回执，
+// 否则创造模式把物品放到快捷栏会被存进盔甲/副手槽，客户端物品错乱。
+// 0–4（合成结果与合成格）在本实现中没有持久槽位，忽略。
+// 负数槽位与原版一致：把物品掉落到世界中（创造界面丢弃手势）。
 func (s *Server) handleSetCreativeSlot(player *session, slot int, itemID int32, count int32) {
 	if player.gameModeID() != uint8(config.GameModeCreative) {
 		slog.Debug("非创造模式忽略了物品栏设置", "name", player.name)
 		return
 	}
-	if slot < 0 || slot >= item.InventorySlots {
+	if slot < 0 {
+		s.dropCreativeTrash(player, itemID, count)
+		return
+	}
+	invSlot, ok := playerInvForMenuSlot(slot)
+	if !ok {
 		return
 	}
 	if count <= 0 || itemID <= 0 {
-		player.inventory.Set(slot, item.Empty())
-		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), item.Empty().AppendSlot(nil)))
+		player.inventory.Set(invSlot, item.Empty())
+		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(invSlot), item.Empty().AppendSlot(nil)))
 		return
 	}
 	name, ok := registry.ItemName(itemID)
@@ -342,15 +354,39 @@ func (s *Server) handleSetCreativeSlot(player *session, slot int, itemID int32, 
 		slog.Debug("未知的物品 ID", "name", player.name, "itemID", itemID)
 		return
 	}
-	if count > 64 {
-		count = 64
-	}
 	stack, err := item.FromName(name, count)
 	if err != nil {
 		return
 	}
-	player.inventory.Set(slot, stack)
-	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
+	if stack.Count > stack.MaxStack() {
+		return // 与原版一致：超过堆叠上限的设置被忽略
+	}
+	player.inventory.Set(invSlot, stack)
+	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(invSlot), stack.AppendSlot(nil)))
+}
+
+// dropCreativeTrash 处理创造模式物品栏的负数槽位设置：把物品沿视线抛出。
+func (s *Server) dropCreativeTrash(player *session, itemID int32, count int32) {
+	if count <= 0 || itemID <= 0 {
+		return
+	}
+	name, ok := registry.ItemName(itemID)
+	if !ok {
+		return
+	}
+	stack, err := item.FromName(name, count)
+	if err != nil || stack.Count > stack.MaxStack() {
+		return
+	}
+	x, y, z, yaw, pitch := player.playerPosition()
+	yawRad := float64(yaw) * math.Pi / 180
+	pitchRad := float64(pitch) * math.Pi / 180
+	const throwSpeed = 0.3
+	s.spawnItem(player.dimensionID(), stack, x, y+1.0, z,
+		-math.Cos(pitchRad)*math.Sin(yawRad)*throwSpeed,
+		-math.Sin(pitchRad)*throwSpeed+0.1,
+		math.Cos(pitchRad)*math.Cos(yawRad)*throwSpeed,
+		itemPickupDelayPlayer)
 }
 
 // broadcastBlockUpdate 把方块更新发送给指定维度内附近的玩家。

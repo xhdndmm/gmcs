@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"gmcs/internal/config"
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 	"gmcs/internal/world"
@@ -52,11 +53,30 @@ func sendSetCarriedItem(t *testing.T, conn net.Conn, slot int32) {
 	}
 }
 
-// sendSetCreativeSlot 发送创造模式物品栏设置包（无数据组件）。
-func sendSetCreativeSlot(t *testing.T, conn net.Conn, slot int16, itemID int32, count int32) {
+// menuSlotForInventory 把物品栏内部槽位映射为“玩家物品栏菜单”槽位号
+// （Set Creative Mode Slot 线上使用的编号，与服务端 handleSetCreativeSlot 的
+// 反向映射 playerInvForMenuSlot 对应）。
+func menuSlotForInventory(slot int) int16 {
+	switch {
+	case slot >= item.SlotHotbarStart && slot <= item.SlotHotbarEnd:
+		return int16(36 + slot)
+	case slot >= item.SlotMainStart && slot <= item.SlotMainEnd:
+		return int16(slot)
+	case slot >= item.SlotFeet && slot <= item.SlotHead:
+		return int16(44 - slot) // 39→5（头）… 36→8（脚）
+	case slot == item.SlotOffhand:
+		return 45
+	default:
+		return -1
+	}
+}
+
+// sendSetCreativeSlotMenu 按线上“玩家菜单”槽位号发送创造物品栏设置包
+// （无数据组件）。
+func sendSetCreativeSlotMenu(t *testing.T, conn net.Conn, menuSlot int16, itemID int32, count int32) {
 	t.Helper()
 	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDSetCreativeSlot)
-	packet = append(packet, byte(slot>>8), byte(slot))
+	packet = append(packet, byte(menuSlot>>8), byte(menuSlot))
 	packet = protocol.AppendVarInt(packet, count)
 	if count > 0 {
 		packet = protocol.AppendVarInt(packet, itemID)
@@ -66,6 +86,17 @@ func sendSetCreativeSlot(t *testing.T, conn net.Conn, slot int16, itemID int32, 
 	if err := protocol.WritePacketWithCompression(conn, packet, compressionThreshold); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// sendSetCreativeSlot 按物品栏内部槽位发送创造物品栏设置包
+// （自动映射为菜单槽位号，与客户端在创造物品栏中的行为一致）。
+func sendSetCreativeSlot(t *testing.T, conn net.Conn, invSlot int16, itemID int32, count int32) {
+	t.Helper()
+	menuSlot := menuSlotForInventory(int(invSlot))
+	if menuSlot < 0 {
+		t.Fatalf("无效的物品栏槽位 %d", invSlot)
+	}
+	sendSetCreativeSlotMenu(t, conn, menuSlot, itemID, count)
 }
 
 // expectBlockUpdate 读取一个方块更新包并校验位置与状态。
@@ -231,5 +262,126 @@ func TestSurvivalBlockPlaceConsumesItem(t *testing.T) {
 	sendUseItemOn(t, conn, x2, y2-1, z2, 1)
 	if got := instance.testWorld().BlockAt(x2, y2, z2); got != world.AirBlock {
 		t.Fatalf("物品耗尽后不应能放置方块（方块 = %d）", got)
+	}
+}
+
+// TestSetCreativeModeSlotMenuMapping 验证创造物品栏设置（Set Creative Mode Slot）
+// 的槽位映射：线上槽位是玩家菜单编号（5–8 盔甲、9–35 主背包、36–44 快捷栏、
+// 45 副手），服务端必须映射到物品栏内部槽位后再存储与回执。
+// 回归背景：曾把菜单槽位直接当作内部槽位，创造模式把物品放到快捷栏会被存进
+// 盔甲/副手槽（并回执错误的槽位），造成客户端物品错乱、丢弃/拾取结果不符。
+func TestSetCreativeModeSlotMenuMapping(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.GameMode = "creative"
+	cfg.StartingItems = nil
+	instance, conn := joinServer(t, cfg, "MenuSlots")
+	player := findSession(t, instance, "MenuSlots")
+
+	stone, err := registry.ItemID("minecraft:stone")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 快捷栏 3 ← 菜单 39：内部槽位 3，且绝不能落到内部 39（头盔）。
+	sendSetCreativeSlotMenu(t, conn, 39, stone, 7)
+	reply := expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
+	if slot, count := packetField(t, reply, 2), packetField(t, reply, 3); slot != 3 || count != 7 {
+		t.Fatalf("回执槽位/数量 = %d/%d, want 3/7", slot, count)
+	}
+	if stack := player.inventory.Get(3); stack.ItemID != stone || stack.Count != 7 {
+		t.Fatalf("内部槽位 3 = %+v, want 石头 x7", stack)
+	}
+	if stack := player.inventory.Get(39); !stack.IsEmpty() {
+		t.Fatalf("头盔槽被误写：%+v", stack)
+	}
+
+	// 盔甲：菜单 5（头）→ 内部 39。
+	sendSetCreativeSlotMenu(t, conn, 5, stone, 1)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
+	if stack := player.inventory.Get(item.SlotHead); stack.ItemID != stone || stack.Count != 1 {
+		t.Fatalf("头盔槽 = %+v, want 石头 x1", stack)
+	}
+
+	// 主背包：菜单 20 → 内部 20。
+	sendSetCreativeSlotMenu(t, conn, 20, stone, 64)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
+	if stack := player.inventory.Get(20); stack.ItemID != stone || stack.Count != 64 {
+		t.Fatalf("主背包槽 20 = %+v, want 石头 x64", stack)
+	}
+
+	// 副手：菜单 45 → 内部 40。
+	sendSetCreativeSlotMenu(t, conn, 45, stone, 3)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
+	if stack := player.inventory.Get(item.SlotOffhand); stack.ItemID != stone || stack.Count != 3 {
+		t.Fatalf("副手槽 = %+v, want 石头 x3", stack)
+	}
+
+	// 合成格（菜单 1–4）、结果槽（0）、越界槽位（46）与超过堆叠上限（100）
+	// 均不改动任何槽位。
+	before := player.inventory.Slots()
+	sendSetCreativeSlotMenu(t, conn, 2, stone, 64)
+	sendSetCreativeSlotMenu(t, conn, 0, stone, 64)
+	sendSetCreativeSlotMenu(t, conn, 46, stone, 64)
+	sendSetCreativeSlotMenu(t, conn, 20, stone, 100)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	if after := player.inventory.Slots(); after != before {
+		t.Fatalf("合成格/非法槽位不应改动物品栏")
+	}
+
+	// 负数槽位（创造界面丢弃手势）：与原版一致，物品沿视线掉落到世界。
+	beforeDrop := player.inventory.Slots()
+	sendSetCreativeSlotMenu(t, conn, -1, stone, 5)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
+	instance.entityMu.Lock()
+	droppedCount := 0
+	var dropped item.Stack
+	for _, e := range instance.items {
+		droppedCount++
+		dropped = e.Stack
+	}
+	instance.entityMu.Unlock()
+	if droppedCount != 1 || dropped.ItemID != stone || dropped.Count != 5 {
+		t.Fatalf("负数槽位丢弃 = %d 个实体、堆叠 %+v, want 1 个石头 x5", droppedCount, dropped)
+	}
+	if after := player.inventory.Slots(); after != beforeDrop {
+		t.Fatal("负数槽位不应改动物品栏")
+	}
+}
+
+// TestCreativeRedstoneTakeOutAndPlace 验证创造模式取出红石粉（经菜单槽位
+// 映射到快捷栏）后能正常放置为红石线，且创造模式不消耗物品。
+func TestCreativeRedstoneTakeOutAndPlace(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.GameMode = "creative"
+	cfg.StartingItems = nil
+	instance, conn := joinServer(t, cfg, "Redstoner")
+
+	dust, err := registry.ItemID("minecraft:redstone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 从创造物品栏取出红石粉到快捷栏 4（线上菜单槽位 40），并切换到该槽位。
+	sendSetCreativeSlot(t, conn, 4, dust, 64)
+	sendSetCarriedItem(t, conn, 4)
+
+	x, y, z := findDigTarget(t, instance)
+	sendPlayerAction(t, conn, 0, x, y, z, 1) // 先清出位置
+	expectBlockUpdate(t, conn, x, y, z, int32(world.AirBlock))
+
+	sendUseItemOn(t, conn, x, y-1, z, 1)
+	// /list 往返作为处理屏障：放置与红石网络重算均已完成。
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	name, _, ok := registry.StateProps(instance.testWorld().BlockAt(x, y, z))
+	if !ok || name != "minecraft:redstone_wire" {
+		t.Fatalf("放置后方块 = %v (ok=%v), want 红石线", name, ok)
+	}
+	if stack := activeSession(t, instance, "Redstoner").inventory.Get(4); stack.ItemID != dust || stack.Count != 64 {
+		t.Fatalf("创造模式放置后物品 = %+v, want 红石粉 x64", stack)
 	}
 }

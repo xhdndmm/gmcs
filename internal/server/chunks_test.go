@@ -83,3 +83,52 @@ func TestChunkUnloadFarFromPlayers(t *testing.T) {
 		t.Fatal("重新加载被卸载的区块返回 nil")
 	}
 }
+
+// TestChunkUnloadEvictsPacketCache 验证区块卸载时同步驱逐区块帧缓存：
+// 帧缓存条目持有 *world.Chunk 指针，若不驱逐会阻止已卸载区块被 GC，
+// 长时间跑图后内存占用只增不减。回归背景：区块卸载只清 world 缓存，
+// 帧缓存仍然强引用旧区块。
+func TestChunkUnloadEvictsPacketCache(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "CacheWalker")
+	gameWorld := instance.testWorld()
+	dim := world.DimensionOverworld
+
+	// 构造一个远离玩家的区块并填充帧缓存。
+	pos := world.ChunkPos{X: 100, Z: 100}
+	chunk, err := gameWorld.Chunk(pos.X, pos.Z)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame := instance.chunkPacket(dim, pos, chunk); frame == nil {
+		t.Fatal("chunkPacket 返回 nil")
+	}
+	key := chunkPacketKey{dim: dim, pos: pos}
+	instance.chunkPackets.mu.Lock()
+	_, cached := instance.chunkPackets.entries[key]
+	instance.chunkPackets.mu.Unlock()
+	if !cached {
+		t.Fatal("帧缓存缺少刚编码的区块条目")
+	}
+
+	if err := instance.unloadFarChunks(); err != nil {
+		t.Fatal(err)
+	}
+	instance.chunkPackets.mu.Lock()
+	_, cachedAfter := instance.chunkPackets.entries[key]
+	instance.chunkPackets.mu.Unlock()
+	if cachedAfter {
+		t.Fatal("区块卸载后帧缓存仍持有该区块（阻止 GC，内存持续增长）")
+	}
+
+	// 世界缓存中该区块也已卸载：再次访问应重新加载（新指针）。
+	reloaded, err := gameWorld.Chunk(pos.X, pos.Z)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded == chunk {
+		t.Fatal("区块未被卸载（重新访问返回同一指针）")
+	}
+}

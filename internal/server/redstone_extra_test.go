@@ -1,6 +1,7 @@
 package server
 
 import (
+	"math"
 	"testing"
 
 	"gmcs/internal/config"
@@ -247,6 +248,61 @@ func TestRegistryHasRepeaterAndObserverStates(t *testing.T) {
 			"facing": facing, "powered": "false",
 		}); !ok {
 			t.Fatalf("observer state (facing=%s) missing", facing)
+		}
+	}
+}
+
+// TestRedstoneFuzzNoHang 验证红石元件（红石线/拉杆/按钮/红石灯/中继器/侦测器）
+// 在随机摆放、切换与逐 tick 推进下不会出现同步递归、死循环或状态广播风暴
+// （测试超时兜底；对应“放置红石后卡住”的服务端风险面）。
+func TestRedstoneFuzzNoHang(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "Fuzzer")
+	gameWorld := instance.testWorld()
+
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	baseX := int(math.Floor(spawnX))
+	baseY := int(math.Floor(spawnY))
+	baseZ := int(math.Floor(spawnZ))
+
+	names := []string{wireName, leverName, stoneButtonName, oakButtonName, lampName, repeaterName, observerName}
+	states := make([]uint16, len(names))
+	for i, name := range names {
+		state, ok := registry.BlockStateIDs[name]
+		if !ok {
+			t.Fatalf("缺少方块状态 %s", name)
+		}
+		states[i] = state
+	}
+
+	seed := uint64(0x9E3779B97F4A7C15)
+	next := func() uint64 {
+		seed = seed*6364136223846793005 + 1442695040888963407
+		return seed >> 33
+	}
+	for op := 0; op < 120; op++ {
+		dx := int(next()%7) - 3
+		dz := int(next()%7) - 3
+		kind := int(next() % uint64(len(names)))
+		x, z := baseX+dx, baseZ+dz
+		y := baseY
+		state := states[kind]
+		if !gameWorld.SetBlock(x, y, z, state) {
+			continue
+		}
+		instance.broadcastBlockUpdate(world.DimensionOverworld, x, y, z, int32(state))
+		instance.updateRedstoneAround(world.DimensionOverworld, x, y, z)
+		// 拉杆/按钮/中继器随机切换（按钮同时驱动弹起计时）。
+		if names[kind] == leverName || names[kind] == repeaterName || names[kind] == stoneButtonName {
+			instance.handleRedstoneUse(gameWorld, x, y, z, state)
+		}
+		if op%4 == 0 {
+			instance.tickRedstone()
+		}
+		if op%12 == 0 {
+			instance.tick()
 		}
 	}
 }
