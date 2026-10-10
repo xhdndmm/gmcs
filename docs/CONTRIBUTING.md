@@ -26,7 +26,7 @@
 
 ## 2. 开发环境
 
-- Go 工具链：版本下限见 [go.mod](../go.mod)（当前为 1.26）
+- Go 工具链：版本下限见 [go.mod](../go.mod)（当前为 1.27）
 - 项目只使用标准库，无需安装第三方依赖
 - `go test -race` 需要 CGO 与受支持的平台；不支持时使用
   `scripts/test.sh --no-race`

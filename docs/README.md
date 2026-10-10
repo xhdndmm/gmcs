@@ -8,7 +8,7 @@
   <a href="https://github.com/xhdndmm/gmcs/stargazers"><img src="https://img.shields.io/github/stars/xhdndmm/gmcs" alt="GitHub Stars"></a>
   <a href="https://github.com/xhdndmm/gmcs/issues"><img src="https://img.shields.io/github/issues/xhdndmm/gmcs" alt="GitHub Issues"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
-  <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/Go-1.26%2B-blue" alt="Go 1.26+"></a>
+  <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/Go-1.27%2B-blue" alt="Go 1.27+"></a>
   <a href="https://github.com/xhdndmm/gmcs/releases"><img src="https://img.shields.io/github/v/tag/xhdndmm/gmcs?label=release" alt="Latest Release"></a>
   <a href="https://github.com/xhdndmm/gmcs/releases"><img src="https://img.shields.io/github/downloads/xhdndmm/gmcs/total" alt="Downloads"></a>
 </p>
