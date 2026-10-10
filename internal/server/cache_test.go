@@ -206,7 +206,7 @@ func BenchmarkChunkPacketCacheHit(b *testing.B) {
 	instance.chunkPacket(pos, chunk) // 预热
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = instance.chunkPacket(pos, chunk)
 	}
 }

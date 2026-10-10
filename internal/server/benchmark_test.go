@@ -33,7 +33,7 @@ func BenchmarkServerTick(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		instance.tick()
 	}
 	b.StopTimer()
@@ -87,7 +87,7 @@ func BenchmarkItemTick(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		instance.tick()
 	}
 	b.StopTimer()
