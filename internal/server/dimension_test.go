@@ -162,6 +162,11 @@ func TestDimensionMobsIsolated(t *testing.T) {
 	// 并发访问会话状态）：传送到同一坐标后同一只僵尸可以攻击。
 	sendChatCommand(t, conn, "/dimension the_nether")
 	expectPlayPacket(t, conn, protocol.PlayPacketIDRespawn)
+	// /dimension 的完整流程（Respawn → 区块 → 同步位置）必须先全部消费：
+	// 否则下面 /tp 的同步位置断言会先匹配到这个残留包，而读循环可能尚未
+	// 处理 /tp，此时手动 tick 会以旧位置（下界出生点，距生物约 197 格）
+	// 触发“距离过远”的生物弃用。
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSynchronizePlayerPos)
 	sendChatCommand(t, conn, fmt.Sprintf("/tp %.2f %.2f %.2f", spawnX, spawnY, spawnZ))
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSynchronizePlayerPos)
 	for i := 0; i < mobAttackWindupTicks+4; i++ {
