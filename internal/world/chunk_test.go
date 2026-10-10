@@ -327,16 +327,18 @@ func TestEncodeChunkDataPacketPalette(t *testing.T) {
 	}
 }
 
-// TestPackBitsRoundTrip 验证紧密位流打包与解包互为逆操作。
+// TestPackBitsRoundTrip 验证“每 long 独立”的打包与解包互为逆操作
+// （与客户端 BitStorage 的读取布局一致）。
 func TestPackBitsRoundTrip(t *testing.T) {
-	for _, bits := range []int{4, 5, 8, 15} {
+	for _, bits := range []int{4, 5, 6, 7, 8, 15} {
 		values := make([]uint16, SectionVolume)
 		mask := uint16(1)<<uint(bits) - 1
 		for i := range values {
 			values[i] = uint16(i*7) & mask
 		}
 		longs := packBits(values, bits)
-		if want := (len(values)*bits + 63) / 64; len(longs) != want {
+		perLong := 64 / bits
+		if want := (len(values) + perLong - 1) / perLong; len(longs) != want {
 			t.Fatalf("bits=%d: %d longs, want %d", bits, len(longs), want)
 		}
 		got := unpackBits(t, longs, len(values), bits)
@@ -423,7 +425,9 @@ func TestAppendBlockStatesPacking(t *testing.T) {
 				t.Fatalf("palette size %d: 调色板缺少方块状态 %d", paletteSize, state)
 			}
 		}
-		longCount := (SectionVolume*bits + 63) / 64
+		// 数据数组长度由客户端按 BitStorage 布局推导：
+		// ceil(SectionVolume / (64/bits))，条目不跨 long 边界。
+		longCount := (SectionVolume + 64/bits - 1) / (64 / bits)
 		longs := make([]int64, longCount)
 		for i := range longs {
 			value, next, err := protocol.DecodeInt64(data, offset)
@@ -445,24 +449,76 @@ func TestAppendBlockStatesPacking(t *testing.T) {
 	}
 }
 
-// TestPackBitsPaddedRoundTrip 验证全局调色板的“每 long 独立”打包。
-func TestPackBitsPaddedRoundTrip(t *testing.T) {
-	const bits = 15
-	values := make([]uint16, SectionVolume)
-	for i := range values {
-		values[i] = uint16(i * 3 & 0x7FFF)
-	}
-	longs := packBitsPadded(values, bits)
-	perLong := 64 / bits
-	if want := (len(values) + perLong - 1) / perLong; len(longs) != want {
-		t.Fatalf("%d longs, want %d", len(longs), want)
-	}
-	for i, value := range values {
-		index := i / perLong
-		offset := uint(i%perLong) * uint(bits)
-		got := uint16(uint64(longs[index])>>offset) & (1<<bits - 1)
-		if got != value {
-			t.Fatalf("index %d: got %d, want %d", i, got, value)
+// TestChunkSectionWirePaletteSizes 验证方块状态调色板容器在 5–8 位网络位宽
+// 下的线上格式与客户端解析一致：数据数组按“每 long 独立”打包
+// （valuesPerLong = 64/bits，条目不跨 long 边界），long 数 =
+// ceil(SectionVolume / valuesPerLong)。
+// 回归背景：客户端按 BitStorage 的该布局读取；服务端曾按连续位流打包，
+// 5–7 位宽的数据数组短于客户端预期，导致客户端读包越界并断开连接。
+func TestChunkSectionWirePaletteSizes(t *testing.T) {
+	// 255 种状态 + 空气 = 256 项调色板（8 位间接）；再多为 15 位全局调色板，
+	// 由 TestAppendBlockStatesPacking 覆盖。
+	for _, states := range []int{17, 33, 65, 129, 255} {
+		chunk := NewChunk(0, 0)
+		placed := make([]uint16, SectionVolume)
+		for i := 0; i < SectionVolume; i++ {
+			state := uint16(100 + i%states)
+			placed[i] = state
+			chunk.SetBlockState(i%SectionSize, WorldMinY+i/SectionSize/SectionSize, (i/SectionSize)%SectionSize, state)
+		}
+
+		data := chunkDataOf(t, EncodeChunkDataPacket(chunk))
+		// Section 0：block count（大端 i16）+ 方块状态调色板容器。
+		if count := int(data[0])<<8 | int(data[1]); count != SectionVolume {
+			t.Fatalf("states=%d: block count = %d, want %d", states, count, SectionVolume)
+		}
+		offset := 2
+		bits := int(data[offset])
+		offset++
+		if bits < 4 || bits > 8 {
+			t.Fatalf("states=%d: bits per entry = %d, want 4-8", states, bits)
+		}
+		paletteSize, next := decodeTestVarInt(t, data, offset)
+		offset = next
+		palette := make([]uint16, paletteSize)
+		for i := range palette {
+			value, next := decodeTestVarInt(t, data, offset)
+			offset = next
+			palette[i] = uint16(value)
+		}
+		perLong := 64 / bits
+		longCount := (SectionVolume + perLong - 1) / perLong
+		longs := make([]int64, longCount)
+		for i := range longs {
+			value, next, err := protocol.DecodeInt64(data, offset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			longs[i] = value
+			offset = next
+		}
+		values := unpackBits(t, longs, SectionVolume, bits)
+		for i, want := range placed {
+			if got := palette[values[i]]; got != want {
+				t.Fatalf("states=%d index %d: state %d, want %d", states, i, got, want)
+			}
+		}
+
+		// Section 0 的群系容器（单值调色板）。
+		if data[offset] != 0x00 {
+			t.Fatalf("states=%d: biome palette BPE = %d, want 0", states, data[offset])
+		}
+		_, biomeEnd := decodeTestVarInt(t, data, offset+1)
+		offset = biomeEnd
+
+		// 其余 section（空）必须能被完整解析、无残留字节，
+		// 即整个数据体在正确布局下长度自洽。
+		rest := data[offset:]
+		for i := 1; i < SectionCount; i++ {
+			rest = checkEmptySection(t, i, rest)
+		}
+		if len(rest) != 0 {
+			t.Fatalf("states=%d: %d trailing bytes after sections", states, len(rest))
 		}
 	}
 }
@@ -488,26 +544,19 @@ func chunkDataOf(t *testing.T, packet []byte) []byte {
 	return packet[offset : offset+int(length)]
 }
 
-// unpackBits 以紧密位流解包（与 packBits 互为逆操作）。
+// unpackBits 以“每 long 独立”布局解包（与 packBits 互为逆操作，
+// 即原版 BitStorage 的读取方式：valuesPerLong = 64/bits，条目
+// 不跨 long 边界）。
 func unpackBits(t *testing.T, longs []int64, count, bits int) []uint16 {
 	t.Helper()
+	perLong := 64 / bits
+	mask := uint64(1)<<uint(bits) - 1
+	if (count+perLong-1)/perLong > len(longs) {
+		t.Fatalf("unpack %d values with %d longs (bits=%d)", count, len(longs), bits)
+	}
 	values := make([]uint16, count)
-	position := 0
 	for i := range values {
-		index := position >> 6
-		shift := uint(position & 63)
-		if index >= len(longs) {
-			t.Fatalf("unpack overflow at index %d", i)
-		}
-		value := uint64(longs[index]) >> shift
-		if shift+uint(bits) > 64 {
-			if index+1 >= len(longs) {
-				t.Fatalf("unpack cross-boundary overflow at index %d", i)
-			}
-			value |= uint64(longs[index+1]) << (64 - shift)
-		}
-		values[i] = uint16(value & (1<<uint(bits) - 1))
-		position += bits
+		values[i] = uint16((uint64(longs[i/perLong]) >> (uint(i%perLong) * uint(bits))) & mask)
 	}
 	return values
 }
@@ -636,22 +685,10 @@ func parseHeightmaps(t *testing.T, packet []byte) []heightmapEntry {
 		entries = append(entries, heightmapEntry{
 			kind:   kind,
 			longs:  longs,
-			values: unpackPadded(t, longs, SectionSize*SectionSize, 9),
+			values: unpackBits(t, longs, SectionSize*SectionSize, 9),
 		})
 	}
 	return entries
-}
-
-// unpackPadded 以“每 long 独立、高位填充”的方式解包（packBitsPadded 的逆操作）。
-func unpackPadded(t *testing.T, longs []int64, count, bits int) []uint16 {
-	t.Helper()
-	perLong := 64 / bits
-	mask := uint64(1)<<uint(bits) - 1
-	values := make([]uint16, count)
-	for i := range values {
-		values[i] = uint16((uint64(longs[i/perLong]) >> (uint(i%perLong) * uint(bits))) & mask)
-	}
-	return values
 }
 
 // TestChunkHeightmaps 验证 Chunk Data 包发送的 heightmaps：

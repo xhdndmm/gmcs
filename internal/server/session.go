@@ -318,9 +318,11 @@ func (s *session) handleMove(x, y, z float64, yaw, pitch float32, rotate bool, n
 	s.server.checkPortalTravel(s)
 }
 
-// maxJumpRise 是一次腾空允许的累计上升（方块）：原版跳跃弧顶约 0.96，
-// 击退/活塞等留出余量；生存/冒险模式超过即视为飞行并回拉。
-const maxJumpRise = 1.2
+// maxJumpRise 是一次腾空允许的累计上升（方块）。原版跳跃（初速度 0.42、
+// 重力 0.08、每 tick 阻力 0.98）的弧顶约 1.2522 格；取 1.2 会把正常跳跃
+// 的弧顶截断（最后几个位置包被回拉，客户端感觉“跳不高”），因此这里按弧顶
+// 留出余量取 1.3。创造/旁观豁免；生存/冒险模式超过即视为飞行并回拉。
+const maxJumpRise = 1.3
 
 // packetBudget 是简单的令牌桶（每会话）：限制高频数据包的处理速率。
 // 仅由会话读循环访问，无需加锁。

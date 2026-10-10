@@ -428,7 +428,8 @@ func (c *Chunk) SetBiomeGrid(grid [16]uint16) {
 //   - heightmaps 发送 WORLD_SURFACE（1）与 MOTION_BLOCKING（4）：
 //     9 位/列、每 long 7 个值、共 37 个 long（1.21.5+ 格式）；
 //   - 方块状态使用调色板容器：单值（Bits Per Entry = 0）、间接调色板（4–8 位）
-//     或全局调色板（15 位），采用 1.16+ 的紧密位流打包；
+//     或全局调色板（15 位），数据数组按原版 BitStorage 的“每 long 独立”
+//     布局打包（valuesPerLong = 64/bits，条目不跨 long 边界）；
 //   - 不包含方块实体；
 //   - 天空光全亮（15）、方块光为空。
 //
@@ -704,7 +705,7 @@ func appendBlockStates(dst []byte, storage *sectionStorage) []byte {
 	for _, state := range palette {
 		dst = protocol.AppendVarInt(dst, int32(state))
 	}
-	// 位宽一致且为 2 的幂时（1/2/4/8），紧凑存储与网络紧密位流的布局相同
+	// 位宽一致且为 2 的幂时（1/2/4/8），紧凑存储与网络布局相同
 	// （64 能被整除，条目不跨字），可直接复制数据数组（常见路径：4 位）。
 	if bits == int(storage.bits) && 64%bits == 0 {
 		for _, word := range storage.data {
@@ -715,33 +716,33 @@ func appendBlockStates(dst []byte, storage *sectionStorage) []byte {
 	return appendPackedIndices(dst, storage, bits)
 }
 
-// appendPackedIndices 把紧凑存储中的调色板索引重新打包为网络位宽的紧密
-// 位流（允许跨 long 边界，位宽 ≤ 8），直接追加到 dst，不分配中间数组。
+// appendPackedIndices 把紧凑存储中的调色板索引重新打包为网络位宽的位流。
+// 布局必须与原版 BitStorage 一致：每 long 独立（valuesPerLong = 64/bits），
+// 条目不允许跨 long 边界，最后一个 long 的剩余位留 0 填充。
+// 客户端不读取数据数组的长度前缀，而是按同一公式自行计算 long 数
+// （ceil(SectionVolume / valuesPerLong)）；若按连续位流（允许跨 long）打包，
+// 5/6/7 位宽会少发 long，客户端读取数据数组时越过包尾并直接断开连接
+// （IndexOutOfBoundsException: readLong exceeds writerIndex）。
 func appendPackedIndices(dst []byte, storage *sectionStorage, bits int) []byte {
 	sourceBits := int(storage.bits)
 	mask := uint64(1)<<uint(sourceBits) - 1
+	valuesPerLong := 64 / bits
 	var (
-		accumulator uint64
-		accumBits   uint
+		current uint64
+		filled  int
 	)
 	for i := 0; i < SectionVolume; i++ {
 		position := i * sourceBits
 		value := (storage.data[position>>6] >> uint(position&63)) & mask
-		accumulator |= value << accumBits
-		accumBits += uint(bits)
-		if accumBits >= 64 {
-			dst = protocol.AppendInt64(dst, int64(accumulator))
-			if overflow := accumBits - 64; overflow > 0 {
-				accumulator = value >> (uint(bits) - overflow)
-				accumBits = overflow
-			} else {
-				accumulator = 0
-				accumBits = 0
-			}
+		current |= value << (uint(filled) * uint(bits))
+		filled++
+		if filled == valuesPerLong {
+			dst = protocol.AppendInt64(dst, int64(current))
+			current, filled = 0, 0
 		}
 	}
-	if accumBits > 0 {
-		dst = protocol.AppendInt64(dst, int64(accumulator))
+	if filled > 0 {
+		dst = protocol.AppendInt64(dst, int64(current))
 	}
 	return dst
 }
@@ -755,28 +756,11 @@ func bitsFor(paletteSize int) int {
 	return bits
 }
 
-// packBits 按 1.16+ 的紧密位流把值打包为 long 数组（允许跨 long 边界）。
-// 生产路径为 appendPackedIndices；此实现作为格式参考用于测试校验。
+// packBits 按原版 BitStorage 的“每 long 独立”布局把值打包为 long 数组
+// （valuesPerLong = 64/bits，条目不跨 long 边界，最后一个 long 的剩余位填充）。
+// 生产路径为 appendPackedIndices / appendBiomes / appendPackedHeightmap 与
+// 全局调色板分支；此实现作为格式参考用于测试校验。
 func packBits(values []uint16, bits int) []int64 {
-	longs := make([]int64, (len(values)*bits+63)/64)
-	position := 0
-	for _, value := range values {
-		v := uint64(value)
-		index := position >> 6
-		offset := uint(position & 63)
-		longs[index] |= int64(v << offset)
-		if offset+uint(bits) > 64 {
-			longs[index+1] |= int64(v >> (64 - offset))
-		}
-		position += bits
-	}
-	return longs
-}
-
-// packBitsPadded 按“每 long 独立”的方式打包（允许内部填充）。
-// 生产路径为 appendPackedHeightmap 与 appendBlockStates 的全局调色板分支；
-// 此实现作为格式参考用于测试校验。
-func packBitsPadded(values []uint16, bits int) []int64 {
 	perLong := 64 / bits
 	longs := make([]int64, (len(values)+perLong-1)/perLong)
 	for i, value := range values {

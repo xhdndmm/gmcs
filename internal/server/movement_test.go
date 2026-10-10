@@ -253,20 +253,22 @@ func TestJumpRiseLimit(t *testing.T) {
 		}
 	}
 
-	// 正常跳跃弧：累计上升约 0.9（< maxJumpRise）应被接受。
-	sendPlayerPosition(t, conn, x, y+0.42, z, false)
-	sendPlayerPosition(t, conn, x, y+0.75, z, false)
-	sendPlayerPosition(t, conn, x, y+0.9, z, false)
+	// 原版跳跃弧（初速度 0.42、重力 0.08、阻力 0.98）的累计上升：
+	// 0.42 → 0.7532 → 1.0013 → 1.1661 → 1.2492 → 1.2522（弧顶）。
+	// 全程都必须被接受：旧上限 1.2 会拒绝弧顶附近的位置包并回拉。
+	apex := 0.0
+	for _, dy := range []float64{0.42, 0.7532, 1.001336, 1.166109, 1.249187, 1.252223} {
+		sendPlayerPosition(t, conn, x, y+dy, z, false)
+		apex = dy
+	}
 	sendChatCommand(t, conn, "/list")
 	expectSystemChat(t, conn, "当前有")
-	if _, gotY, _, _, _ := player.playerPosition(); math.Abs(gotY-(y+0.9)) > 1e-9 {
-		t.Fatalf("正常跳跃被拒绝：%v, want %v", gotY, y+0.9)
+	if _, gotY, _, _, _ := player.playerPosition(); math.Abs(gotY-(y+apex)) > 1e-9 {
+		t.Fatalf("原版跳跃弧被拒绝：%v, want %v", gotY, y+apex)
 	}
 
-	// 持续上升：超过预算后被拒绝并回拉。
-	for i := 0; i < 6; i++ {
-		sendPlayerPosition(t, conn, x, y+0.9+0.3*float64(i+1), z, false)
-	}
+	// 超过预算的持续上升（悬停作弊）：被拒绝并回拉。
+	sendPlayerPosition(t, conn, x, y+apex+0.3, z, false)
 	expectResyncPosition(t, conn)
 	_, gotY, _, _, _ := player.playerPosition()
 	if gotY > y+maxJumpRise+1e-9 {
