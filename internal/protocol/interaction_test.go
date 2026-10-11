@@ -123,13 +123,13 @@ func TestParseUseItemOn(t *testing.T) {
 // TestParseSetCarriedItem 验证快捷栏切换解析与越界拒绝。
 func TestParseSetCarriedItem(t *testing.T) {
 	packet := AppendVarInt(nil, PlayServerboundPacketIDSetCarriedItem)
-	packet = AppendVarInt(packet, 5)
+	packet = AppendInt16(packet, 5)
 	slot, err := ParseSetCarriedItem(packet)
 	if err != nil || slot != 5 {
 		t.Fatalf("slot = %d (err=%v)", slot, err)
 	}
 	bad := AppendVarInt(nil, PlayServerboundPacketIDSetCarriedItem)
-	bad = AppendVarInt(bad, 9)
+	bad = AppendInt16(bad, 9)
 	if _, err := ParseSetCarriedItem(bad); err == nil {
 		t.Fatal("越界槽位应返回错误")
 	}
