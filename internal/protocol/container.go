@@ -8,6 +8,8 @@ const (
 	PlayPacketIDCloseContainer = 0x11 // clientbound
 	// PlayPacketIDSetContainerSlot 是 Set Container Slot（clientbound，单槽位更新）。
 	PlayPacketIDSetContainerSlot = 0x14 // clientbound
+	// PlayPacketIDSetCursorItem 是 Set Cursor Item（clientbound，鼠标持有物品）。
+	PlayPacketIDSetCursorItem = 0x5E // clientbound
 	// PlayPacketIDSetContainerProperty 是 Set Container Property（clientbound，
 	// 窗口属性更新：熔炉燃烧/烹饪进度条等）。
 	PlayPacketIDSetContainerProperty = 0x13 // clientbound
@@ -62,6 +64,12 @@ func EncodeSetContainerSlot(windowID, stateID int32, slot int16, slotData []byte
 	packet = AppendVarInt(packet, windowID)
 	packet = AppendVarInt(packet, stateID)
 	packet = AppendInt16(packet, slot)
+	return append(packet, slotData...)
+}
+
+// 同步鼠标持有的物品
+func EncodeSetCursorItem(slotData []byte) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDSetCursorItem))
 	return append(packet, slotData...)
 }
 

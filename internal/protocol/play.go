@@ -516,14 +516,14 @@ func ParseSetCarriedItem(packet []byte) (int32, error) {
 	if err != nil || packetID != PlayServerboundPacketIDSetCarriedItem {
 		return 0, fmt.Errorf("invalid set carried item packet")
 	}
-	slot, _, err := decodeVarIntAt(packet, offset)
+	slot, _, err := DecodeInt16(packet, offset)
 	if err != nil {
 		return 0, err
 	}
 	if slot < 0 || slot > 8 {
 		return 0, fmt.Errorf("carried slot %d out of range", slot)
 	}
-	return slot, nil
+	return int32(slot), nil
 }
 
 // errUnsupportedComponents 表示物品携带数据组件（附魔等），当前不支持解析。

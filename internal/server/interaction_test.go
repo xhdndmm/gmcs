@@ -47,7 +47,7 @@ func sendUseItemOn(t *testing.T, conn net.Conn, x, y, z int, direction int32) {
 func sendSetCarriedItem(t *testing.T, conn net.Conn, slot int32) {
 	t.Helper()
 	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDSetCarriedItem)
-	packet = protocol.AppendVarInt(packet, slot)
+	packet = protocol.AppendInt16(packet, int16(slot))
 	if err := protocol.WritePacketWithCompression(conn, packet, compressionThreshold); err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +224,51 @@ func TestCreativeInventoryAndPlace(t *testing.T) {
 	expectBlockUpdate(t, conn, x, y, z, int32(world.DirtBlock))
 	if got := instance.testWorld().BlockAt(x, y, z); got != world.DirtBlock {
 		t.Fatalf("放置后方块 = %d, want 泥土", got)
+	}
+}
+
+// TestHotbarSwitchUsesSelectedSlot 验证快捷栏切换按实机编码（Short）解析：
+// 切到空槽位后右键地面不能从槽位 0 取物品放置，切到有物品的槽位则放置该槽位物品。
+func TestHotbarSwitchUsesSelectedSlot(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*8"}
+	instance, conn := joinServer(t, cfg, "Switcher")
+
+	x, y, z := findDigTarget(t, instance)
+	sendPlayerAction(t, conn, 2, x, y, z, 1) // 生存模式：客户端完成挖掘后提交
+	expectBlockUpdate(t, conn, x, y, z, int32(world.AirBlock))
+
+	// 切到空的快捷栏槽位 4：右键不应放置任何方块（此前槽位号被误读为 0）。
+	sendSetCarriedItem(t, conn, 4)
+	sendUseItemOn(t, conn, x, y-1, z, 1)
+	sendChatCommand(t, conn, "/list") // 处理屏障
+	expectSystemChat(t, conn, "当前有")
+	if got := instance.testWorld().BlockAt(x, y, z); got != world.AirBlock {
+		t.Fatalf("空手右键不应放置方块，得到 %d", got)
+	}
+	if stack := activeSession(t, instance, "Switcher").inventory.Get(item.SlotHotbarStart); stack.Count != 8 {
+		t.Fatalf("槽位 0 的物品不应被取用：%+v", stack)
+	}
+
+	// 把石头从快捷栏 0 移到快捷栏 4（窗口 0 菜单槽位 36 → 40），并切换过去。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 1, 40, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+	sendSetCarriedItem(t, conn, 4)
+
+	sendUseItemOn(t, conn, x, y-1, z, 1)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	if got := instance.testWorld().BlockAt(x, y, z); got != world.StoneBlock {
+		t.Fatalf("切换到快捷栏 4 后放置的方块 = %d, want 石头", got)
+	}
+	if stack := activeSession(t, instance, "Switcher").inventory.Get(4); stack.Count != 7 {
+		t.Fatalf("快捷栏 4 的石头应剩余 7：%+v", stack)
 	}
 }
 

@@ -37,7 +37,7 @@ func TestChatSessionUpdateBroadcast(t *testing.T) {
 	addr := firstConn.RemoteAddr().String()
 
 	// 第二名玩家先加入，便于观察 First 的会话广播。
-	secondConn := joinAt(t, cfg, addr, "Second", len(cfg.StartingItems))
+	secondConn := joinAt(t, cfg, addr, "Second")
 
 	session := protocol.ChatSession{
 		SessionUUID:  [16]byte{0xA1, 0xA2},
@@ -115,7 +115,7 @@ func TestChatSessionUpdateBroadcast(t *testing.T) {
 		}
 		sessions = append(sessions, append([]byte(nil), payload...))
 	}
-	_ = joinAt(t, cfg, addr, "Third", len(cfg.StartingItems), observer)
+	_ = joinAt(t, cfg, addr, "Third", observer)
 	found := false
 	for _, payload := range sessions {
 		if bytes.Contains(payload, session.SessionUUID[:]) {

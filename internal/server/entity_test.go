@@ -48,16 +48,16 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 		}
 	})
 
-	return instance, joinAt(t, cfg, listener.Addr().String(), name, len(cfg.StartingItems))
+	return instance, joinAt(t, cfg, listener.Addr().String(), name)
 }
 
 // joinAt 连接到地址 addr 上的测试服务器并完成完整进入世界流程
 // （握手 → 登录 → 配置 → 初始数据包），返回就绪的连接。
-// startingItemPackets 是预期在命令树之后收到的 Set Player Inventory 包数量
-// （恢复已保存数据的玩家不会重新获得初始物品，为 0）。
+// 命令树之后服务器会发送玩家物品栏窗口（窗口 0）的完整内容包，
+// 新玩家与恢复存档的玩家都会收到。
 // observers 会收到 Play 阶段加入流程中读到的每个数据包（含被跳过的），
 // 用于在加入流程中断言特定数据包（如聊天会话分发）。
-func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPackets int, observers ...func(id int32, payload []byte)) net.Conn {
+func joinAt(t *testing.T, cfg config.Config, addr, name string, observers ...func(id int32, payload []byte)) net.Conn {
 	t.Helper()
 	observe := func(id int32, payload []byte) {
 		for _, observer := range observers {
@@ -155,9 +155,8 @@ func joinAt(t *testing.T, cfg config.Config, addr, name string, startingItemPack
 	for _, want := range []int32{0x46, 0x44, 0x77, 0x10} {
 		expectPlayPacketObserved(t, conn, want, observe)
 	}
-	for i := 0; i < startingItemPackets; i++ {
-		expectPlayPacketObserved(t, conn, protocol.PlayPacketIDSetPlayerInventory, observe)
-	}
+	// 玩家物品栏窗口（窗口 0）的完整内容。
+	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDContainerSetContent, observe)
 	expectPlayPacketObserved(t, conn, protocol.PlayPacketIDUpdateHealth, observe)
 	// 世界时间与经验条：下界/末地为固定时间，不发送时间更新包，因此
 	// UpdateHealth 之后可能直接是经验条包。

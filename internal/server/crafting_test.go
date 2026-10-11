@@ -86,12 +86,12 @@ func TestCraftingTableCraftStick(t *testing.T) {
 	// 拾取木板到光标。
 	sendContainerClick(t, conn, windowID, 0, hotbarSlot, 0, protocol.ClickModePickup)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 背包槽清空
-	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 光标持木板
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)    // 光标持木板
 
 	// 放 1 个到合成格 1（左上）：右键放下单个。
 	sendContainerClick(t, conn, windowID, 0, 1, 1, protocol.ClickModePickup)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 格 1 = 1 木板
-	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 光标 = 1 木板
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)    // 光标 = 1 木板
 
 	// 再放 1 个到合成格 4（中左，竖排第二格）。
 	sendContainerClick(t, conn, windowID, 0, 4, 1, protocol.ClickModePickup)
@@ -137,24 +137,16 @@ func TestPlayerInventoryCraft2x2(t *testing.T) {
 	// 窗口 0：快捷栏槽 0 的槽位 = 36。
 	sendContainerClick(t, conn, 0, 0, 36, 0, protocol.ClickModePickup)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 背包清空
-	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 光标 4 木板
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)    // 光标 4 木板
 
 	// 右键 4 次放入 2×2 格（槽位 1-4），每次放 1 个。
 	for _, slot := range []int16{1, 2, 3, 4} {
 		sendContainerClick(t, conn, 0, 0, slot, 1, protocol.ClickModePickup)
 		expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 格子更新
-		expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 光标更新
+		expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)    // 光标更新
 	}
 
-	// 结果槽（0）应显示工作台。
-	resultSeen := false
-	for i := 0; i < 2; i++ {
-		_, _, slot, stack := setContainerSlotPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot))
-		if slot == 0 && stack.ID == tableID {
-			resultSeen = true
-		}
-	}
-	// 结果刷新可能与光标更新合并发送；兜底轮询会话状态。
+	// 结果槽由服务器权威状态决定（客户端可见的槽位更新已在上述循环中读取）。
 	player := activeSession(t, instance, "MiniCrafter")
 	if player.peekInvCraft() == nil {
 		t.Fatal("窗口 0 应初始化合成格")
@@ -163,7 +155,6 @@ func TestPlayerInventoryCraft2x2(t *testing.T) {
 		backing := craftSlotBacking{player: player, state: player.peekInvCraft(), windowZero: true}
 		return backing.resultOf(nil).ItemID == tableID
 	}, "2×2 木板应合成工作台")
-	_ = resultSeen
 }
 
 // TestCraftingGridReturnedOnClose 验证关闭工作台窗口时合成格内容归还背包。
@@ -186,11 +177,11 @@ func TestCraftingGridReturnedOnClose(t *testing.T) {
 
 	// 拾取木板并放入合成格 1。
 	sendContainerClick(t, conn, windowID, 0, 37, 0, protocol.ClickModePickup)
-	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
-	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 背包槽清空
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)    // 光标持木板
 	sendContainerClick(t, conn, windowID, 0, 1, 0, protocol.ClickModePickup)
-	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
-	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 合成格 1 = 木板
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)    // 光标清空
 
 	// 关闭窗口。
 	closePacket := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDContainerClose)

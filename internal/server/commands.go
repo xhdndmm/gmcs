@@ -463,7 +463,7 @@ func (s *Server) handleClearCommand(player *session, argument string) {
 		target.inventory.Set(slot, item.Empty())
 		target.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), item.Empty().AppendSlot(nil)))
 	}
-	target.setCursor(item.Empty())
+	target.clearCursor()
 	target.tryWrite(protocol.EncodeSystemChat("物品栏已清空。"))
 }
 

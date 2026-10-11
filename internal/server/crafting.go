@@ -252,7 +252,6 @@ func (s *Server) openCraftingTable(player *session) {
 	player.setOpenCraft(newCraftingState(3))
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
-	player.setCursor(item.Empty())
 
 	if err := player.writePacket(protocol.EncodeOpenScreen(player.windowID, menuType, "Crafting")); err != nil {
 		return
@@ -280,6 +279,7 @@ func (s *Server) closeCrafting(player *session, sendClose bool) {
 	}
 	player.setOpenCraft(nil)
 	windowID := player.windowID
+	s.releaseCursor(player)
 	s.returnCraftGrid(player, state)
 	if sendClose {
 		player.tryWrite(protocol.EncodeContainerClose(windowID))

@@ -206,7 +206,7 @@ func TestDimensionPersistsAcrossReconnect(t *testing.T) {
 	}
 
 	// 重连：直接以下界身份进入（恢复维度与位置，不再发放初始物品）。
-	conn2 := joinAt(t, cfg, addr, "NetherDweller", 0)
+	conn2 := joinAt(t, cfg, addr, "NetherDweller")
 	_ = conn2
 	restored := findSession(t, instance, "NetherDweller")
 	if got := restored.dimensionID(); got != world.DimensionNether {

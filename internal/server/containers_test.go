@@ -185,6 +185,54 @@ func setContainerSlotPacket(t *testing.T, payload []byte) (windowID, stateID int
 	return windowID, stateID, slot, itemStack{ID: itemID, Count: count}
 }
 
+// containerContentCarried 解析 Container Set Content 包末尾的 carried（光标）物品。
+func containerContentCarried(t *testing.T, payload []byte) itemStack {
+	t.Helper()
+	_, offset, err := protocol.DecodeVarInt(payload) // 跳过包 ID
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, size, err := protocol.DecodeVarInt(payload[offset:]) // 窗口编号
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset += size
+	_, size, err = protocol.DecodeVarInt(payload[offset:]) // 状态号
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset += size
+	count, size, err := protocol.DecodeVarInt(payload[offset:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset += size
+	for i := int32(0); i < count; i++ {
+		_, offset = parseSlotLength(t, payload, offset)
+	}
+	itemID, itemCount, err := protocol.ParseSlotItem(payload[offset:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return itemStack{ID: itemID, Count: itemCount}
+}
+
+// cursorItemPacket 解析 Set Cursor Item 包（鼠标光标物品）。
+// 1.21.11 客户端用该专用包同步光标：Set Container Slot 的槽位必须在窗口槽位
+// 范围内，用 slot=-1 会让客户端抛越界异常并断线（网络协议错误）。
+func cursorItemPacket(t *testing.T, payload []byte) itemStack {
+	t.Helper()
+	_, offset, err := protocol.DecodeVarInt(payload) // 跳过包 ID
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID, count, err := protocol.ParseSlotItem(payload[offset:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return itemStack{ID: itemID, Count: count}
+}
+
 // placeChest 在指定坐标放置一个箱子方块（直接写世界，模拟放置后的状态）。
 func placeChest(t *testing.T, instance *Server, x, y, z int) {
 	t.Helper()
@@ -243,8 +291,8 @@ func TestContainerOpenAndMoveItem(t *testing.T) {
 	if _, _, slot, stack := setContainerSlotPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)); slot != 54 || stack.Count != 0 {
 		t.Fatalf("玩家槽位应被清空，得到 slot=%d stack=%+v", slot, stack)
 	}
-	if _, _, slot, stack := setContainerSlotPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)); slot != -1 || stack.ID != stoneID || stack.Count != 64 {
-		t.Fatalf("光标应持有 64 石头，得到 slot=%d stack=%+v", slot, stack)
+	if stack := cursorItemPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)); stack.ID != stoneID || stack.Count != 64 {
+		t.Fatalf("光标应持有 64 石头，得到 %+v", stack)
 	}
 	// 左键点击容器槽 0：放下。
 	sendContainerClick(t, conn, windowID, 0, 0, 0, protocol.ClickModePickup)
@@ -252,8 +300,8 @@ func TestContainerOpenAndMoveItem(t *testing.T) {
 		t.Fatalf("容器槽 0 应收到 64 石头，得到 slot=%d stack=%+v", slot, stack)
 	}
 	// 光标清空。
-	if _, _, slot, stack := setContainerSlotPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)); slot != -1 || stack.Count != 0 {
-		t.Fatalf("光标应清空，得到 slot=%d stack=%+v", slot, stack)
+	if stack := cursorItemPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)); stack.Count != 0 {
+		t.Fatalf("光标应清空，得到 %+v", stack)
 	}
 
 	// 关闭窗口（客户端主动关闭）。
@@ -270,6 +318,201 @@ func TestContainerOpenAndMoveItem(t *testing.T) {
 		}
 		return entity.Items[0].ItemID == stoneID && entity.Items[0].Count == 64
 	}, "箱子内容应写回区块")
+}
+
+// TestPlayerInventoryCursorSync 复现实机 1.21.11 客户端的光标同步约束：
+// 窗口 0 的槽位更新必须落在 InventoryMenu 的 46 个槽位（0–45）内，
+// 光标必须用 Set Cursor Item 下发 —— 用 slot=-1 的 Set Container Slot 会让
+// 客户端在 AbstractContainerMenu#getSlot(-1) 抛出越界异常并以网络协议错误断线。
+func TestPlayerInventoryCursorSync(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	_, conn := joinServer(t, cfg, "Cursor")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		id, payload := readCompressedPacket(t, conn)
+		switch id {
+		case 0x2B:
+			replyKeepAlive(t, conn, payload)
+		case protocol.PlayPacketIDSetContainerSlot:
+			windowID, _, slot, stack := setContainerSlotPacket(t, payload)
+			if windowID == protocol.PlayerInventoryWindowID && (slot < 0 || slot > 45) {
+				t.Fatalf("窗口 0 收到越界槽位 %d（stack=%+v）：实机客户端会以网络协议错误断线", slot, stack)
+			}
+		case protocol.PlayPacketIDSetCursorItem:
+			if stack := cursorItemPacket(t, payload); stack.Count != 32 {
+				t.Fatalf("光标 = %+v, want 32 石头", stack)
+			}
+			return
+		}
+	}
+	t.Fatal("未收到 Set Cursor Item 光标同步包")
+}
+
+// TestCursorItemSurvivesWindowSwitch 验证光标物品在窗口切换中的生命周期：
+// 在物品栏拾起的物品随打开的箱子窗口转交（不丢失），关闭箱子后归还物品栏。
+func TestCursorItemSurvivesWindowSwitch(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "Carrier")
+
+	// 窗口 0 快捷栏 0 → 光标。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot) // 背包槽清空
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)    // 光标持 32 石头
+
+	// 打开箱子：光标物品写入窗口内容的 carried 字段。
+	cx, cy, cz := chestPositions(t, instance)
+	placeChest(t, instance, cx, cy, cz)
+	sendUseItemOn(t, conn, cx, cy, cz, 1)
+	windowID, _ := openScreen(t, conn)
+	content := expectPlayPacket(t, conn, protocol.PlayPacketIDContainerSetContent)
+	if stack := containerContentCarried(t, content); stack.Count != 32 {
+		t.Fatalf("窗口内容 carried = %+v, want 32 石头", stack)
+	}
+
+	// 关闭窗口：光标物品放回物品栏（原版 dropOrPlaceInInventory 语义）。
+	closePacket := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDContainerClose)
+	closePacket = protocol.AppendVarInt(closePacket, windowID)
+	if err := protocol.WritePacketWithCompression(conn, closePacket, compressionThreshold); err != nil {
+		t.Fatal(err)
+	}
+	if stack := cursorItemPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)); stack.Count != 0 {
+		t.Fatalf("关闭窗口后光标应清空，得到 %+v", stack)
+	}
+	player := activeSession(t, instance, "Carrier")
+	waitFor(t, func() bool {
+		return player.inventory.Get(item.SlotHotbarStart).Count == 32
+	}, "关闭窗口后光标物品应回到物品栏")
+}
+
+// TestQuickCraftOutsideWindowIsIgnored 验证实机客户端在窗口外按住鼠标拖动
+// （开始/经过/结束三个阶段都携带 slot=-999）时的容错：光标为空时应丢弃拖拽，
+// 不能按槽位索引导致越界崩溃。
+func TestQuickCraftOutsideWindowIsIgnored(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "Dragger")
+
+	// 实机客户端在窗口外拖动时整段序列的三个阶段都携带 slot=-999。
+	// 左键拖拽：开始 button 0、经过 1、结束 2。
+	for _, button := range []int8{0, 1, 2} {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, button, protocol.ClickModeQuickCraft)
+	}
+	// 处理屏障：服务器仍在正常响应（未崩溃、会话可用）。
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	if _, ok := instance.players[[16]byte{}]; ok {
+		t.Fatal("会话表不应被破坏")
+	}
+	if stack := activeSession(t, instance, "Dragger").inventory.Get(item.SlotHotbarStart); stack.Count != 32 {
+		t.Fatalf("物品栏不应被改动：%+v", stack)
+	}
+}
+
+// TestQuickCraftLeftDragDistributes 验证左键拖拽（开始 0、经过 1、结束 2）按原版
+// 把整栈平均分摊到经过的槽位（每格 floor(数量/槽位数)）。
+func TestQuickCraftLeftDragDistributes(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "DragLeft")
+
+	// 窗口 0：先把快捷栏 0（菜单槽位 36）的石头拿到光标。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+
+	// 拖过主背包槽位 9、10、11（菜单槽位 9、10、11）。
+	// 左键拖拽的 button 编码：开始 0、经过 1、结束 2（低 2 位为阶段，高 2 位为按键类型）。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 0, protocol.ClickModeQuickCraft)
+	for _, slot := range []int16{9, 10, 11} {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, slot, 1, protocol.ClickModeQuickCraft)
+	}
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 2, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragLeft")
+	for _, slot := range []int{9, 10, 11} {
+		if stack := player.inventory.Get(slot); stack.Count != 10 {
+			t.Fatalf("主背包槽位 %d = %+v, want 10 石头（32/3 分摊）", slot, stack)
+		}
+	}
+	if cursor := player.getCursor(); cursor.Count != 2 {
+		t.Fatalf("拖拽后光标 = %+v, want 2 石头", cursor)
+	}
+}
+
+// TestQuickCraftLeftDragSingleSlotPlacesStack 验证左键拖拽只划过一格时放下整栈：
+// 原版每格放 floor(数量/槽位数) = 全部，此前实现每格只放 1 个，手上会剩 n−1。
+func TestQuickCraftLeftDragSingleSlotPlacesStack(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*64"}
+	instance, conn := joinServer(t, cfg, "DragOne")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+
+	// 只划过主背包槽位 9（菜单槽位 9）。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 0, protocol.ClickModeQuickCraft)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 1, protocol.ClickModeQuickCraft)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 2, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragOne")
+	if stack := player.inventory.Get(9); stack.Count != 64 {
+		t.Fatalf("主背包槽位 9 = %+v, want 64 石头", stack)
+	}
+	if cursor := player.getCursor(); !cursor.IsEmpty() {
+		t.Fatalf("放下整栈后光标应为空，得到 %+v", cursor)
+	}
+}
+
+// TestQuickCraftRightDragPlacesOne 验证右键拖拽（开始 4、经过 5、结束 6）
+// 每个经过的槽位放 1 个。
+func TestQuickCraftRightDragPlacesOne(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "DragRight")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 4, protocol.ClickModeQuickCraft)
+	for _, slot := range []int16{9, 10, 11} {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, slot, 5, protocol.ClickModeQuickCraft)
+	}
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 6, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragRight")
+	for _, slot := range []int{9, 10, 11} {
+		if stack := player.inventory.Get(slot); stack.Count != 1 {
+			t.Fatalf("主背包槽位 %d = %+v, want 1 石头", slot, stack)
+		}
+	}
+	if cursor := player.getCursor(); cursor.Count != 29 {
+		t.Fatalf("拖拽后光标 = %+v, want 29 石头", cursor)
+	}
 }
 
 // TestContainerQuickMove 验证 Shift 点击（快速移动）把整栈移入容器。
@@ -382,8 +625,8 @@ func TestPlayerInventoryClickMovesItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, slot, stack := setContainerSlotPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)); slot != -1 || stack.ID != stoneID || stack.Count != 32 {
-		t.Fatalf("光标应持有 32 石头，得到 slot=%d stack=%+v", slot, stack)
+	if stack := cursorItemPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)); stack.ID != stoneID || stack.Count != 32 {
+		t.Fatalf("光标应持有 32 石头，得到 %+v", stack)
 	}
 	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 1, 9, 0, protocol.ClickModePickup)
 	if _, _, slot, stack := setContainerSlotPacket(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)); slot != 9 || stack.Count != 32 {

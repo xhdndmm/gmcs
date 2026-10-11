@@ -1226,8 +1226,10 @@ func (s *session) runPlay() {
 	packets = append(packets, protocol.EncodeDeclareCommands(s.server.serverCommands(s)))
 	if !restored {
 		// 仅新玩家发放初始物品；恢复的玩家沿用其已保存的物品栏。
-		packets = append(packets, s.giveStartingItems()...)
+		s.giveStartingItems()
 	}
+	// 进入世界时同步完整物品栏
+	packets = append(packets, s.inventoryContentPacket())
 	health, food, saturation := s.healthStatus()
 	packets = append(packets, protocol.EncodeUpdateHealth(health, food, saturation))
 	// 世界时间（下界/末地为固定时间，不发送时间更新包）与经验条。
@@ -1273,10 +1275,20 @@ func (s *session) runPlay() {
 	slog.Info("player disconnected", "name", s.name)
 }
 
+// inventoryContentPacket 返回玩家物品栏窗口（窗口 0）的完整内容包。
+func (s *session) inventoryContentPacket() []byte {
+	backing := craftSlotBacking{player: s, state: s.invCraftState(), windowZero: true}
+	slots := make([][]byte, 0, backing.SlotCount())
+	for i := range backing.SlotCount() {
+		slots = append(slots, backing.Get(i).AppendSlot(nil))
+	}
+	return protocol.EncodeContainerSetContent(
+		protocol.PlayerInventoryWindowID, s.windowState, slots, s.getCursor().AppendSlot(nil))
+}
+
 // giveStartingItems 把配置中的初始物品发放到快捷栏，返回同步给客户端的数据包。
 // 支持 "minecraft:stone" 与 "minecraft:stone*64" 两种写法。
-func (s *session) giveStartingItems() [][]byte {
-	var packets [][]byte
+func (s *session) giveStartingItems() {
 	slot := item.SlotHotbarStart
 	for _, entry := range s.server.config.StartingItems {
 		if slot > item.SlotHotbarEnd {
@@ -1289,10 +1301,8 @@ func (s *session) giveStartingItems() [][]byte {
 			continue
 		}
 		s.inventory.Set(slot, stack)
-		packets = append(packets, protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
 		slot++
 	}
-	return packets
 }
 
 // splitItemCount 解析初始物品配置："minecraft:stone"（默认 1 个）或
@@ -1586,6 +1596,15 @@ func (s *session) setCursor(cursor item.Stack) {
 	s.stateMu.Lock()
 	s.cursor = cursor
 	s.stateMu.Unlock()
+}
+
+// clearCursor 清空光标并把结果同步给客户端
+func (s *session) clearCursor() {
+	if s.getCursor().IsEmpty() {
+		return
+	}
+	s.setCursor(item.Empty())
+	s.tryWrite(protocol.EncodeSetCursorItem(item.Empty().AppendSlot(nil)))
 }
 
 // setClientInfo 更新客户端信息并返回旧值（线程安全：

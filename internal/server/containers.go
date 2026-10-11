@@ -178,7 +178,6 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	player.openContainer = container
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
-	player.setCursor(item.Empty())
 
 	if err := player.writePacket(protocol.EncodeOpenScreen(player.windowID, def.MenuType, def.Title)); err != nil {
 		return
@@ -186,6 +185,26 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	s.sendContainerContent(player, container)
 	// 开合动画广播给附近所有玩家（包括打开者本人）。
 	s.broadcastContainerAction(container, true, nil)
+}
+
+// releaseCursor 在窗口关闭时处理光标物品：先放回物品栏，放不下则掉落到世界
+// （与原版 AbstractContainerMenu#removed 的 dropOrPlaceInInventory 一致），
+// 并把清空后的光标同步给客户端。由会话 goroutine 调用。
+func (s *Server) releaseCursor(player *session) {
+	cursor := player.getCursor()
+	if cursor.IsEmpty() {
+		return
+	}
+	player.setCursor(item.Empty())
+	player.tryWrite(protocol.EncodeSetCursorItem(item.Empty().AppendSlot(nil)))
+	remaining, changed := player.inventory.Add(cursor)
+	for _, slot := range changed {
+		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), player.inventory.Get(slot).AppendSlot(nil)))
+	}
+	if remaining > 0 {
+		cursor.Count = remaining
+		s.dropFromContainer(player, cursor)
+	}
 }
 
 // registerViewer 把玩家加入容器的观察者集合；容器已在打开状态时复用同一状态。
@@ -215,7 +234,7 @@ func (s *Server) closeContainer(player *session, sendClose bool) {
 		return
 	}
 	player.openContainer = nil
-	player.setCursor(item.Empty())
+	s.releaseCursor(player)
 	player.drag = nil
 	windowID := player.windowID
 
@@ -569,7 +588,7 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 	}
 	if cursor != player.getCursor() {
 		player.setCursor(cursor)
-		player.tryWrite(protocol.EncodeSetContainerSlot(windowID, player.windowState, -1, cursor.AppendSlot(nil)))
+		player.tryWrite(protocol.EncodeSetCursorItem(cursor.AppendSlot(nil)))
 	}
 }
 
@@ -580,7 +599,10 @@ const containerReach = 8.0
 // 行为对齐原版 AbstractContainerMenu#doClick 的主要模式。
 func (s *Server) applyContainerClick(player *session, backing slotBacking, working []item.Stack, cursor item.Stack, click protocol.ContainerClick) item.Stack {
 	slot := int(click.Slot)
-	if click.Mode != protocol.ClickModeQuickCraft && (slot < 0 || slot >= len(working) || !backing.Supported(slot)) {
+	if click.Mode == protocol.ClickModeQuickCraft {
+		return s.applyQuickCraft(player, working, cursor, click)
+	}
+	if slot < 0 || slot >= len(working) || !backing.Supported(slot) {
 		return cursor
 	}
 	limit := cursor.MaxStack()
@@ -634,8 +656,6 @@ func (s *Server) applyContainerClick(player *session, backing slotBacking, worki
 		working[slot] = stack
 		s.dropFromContainer(player, dropped)
 		return cursor
-	case protocol.ClickModeQuickCraft:
-		return s.applyQuickCraft(player, working, cursor, click)
 	case protocol.ClickModePickupAll:
 		return clickPickupAll(working, cursor, limit)
 	}
@@ -754,20 +774,49 @@ type dragState struct {
 	slots  []int
 }
 
-// applyQuickCraft 处理拖拽分发（mode 5）。
-// button 0/4/8 = 左键开始/经过/结束，1/5/9 = 右键开始/经过/结束（游戏内编码）。
+// quickCraftKind / quickCraftStage 解码拖拽包的 button（与原版
+// AbstractContainerMenu#getQuickcraftType / #getQuickcraftHeader 一致）：
+// button = 类型 << 2 | 阶段；类型 0 左键、1 右键、2 中键，阶段 0 开始、1 经过、2 结束。
+func quickCraftKind(button int8) int  { return (int(button) >> 2) & 3 }
+func quickCraftStage(button int8) int { return int(button) & 3 }
+
+// applyQuickCraft 处理拖拽分发（mode 5），对齐原版 AbstractContainerMenu#doClick
+// 的 QUICK_CRAFT 分支：阶段序列非法或光标为空时放弃这次拖拽（客户端在窗口外
+// 按住鼠标拖动会发 slot=-999 的开始包，此时光标通常为空）；只有“经过”阶段才
+// 解析槽位（结束阶段的 slot=-999 表示鼠标在窗口外释放）。
 func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor item.Stack, click protocol.ContainerClick) item.Stack {
-	stage := (click.MouseButton / 4) // 0 开始、1 经过、2 结束
-	left := click.MouseButton%4 == 0
+	stage := quickCraftStage(click.MouseButton)
+	previous := 0
+	if player.drag != nil {
+		previous = 1
+	}
+	// 合法序列：空闲 → 开始 → 经过… → 结束；其余组合（含首包不是“开始”）重置。
+	if (previous != 1 || stage != 2) && previous != stage {
+		player.drag = nil
+		return cursor
+	}
+	if cursor.IsEmpty() {
+		player.drag = nil
+		return cursor
+	}
 	switch stage {
 	case 0: // 开始
+		kind := quickCraftKind(click.MouseButton)
+		if kind == 2 && player.gameModeID() != uint8(config.GameModeCreative) {
+			player.drag = nil
+			return cursor
+		}
 		player.drag = &dragState{button: click.MouseButton}
 		return cursor
 	case 1: // 经过
 		if player.drag == nil {
 			return cursor
 		}
-		player.drag.slots = append(player.drag.slots, int(click.Slot))
+		slot := int(click.Slot)
+		if slot < 0 || slot >= len(working) {
+			return cursor
+		}
+		player.drag.slots = append(player.drag.slots, slot)
 		return cursor
 	default: // 结束（slot = -999）
 		drag := player.drag
@@ -775,51 +824,54 @@ func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor i
 		if drag == nil {
 			return cursor
 		}
-		if left {
-			// 左键拖拽：每个经过的槽位放 1 个。
-			for _, index := range drag.slots {
-				if cursor.IsEmpty() {
-					break
-				}
-				if index < 0 || index >= len(working) {
-					continue
-				}
-				stack := working[index]
-				if stack.IsEmpty() {
-					placed := cursor
-					placed.Count = 1
-					working[index] = placed
-					cursor.Count--
-				} else if stack.ItemID == cursor.ItemID && stack.Count < cursor.MaxStack() {
-					stack.Count++
-					working[index] = stack
-					cursor.Count--
-				}
-			}
-		} else {
-			// 右键拖拽：按经过顺序逐个分配 1 个。
-			placed := int32(0)
-			for _, index := range drag.slots {
-				if placed >= cursor.Count {
-					break
-				}
-				if index < 0 || index >= len(working) {
-					continue
-				}
-				stack := working[index]
-				if stack.IsEmpty() {
-					one := cursor
-					one.Count = 1
-					working[index] = one
-					placed++
-				} else if stack.ItemID == cursor.ItemID && stack.Count < cursor.MaxStack() {
-					stack.Count++
-					working[index] = stack
-					placed++
-				}
-			}
-			cursor.Count -= placed
+		kind := quickCraftKind(drag.button)
+		count := cursor.Count
+		// 原版只把物品放进能接受的槽位，且非创造拖拽要求数量不少于经过的槽位数。
+		if kind != 2 && count < int32(len(drag.slots)) {
+			return cursor
 		}
+		// 每个经过槽位放多少（原版 AbstractContainerMenu#getQuickCraftPlaceCount）：
+		// 左键拖拽把整栈平均分摊（数量/槽位数），右键拖拽每个槽位 1 个，
+		// 中键（创造）每个槽位放整栈。
+		perSlot := int32(1)
+		switch kind {
+		case 0:
+			perSlot = count / int32(len(drag.slots))
+		case 2:
+			perSlot = cursor.MaxStack()
+		}
+		remaining := count
+		for _, index := range drag.slots {
+			if remaining <= 0 {
+				break
+			}
+			if index < 0 || index >= len(working) {
+				continue
+			}
+			stack := working[index]
+			current := int32(0)
+			if !stack.IsEmpty() {
+				if stack.ItemID != cursor.ItemID {
+					continue
+				}
+				current = stack.Count
+			}
+			target := perSlot + current
+			if limit := cursor.MaxStack(); target > limit {
+				target = limit
+			}
+			moved := min(remaining, target-current)
+			if moved <= 0 {
+				continue
+			}
+			if stack.IsEmpty() {
+				stack = cursor
+			}
+			stack.Count = target
+			working[index] = stack
+			remaining -= moved
+		}
+		cursor.Count = remaining
 		if cursor.Count <= 0 {
 			return item.Empty()
 		}
