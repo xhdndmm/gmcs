@@ -21,7 +21,7 @@ func TestPlayerEntitySyncBetweenPlayers(t *testing.T) {
 	addr := observerConn.RemoteAddr().String()
 
 	// 第二名玩家加入：Observer 应收到其实体（Add Entity）。
-	moverConn := joinAt(t, cfg, addr, "Mover", len(cfg.StartingItems))
+	moverConn := joinAt(t, cfg, addr, "Mover")
 	expectPlayPacket(t, observerConn, protocol.PlayPacketIDAddEntity)
 
 	mover := findSession(t, instance, "Mover")
@@ -66,7 +66,7 @@ func TestSwingBroadcast(t *testing.T) {
 	_, observerConn := joinServer(t, cfg, "Observer")
 	addr := observerConn.RemoteAddr().String()
 
-	swingerConn := joinAt(t, cfg, addr, "Swinger", len(cfg.StartingItems))
+	swingerConn := joinAt(t, cfg, addr, "Swinger")
 	expectPlayPacket(t, observerConn, protocol.PlayPacketIDAddEntity)
 
 	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDSwingArm)

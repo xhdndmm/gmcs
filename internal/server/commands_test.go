@@ -275,7 +275,7 @@ func TestKickPlayer(t *testing.T) {
 	cfg.Ops = []string{"Admin"}
 	instance, adminConn := joinServer(t, cfg, "Admin")
 	addr := adminConn.RemoteAddr().String()
-	guestConn := joinAt(t, cfg, addr, "Guest", 1)
+	guestConn := joinAt(t, cfg, addr, "Guest")
 
 	// 无权限的玩家不能用 /kick。
 	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDChatCommand)

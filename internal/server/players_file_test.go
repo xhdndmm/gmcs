@@ -14,6 +14,7 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
+	"gmcs/internal/registry"
 )
 
 // readSavedPlayer 从 players.json 读取指定玩家的记录（测试辅助，避免直接访问会话物品栏）。
@@ -99,7 +100,7 @@ func TestPlayerDataSavedOnDisconnect(t *testing.T) {
 
 	// 重连前修改初始物品配置：恢复逻辑不应再发放（否则下次落盘会变成 dirt×3）。
 	instance.config.StartingItems = []string{"minecraft:dirt*3"}
-	conn2 := joinAt(t, cfg, addr, "Saver", 0)
+	conn2 := joinAt(t, cfg, addr, "Saver")
 	sess2 := findSession(t, instance, "Saver")
 	x, y, z, yaw, pitch := sess2.playerPosition()
 	if math.Abs(x-200.5) > 1e-6 || math.Abs(y-66) > 1e-6 || math.Abs(z-(-120.5)) > 1e-6 ||
@@ -121,6 +122,55 @@ func TestPlayerDataSavedOnDisconnect(t *testing.T) {
 	record = readSavedPlayer(t, cfg.WorldDir, sess2.uuid)
 	if len(record.Inventory) != 1 || record.Inventory[0].Item != "minecraft:stone" || record.Inventory[0].Count != 42 {
 		t.Fatalf("恢复后物品栏被改动：%+v", record.Inventory)
+	}
+}
+
+// TestRestoredInventorySentToClient 验证重连（恢复存档）时服务器会把完整物品栏
+// 随进入世界的内容包下发：此前恢复的玩家只写回服务端状态、不发送槽位，客户端
+// 物品栏一直显示为空，直到点击某个槽位才逐个“冒出来”。
+func TestRestoredInventorySentToClient(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.ViewDistance = 2
+	cfg.StartingItems = []string{"minecraft:stone*42"}
+	instance, conn := joinServer(t, cfg, "Ghost")
+	addr := conn.RemoteAddr().String()
+	sess := findSession(t, instance, "Ghost")
+
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitPlayerOffline(t, instance, sess.uuid)
+
+	var content []byte
+	conn2 := joinAt(t, cfg, addr, "Ghost", func(id int32, payload []byte) {
+		if id == protocol.PlayPacketIDContainerSetContent {
+			content = payload
+		}
+	})
+	defer conn2.Close()
+
+	if content == nil {
+		t.Fatal("恢复存档的玩家进入世界时未收到物品栏内容包")
+	}
+	windowID, slots := containerContent(t, content)
+	if windowID != protocol.PlayerInventoryWindowID {
+		t.Fatalf("窗口编号 = %d, want %d", windowID, protocol.PlayerInventoryWindowID)
+	}
+	if len(slots) != playerMenuSlots {
+		t.Fatalf("窗口 0 槽位数 = %d, want %d", len(slots), playerMenuSlots)
+	}
+	stoneID, err := registry.ItemID("minecraft:stone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 窗口 0 布局：36 是快捷栏 0（初始物品发放到该槽位）。
+	if stack := slots[36]; stack.ID != stoneID || stack.Count != 42 {
+		t.Fatalf("快捷栏 0 = %+v, want 42 石头", stack)
+	}
+	if stack := containerContentCarried(t, content); stack.Count != 0 {
+		t.Fatalf("光标 = %+v, want 空", stack)
 	}
 }
 
@@ -153,7 +203,7 @@ func TestPlayerDeadStatePersists(t *testing.T) {
 		t.Fatalf("磁盘记录应为死亡状态：%+v", record)
 	}
 
-	conn2 := joinAt(t, cfg, addr, "DeadSaver", 0)
+	conn2 := joinAt(t, cfg, addr, "DeadSaver")
 	sess2 := findSession(t, instance, "DeadSaver")
 	if !sess2.isDead() {
 		t.Fatal("重连后应保持死亡状态")
@@ -230,7 +280,7 @@ func TestPlayerPeriodicAutosave(t *testing.T) {
 		}
 	})
 
-	conn := joinAt(t, cfg, listener.Addr().String(), "AutoSaver", len(cfg.StartingItems))
+	conn := joinAt(t, cfg, listener.Addr().String(), "AutoSaver")
 	t.Cleanup(func() { _ = conn.Close() })
 	sess := findSession(t, instance, "AutoSaver")
 	moveX, moveZ := 12.5, -8.25
