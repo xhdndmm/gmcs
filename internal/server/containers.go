@@ -599,7 +599,10 @@ const containerReach = 8.0
 // 行为对齐原版 AbstractContainerMenu#doClick 的主要模式。
 func (s *Server) applyContainerClick(player *session, backing slotBacking, working []item.Stack, cursor item.Stack, click protocol.ContainerClick) item.Stack {
 	slot := int(click.Slot)
-	if click.Mode != protocol.ClickModeQuickCraft && (slot < 0 || slot >= len(working) || !backing.Supported(slot)) {
+	if click.Mode == protocol.ClickModeQuickCraft {
+		return s.applyQuickCraft(player, working, cursor, click)
+	}
+	if slot < 0 || slot >= len(working) || !backing.Supported(slot) {
 		return cursor
 	}
 	limit := cursor.MaxStack()
@@ -653,8 +656,6 @@ func (s *Server) applyContainerClick(player *session, backing slotBacking, worki
 		working[slot] = stack
 		s.dropFromContainer(player, dropped)
 		return cursor
-	case protocol.ClickModeQuickCraft:
-		return s.applyQuickCraft(player, working, cursor, click)
 	case protocol.ClickModePickupAll:
 		return clickPickupAll(working, cursor, limit)
 	}
@@ -773,20 +774,49 @@ type dragState struct {
 	slots  []int
 }
 
-// applyQuickCraft 处理拖拽分发（mode 5）。
-// button 0/4/8 = 左键开始/经过/结束，1/5/9 = 右键开始/经过/结束（游戏内编码）。
+// quickCraftKind / quickCraftStage 解码拖拽包的 button（与原版
+// AbstractContainerMenu#getQuickcraftType / #getQuickcraftHeader 一致）：
+// button = 类型 << 2 | 阶段；类型 0 左键、1 右键、2 中键，阶段 0 开始、1 经过、2 结束。
+func quickCraftKind(button int8) int  { return (int(button) >> 2) & 3 }
+func quickCraftStage(button int8) int { return int(button) & 3 }
+
+// applyQuickCraft 处理拖拽分发（mode 5），对齐原版 AbstractContainerMenu#doClick
+// 的 QUICK_CRAFT 分支：阶段序列非法或光标为空时放弃这次拖拽（客户端在窗口外
+// 按住鼠标拖动会发 slot=-999 的开始包，此时光标通常为空）；只有“经过”阶段才
+// 解析槽位（结束阶段的 slot=-999 表示鼠标在窗口外释放）。
 func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor item.Stack, click protocol.ContainerClick) item.Stack {
-	stage := (click.MouseButton / 4) // 0 开始、1 经过、2 结束
-	left := click.MouseButton%4 == 0
+	stage := quickCraftStage(click.MouseButton)
+	previous := 0
+	if player.drag != nil {
+		previous = 1
+	}
+	// 合法序列：空闲 → 开始 → 经过… → 结束；其余组合（含首包不是“开始”）重置。
+	if (previous != 1 || stage != 2) && previous != stage {
+		player.drag = nil
+		return cursor
+	}
+	if cursor.IsEmpty() {
+		player.drag = nil
+		return cursor
+	}
 	switch stage {
 	case 0: // 开始
+		kind := quickCraftKind(click.MouseButton)
+		if kind == 2 && player.gameModeID() != uint8(config.GameModeCreative) {
+			player.drag = nil
+			return cursor
+		}
 		player.drag = &dragState{button: click.MouseButton}
 		return cursor
 	case 1: // 经过
 		if player.drag == nil {
 			return cursor
 		}
-		player.drag.slots = append(player.drag.slots, int(click.Slot))
+		slot := int(click.Slot)
+		if slot < 0 || slot >= len(working) {
+			return cursor
+		}
+		player.drag.slots = append(player.drag.slots, slot)
 		return cursor
 	default: // 结束（slot = -999）
 		drag := player.drag
@@ -794,7 +824,7 @@ func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor i
 		if drag == nil {
 			return cursor
 		}
-		if left {
+		if quickCraftKind(drag.button) == 0 {
 			// 左键拖拽：每个经过的槽位放 1 个。
 			for _, index := range drag.slots {
 				if cursor.IsEmpty() {

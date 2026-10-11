@@ -393,6 +393,67 @@ func TestCursorItemSurvivesWindowSwitch(t *testing.T) {
 	}, "关闭窗口后光标物品应回到物品栏")
 }
 
+// TestQuickCraftOutsideWindowIsIgnored 验证实机客户端在窗口外按住鼠标拖动
+// （开始/经过/结束三个阶段都携带 slot=-999）时的容错：光标为空时应丢弃拖拽，
+// 不能按槽位索引导致越界崩溃。
+func TestQuickCraftOutsideWindowIsIgnored(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "Dragger")
+
+	// 实机客户端在窗口外拖动时整段序列的三个阶段都携带 slot=-999。
+	// 左键拖拽：开始 button 0、经过 1、结束 2。
+	for _, button := range []int8{0, 1, 2} {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, button, protocol.ClickModeQuickCraft)
+	}
+	// 处理屏障：服务器仍在正常响应（未崩溃、会话可用）。
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	if _, ok := instance.players[[16]byte{}]; ok {
+		t.Fatal("会话表不应被破坏")
+	}
+	if stack := activeSession(t, instance, "Dragger").inventory.Get(item.SlotHotbarStart); stack.Count != 32 {
+		t.Fatalf("物品栏不应被改动：%+v", stack)
+	}
+}
+
+// TestQuickCraftLeftDragDistributes 验证左键拖拽（开始 0、经过 1、结束 2）
+// 把光标物品每个槽位放 1 个。
+func TestQuickCraftLeftDragDistributes(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "DragLeft")
+
+	// 窗口 0：先把快捷栏 0（菜单槽位 36）的石头拿到光标。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+
+	// 拖过主背包槽位 9、10、11（菜单槽位 9、10、11）。
+	// 左键拖拽的 button 编码：开始 0、经过 1、结束 2（低 2 位为阶段，高 2 位为按键类型）。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 0, protocol.ClickModeQuickCraft)
+	for _, slot := range []int16{9, 10, 11} {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, slot, 1, protocol.ClickModeQuickCraft)
+	}
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 2, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragLeft")
+	for _, slot := range []int{9, 10, 11} {
+		if stack := player.inventory.Get(slot); stack.Count != 1 {
+			t.Fatalf("主背包槽位 %d = %+v, want 1 石头", slot, stack)
+		}
+	}
+	if cursor := player.getCursor(); cursor.Count != 29 {
+		t.Fatalf("拖拽后光标 = %+v, want 29 石头", cursor)
+	}
+}
+
 // TestContainerQuickMove 验证 Shift 点击（快速移动）把整栈移入容器。
 func TestContainerQuickMove(t *testing.T) {
 	cfg := config.Default()
