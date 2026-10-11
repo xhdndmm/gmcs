@@ -77,6 +77,10 @@ func TestRepeaterDelayAndDirection(t *testing.T) {
 	if _, props := blockProps(t, instance, baseX+1, y, baseZ); props["powered"] != "false" {
 		t.Fatal("repeater still powered after the off delay")
 	}
+	// 灯在中继器断电后还需 4 tick 熄灭延迟。
+	for i := 0; i < lampOffDelayTicks; i++ {
+		instance.tickRedstone()
+	}
 	if _, props := blockProps(t, instance, baseX+2, y, baseZ); props["lit"] != "false" {
 		t.Fatal("lamp still lit after the repeater turned off")
 	}
@@ -197,6 +201,9 @@ func TestObserverPulse(t *testing.T) {
 	instance.tickRedstone()
 	if _, props := blockProps(t, instance, baseX, y, baseZ); props["powered"] != "false" {
 		t.Fatal("observer still powered after the pulse")
+	}
+	for i := 0; i < lampOffDelayTicks; i++ {
+		instance.tickRedstone()
 	}
 	if _, props := blockProps(t, instance, baseX-1, y, baseZ); props["lit"] != "false" {
 		t.Fatal("lamp still lit after the pulse ended")

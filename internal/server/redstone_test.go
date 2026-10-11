@@ -67,13 +67,23 @@ func TestRedstoneLeverPowersLamp(t *testing.T) {
 		t.Fatalf("lamp after lever on = %s %v, want lit=true", name, props)
 	}
 
-	// 第二次切换：灯熄灭。
+	// 第二次切换：灯在 4 tick 延迟后熄灭（原版 RedstoneLampBlock）。
 	currentLever := instance.testWorld().BlockAt(baseX, leverY, baseZ)
 	if !instance.handleRedstoneUse(instance.testWorld(), baseX, leverY, baseZ, currentLever) {
 		t.Fatal("handleRedstoneUse(lever) second time = false, want true")
 	}
+	if name, props := blockProps(t, instance, baseX+1, leverY, baseZ); name != lampName || props["lit"] != "true" {
+		t.Fatalf("lamp immediately after lever off = %s %v, want lit=true (4-tick delay)", name, props)
+	}
+	for i := 0; i < lampOffDelayTicks-1; i++ {
+		instance.tickRedstone()
+	}
+	if _, props := blockProps(t, instance, baseX+1, leverY, baseZ); props["lit"] != "true" {
+		t.Fatal("lamp went out before the 4-tick delay elapsed")
+	}
+	instance.tickRedstone()
 	if name, props := blockProps(t, instance, baseX+1, leverY, baseZ); name != lampName || props["lit"] != "false" {
-		t.Fatalf("lamp after lever off = %s %v, want lit=false", name, props)
+		t.Fatalf("lamp after the off delay = %s %v, want lit=false", name, props)
 	}
 }
 
@@ -114,6 +124,10 @@ func TestRedstoneButtonAutoRelease(t *testing.T) {
 	instance.tickRedstone()
 	if _, props := blockProps(t, instance, baseX, buttonY, baseZ); props["powered"] != "false" {
 		t.Fatalf("button still powered after %d ticks", buttonStoneTicks)
+	}
+	// 灯在按钮弹起后还需 4 tick 才熄灭。
+	for i := 0; i < lampOffDelayTicks; i++ {
+		instance.tickRedstone()
 	}
 	if _, props := blockProps(t, instance, baseX+1, buttonY, baseZ); props["lit"] != "false" {
 		t.Fatal("lamp still lit after the button released")
@@ -196,6 +210,9 @@ func TestRedstoneWireChain(t *testing.T) {
 			t.Fatalf("wire %d power = %d after lever off, want 0", dx, power)
 		}
 	}
+	for i := 0; i < lampOffDelayTicks; i++ {
+		instance.tickRedstone()
+	}
 	if _, props := blockProps(t, instance, baseX+4, wireY, baseZ); props["lit"] != "false" {
 		t.Fatal("lamp still lit after the lever turned off")
 	}
@@ -249,9 +266,12 @@ func TestRedstoneBlockSource(t *testing.T) {
 	if _, props := blockProps(t, instance, baseX+1, y, baseZ); props["lit"] != "true" {
 		t.Fatal("lamp not lit next to a redstone block")
 	}
-	// 拆除红石块后灯熄灭。
+	// 拆除红石块后灯在 4 tick 延迟后熄灭。
 	instance.testWorld().SetBlock(baseX, y, baseZ, world.AirBlock)
 	instance.updateRedstoneAround(world.DimensionOverworld, baseX, y, baseZ)
+	for i := 0; i < lampOffDelayTicks; i++ {
+		instance.tickRedstone()
+	}
 	if _, props := blockProps(t, instance, baseX+1, y, baseZ); props["lit"] != "false" {
 		t.Fatal("lamp still lit after the redstone block was removed")
 	}

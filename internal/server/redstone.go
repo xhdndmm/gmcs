@@ -30,6 +30,8 @@ import (
 const (
 	buttonStoneTicks = 20
 	buttonWoodTicks  = 30
+	// lampOffDelayTicks 是红石灯从亮到灭的延迟（原版 4 tick）。
+	lampOffDelayTicks = 4
 
 	wireName              = "minecraft:redstone_wire"
 	leverName             = "minecraft:lever"
@@ -237,6 +239,8 @@ func (s *Server) fireRedstoneTick(key containerKey) {
 		s.tickPiston(w, key.dim, pos, state)
 	case isButtonName(name):
 		s.tickButton(w, key.dim, pos, state)
+	case isLampState(state):
+		s.tickLamp(w, key.dim, pos, state)
 	}
 }
 
@@ -665,17 +669,41 @@ func (s *Server) refreshRedstoneConsumers(w *world.World, dim world.Dimension, p
 }
 
 // refreshLamp 按 hasNeighborSignal 更新红石灯亮灭（含导体强充能）。
+// 原版 RedstoneLampBlock 语义：点亮立即生效；从亮转灭需要 4 tick
+// （计划刻到点后再检查一次），熄灭延迟期间恢复供电则取消。
 func (s *Server) refreshLamp(w *world.World, pos [3]int, state uint16) {
 	_, props, ok := registry.StateProps(state)
 	if !ok || props == nil {
 		return
 	}
-	lit := s.bestNeighborSignal(w, pos) > 0
-	if lit == (props["lit"] == "true") {
+	signal := s.bestNeighborSignal(w, pos) > 0
+	if signal == (props["lit"] == "true") {
+		return
+	}
+	if !signal {
+		// 亮 → 灭：安排 4 tick 后的熄灭（已有计划刻则忽略）。
+		if !s.hasRedstoneTick(w.Dimension(), pos) {
+			s.scheduleRedstoneTick(w.Dimension(), pos, lampOffDelayTicks)
+		}
 		return
 	}
 	next := cloneProps(props)
-	next["lit"] = strconv.FormatBool(lit)
+	next["lit"] = "true"
+	s.setRedstoneBlock(w, pos[0], pos[1], pos[2], lampName, next)
+}
+
+// tickLamp 处理红石灯计划刻（原版 RedstoneLampBlock.tick）：
+// 仍处于熄灭延迟中且无信号时真正熄灭。
+func (s *Server) tickLamp(w *world.World, dim world.Dimension, pos [3]int, state uint16) {
+	_, props, ok := registry.StateProps(state)
+	if !ok || props["lit"] != "true" {
+		return
+	}
+	if s.bestNeighborSignal(w, pos) > 0 {
+		return // 延迟期间恢复供电：保持点亮
+	}
+	next := cloneProps(props)
+	next["lit"] = "false"
 	s.setRedstoneBlock(w, pos[0], pos[1], pos[2], lampName, next)
 }
 
