@@ -419,8 +419,8 @@ func TestQuickCraftOutsideWindowIsIgnored(t *testing.T) {
 	}
 }
 
-// TestQuickCraftLeftDragDistributes 验证左键拖拽（开始 0、经过 1、结束 2）
-// 把光标物品每个槽位放 1 个。
+// TestQuickCraftLeftDragDistributes 验证左键拖拽（开始 0、经过 1、结束 2）按原版
+// 把整栈平均分摊到经过的槽位（每格 floor(数量/槽位数)）。
 func TestQuickCraftLeftDragDistributes(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
@@ -444,6 +444,67 @@ func TestQuickCraftLeftDragDistributes(t *testing.T) {
 	expectSystemChat(t, conn, "当前有")
 
 	player := activeSession(t, instance, "DragLeft")
+	for _, slot := range []int{9, 10, 11} {
+		if stack := player.inventory.Get(slot); stack.Count != 10 {
+			t.Fatalf("主背包槽位 %d = %+v, want 10 石头（32/3 分摊）", slot, stack)
+		}
+	}
+	if cursor := player.getCursor(); cursor.Count != 2 {
+		t.Fatalf("拖拽后光标 = %+v, want 2 石头", cursor)
+	}
+}
+
+// TestQuickCraftLeftDragSingleSlotPlacesStack 验证左键拖拽只划过一格时放下整栈：
+// 原版每格放 floor(数量/槽位数) = 全部，此前实现每格只放 1 个，手上会剩 n−1。
+func TestQuickCraftLeftDragSingleSlotPlacesStack(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*64"}
+	instance, conn := joinServer(t, cfg, "DragOne")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+
+	// 只划过主背包槽位 9（菜单槽位 9）。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 0, protocol.ClickModeQuickCraft)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 1, protocol.ClickModeQuickCraft)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 2, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragOne")
+	if stack := player.inventory.Get(9); stack.Count != 64 {
+		t.Fatalf("主背包槽位 9 = %+v, want 64 石头", stack)
+	}
+	if cursor := player.getCursor(); !cursor.IsEmpty() {
+		t.Fatalf("放下整栈后光标应为空，得到 %+v", cursor)
+	}
+}
+
+// TestQuickCraftRightDragPlacesOne 验证右键拖拽（开始 4、经过 5、结束 6）
+// 每个经过的槽位放 1 个。
+func TestQuickCraftRightDragPlacesOne(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "DragRight")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 4, protocol.ClickModeQuickCraft)
+	for _, slot := range []int16{9, 10, 11} {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, slot, 5, protocol.ClickModeQuickCraft)
+	}
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 6, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragRight")
 	for _, slot := range []int{9, 10, 11} {
 		if stack := player.inventory.Get(slot); stack.Count != 1 {
 			t.Fatalf("主背包槽位 %d = %+v, want 1 石头", slot, stack)

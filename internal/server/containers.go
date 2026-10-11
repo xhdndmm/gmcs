@@ -824,51 +824,54 @@ func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor i
 		if drag == nil {
 			return cursor
 		}
-		if quickCraftKind(drag.button) == 0 {
-			// 左键拖拽：每个经过的槽位放 1 个。
-			for _, index := range drag.slots {
-				if cursor.IsEmpty() {
-					break
-				}
-				if index < 0 || index >= len(working) {
-					continue
-				}
-				stack := working[index]
-				if stack.IsEmpty() {
-					placed := cursor
-					placed.Count = 1
-					working[index] = placed
-					cursor.Count--
-				} else if stack.ItemID == cursor.ItemID && stack.Count < cursor.MaxStack() {
-					stack.Count++
-					working[index] = stack
-					cursor.Count--
-				}
-			}
-		} else {
-			// 右键拖拽：按经过顺序逐个分配 1 个。
-			placed := int32(0)
-			for _, index := range drag.slots {
-				if placed >= cursor.Count {
-					break
-				}
-				if index < 0 || index >= len(working) {
-					continue
-				}
-				stack := working[index]
-				if stack.IsEmpty() {
-					one := cursor
-					one.Count = 1
-					working[index] = one
-					placed++
-				} else if stack.ItemID == cursor.ItemID && stack.Count < cursor.MaxStack() {
-					stack.Count++
-					working[index] = stack
-					placed++
-				}
-			}
-			cursor.Count -= placed
+		kind := quickCraftKind(drag.button)
+		count := cursor.Count
+		// 原版只把物品放进能接受的槽位，且非创造拖拽要求数量不少于经过的槽位数。
+		if kind != 2 && count < int32(len(drag.slots)) {
+			return cursor
 		}
+		// 每个经过槽位放多少（原版 AbstractContainerMenu#getQuickCraftPlaceCount）：
+		// 左键拖拽把整栈平均分摊（数量/槽位数），右键拖拽每个槽位 1 个，
+		// 中键（创造）每个槽位放整栈。
+		perSlot := int32(1)
+		switch kind {
+		case 0:
+			perSlot = count / int32(len(drag.slots))
+		case 2:
+			perSlot = cursor.MaxStack()
+		}
+		remaining := count
+		for _, index := range drag.slots {
+			if remaining <= 0 {
+				break
+			}
+			if index < 0 || index >= len(working) {
+				continue
+			}
+			stack := working[index]
+			current := int32(0)
+			if !stack.IsEmpty() {
+				if stack.ItemID != cursor.ItemID {
+					continue
+				}
+				current = stack.Count
+			}
+			target := perSlot + current
+			if limit := cursor.MaxStack(); target > limit {
+				target = limit
+			}
+			moved := min(remaining, target-current)
+			if moved <= 0 {
+				continue
+			}
+			if stack.IsEmpty() {
+				stack = cursor
+			}
+			stack.Count = target
+			working[index] = stack
+			remaining -= moved
+		}
+		cursor.Count = remaining
 		if cursor.Count <= 0 {
 			return item.Empty()
 		}
