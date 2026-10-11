@@ -136,3 +136,73 @@ func TestItemPersistence(t *testing.T) {
 		t.Fatalf("restored position = (%v, %v, %v)", got.X, got.Y, got.Z)
 	}
 }
+
+// TestArrowPersistence 验证箭矢（含速度与伤害）保存到 entities.json 并在
+// 重启后恢复。
+func TestArrowPersistence(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.arrowsEnabled {
+		t.Skip("arrows disabled (missing registry data)")
+	}
+	spawnX, spawnY, spawnZ := first.spawnPositionFor(world.DimensionOverworld)
+	first.entityMu.Lock()
+	saved := &arrowEntity{
+		ID:       first.entityIDs.Add(1),
+		UUID:     newEntityUUID(),
+		Dim:      world.DimensionOverworld,
+		X:        spawnX + 1,
+		Y:        spawnY + 1,
+		Z:        spawnZ + 1,
+		VelX:     0.5,
+		VelY:     -0.25,
+		VelZ:     0.125,
+		Damage:   4,
+		AgeTicks: 37,
+	}
+	first.arrows[saved.ID] = saved
+	first.entityMu.Unlock()
+
+	if err := first.saveEntities(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.testWorld().Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟重启：用同一世界目录新建服务器。
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.testWorld().Close()
+	second.entityMu.Lock()
+	restored := make([]*arrowEntity, 0, len(second.arrows))
+	for _, a := range second.arrows {
+		restored = append(restored, a)
+	}
+	second.entityMu.Unlock()
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored arrow, got %d", len(restored))
+	}
+	got := restored[0]
+	if got.Dim != world.DimensionOverworld {
+		t.Fatalf("restored dimension = %v", got.Dim)
+	}
+	if math.Abs(got.X-(spawnX+1)) > 1e-6 || math.Abs(got.Y-(spawnY+1)) > 1e-6 || math.Abs(got.Z-(spawnZ+1)) > 1e-6 {
+		t.Fatalf("restored position = (%v, %v, %v)", got.X, got.Y, got.Z)
+	}
+	if got.VelX != 0.5 || got.VelY != -0.25 || got.VelZ != 0.125 {
+		t.Fatalf("restored velocity = (%v, %v, %v)", got.VelX, got.VelY, got.VelZ)
+	}
+	if got.Damage != 4 || got.AgeTicks != 37 {
+		t.Fatalf("restored damage/age = %v/%d", got.Damage, got.AgeTicks)
+	}
+	if got.ID <= 0 {
+		t.Fatalf("restored arrow has invalid entity ID %d", got.ID)
+	}
+}

@@ -16,12 +16,13 @@ import (
 	"gmcs/internal/world"
 )
 
-// 实体持久化：各维度世界目录下的 entities.json（生物 + 掉落物）。
+// 实体持久化：各维度世界目录下的 entities.json（生物 + 掉落物 + 箭矢）。
 //
 // 说明：gmcs 的区块存储是自定义格式（不含实体），因此实体单独保存在
 // 维度目录的 entities.json 中（主世界为世界目录，下界/末地为其子目录）；
 // 文件采用“临时文件 + 重命名”的原子写入。恢复时保留类型、位置、朝向、
-// 生命、物品堆叠与 UUID（实体 ID 重新分配）；掉落物的速度不保存。
+// 生命、物品堆叠与 UUID（实体 ID 重新分配）；掉落物的速度不保存，
+// 箭矢的速度与伤害保存。
 
 // entityFileName 是世界目录中实体数据的文件名。
 const entityFileName = "entities.json"
@@ -36,8 +37,22 @@ func (s *Server) entityFilePath(dim world.Dimension) string {
 }
 
 type entityFile struct {
-	Mobs  []mobRecord  `json:"mobs"`
-	Items []itemRecord `json:"items,omitempty"`
+	Mobs   []mobRecord   `json:"mobs"`
+	Items  []itemRecord  `json:"items,omitempty"`
+	Arrows []arrowRecord `json:"arrows,omitempty"`
+}
+
+// arrowRecord 是一条持久化的箭矢（保留速度与伤害）。
+type arrowRecord struct {
+	UUID     string  `json:"uuid"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	Z        float64 `json:"z"`
+	VelX     float64 `json:"velX"`
+	VelY     float64 `json:"velY"`
+	VelZ     float64 `json:"velZ"`
+	Damage   float32 `json:"damage"`
+	AgeTicks int     `json:"ageTicks"`
 }
 
 // itemRecord 是一条持久化的掉落物（速度不保存）。
@@ -61,12 +76,13 @@ type mobRecord struct {
 	Health float32 `json:"health"`
 }
 
-// saveEntities 把全部维度中的生物与掉落物写入各自目录（原子写入）。
+// saveEntities 把全部维度中的生物、掉落物与箭矢写入各自目录（原子写入）。
 func (s *Server) saveEntities() error {
 	type dimFile struct {
-		dim   world.Dimension
-		mobs  []mobRecord
-		items []itemRecord
+		dim    world.Dimension
+		mobs   []mobRecord
+		items  []itemRecord
+		arrows []arrowRecord
 	}
 	files := make(map[world.Dimension]*dimFile, 3)
 	get := func(dim world.Dimension) *dimFile {
@@ -110,11 +126,25 @@ func (s *Server) saveEntities() error {
 			Z:     e.Z,
 		})
 	}
+	for _, a := range s.arrows {
+		file := get(a.Dim)
+		file.arrows = append(file.arrows, arrowRecord{
+			UUID:     hex.EncodeToString(a.UUID[:]),
+			X:        a.X,
+			Y:        a.Y,
+			Z:        a.Z,
+			VelX:     a.VelX,
+			VelY:     a.VelY,
+			VelZ:     a.VelZ,
+			Damage:   a.Damage,
+			AgeTicks: a.AgeTicks,
+		})
+	}
 	s.entityMu.Unlock()
 
 	var firstErr error
 	for _, file := range files {
-		content, err := json.MarshalIndent(entityFile{Mobs: file.mobs, Items: file.items}, "", "  ")
+		content, err := json.MarshalIndent(entityFile{Mobs: file.mobs, Items: file.items, Arrows: file.arrows}, "", "  ")
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -163,6 +193,7 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 
 	restored := 0
 	restoredItems := 0
+	restoredArrows := 0
 	s.entityMu.Lock()
 	for _, record := range file.Mobs {
 		kind, ok := kindByName[record.Type]
@@ -227,12 +258,40 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 		s.items[e.ID] = e
 		restoredItems++
 	}
+	for _, record := range file.Arrows {
+		if !s.arrowsEnabled {
+			break
+		}
+		uuid, uuidErr := parseMobUUID(record.UUID)
+		if uuidErr != nil {
+			slog.Warn("箭矢的 UUID 无效，重新生成", "uuid", record.UUID, "error", uuidErr)
+			uuid = newEntityUUID()
+		}
+		a := &arrowEntity{
+			ID:       s.entityIDs.Add(1),
+			UUID:     uuid,
+			Dim:      dim,
+			X:        record.X,
+			Y:        record.Y,
+			Z:        record.Z,
+			VelX:     record.VelX,
+			VelY:     record.VelY,
+			VelZ:     record.VelZ,
+			Damage:   record.Damage,
+			AgeTicks: record.AgeTicks,
+		}
+		s.arrows[a.ID] = a
+		restoredArrows++
+	}
 	s.entityMu.Unlock()
 	if restored > 0 {
 		slog.Info("restored mobs from disk", "dimension", dim, "count", restored)
 	}
 	if restoredItems > 0 {
 		slog.Info("restored items from disk", "dimension", dim, "count", restoredItems)
+	}
+	if restoredArrows > 0 {
+		slog.Info("restored arrows from disk", "dimension", dim, "count", restoredArrows)
 	}
 	return nil
 }
