@@ -132,7 +132,7 @@ func (s *Server) resolveContainerDefs() {
 
 // containerForState 返回方块状态对应的容器定义（非容器方块返回 nil）。
 func (s *Server) containerForState(state uint16) (*containerDef, string, bool) {
-	name, ok := s.blockNames[state]
+	name, ok := s.blockNameOf(state)
 	if !ok {
 		return nil, "", false
 	}

@@ -146,6 +146,12 @@ func main() {
 		if err := writeBlockPropertyStates(filepath.Dir(*outPath), *version, stateData); err != nil {
 			fatal("写入方块属性状态表：%v", err)
 		}
+		if err := writeBlockStateNames(filepath.Dir(*outPath), *version, stateData); err != nil {
+			fatal("写入状态名区间表：%v", err)
+		}
+		if err := writeBlockFlags(filepath.Dir(*outPath), *version); err != nil {
+			fatal("写入方块行为表：%v", err)
+		}
 		return
 	}
 
@@ -188,6 +194,12 @@ func main() {
 	fmt.Printf("已生成碰撞形状表（%d 个方块）\n", len(blockShapeData))
 	if err := writeBlockPropertyStates(filepath.Dir(*outPath), *version, blockShapeData); err != nil {
 		fatal("写入方块属性状态表：%v", err)
+	}
+	if err := writeBlockStateNames(filepath.Dir(*outPath), *version, blockShapeData); err != nil {
+		fatal("写入状态名区间表：%v", err)
+	}
+	if err := writeBlockFlags(filepath.Dir(*outPath), *version); err != nil {
+		fatal("写入方块行为表：%v", err)
 	}
 	if err := writeStaticIDs(filepath.Dir(*outPath), *version, generated.staticIDs); err != nil {
 		fatal("写入静态 ID 表：%v", err)

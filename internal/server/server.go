@@ -125,13 +125,11 @@ type Server struct {
 	itemsEnabled    bool
 
 	// 容器系统：containerDefs 是方块名 → 容器定义（注册表数据缺失时为空）；
-	// 红石：已按下按钮的剩余 tick（受 redstoneMu 保护）。
-	redstoneMu      sync.Mutex
-	redstoneButtons map[containerKey]int
-	// repeaters/observers 是红石计时（中继器延迟切换与侦测器脉冲），
-	// 同样受 redstoneMu 保护。
-	repeaters map[containerKey]repeaterPending
-	observers map[containerKey]int
+	// 红石：计划刻表、火把熔断统计与 tick 计数（均受 redstoneMu 保护）。
+	redstoneMu        sync.Mutex
+	redstoneTicks     map[containerKey]int
+	torchToggles      map[containerKey][]int64
+	redstoneTickCount int64
 
 	// containers 是已打开容器（按维度 + 方块坐标索引），受 containerMu 保护。
 	containerDefs map[string]*containerDef
@@ -147,10 +145,6 @@ type Server struct {
 
 	// fallDamageMultipliers 是落点方块的摔落伤害倍率（New 中解析）。
 	fallDamageMultipliers map[uint16]float32
-
-	// blockNames 是方块状态 ID → 命名空间名的反查表（New 中构建），
-	// 用于破坏方块时的掉落判定。
-	blockNames map[uint16]string
 
 	// 配置阶段共享的预编码数据包（内容与玩家无关，只读共享）。
 	registryPackets [][]byte
@@ -360,7 +354,6 @@ func New(cfg config.Config) (*Server, error) {
 	server.initFurnaceKinds()
 	server.furnaces = make(map[containerKey]*furnaceState)
 	bucketItemID, bucketLavaItemID = initFurnaceItems()
-	server.blockNames = resolveBlockNames()
 	if server.registryPackets, server.tagsPacket, err = buildRegistryPackets(); err != nil {
 		return nil, fmt.Errorf("构造注册表数据包：%w", err)
 	}

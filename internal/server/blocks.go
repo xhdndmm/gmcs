@@ -93,6 +93,11 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	if current == world.AirBlock || current == world.WaterBlock || current == world.BedrockBlock {
 		return // 空气/水/基岩不可破坏
 	}
+	// 活塞基座/活塞头联动：破坏基座时头部消失；破坏头部时基座被移除
+	// （原版 PistonHeadBlock 与 PistonBaseBlock 的行为）。
+	if s.handlePistonBreak(dim, player, w, action.X, action.Y, action.Z, current) {
+		return
+	}
 	// 破坏容器方块：先关闭观察窗口，再把内容物掉落到世界中（与原版一致）。
 	if def, _, ok := s.containerForState(current); ok {
 		if def.IsFurnace {
@@ -164,7 +169,7 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 			return
 		}
 		// 右键工作台：打开 3×3 合成窗口。
-		name, hasName := s.blockNames[current]
+		name, hasName := s.blockNameOf(current)
 		if hasName && name == "minecraft:crafting_table" {
 			s.openCraftingTable(player)
 			return
@@ -204,9 +209,9 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if !ok {
 		return // 手持物品不是可放置的方块
 	}
-	// 红石类方向方块（中继器/侦测器）按玩家视线方向设置 facing。
-	_, _, _, placeYaw, _ := player.playerPosition()
-	state = orientPlacementState(state, placeYaw)
+	// 红石类方向方块（中继器/比较器/侦测器/活塞）按玩家视线方向设置朝向。
+	_, _, _, placeYaw, placePitch := player.playerPosition()
+	state = orientPlacementState(state, placeYaw, placePitch)
 	if !w.SetBlock(placeX, placeY, placeZ, state) {
 		return
 	}

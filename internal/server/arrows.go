@@ -233,7 +233,7 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 				if state == world.AirBlock || state == world.WaterBlock || state == world.LavaBlock {
 					continue
 				}
-				if name, ok := s.blockNames[state]; ok && explosionResistantBlocks[name] {
+				if name, ok := s.blockNameOf(state); ok && explosionResistantBlocks[name] {
 					continue
 				}
 				if !w.SetBlock(bx, by, bz, world.AirBlock) {

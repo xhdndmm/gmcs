@@ -41,7 +41,8 @@ func TestRepeaterDelayAndDirection(t *testing.T) {
 	}
 	lever := placeState(t, instance, baseX, y, baseZ, leverName,
 		map[string]string{"face": "floor", "facing": "north", "powered": "false"})
-	placeRepeater(t, instance, baseX+1, y, baseZ, "east", "1")
+	// 原版语义：facing 指向输入侧；拉杆在西侧，故 facing=west，输出在东侧。
+	placeRepeater(t, instance, baseX+1, y, baseZ, "west", "1")
 	placeState(t, instance, baseX+2, y, baseZ, lampName, map[string]string{"lit": "false"})
 
 	// 打开拉杆：中继器输入接通，但需要 1 红石刻（2 tick）延迟。
@@ -105,7 +106,7 @@ func TestRepeaterDelay4(t *testing.T) {
 	}
 	lever := placeState(t, instance, baseX, y, baseZ, leverName,
 		map[string]string{"face": "floor", "facing": "north", "powered": "false"})
-	placeRepeater(t, instance, baseX+1, y, baseZ, "east", "4")
+	placeRepeater(t, instance, baseX+1, y, baseZ, "west", "4")
 
 	instance.handleRedstoneUse(instance.testWorld(), baseX, y, baseZ, lever)
 	for i := 0; i < 7; i++ {
@@ -167,11 +168,20 @@ func TestObserverPulse(t *testing.T) {
 		t.Fatal("observer fired for an unrelated block change")
 	}
 
-	// 破坏被观察方块：侦测器立即通电，输出侧灯亮。
+	// 破坏被观察方块：侦测器在 2 tick 后开始输出 2 tick 脉冲（原版
+	// ObserverBlock.updateShape → scheduleTick(2) 的时序），输出侧灯亮。
 	if !instance.testWorld().SetBlock(baseX+1, y, baseZ, world.AirBlock) {
 		t.Fatal("breaking the observed block failed")
 	}
 	instance.broadcastBlockUpdate(world.DimensionOverworld, baseX+1, y, baseZ, int32(world.AirBlock))
+	if _, props := blockProps(t, instance, baseX, y, baseZ); props["powered"] != "false" {
+		t.Fatal("observer powered before the pulse tick")
+	}
+	instance.tickRedstone()
+	if _, props := blockProps(t, instance, baseX, y, baseZ); props["powered"] != "false" {
+		t.Fatal("observer powered after only 1 tick (pulse starts after 2 ticks)")
+	}
+	instance.tickRedstone()
 	if _, props := blockProps(t, instance, baseX, y, baseZ); props["powered"] != "true" {
 		t.Fatal("observer did not fire when the observed block changed")
 	}
@@ -179,7 +189,7 @@ func TestObserverPulse(t *testing.T) {
 		t.Fatal("lamp behind the observer not lit during the pulse")
 	}
 
-	// 2 tick 后脉冲结束：侦测器断电，灯熄灭。
+	// 再 2 tick 后脉冲结束：侦测器断电，灯熄灭。
 	instance.tickRedstone()
 	if _, props := blockProps(t, instance, baseX, y, baseZ); props["powered"] != "true" {
 		t.Fatal("observer pulse ended too early")
@@ -215,6 +225,9 @@ func TestObserverPowersWire(t *testing.T) {
 
 	instance.testWorld().SetBlock(baseX, y+1, baseZ, world.AirBlock)
 	instance.broadcastBlockUpdate(world.DimensionOverworld, baseX, y+1, baseZ, int32(world.AirBlock))
+	// 原版时序：变化后 2 tick 才开始输出脉冲。
+	instance.tickRedstone()
+	instance.tickRedstone()
 	if power := wirePowerOf(instance.testWorld().BlockAt(baseX, y-1, baseZ)); power == 0 {
 		t.Fatalf("wire below the observer not powered (power=%d)", power)
 	}

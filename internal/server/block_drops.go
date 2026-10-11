@@ -78,20 +78,15 @@ func blockDropsNothing(name string) bool {
 		strings.HasSuffix(name, "_leaves")
 }
 
-// resolveBlockNames 构建方块状态 ID → 命名空间名的反查表（各方块的默认状态）。
-// 掉落判定需要“状态 → 名字”，注册表只提供正向表。
-func resolveBlockNames() map[uint16]string {
-	names := make(map[uint16]string, len(registry.BlockStateIDs))
-	for name, state := range registry.BlockStateIDs {
-		names[state] = name
-	}
-	return names
+// blockNameOf 返回方块状态所属方块的命名空间名（全部状态，不只默认状态）。
+func (s *Server) blockNameOf(state uint16) (string, bool) {
+	return registry.BlockNameByState(state)
 }
 
 // blockDrop 返回破坏方块后的掉落物（命名空间 ID 与数量）；
 // 无掉落时返回空字符串与 0。
 func (s *Server) blockDrop(state uint16) (string, int32) {
-	name, ok := s.blockNames[state]
+	name, ok := s.blockNameOf(state)
 	if !ok {
 		return "", 0
 	}

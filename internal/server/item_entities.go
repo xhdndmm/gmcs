@@ -210,7 +210,7 @@ func moveItemAxis(w *world.World, e *itemEntity, axis int, delta float64) bool {
 
 // itemHazardAt 报告掉落物所在位置的破坏性方块（岩浆/火/灵魂火/仙人掌）。
 func (s *Server) itemHazardAt(w *world.World, x, y, z float64) bool {
-	name, ok := s.blockNames[w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z)))]
+	name, ok := s.blockNameOf(w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))))
 	if !ok {
 		return false
 	}

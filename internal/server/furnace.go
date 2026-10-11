@@ -74,7 +74,7 @@ func (s *Server) registerFurnace(dim world.Dimension, x, y, z int) *furnaceState
 	}
 	// 优先按方块名解析类型（空方块实体的 TypeID 零值会与 furnace 的 ID 0 混淆）。
 	blockState := w.BlockAt(x, y, z)
-	blockName, nameOK := s.blockNames[blockState]
+	blockName, nameOK := s.blockNameOf(blockState)
 	var typeID int32
 	if nameOK {
 		typeID, _ = registry.StaticEntryID("minecraft:block_entity_type", blockName)
