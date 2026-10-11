@@ -178,7 +178,6 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	player.openContainer = container
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
-	player.setCursor(item.Empty())
 
 	if err := player.writePacket(protocol.EncodeOpenScreen(player.windowID, def.MenuType, def.Title)); err != nil {
 		return
@@ -186,6 +185,26 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	s.sendContainerContent(player, container)
 	// 开合动画广播给附近所有玩家（包括打开者本人）。
 	s.broadcastContainerAction(container, true, nil)
+}
+
+// releaseCursor 在窗口关闭时处理光标物品：先放回物品栏，放不下则掉落到世界
+// （与原版 AbstractContainerMenu#removed 的 dropOrPlaceInInventory 一致），
+// 并把清空后的光标同步给客户端。由会话 goroutine 调用。
+func (s *Server) releaseCursor(player *session) {
+	cursor := player.getCursor()
+	if cursor.IsEmpty() {
+		return
+	}
+	player.setCursor(item.Empty())
+	player.tryWrite(protocol.EncodeSetCursorItem(item.Empty().AppendSlot(nil)))
+	remaining, changed := player.inventory.Add(cursor)
+	for _, slot := range changed {
+		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), player.inventory.Get(slot).AppendSlot(nil)))
+	}
+	if remaining > 0 {
+		cursor.Count = remaining
+		s.dropFromContainer(player, cursor)
+	}
 }
 
 // registerViewer 把玩家加入容器的观察者集合；容器已在打开状态时复用同一状态。
@@ -215,7 +234,7 @@ func (s *Server) closeContainer(player *session, sendClose bool) {
 		return
 	}
 	player.openContainer = nil
-	player.setCursor(item.Empty())
+	s.releaseCursor(player)
 	player.drag = nil
 	windowID := player.windowID
 
@@ -569,7 +588,7 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 	}
 	if cursor != player.getCursor() {
 		player.setCursor(cursor)
-		player.tryWrite(protocol.EncodeSetContainerSlot(windowID, player.windowState, -1, cursor.AppendSlot(nil)))
+		player.tryWrite(protocol.EncodeSetCursorItem(cursor.AppendSlot(nil)))
 	}
 }
 

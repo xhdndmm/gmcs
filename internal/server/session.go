@@ -1588,6 +1588,15 @@ func (s *session) setCursor(cursor item.Stack) {
 	s.stateMu.Unlock()
 }
 
+// clearCursor 清空光标并把结果同步给客户端
+func (s *session) clearCursor() {
+	if s.getCursor().IsEmpty() {
+		return
+	}
+	s.setCursor(item.Empty())
+	s.tryWrite(protocol.EncodeSetCursorItem(item.Empty().AppendSlot(nil)))
+}
+
 // setClientInfo 更新客户端信息并返回旧值（线程安全：
 // 皮肤掩码会被其他会话的生成路径读取）。
 func (s *session) setClientInfo(info protocol.ClientInformation) protocol.ClientInformation {

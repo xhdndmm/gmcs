@@ -106,7 +106,6 @@ func (s *Server) openEnderChest(player *session) {
 	player.setOpenEnder(true)
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
-	player.setCursor(item.Empty())
 
 	if err := player.writePacket(protocol.EncodeOpenScreen(player.windowID, menuType, "Ender Chest")); err != nil {
 		return
@@ -128,6 +127,7 @@ func (s *Server) closeEnderChest(player *session, sendClose bool) {
 		return
 	}
 	player.setOpenEnder(false)
+	s.releaseCursor(player)
 	if sendClose {
 		player.tryWrite(protocol.EncodeContainerClose(player.windowID))
 	}
