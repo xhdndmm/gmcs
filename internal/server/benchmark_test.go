@@ -102,3 +102,38 @@ func BenchmarkItemTick(b *testing.B) {
 		b.Fatalf("剩余掉落物 %d，期望 128（基准可能未在测量真实路径）", remaining)
 	}
 }
+
+// BenchmarkEntityInsideBlocks 衡量“实体进入方块”（压力板检测）扫描的成本：
+// 每次迭代对 32 个生物包围盒各扫描一次。场景为普通地表（无压力板），
+// 覆盖区块解析、按列批量读取与状态数组过滤的常见路径。
+func BenchmarkEntityInsideBlocks(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	spawnX, _, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	gameWorld := instance.worldFor(world.DimensionOverworld)
+	boxes := make([]world.Box, 0, 32)
+	for i := 0; i < 32; i++ {
+		x := int(math.Floor(spawnX)) + i%8
+		z := int(math.Floor(spawnZ)) + i/8
+		groundY, ok := gameWorld.GroundY(x, z)
+		if !ok {
+			b.Fatal("no ground at spawn area")
+		}
+		boxes = append(boxes, mobBox(float64(x)+0.5, float64(groundY), float64(z)+0.5))
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		for _, box := range boxes {
+			instance.entityInsideBlocks(gameWorld, world.DimensionOverworld, box)
+		}
+	}
+}

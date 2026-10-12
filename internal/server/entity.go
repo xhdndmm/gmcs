@@ -304,6 +304,7 @@ func (s *Server) tick() {
 	s.tickMobs(players)
 	s.tickArrows(players)
 	s.tickItems(players)
+	s.tickXPOrbs(players)
 	s.tickWorldTime(players)
 	s.tickFurnaces()
 	s.tickRedstone()
@@ -377,6 +378,11 @@ func (s *Server) tickMobs(players []*session) {
 		x, y, z    float64
 		yaw, pitch float32
 	}
+	type insideCheck struct {
+		dim world.Dimension
+		box world.Box
+		w   *world.World
+	}
 	var (
 		attacks    []pendingAttack
 		arrows     []pendingArrow
@@ -385,6 +391,7 @@ func (s *Server) tickMobs(players []*session) {
 		moves      []pendingMove
 		heads      []pendingMove
 		removals   []int32
+		insides    []insideCheck
 	)
 
 	s.entityMu.Lock()
@@ -544,6 +551,7 @@ func (s *Server) tickMobs(players []*session) {
 		}
 		if moved {
 			moves = append(moves, pendingMove{id: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
+			insides = append(insides, insideCheck{dim: m.Dim, box: mobBox(m.X, m.Y, m.Z), w: mobWorld})
 			if absAngleDelta(m.Yaw, m.HeadYaw) >= mobHeadYawThreshold {
 				m.HeadYaw = m.Yaw
 				heads = append(heads, pendingMove{id: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
@@ -568,6 +576,10 @@ func (s *Server) tickMobs(players []*session) {
 	packetBufferPool.Put(buf)
 	if len(removals) > 0 {
 		s.broadcastPacket(protocol.EncodeEntityDestroy(removals))
+	}
+	// 移动过的生物通知压力板（原版 Entity.checkInsideBlocks 在移动后调用）。
+	for _, inside := range insides {
+		s.entityInsideBlocks(inside.w, inside.dim, inside.box)
 	}
 	for _, prime := range priming {
 		s.broadcastPacket(protocol.EncodeEntitySoundEffect(s.soundCreeperPrime, protocol.SoundCategoryHostile, prime.mobID, 1, 1, 0))
@@ -1075,8 +1087,8 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 	if died {
 		slog.Info("mob killed", "id", m.ID, "player", player.name)
 		s.dropMobLoot(kind, dim, x, y, z)
-		bar, level, total := player.addExperience(mobKinds[kind].experience)
-		player.tryWrite(protocol.EncodeSetExperience(bar, level, total))
+		// 与原版一致：击杀经验以经验球形式掉落（玩家靠近后拾取）。
+		s.spawnXPOrbs(dim, x, y+0.5, z, mobKinds[kind].experience)
 	}
 }
 
@@ -1173,8 +1185,15 @@ func (s *Server) damagePlayerWithMessage(player *session, amount float32, source
 		}
 		s.broadcastPacket(protocol.EncodeSystemChat(message))
 		slog.Info("player died", "name", player.name, "source", sourceName)
-		// 与原版一致：死亡时掉落全部物品。
+		// 与原版一致：死亡时掉落全部物品与经验球（等级 × 7，上限 100）。
 		s.dropPlayerInventory(player)
+		if _, level, _ := player.experienceStatus(); level > 0 {
+			dropped := level * 7
+			if dropped > 100 {
+				dropped = 100
+			}
+			s.spawnXPOrbs(player.dimensionID(), px, py+0.5, pz, dropped)
+		}
 	}
 	return true
 }

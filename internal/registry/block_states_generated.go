@@ -34,6 +34,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10591, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10592, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
 	},
+	"minecraft:acacia_pressure_plate": {
+		{ID: 6668, Props: map[string]string{"powered": "true"}},
+		{ID: 6669, Props: map[string]string{"powered": "false"}},
+	},
 	"minecraft:bamboo_button": {
 		{ID: 10689, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
 		{ID: 10690, Props: map[string]string{"face": "floor", "facing": "north", "powered": "false"}},
@@ -59,6 +63,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10710, Props: map[string]string{"face": "ceiling", "facing": "west", "powered": "false"}},
 		{ID: 10711, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10712, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
+	},
+	"minecraft:bamboo_pressure_plate": {
+		{ID: 6678, Props: map[string]string{"powered": "true"}},
+		{ID: 6679, Props: map[string]string{"powered": "false"}},
 	},
 	"minecraft:birch_button": {
 		{ID: 10521, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
@@ -86,6 +94,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10543, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10544, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
 	},
+	"minecraft:birch_pressure_plate": {
+		{ID: 6664, Props: map[string]string{"powered": "true"}},
+		{ID: 6665, Props: map[string]string{"powered": "false"}},
+	},
 	"minecraft:cherry_button": {
 		{ID: 10593, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
 		{ID: 10594, Props: map[string]string{"face": "floor", "facing": "north", "powered": "false"}},
@@ -111,6 +123,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10614, Props: map[string]string{"face": "ceiling", "facing": "west", "powered": "false"}},
 		{ID: 10615, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10616, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
+	},
+	"minecraft:cherry_pressure_plate": {
+		{ID: 6670, Props: map[string]string{"powered": "true"}},
+		{ID: 6671, Props: map[string]string{"powered": "false"}},
 	},
 	"minecraft:comparator": {
 		{ID: 11061, Props: map[string]string{"facing": "north", "mode": "compare", "powered": "true"}},
@@ -156,6 +172,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 21286, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 21287, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
 	},
+	"minecraft:crimson_pressure_plate": {
+		{ID: 20844, Props: map[string]string{"powered": "true"}},
+		{ID: 20845, Props: map[string]string{"powered": "false"}},
+	},
 	"minecraft:dark_oak_button": {
 		{ID: 10617, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
 		{ID: 10618, Props: map[string]string{"face": "floor", "facing": "north", "powered": "false"}},
@@ -182,6 +202,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10639, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10640, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
 	},
+	"minecraft:dark_oak_pressure_plate": {
+		{ID: 6672, Props: map[string]string{"powered": "true"}},
+		{ID: 6673, Props: map[string]string{"powered": "false"}},
+	},
 	"minecraft:end_portal_frame": {
 		{ID: 9268, Props: map[string]string{"eye": "true", "facing": "north"}},
 		{ID: 9269, Props: map[string]string{"eye": "true", "facing": "south"}},
@@ -191,6 +215,24 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 9273, Props: map[string]string{"eye": "false", "facing": "south"}},
 		{ID: 9274, Props: map[string]string{"eye": "false", "facing": "west"}},
 		{ID: 9275, Props: map[string]string{"eye": "false", "facing": "east"}},
+	},
+	"minecraft:heavy_weighted_pressure_plate": {
+		{ID: 11045, Props: map[string]string{"power": "0"}},
+		{ID: 11046, Props: map[string]string{"power": "1"}},
+		{ID: 11047, Props: map[string]string{"power": "2"}},
+		{ID: 11048, Props: map[string]string{"power": "3"}},
+		{ID: 11049, Props: map[string]string{"power": "4"}},
+		{ID: 11050, Props: map[string]string{"power": "5"}},
+		{ID: 11051, Props: map[string]string{"power": "6"}},
+		{ID: 11052, Props: map[string]string{"power": "7"}},
+		{ID: 11053, Props: map[string]string{"power": "8"}},
+		{ID: 11054, Props: map[string]string{"power": "9"}},
+		{ID: 11055, Props: map[string]string{"power": "10"}},
+		{ID: 11056, Props: map[string]string{"power": "11"}},
+		{ID: 11057, Props: map[string]string{"power": "12"}},
+		{ID: 11058, Props: map[string]string{"power": "13"}},
+		{ID: 11059, Props: map[string]string{"power": "14"}},
+		{ID: 11060, Props: map[string]string{"power": "15"}},
 	},
 	"minecraft:jungle_button": {
 		{ID: 10545, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
@@ -218,6 +260,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10567, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10568, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
 	},
+	"minecraft:jungle_pressure_plate": {
+		{ID: 6666, Props: map[string]string{"powered": "true"}},
+		{ID: 6667, Props: map[string]string{"powered": "false"}},
+	},
 	"minecraft:lever": {
 		{ID: 6570, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
 		{ID: 6571, Props: map[string]string{"face": "floor", "facing": "north", "powered": "false"}},
@@ -243,6 +289,24 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 6591, Props: map[string]string{"face": "ceiling", "facing": "west", "powered": "false"}},
 		{ID: 6592, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 6593, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
+	},
+	"minecraft:light_weighted_pressure_plate": {
+		{ID: 11029, Props: map[string]string{"power": "0"}},
+		{ID: 11030, Props: map[string]string{"power": "1"}},
+		{ID: 11031, Props: map[string]string{"power": "2"}},
+		{ID: 11032, Props: map[string]string{"power": "3"}},
+		{ID: 11033, Props: map[string]string{"power": "4"}},
+		{ID: 11034, Props: map[string]string{"power": "5"}},
+		{ID: 11035, Props: map[string]string{"power": "6"}},
+		{ID: 11036, Props: map[string]string{"power": "7"}},
+		{ID: 11037, Props: map[string]string{"power": "8"}},
+		{ID: 11038, Props: map[string]string{"power": "9"}},
+		{ID: 11039, Props: map[string]string{"power": "10"}},
+		{ID: 11040, Props: map[string]string{"power": "11"}},
+		{ID: 11041, Props: map[string]string{"power": "12"}},
+		{ID: 11042, Props: map[string]string{"power": "13"}},
+		{ID: 11043, Props: map[string]string{"power": "14"}},
+		{ID: 11044, Props: map[string]string{"power": "15"}},
 	},
 	"minecraft:lilac": {
 		{ID: 12715, Props: map[string]string{"half": "upper"}},
@@ -274,6 +338,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10687, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10688, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
 	},
+	"minecraft:mangrove_pressure_plate": {
+		{ID: 6676, Props: map[string]string{"powered": "true"}},
+		{ID: 6677, Props: map[string]string{"powered": "false"}},
+	},
 	"minecraft:nether_portal": {
 		{ID: 6816, Props: map[string]string{"axis": "x"}},
 		{ID: 6817, Props: map[string]string{"axis": "z"}},
@@ -303,6 +371,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10494, Props: map[string]string{"face": "ceiling", "facing": "west", "powered": "false"}},
 		{ID: 10495, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10496, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
+	},
+	"minecraft:oak_pressure_plate": {
+		{ID: 6660, Props: map[string]string{"powered": "true"}},
+		{ID: 6661, Props: map[string]string{"powered": "false"}},
 	},
 	"minecraft:observer": {
 		{ID: 14650, Props: map[string]string{"facing": "north", "powered": "true"}},
@@ -343,6 +415,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10662, Props: map[string]string{"face": "ceiling", "facing": "west", "powered": "false"}},
 		{ID: 10663, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10664, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
+	},
+	"minecraft:pale_oak_pressure_plate": {
+		{ID: 6674, Props: map[string]string{"powered": "true"}},
+		{ID: 6675, Props: map[string]string{"powered": "false"}},
 	},
 	"minecraft:peony": {
 		{ID: 12719, Props: map[string]string{"half": "upper"}},
@@ -413,6 +489,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 22564, Props: map[string]string{"face": "ceiling", "facing": "west", "powered": "false"}},
 		{ID: 22565, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 22566, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
+	},
+	"minecraft:polished_blackstone_pressure_plate": {
+		{ID: 22541, Props: map[string]string{"powered": "true"}},
+		{ID: 22542, Props: map[string]string{"powered": "false"}},
 	},
 	"minecraft:redstone_block": {
 		{ID: 11109, Props: map[string]string{}},
@@ -1829,6 +1909,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 10519, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 10520, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
 	},
+	"minecraft:spruce_pressure_plate": {
+		{ID: 6662, Props: map[string]string{"powered": "true"}},
+		{ID: 6663, Props: map[string]string{"powered": "false"}},
+	},
 	"minecraft:sticky_piston": {
 		{ID: 2035, Props: map[string]string{"extended": "true", "facing": "north"}},
 		{ID: 2036, Props: map[string]string{"extended": "true", "facing": "east"}},
@@ -1869,6 +1953,10 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 6716, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 6717, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
 	},
+	"minecraft:stone_pressure_plate": {
+		{ID: 6594, Props: map[string]string{"powered": "true"}},
+		{ID: 6595, Props: map[string]string{"powered": "false"}},
+	},
 	"minecraft:sunflower": {
 		{ID: 12713, Props: map[string]string{"half": "upper"}},
 		{ID: 12714, Props: map[string]string{"half": "lower"}},
@@ -1898,5 +1986,9 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 21309, Props: map[string]string{"face": "ceiling", "facing": "west", "powered": "false"}},
 		{ID: 21310, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "true"}},
 		{ID: 21311, Props: map[string]string{"face": "ceiling", "facing": "east", "powered": "false"}},
+	},
+	"minecraft:warped_pressure_plate": {
+		{ID: 20846, Props: map[string]string{"powered": "true"}},
+		{ID: 20847, Props: map[string]string{"powered": "false"}},
 	},
 }

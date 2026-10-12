@@ -129,6 +129,15 @@ type Server struct {
 	soundItemPickup int32
 	itemsEnabled    bool
 
+	// 经验球系统（注册表缺少经验球实体类型时禁用）；xpOrbs 受 entityMu 保护。
+	xpOrbTypeID   int32
+	xpOrbsEnabled bool
+	xpOrbs        map[int32]*xpOrb
+
+	// 压力板点击音效（按木质/石质/金属分组；缺失时播放时静默跳过）。
+	plateClickOn  [plateSoundGroups]int32
+	plateClickOff [plateSoundGroups]int32
+
 	// 容器系统：containerDefs 是方块名 → 容器定义（注册表数据缺失时为空）；
 	// 红石：计划刻表、火把熔断统计与 tick 计数（均受 redstoneMu 保护）。
 	redstoneMu        sync.Mutex
@@ -338,6 +347,7 @@ func New(cfg config.Config) (*Server, error) {
 		keepAliveInterval:      defaultKeepAliveInterval,
 		mobs:                   make(map[int32]*mob),
 		items:                  make(map[int32]*itemEntity),
+		xpOrbs:                 make(map[int32]*xpOrb),
 		tickInterval:           defaultTickInterval,
 		chunkUnloadInterval:    defaultChunkUnloadInterval,
 		unloadNow:              make(chan struct{}, 1),
@@ -357,6 +367,8 @@ func New(cfg config.Config) (*Server, error) {
 	server.resolveMobRegistryIDs()
 	server.resolvePlayerEntityType()
 	server.resolveItemRegistryIDs()
+	server.resolveXPOrbRegistryIDs()
+	server.resolvePlateSounds()
 	server.resolveFallDamageBlocks()
 	server.resolveContainerDefs()
 	server.initFurnaceKinds()
@@ -374,6 +386,9 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	if !server.itemsEnabled {
 		slog.Warn("掉落物系统已禁用：注册表数据缺失")
+	}
+	if !server.xpOrbsEnabled {
+		slog.Warn("经验球系统已禁用：注册表数据缺失")
 	}
 	// 恢复上次保存的生物与掉落物（各维度的 entities.json；不存在时不做任何事）。
 	// 下界/末地在对应维度第一次被访问时加载（见 worldFor/ensureEntitiesLoaded）。

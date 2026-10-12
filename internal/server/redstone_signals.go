@@ -120,7 +120,11 @@ func isSignalSourceName(name string) bool {
 		repeaterName, comparatorName, observerName:
 		return true
 	}
-	return buttonNames[name]
+	if buttonNames[name] {
+		return true
+	}
+	_, isPlate := plateInfos[name]
+	return isPlate
 }
 
 // buttonNames 是全部按钮方块名（用于信号源判定与按下状态处理）。
@@ -235,6 +239,11 @@ func (s *Server) blockOwnSignal(w *world.World, pos [3]int, state uint16, dir st
 		}
 		return 0
 	}
+	// 压力板：向所有方向发射自身信号（原版 BasePressurePlateBlock.getSignal：
+	// 轻型 powered ? 15 : 0；加权 power 属性值）。
+	if info, ok := plateInfos[name]; ok {
+		return plateSignalOfProps(info, props)
+	}
 	return 0
 }
 
@@ -260,6 +269,10 @@ func (s *Server) blockDirectSignal(w *world.World, pos [3]int, state uint16, dir
 	case name == repeaterName || name == comparatorName || name == observerName:
 		// 原版二极管/侦测器的 getDirectSignal 委托 getSignal。
 		return s.blockOwnSignal(w, pos, state, dir)
+	}
+	// 压力板：仅向上提供 direct signal（弱充能下方方块）。
+	if info, ok := plateInfos[name]; ok && dir == "up" {
+		return plateSignalOfProps(info, props)
 	}
 	return 0
 }

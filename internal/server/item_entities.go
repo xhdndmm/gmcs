@@ -291,11 +291,17 @@ func (s *Server) tickItems(players []*session) {
 		packet []byte
 		x, z   float64
 	}
+	type insideCheck struct {
+		dim world.Dimension
+		box world.Box
+		w   *world.World
+	}
 	var (
 		moves    []itemMove
 		removals []int32
 		updates  [][]byte
 		pickups  []itemPickup
+		insides  []insideCheck
 	)
 
 	s.entityMu.Lock()
@@ -383,6 +389,8 @@ func (s *Server) tickItems(players []*session) {
 				x:      e.X,
 				z:      e.Z,
 			})
+			// 移动到新位置：通知实体进入方块（压力板）。
+			insides = append(insides, insideCheck{dim: e.Dim, box: itemBoxAt(e.X, e.Y, e.Z), w: w})
 		}
 	}
 	// 拾取检查：每个存活玩家一帧内可拾取多个掉落物（仅同维度）。
@@ -430,6 +438,10 @@ func (s *Server) tickItems(players []*session) {
 
 	for _, move := range moves {
 		s.broadcastToNearby(move.dim, move.packet, move.x, move.z, players)
+	}
+	// 移动过的掉落物通知压力板（与原版 Entity.checkInsideBlocks 一致）。
+	for _, inside := range insides {
+		s.entityInsideBlocks(inside.w, inside.dim, inside.box)
 	}
 	for _, packet := range updates {
 		s.broadcastPacket(packet)

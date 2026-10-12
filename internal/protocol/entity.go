@@ -185,6 +185,10 @@ func EncodeEntityDestroy(ids []int32) []byte {
 // 元数据索引（基类实体占用 0–7；见 wiki 的实体元数据表）。
 const EntityMetadataItemStackIndex = 8
 
+// EntityMetadataXPValueIndex 是经验球（minecraft:experience_orb）Data Value
+// 字段的元数据索引（基类实体占用 0–7，经验球只定义这一个字段，因此也是 8）。
+const EntityMetadataXPValueIndex = 8
+
 // EncodeEntityMetadataItem 编码 Set Entity Data 包，设置物品实体的
 // Item 字段（槽位数据由 item.Stack.AppendSlot 编码；元数据类型 7 = item_stack）。
 func EncodeEntityMetadataItem(id int32, slotData []byte) []byte {

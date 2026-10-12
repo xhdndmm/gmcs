@@ -241,6 +241,10 @@ func (s *Server) fireRedstoneTick(key containerKey) {
 		s.tickButton(w, key.dim, pos, state)
 	case isLampState(state):
 		s.tickLamp(w, key.dim, pos, state)
+	default:
+		if _, ok := plateStateTable[state]; ok {
+			s.tickPressurePlate(w, key.dim, pos, state)
+		}
 	}
 }
 

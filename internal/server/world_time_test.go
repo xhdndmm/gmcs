@@ -109,7 +109,20 @@ func TestMobKillRewardsExperience(t *testing.T) {
 		return mob.Dead
 	}, "mob should be dead")
 
-	// 经验条：总经验 = 僵尸经验值。
+	// 击杀经验以经验球形式掉落（与原版一致）：经验球总价值 = 僵尸经验值
+	// （原版拆分表会把 5 点经验拆成 3+1+1 三个球，可合并）。
+	waitFor(t, func() bool {
+		instance.entityMu.Lock()
+		defer instance.entityMu.Unlock()
+		total := int32(0)
+		for _, orb := range instance.xpOrbs {
+			total += orb.Value * orb.Count
+		}
+		return total == mobKinds[mobZombie].experience
+	}, "mob kill should drop experience orbs")
+
+	// 玩家在经验球附近：下一帧拾取并同步经验条（Set Experience）。
+	instance.tick()
 	payload := expectPlayPacket(t, conn, protocol.PlayPacketIDSetExperience)
 	_, offset, err := protocol.DecodeVarInt(payload) // 跳过包 ID
 	if err != nil {
@@ -129,6 +142,13 @@ func TestMobKillRewardsExperience(t *testing.T) {
 	}
 	if total != mobKinds[mobZombie].experience || level != 0 {
 		t.Fatalf("experience total/level = %d/%d, want %d/0", total, level, mobKinds[mobZombie].experience)
+	}
+	// 拾取后经验球移除。
+	instance.entityMu.Lock()
+	orbs := len(instance.xpOrbs)
+	instance.entityMu.Unlock()
+	if orbs != 0 {
+		t.Fatalf("经验球未被拾取：remaining = %d", orbs)
 	}
 
 	// 掉落物：腐肉数量 0–2（外加可能的稀有掉落）。

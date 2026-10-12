@@ -260,6 +260,10 @@ func (s *session) setPlayerPosition(x, y, z float64, yaw, pitch float32) {
 	s.stateMu.Lock()
 	s.posX, s.posY, s.posZ, s.yaw, s.pitch = x, y, z, yaw, pitch
 	s.stateMu.Unlock()
+	// 玩家进入方块（压力板）：与原版实体移动后调用 checkInsideBlocks 一致。
+	if s.server != nil {
+		s.server.entityInsideBlocks(s.playerWorld(), s.dimensionID(), playerBox(x, y, z))
+	}
 }
 
 // setPlayerRotation 更新朝向。
