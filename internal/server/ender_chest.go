@@ -99,6 +99,12 @@ func (s *Server) openEnderChest(player *session) {
 	if player.getOpenCraft() != nil {
 		s.closeCrafting(player, false)
 	}
+	if player.getStonecutter() != nil {
+		s.closeStonecutter(player, false)
+	}
+	if player.getSmithing() != nil {
+		s.closeSmithing(player, false)
+	}
 	menuType, ok := registry.StaticEntryID("minecraft:menu", "minecraft:generic_9x3")
 	if !ok {
 		menuType = protocol.MenuTypeGeneric9x3

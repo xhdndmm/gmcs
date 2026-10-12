@@ -220,8 +220,9 @@ func main() {
 	if err := writeRecipes(filepath.Dir(*outPath), *version, recipeTables); err != nil {
 		fatal("写入配方表：%v", err)
 	}
-	fmt.Printf("已生成配方表（有序 %d、无序 %d、烹饪 %d）\n",
-		len(recipeTables.shaped), len(recipeTables.shapeless), len(recipeTables.cooking))
+	fmt.Printf("已生成配方表（有序 %d、无序 %d、烹饪 %d、切石机 %d、锻造 %d）\n",
+		len(recipeTables.shaped), len(recipeTables.shapeless), len(recipeTables.cooking),
+		len(recipeTables.stonecutting), len(recipeTables.smithing))
 	if *itemsPath != "" {
 		foods, stackSizes, err := loadItemComponents(*itemsPath)
 		if err != nil {

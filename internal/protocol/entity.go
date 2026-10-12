@@ -211,6 +211,17 @@ func EncodeEntityMetadataByte(id int32, index uint8, value byte) []byte {
 	return append(packet, 0xFF) // 元数据数组结束标记
 }
 
+// EncodeEntityMetadataVarInt 编码 Set Entity Data 包，设置单个 VarInt 元数据
+// 字段（元数据类型 1 = varint）；用于玩家的氧气值（索引 1）。
+func EncodeEntityMetadataVarInt(id int32, index uint8, value int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDEntityMetadata))
+	packet = AppendVarInt(packet, id)
+	packet = append(packet, index)
+	packet = AppendVarInt(packet, 1) // 元数据类型：varint
+	packet = AppendVarInt(packet, value)
+	return append(packet, 0xFF) // 元数据数组结束标记
+}
+
 // EncodeEntityMetadataSkinParts 编码 Set Entity Data 包，设置玩家的皮肤层
 // 显示掩码（与 Client Information 的 Displayed Skin Parts 一致）。
 func EncodeEntityMetadataSkinParts(id int32, parts uint8) []byte {

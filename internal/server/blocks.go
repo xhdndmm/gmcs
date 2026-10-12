@@ -174,6 +174,15 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 			s.openCraftingTable(player)
 			return
 		}
+		// 右键切石机/锻造台：打开对应窗口。
+		if hasName && name == "minecraft:stonecutter" {
+			s.openStonecutter(player)
+			return
+		}
+		if hasName && name == "minecraft:smithing_table" {
+			s.openSmithing(player)
+			return
+		}
 		// 右键末影箱：打开玩家自己的末影箱（内容随玩家）。
 		if hasName && name == "minecraft:ender_chest" {
 			s.openEnderChest(player)

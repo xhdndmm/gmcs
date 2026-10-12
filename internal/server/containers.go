@@ -150,6 +150,12 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	if player.getOpenCraft() != nil {
 		s.closeCrafting(player, false)
 	}
+	if player.getStonecutter() != nil {
+		s.closeStonecutter(player, false)
+	}
+	if player.getSmithing() != nil {
+		s.closeSmithing(player, false)
+	}
 
 	dim := player.dimensionID()
 	state, err := s.worldFor(dim).BlockEntityAt(x, y, z)
@@ -526,6 +532,12 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 	case player.getOpenEnder() && click.WindowID == player.windowID:
 		backing = enderSlotBacking{player: player}
 		windowID = player.windowID
+	case player.getStonecutter() != nil && click.WindowID == player.windowID:
+		backing = stonecutterSlotBacking{player: player, state: player.getStonecutter()}
+		windowID = player.windowID
+	case player.getSmithing() != nil && click.WindowID == player.windowID:
+		backing = smithingSlotBacking{player: player, state: player.getSmithing()}
+		windowID = player.windowID
 	case player.openContainer != nil && click.WindowID == player.windowID:
 		container := player.openContainer
 		// 容器方块已被破坏：清理窗口状态（内容已掉落）。
@@ -572,11 +584,31 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 			break
 		}
 		cursor = s.applyContainerClick(player, backing, working, cursor, click)
+	case click.Slot == stonecutterResultSlot:
+		if stonecutter, ok := backing.(stonecutterSlotBacking); ok {
+			cursor = s.stonecutterResultClick(player, stonecutter, working, cursor, click)
+			break
+		}
+		cursor = s.applyContainerClick(player, backing, working, cursor, click)
+	case click.Slot == smithingResultSlot:
+		if smithing, ok := backing.(smithingSlotBacking); ok {
+			cursor = s.smithingResultClick(player, smithing, working, cursor, click)
+			break
+		}
+		cursor = s.applyContainerClick(player, backing, working, cursor, click)
 	default:
 		cursor = s.applyContainerClick(player, backing, working, cursor, click)
 	}
 	if craft, ok := backing.(craftSlotBacking); ok {
 		working[0] = craft.resultOf(working) // 结果槽随合成格刷新
+	}
+	if stonecutter, ok := backing.(stonecutterSlotBacking); ok {
+		// 输入变化后刷新选中配方与结果槽。
+		stonecutter.state.setInput(working[stonecutterInputSlot])
+		working[stonecutterResultSlot] = stonecutter.state.resultStack()
+	}
+	if smithing, ok := backing.(smithingSlotBacking); ok {
+		working[smithingResultSlot] = smithing.state.resultStack()
 	}
 
 	player.windowState++
@@ -676,6 +708,10 @@ func swapHotbarIndex(backing slotBacking, hotbar int) int {
 		return 30 + hotbar
 	case enderSlotBacking:
 		return enderChestSlots + 27 + hotbar
+	case stonecutterSlotBacking:
+		return 2 + 27 + hotbar
+	case smithingSlotBacking:
+		return 4 + 27 + hotbar
 	}
 	return -1
 }
@@ -958,6 +994,32 @@ func quickMoveTargets(backing slotBacking, slot int) [][2]int {
 			return [][2]int{{37, 46}}
 		case slot >= 37 && slot <= 45: // 快捷栏 → 主背包
 			return [][2]int{{10, 37}}
+		}
+	case stonecutterSlotBacking:
+		if slot == stonecutterResultSlot {
+			return nil // 结果槽由专用路径处理
+		}
+		if slot == stonecutterInputSlot {
+			return [][2]int{{2, 29}, {29, 38}} // 输入 → 背包
+		}
+		switch {
+		case slot >= 2 && slot <= 28: // 主背包 → 快捷栏
+			return [][2]int{{29, 38}}
+		case slot >= 29 && slot <= 37: // 快捷栏 → 主背包
+			return [][2]int{{2, 29}}
+		}
+	case smithingSlotBacking:
+		if slot == smithingResultSlot {
+			return nil
+		}
+		if slot >= smithingTemplateSlot && slot <= smithingAdditionSlot {
+			return [][2]int{{4, 31}, {31, 40}}
+		}
+		switch {
+		case slot >= 4 && slot <= 30: // 主背包 → 快捷栏
+			return [][2]int{{31, 40}}
+		case slot >= 31 && slot <= 39: // 快捷栏 → 主背包
+			return [][2]int{{4, 31}}
 		}
 	}
 	return nil

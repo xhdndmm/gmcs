@@ -97,9 +97,14 @@ type Server struct {
 	fallDamageTypeID         int32
 	arrowDamageTypeID        int32
 	explosionDamageTypeID    int32
-	soundMobHurt             int32
-	soundMobDeath            int32
-	soundPlayerHurt          int32
+	// 环境伤害（岩浆/着火/溺水/岩浆块）。
+	lavaDamageTypeID     int32
+	fireDamageTypeID     int32
+	drownDamageTypeID    int32
+	hotFloorDamageTypeID int32
+	soundMobHurt         int32
+	soundMobDeath        int32
+	soundPlayerHurt      int32
 
 	// 箭矢系统（骷髅的远程攻击；与生物系统一同启用/禁用）。
 	arrowTypeID        int32
@@ -145,6 +150,9 @@ type Server struct {
 
 	// fallDamageMultipliers 是落点方块的摔落伤害倍率（New 中解析）。
 	fallDamageMultipliers map[uint16]float32
+
+	// recipeBook 是启动时构建的配方书共享数据（注册表缺失时为 nil）。
+	recipeBook *recipeBook
 
 	// 配置阶段共享的预编码数据包（内容与玩家无关，只读共享）。
 	registryPackets [][]byte
@@ -352,6 +360,7 @@ func New(cfg config.Config) (*Server, error) {
 	server.resolveFallDamageBlocks()
 	server.resolveContainerDefs()
 	server.initFurnaceKinds()
+	server.buildRecipeBook()
 	server.furnaces = make(map[containerKey]*furnaceState)
 	bucketItemID, bucketLavaItemID = initFurnaceItems()
 	if server.registryPackets, server.tagsPacket, err = buildRegistryPackets(); err != nil {

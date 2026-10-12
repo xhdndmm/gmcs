@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"log/slog"
 	"math"
 	"time"
@@ -93,10 +94,14 @@ const (
 	mobMoveBroadcastRange = 64
 	// mobStuckTicks 是追击/游荡被挡住多少次后触发随机侧移（简单避障）。
 	mobStuckTicks = 40
+	// mobPathRefreshTicks 是 A* 寻路路径的重算间隔（tick）。
+	mobPathRefreshTicks = 10
 	// mobSideStep 是避障侧移的步长（方块）。
 	mobSideStep = 0.4
 	// mobHeadYawThreshold 是发送 Rotate Head 的最小转角（度）。
 	mobHeadYawThreshold = 20
+	// mobMaxFall 是生物单步允许的最大下落格数（与寻路的 MaxFall 一致）。
+	mobMaxFall = 3.0
 
 	// 世界时间：24000 tick 为一天（20 分钟）；怪物只在夜间生成。
 	// worldNightStart/worldNightEnd 是夜晚的 tick 区间（与原版一致）。
@@ -224,6 +229,14 @@ type mob struct {
 	HurtCooldown int
 	// StuckTicks 记录被挡住而无法移动的 tick 数（触发侧移避障）。
 	StuckTicks int
+	// Path/PathStep/PathGoalX/PathGoalZ 是 A* 寻路状态：路径跟随到完成为止；
+	// 目标移动超过 2 格（或路径与地形不符）时重算。
+	Path      []world.PathNode
+	PathStep  int
+	PathGoalX float64
+	PathGoalZ float64
+	// PathCooldown 是 A* 搜索失败后的重试冷却（避免对不可达目标每 tick 搜索）。
+	PathCooldown int
 	// WanderX/WanderZ 是游荡目标；WanderTicks 归零时重新选择。
 	WanderX, WanderZ float64
 	WanderTicks      int
@@ -287,6 +300,7 @@ func (s *Server) playerSnapshot() []*session {
 func (s *Server) tick() {
 	players := s.playerSnapshot()
 	s.tickHunger(players)
+	s.tickPlayerEnvironment(players)
 	s.tickMobs(players)
 	s.tickArrows(players)
 	s.tickItems(players)
@@ -456,7 +470,7 @@ func (s *Server) tickMobs(players []*session) {
 					moved = s.moveMobAway(mobWorld, m, px, pz, stats.walkSpeed)
 				default:
 					attemptedMove = true
-					moved = s.moveMobToward(mobWorld, m, px, pz, stats.walkSpeed)
+					moved = s.navigateMob(mobWorld, m, px, py, pz, stats.walkSpeed)
 				}
 			case mobCreeper:
 				clear := nearestDistance <= creeperResetRange && math.Abs(py-m.Y) < 3 &&
@@ -477,7 +491,7 @@ func (s *Server) tickMobs(players []*session) {
 				} else {
 					m.Fuse = 0
 					attemptedMove = true
-					moved = s.moveMobToward(mobWorld, m, px, pz, stats.walkSpeed)
+					moved = s.navigateMob(mobWorld, m, px, py, pz, stats.walkSpeed)
 				}
 			default:
 				// 僵尸/蜘蛛：抬手近战。
@@ -496,7 +510,7 @@ func (s *Server) tickMobs(players []*session) {
 					})
 				} else if !clear {
 					attemptedMove = true
-					moved = s.moveMobToward(mobWorld, m, px, pz, stats.walkSpeed)
+					moved = s.navigateMob(mobWorld, m, px, py, pz, stats.walkSpeed)
 				}
 			}
 		} else {
@@ -508,7 +522,7 @@ func (s *Server) tickMobs(players []*session) {
 				m.WanderZ = m.Z + math.Sin(angle)*6
 			}
 			attemptedMove = true
-			moved = s.moveMobToward(mobWorld, m, m.WanderX, m.WanderZ, mobWanderSpeed)
+			moved = s.navigateMob(mobWorld, m, m.WanderX, m.Y, m.WanderZ, mobWanderSpeed)
 		}
 
 		if moved {
@@ -634,8 +648,67 @@ func (s *Server) moveMobToward(w *world.World, m *mob, targetX, targetZ, speed f
 	return move(stepX, 0) || move(0, stepZ)
 }
 
-// tryMoveMob 尝试把生物移动到指定位置：校验边界、水面与地面高度差，
-// 成功时更新位置。调用方必须持有 entityMu。
+// navigateMob 让生物朝目标位置移动一步：开阔地形直接直线移动（与旧行为
+// 一致且无需寻路开销），直线受阻时计算并沿 A* 路径行走（绕障、上跳 1 格、
+// 下落 ≤3 格）。有路径时只沿路径走（否则障碍边缘的直线回退会造成振荡）。
+// targetY 仅在目标列不可站立（如玩家悬空）时作为到达判定的参考高度。
+// 调用方必须持有 entityMu。
+func (s *Server) navigateMob(w *world.World, m *mob, targetX, targetY, targetZ, speed float64) bool {
+	if m.PathCooldown > 0 {
+		m.PathCooldown--
+	}
+	// 1) 沿活动路径前进；目标移动超过 2 格或路径走完/失效时丢弃。
+	if m.Path != nil {
+		if math.Abs(m.PathGoalX-targetX) > 2 || math.Abs(m.PathGoalZ-targetZ) > 2 {
+			m.Path = nil
+			m.PathStep = 0
+		} else if s.followMobPath(w, m, speed) {
+			return true
+		} else {
+			m.Path = nil
+			m.PathStep = 0
+		}
+	}
+	// 2) 无路径：先直线移动（开阔地形最常见，无寻路开销）。
+	if s.moveMobToward(w, m, targetX, targetZ, speed) {
+		return true
+	}
+	// 3) 直线受阻：按冷却重算 A* 并沿新路径走一步。
+	if m.PathCooldown > 0 {
+		return false
+	}
+	m.PathCooldown = mobPathRefreshTicks
+	from := world.PathNode{X: int(math.Floor(m.X)), Y: int(math.Floor(m.Y + 0.5)), Z: int(math.Floor(m.Z))}
+	goal := world.PathNode{X: int(math.Floor(targetX)), Y: int(math.Floor(targetY + 0.5)), Z: int(math.Floor(targetZ))}
+	m.Path = world.FindPath(world.SurfacePathGrid(w), from, goal, world.DefaultPathLimits())
+	m.PathStep = 0
+	if len(m.Path) == 0 {
+		m.Path = nil
+		return false
+	}
+	m.PathGoalX, m.PathGoalZ = targetX, targetZ
+	return s.followMobPath(w, m, speed)
+}
+
+// followMobPath 沿 m.Path 前进一步：到达当前节点附近时前进到下一个节点；
+// 移动失败（路径与地形不符）或路径走完时返回 false。
+// 调用方必须持有 entityMu。
+func (s *Server) followMobPath(w *world.World, m *mob, speed float64) bool {
+	for m.PathStep < len(m.Path) {
+		node := m.Path[m.PathStep]
+		centerX, centerZ := float64(node.X)+0.5, float64(node.Z)+0.5
+		if math.Hypot(centerX-m.X, centerZ-m.Z) <= 0.3 {
+			m.PathStep++
+			continue
+		}
+		return s.moveMobToward(w, m, centerX, centerZ, speed)
+	}
+	return false
+}
+
+// tryMoveMob 尝试把生物移动到指定位置：校验边界、水面与地面高度差
+// （允许上跳 1 格、下落最多 3 格），成功时更新位置。
+// 调用方必须持有 entityMu。
 func (s *Server) tryMoveMob(w *world.World, m *mob, newX, newZ float64) bool {
 	if !s.insideBorder(newX, newZ) {
 		return false
@@ -646,7 +719,8 @@ func (s *Server) tryMoveMob(w *world.World, m *mob, newX, newZ float64) bool {
 		return false
 	}
 	groundY := float64(column.SolidY + 1)
-	if math.Abs(groundY-m.Y) > 1.1 {
+	delta := groundY - m.Y
+	if delta > 1.1 || delta < -mobMaxFall {
 		return false
 	}
 	m.X, m.Y, m.Z = newX, groundY, newZ
@@ -1072,6 +1146,13 @@ func (s *Server) dropMobLoot(kind mobKind, dim world.Dimension, x, y, z float64)
 // 濒死时广播死亡消息。damageTypeID 是伤害类型注册表同步 ID（如
 // mob_attack/player_attack/fall）。返回伤害是否实际生效。
 func (s *Server) damagePlayer(player *session, amount float32, sourceName string, sourceMobID, damageTypeID int32, sourcePosition *[3]float64) bool {
+	return s.damagePlayerWithMessage(player, amount, sourceName, sourceMobID, damageTypeID, sourcePosition, "")
+}
+
+// damagePlayerWithMessage 与 damagePlayer 相同，但可用 deathTemplate 覆盖
+// 默认死亡消息（“<玩家> was slain by <来源>”）。deathTemplate 使用 fmt 的
+// 单个 %s 占位玩家名，如 "%s tried to swim in lava"。
+func (s *Server) damagePlayerWithMessage(player *session, amount float32, sourceName string, sourceMobID, damageTypeID int32, sourcePosition *[3]float64, deathTemplate string) bool {
 	health, food, saturation, applied, died := player.applyDamage(amount, time.Now())
 	if !applied {
 		return false
@@ -1086,7 +1167,11 @@ func (s *Server) damagePlayer(player *session, amount float32, sourceName string
 	player.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))
 	player.tryWrite(protocol.EncodeSoundEffect(s.soundPlayerHurt, protocol.SoundCategoryPlayer, px, py, pz, 1, 1, 0))
 	if died {
-		s.broadcastPacket(protocol.EncodeSystemChat(player.name + " was slain by " + sourceName))
+		message := player.name + " was slain by " + sourceName
+		if deathTemplate != "" {
+			message = fmt.Sprintf(deathTemplate, player.name)
+		}
+		s.broadcastPacket(protocol.EncodeSystemChat(message))
 		slog.Info("player died", "name", player.name, "source", sourceName)
 		// 与原版一致：死亡时掉落全部物品。
 		s.dropPlayerInventory(player)
@@ -1241,6 +1326,10 @@ func (s *Server) resolveMobRegistryIDs() {
 		{"minecraft:damage_type", "minecraft:fall", &s.fallDamageTypeID},
 		{"minecraft:damage_type", "minecraft:arrow", &s.arrowDamageTypeID},
 		{"minecraft:damage_type", "minecraft:explosion", &s.explosionDamageTypeID},
+		{"minecraft:damage_type", "minecraft:lava", &s.lavaDamageTypeID},
+		{"minecraft:damage_type", "minecraft:on_fire", &s.fireDamageTypeID},
+		{"minecraft:damage_type", "minecraft:drown", &s.drownDamageTypeID},
+		{"minecraft:damage_type", "minecraft:hot_floor", &s.hotFloorDamageTypeID},
 	} {
 		id, ok := syncLookup(item.registry, item.entry)
 		if !ok {

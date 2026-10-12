@@ -100,6 +100,12 @@ type session struct {
 	// （随物品栏生命周期），openCraft 为工作台 3×3 格（随窗口生命周期）。
 	invCraft  *craftingState
 	openCraft *craftingState
+	// stonecutter / smithing 是切石机与锻造台窗口的临时状态（随窗口生命周期）。
+	stonecutter *stonecutterState
+	smithing    *smithingState
+	// recipeBookOpen/Filtering 记录客户端上报的配方书开关与过滤状态（仅记录）。
+	recipeBookOpen      [4]bool
+	recipeBookFiltering [4]bool
 	// enderChest 是玩家的末影箱内容（按玩家独立存储，随玩家数据持久化）。
 	enderChest enderChestStorage
 	// openEnder 标记末影箱窗口是否打开。
@@ -149,6 +155,15 @@ type session struct {
 	// airRise 是本次腾空累计上升（方块）：悬空上升限制（防飞行）用，
 	// 落地/入水时清零。
 	airRise float64
+
+	// 环境效果状态（仅由服务器 Tick goroutine 访问）：
+	// fireTicks 是剩余着火 tick（岩浆点燃 15 秒；每秒 1 点火焰伤害）；
+	// air 是剩余氧气（300 = 满，头部浸水时下降，低于 -20 后每秒 2 点溺水伤害）；
+	// envFireSynced/envAirSynced 记录最近同步给客户端的着火/氧气值，避免重复发送。
+	fireTicks     int
+	air           int
+	envFireSynced bool
+	envAirSynced  int
 
 	// 高频包限流（令牌桶，仅读循环访问）：聊天/命令与移动都会转发给
 	// 其他玩家，防止单客户端包洪泛放大广播成本。
@@ -208,6 +223,8 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		saturation:      playerSaturation,
 		gameMode:        server.defaultGameMode,
 		dimension:       world.DimensionOverworld,
+		air:             maxPlayerAir,
+		envAirSynced:    maxPlayerAir,
 		sentChunks:      make(map[world.ChunkPos]struct{}),
 	}
 }
@@ -1224,6 +1241,16 @@ func (s *session) runPlay() {
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
 	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
 	packets = append(packets, protocol.EncodeDeclareCommands(s.server.serverCommands(s)))
+	// 配方书：声明全部配方并下发显示条目（内容与玩家无关，预编码共享）。
+	if s.server.recipeBook != nil {
+		packets = append(packets,
+			s.server.recipeBook.updateRecipes,
+			s.server.recipeBook.addPacket,
+			protocol.EncodeRecipeBookSettings(
+				protocol.RecipeBookSetting{}, protocol.RecipeBookSetting{},
+				protocol.RecipeBookSetting{}, protocol.RecipeBookSetting{}),
+		)
+	}
 	if !restored {
 		// 仅新玩家发放初始物品；恢复的玩家沿用其已保存的物品栏。
 		s.giveStartingItems()
@@ -1269,6 +1296,8 @@ func (s *session) runPlay() {
 	// 会话结束：保存并关闭可能仍打开的容器/合成窗口。
 	s.server.closeContainer(s, false)
 	s.server.closeCrafting(s, false)
+	s.server.closeStonecutter(s, false)
+	s.server.closeSmithing(s, false)
 	s.server.closeEnderChest(s, false)
 	s.server.returnInventoryCraft(s)
 	s.server.auditLog("leave", "player", s.name, "uuid", uuidString(s.uuid))
@@ -1485,6 +1514,29 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.server.handleContainerClick(s, click)
+		case protocol.PlayServerboundPacketIDContainerButtonClick:
+			// 容器按钮（切石机选择配方等）。
+			windowID, buttonID, err := protocol.ParseContainerButtonClick(packet)
+			if err != nil {
+				continue
+			}
+			if s.getStonecutter() != nil && windowID == s.windowID {
+				s.server.handleStonecutterButton(s, buttonID)
+			}
+		case protocol.PlayServerboundPacketIDPlaceRecipe:
+			windowID, displayID, makeAll, err := protocol.ParsePlaceRecipe(packet)
+			if err != nil {
+				continue
+			}
+			s.server.handlePlaceRecipe(s, windowID, displayID, makeAll)
+		case protocol.PlayServerboundPacketIDRecipeBookChangeSettings:
+			// 配方书开关/过滤设置：客户端 UI 偏好，服务端仅记录。
+			if bookID, open, filtering, err := protocol.ParseRecipeBookChangeSettings(packet); err == nil {
+				s.setRecipeBookSettings(bookID, open, filtering)
+			}
+		case protocol.PlayServerboundPacketIDRecipeBookSeenRecipe:
+			// 查看记录（原版用于取消高亮）；本实现统一不高亮，忽略。
+			_ = packet
 		case protocol.PlayServerboundPacketIDContainerClose:
 			windowID, err := protocol.ParseContainerClose(packet)
 			if err != nil {
@@ -1495,6 +1547,12 @@ func (s *session) playReadLoop() {
 			}
 			if s.getOpenCraft() != nil && windowID == s.windowID {
 				s.server.closeCrafting(s, false)
+			}
+			if s.getStonecutter() != nil && windowID == s.windowID {
+				s.server.closeStonecutter(s, false)
+			}
+			if s.getSmithing() != nil && windowID == s.windowID {
+				s.server.closeSmithing(s, false)
 			}
 			if s.getOpenEnder() && windowID == s.windowID {
 				s.server.closeEnderChest(s, false)
@@ -1538,6 +1596,48 @@ func (s *session) getOpenCraft() *craftingState {
 func (s *session) setOpenCraft(state *craftingState) {
 	s.stateMu.Lock()
 	s.openCraft = state
+	s.stateMu.Unlock()
+}
+
+// getStonecutter 返回打开的切石机状态（线程安全）。
+func (s *session) getStonecutter() *stonecutterState {
+	s.stateMu.Lock()
+	state := s.stonecutter
+	s.stateMu.Unlock()
+	return state
+}
+
+// setStonecutter 设置打开的切石机状态（线程安全）。
+func (s *session) setStonecutter(state *stonecutterState) {
+	s.stateMu.Lock()
+	s.stonecutter = state
+	s.stateMu.Unlock()
+}
+
+// getSmithing 返回打开的锻造台状态（线程安全）。
+func (s *session) getSmithing() *smithingState {
+	s.stateMu.Lock()
+	state := s.smithing
+	s.stateMu.Unlock()
+	return state
+}
+
+// setSmithing 设置打开的锻造台状态（线程安全）。
+func (s *session) setSmithing(state *smithingState) {
+	s.stateMu.Lock()
+	s.smithing = state
+	s.stateMu.Unlock()
+}
+
+// setRecipeBookSettings 记录客户端的配方书开关/过滤状态（仅诊断用途）。
+// bookID：0 合成、1 熔炉、2 高炉、3 烟熏炉（与原版枚举一致）。
+func (s *session) setRecipeBookSettings(bookID int32, open, filtering bool) {
+	if bookID < 0 || bookID >= 4 {
+		return
+	}
+	s.stateMu.Lock()
+	s.recipeBookOpen[bookID] = open
+	s.recipeBookFiltering[bookID] = filtering
 	s.stateMu.Unlock()
 }
 

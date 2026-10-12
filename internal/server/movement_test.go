@@ -7,6 +7,7 @@ import (
 
 	"gmcs/internal/config"
 	"gmcs/internal/protocol"
+	"gmcs/internal/registry"
 	"gmcs/internal/world"
 )
 
@@ -273,5 +274,65 @@ func TestJumpRiseLimit(t *testing.T) {
 	_, gotY, _, _, _ := player.playerPosition()
 	if gotY > y+maxJumpRise+1e-9 {
 		t.Fatalf("飞行上升未被限制：%v", gotY)
+	}
+}
+
+// TestSwimUpwardInWater 验证水中游泳：入水时悬空上升预算清零，
+// 连续每包 1 格的持续上游全部被接受（不触发防飞行回拉）。
+func TestSwimUpwardInWater(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Swimmer")
+	player := findSession(t, instance, "Swimmer")
+
+	x, y, z, _, _ := player.playerPosition()
+	bx, by, bz := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+	// 石头底面 + 7 格深的水柱（3×3）。
+	clearPlayerArea(instance, bx, by-1, bz, 1, 8)
+	for dy := 0; dy <= 6; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			for dz := -1; dz <= 1; dz++ {
+				instance.testWorld().SetBlock(bx+dx, by+dy, bz+dz, world.WaterBlock)
+			}
+		}
+	}
+	for i := 0; i <= 5; i++ {
+		sendPlayerPosition(t, conn, x, float64(by+i), z, false)
+	}
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	if _, gotY, _, _, _ := player.playerPosition(); math.Abs(gotY-float64(by+5)) > 1e-9 {
+		t.Fatalf("水中连续上游后 y = %v, want %d（悬空上升限制未在水里清零）", gotY, by+5)
+	}
+}
+
+// TestStepUpOntoSlab 验证走上半砖（0.5 格台阶）被接受：落点脚部位于半砖
+// 顶面时得到支撑，不触发回拉（支撑面检测按碰撞形状顶面计算）。
+func TestStepUpOntoSlab(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "Stepper")
+	player := findSession(t, instance, "Stepper")
+
+	x, y, z, _, _ := player.playerPosition()
+	bx, by, bz := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+	clearPlayerArea(instance, bx, by-1, bz, 1, 4)
+	slab, ok := registry.BlockStateIDs["minecraft:oak_slab"]
+	if !ok {
+		t.Fatal("缺少 oak_slab 方块状态")
+	}
+	// 东侧一格放置半砖（默认状态为下半砖，顶面高 0.5 格）。
+	if !instance.testWorld().SetBlock(bx+1, by, bz, slab) {
+		t.Fatal("无法放置半砖")
+	}
+	sendPlayerPosition(t, conn, x, float64(by), z, true)
+	sendPlayerPosition(t, conn, x+1, float64(by)+0.5, z, true)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	gotX, gotY, _, _, _ := player.playerPosition()
+	if math.Abs(gotX-(x+1)) > 1e-9 || math.Abs(gotY-(float64(by)+0.5)) > 1e-9 {
+		t.Fatalf("走上半砖后位置 = (%.3f, %.3f), want (%.3f, %.3f)", gotX, gotY, x+1, float64(by)+0.5)
 	}
 }

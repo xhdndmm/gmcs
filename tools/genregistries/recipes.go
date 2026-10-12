@@ -53,12 +53,18 @@ type parsedRecipe struct {
 	height      int
 	pattern     []string // shaped：每行的 key 字符
 	key         map[string]recipeIngredientSpec
-	ingredients []recipeIngredientSpec // shapeless 或烹饪原料
+	ingredients []recipeIngredientSpec // shapeless / 烹饪 / 切石机原料
 	result      string
 	resultCount int32
 	kind        recipeKind
 	experience  float64
 	cookTime    int32
+	// stonecutting 标记切石机配方；smithing 标记锻造升级配方（模板/基底/添加物）。
+	stonecutting bool
+	smithing     bool
+	template     recipeIngredientSpec
+	base         recipeIngredientSpec
+	addition     recipeIngredientSpec
 }
 
 // collectRecipes 读取 jar 中 data/minecraft/recipe/*.json 并解析配方。
@@ -98,6 +104,9 @@ func parseRecipeFile(content []byte, baseName string) (parsedRecipe, bool, error
 		Pattern     json.RawMessage            `json:"pattern"`
 		Ingredients []json.RawMessage          `json:"ingredients"`
 		Ingredient  json.RawMessage            `json:"ingredient"`
+		Template    json.RawMessage            `json:"template"`
+		Base        json.RawMessage            `json:"base"`
+		Addition    json.RawMessage            `json:"addition"`
 		Result      *struct {
 			ID         string          `json:"id"`
 			Count      int32           `json:"count"`
@@ -122,8 +131,12 @@ func parseRecipeFile(content []byte, baseName string) (parsedRecipe, bool, error
 		recipe.kind = recipeSmoking
 	case "minecraft:campfire_cooking":
 		recipe.kind = recipeCampfire
+	case "minecraft:stonecutting":
+		recipe.stonecutting = true
+	case "minecraft:smithing_transform":
+		recipe.smithing = true
 	default:
-		// 其余类型（transmute/smithing/stonecutting/special 等）暂不支持。
+		// 其余类型（transmute/smithing_trim/special 等）暂不支持。
 		return parsedRecipe{}, false, nil
 	}
 	if raw.Result == nil || raw.Result.ID == "" {
@@ -142,6 +155,29 @@ func parseRecipeFile(content []byte, baseName string) (parsedRecipe, bool, error
 	recipe.cookTime = raw.CookingTime
 
 	switch {
+	case recipe.stonecutting:
+		if len(raw.Ingredient) == 0 {
+			return parsedRecipe{}, false, fmt.Errorf("切石机配方缺少 ingredient")
+		}
+		spec, err := parseIngredientSpec(raw.Ingredient)
+		if err != nil {
+			return parsedRecipe{}, false, err
+		}
+		recipe.ingredients = []recipeIngredientSpec{spec}
+	case recipe.smithing:
+		if len(raw.Template) == 0 || len(raw.Base) == 0 || len(raw.Addition) == 0 {
+			return parsedRecipe{}, false, fmt.Errorf("锻造配方缺少 template/base/addition")
+		}
+		var err error
+		if recipe.template, err = parseIngredientSpec(raw.Template); err != nil {
+			return parsedRecipe{}, false, fmt.Errorf("template：%w", err)
+		}
+		if recipe.base, err = parseIngredientSpec(raw.Base); err != nil {
+			return parsedRecipe{}, false, fmt.Errorf("base：%w", err)
+		}
+		if recipe.addition, err = parseIngredientSpec(raw.Addition); err != nil {
+			return parsedRecipe{}, false, fmt.Errorf("addition：%w", err)
+		}
 	case recipe.shaped:
 		// 注意：smithing 等类型的 pattern 是字符串（纹饰名），只对 shaped 解析为行。
 		var pattern []string
@@ -242,9 +278,11 @@ func parseIngredientSpec(raw json.RawMessage) (recipeIngredientSpec, error) {
 
 // recipeTables 是展开物品 ID 后的配方表（写入生成文件）。
 type recipeTables struct {
-	shaped    []resolvedShapedRecipe
-	shapeless []resolvedShapelessRecipe
-	cooking   []resolvedCookingRecipe
+	shaped       []resolvedShapedRecipe
+	shapeless    []resolvedShapelessRecipe
+	cooking      []resolvedCookingRecipe
+	stonecutting []resolvedStonecuttingRecipe
+	smithing     []resolvedSmithingRecipe
 }
 
 type resolvedIngredient []int32
@@ -277,6 +315,24 @@ type resolvedCookingRecipe struct {
 	resultCount int32
 	experience  float64
 	cookTime    int32
+}
+
+// resolvedStonecuttingRecipe 是切石机配方（单个原料 → 产物）。
+type resolvedStonecuttingRecipe struct {
+	name        string
+	ingredient  resolvedIngredient
+	result      int32
+	resultCount int32
+}
+
+// resolvedSmithingRecipe 是锻造升级配方（模板 + 基底 + 添加物 → 产物）。
+type resolvedSmithingRecipe struct {
+	name        string
+	template    resolvedIngredient
+	base        resolvedIngredient
+	addition    resolvedIngredient
+	result      int32
+	resultCount int32
 }
 
 // resolveRecipes 把配方原料展开为物品 ID 集合。
@@ -320,6 +376,31 @@ func resolveRecipes(recipes []parsedRecipe, itemIDs map[string]int32, itemTags m
 			continue
 		}
 		switch {
+		case recipe.stonecutting:
+			ids, err := resolve(recipe.ingredients[0])
+			if err != nil {
+				return nil, fmt.Errorf("配方 %s：%w", recipe.name, err)
+			}
+			tables.stonecutting = append(tables.stonecutting, resolvedStonecuttingRecipe{
+				name: recipe.name, ingredient: ids, result: result, resultCount: recipe.resultCount,
+			})
+		case recipe.smithing:
+			template, err := resolve(recipe.template)
+			if err != nil {
+				return nil, fmt.Errorf("配方 %s template：%w", recipe.name, err)
+			}
+			base, err := resolve(recipe.base)
+			if err != nil {
+				return nil, fmt.Errorf("配方 %s base：%w", recipe.name, err)
+			}
+			addition, err := resolve(recipe.addition)
+			if err != nil {
+				return nil, fmt.Errorf("配方 %s addition：%w", recipe.name, err)
+			}
+			tables.smithing = append(tables.smithing, resolvedSmithingRecipe{
+				name: recipe.name, template: template, base: base, addition: addition,
+				result: result, resultCount: recipe.resultCount,
+			})
 		case recipe.shaped:
 			resolved := resolvedShapedRecipe{
 				name: recipe.name, group: recipe.group,
@@ -390,10 +471,10 @@ func writeRecipes(outDir, version string, tables *recipeTables) error {
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "// Code generated by tools/genregistries from Minecraft %s data/minecraft/recipe; DO NOT EDIT.\n", version)
 	out.WriteString("//\n")
-	out.WriteString("// 数据来源：官方客户端 jar 内置数据包的配方文件；原料标签在生成期展开为物品 ID。\n")
-	out.WriteString("// 支持 crafting_shaped / crafting_shapeless 与四类烹饪配方；\n")
-	out.WriteString("// crafting_transmute / crafting_special_* / smithing / stonecutting 等类型不生成\n")
-	out.WriteString("// （它们需要额外的匹配逻辑或注册表支持，见 docs/TODO.md）。\n\n")
+	out.WriteString("// 数据来源：官方客户端/服务端 jar 内置数据包的配方文件；原料标签在生成期展开为物品 ID。\n")
+	out.WriteString("// 支持 crafting_shaped / crafting_shapeless / 四类烹饪 / stonecutting / smithing_transform；\n")
+	out.WriteString("// crafting_transmute / crafting_special_* / smithing_trim 等类型不生成\n")
+	out.WriteString("// （它们需要额外的匹配逻辑或组件支持，见 docs/TODO.md）。\n\n")
 	out.WriteString("package registry\n\n")
 
 	out.WriteString("// Ingredient 是一个配方原料槽可接受的物品 ID 集合（生成期展开标签，升序）。\n")
@@ -466,6 +547,55 @@ func writeRecipes(outDir, version string, tables *recipeTables) error {
 		fmt.Fprintf(&out, "	{Name: %q, Group: %q, Kind: %d, Result: %d, ResultCount: %d, Experience: %v, CookTime: %d, Ingredient: Ingredient{",
 			recipe.name, recipe.group, int32(recipe.kind), recipe.result, recipe.resultCount, recipe.experience, recipe.cookTime)
 		for i, id := range recipe.ingredient {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			fmt.Fprintf(&out, "%d", id)
+		}
+		out.WriteString("}},\n")
+	}
+	out.WriteString("}\n\n")
+
+	out.WriteString("// StonecuttingRecipe 是切石机配方：单个原料 → 产物（可选多个结果）。\n")
+	out.WriteString("type StonecuttingRecipe struct {\n")
+	out.WriteString("\tName        string\n\tIngredient  Ingredient\n\tResult      int32\n\tResultCount int32\n}\n\n")
+	out.WriteString("// StonecuttingRecipes 保存全部切石机配方（按配方名排序）。\n")
+	out.WriteString("var StonecuttingRecipes = []StonecuttingRecipe{\n")
+	for _, recipe := range tables.stonecutting {
+		fmt.Fprintf(&out, "\t{Name: %q, Result: %d, ResultCount: %d, Ingredient: Ingredient{", recipe.name, recipe.result, recipe.resultCount)
+		for i, id := range recipe.ingredient {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			fmt.Fprintf(&out, "%d", id)
+		}
+		out.WriteString("}},\n")
+	}
+	out.WriteString("}\n\n")
+
+	out.WriteString("// SmithingTransformRecipe 是锻造台升级配方（模板 + 基底 + 添加物 → 产物）。\n")
+	out.WriteString("type SmithingTransformRecipe struct {\n")
+	out.WriteString("\tName        string\n\tTemplate    Ingredient\n\tBase        Ingredient\n\tAddition    Ingredient\n")
+	out.WriteString("\tResult      int32\n\tResultCount int32\n}\n\n")
+	out.WriteString("// SmithingTransformRecipes 保存全部锻造升级配方（按配方名排序）。\n")
+	out.WriteString("var SmithingTransformRecipes = []SmithingTransformRecipe{\n")
+	for _, recipe := range tables.smithing {
+		fmt.Fprintf(&out, "\t{Name: %q, Result: %d, ResultCount: %d, Template: Ingredient{", recipe.name, recipe.result, recipe.resultCount)
+		for i, id := range recipe.template {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			fmt.Fprintf(&out, "%d", id)
+		}
+		out.WriteString("}, Base: Ingredient{")
+		for i, id := range recipe.base {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			fmt.Fprintf(&out, "%d", id)
+		}
+		out.WriteString("}, Addition: Ingredient{")
+		for i, id := range recipe.addition {
 			if i > 0 {
 				out.WriteString(", ")
 			}

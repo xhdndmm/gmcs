@@ -159,3 +159,45 @@ func CookingRecipeFor(kind CookingKind, itemID int32) (CookingRecipe, bool) {
 	}
 	return CookingRecipe{}, false
 }
+
+// stonecuttingIndex 是输入物品 ID → 切石机配方下标（生成顺序，稳定）。
+var stonecuttingIndex = func() map[int32][]int32 {
+	index := make(map[int32][]int32)
+	for i, recipe := range StonecuttingRecipes {
+		for _, id := range recipe.Ingredient {
+			index[id] = append(index[id], int32(i))
+		}
+	}
+	return index
+}()
+
+// StonecuttingRecipesFor 返回可用于该输入物品的切石机配方下标
+// （顺序与生成表一致；客户端按钮索引使用同一顺序）。
+// 无可用配方时返回 nil。
+func StonecuttingRecipesFor(input int32) []int32 {
+	return stonecuttingIndex[input]
+}
+
+// StonecuttingRecipeAt 按下标返回切石机配方。
+func StonecuttingRecipeAt(index int32) (StonecuttingRecipe, bool) {
+	if index < 0 || int(index) >= len(StonecuttingRecipes) {
+		return StonecuttingRecipe{}, false
+	}
+	return StonecuttingRecipes[index], true
+}
+
+// MatchSmithing 在模板/基底/添加物三个槽位中查找锻造升级配方
+// （任一槽位为空时返回 false）。
+func MatchSmithing(template, base, addition int32) (SmithingTransformRecipe, bool) {
+	if template == 0 || base == 0 || addition == 0 {
+		return SmithingTransformRecipe{}, false
+	}
+	for _, recipe := range SmithingTransformRecipes {
+		if ingredientAccepts(recipe.Template, template) &&
+			ingredientAccepts(recipe.Base, base) &&
+			ingredientAccepts(recipe.Addition, addition) {
+			return recipe, true
+		}
+	}
+	return SmithingTransformRecipe{}, false
+}

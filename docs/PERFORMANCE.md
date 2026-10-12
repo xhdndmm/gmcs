@@ -39,7 +39,7 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈6.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈53.7 ns/op | 80 B/op | 1 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈70–75 µs/op | 17–250 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈7.3 µs/op | 2,574 B/op | 6 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈18.8 µs/op | ≈8.6 KB/op | 75 allocs/op |
 | `BenchmarkItemTick`（128 掉落物） | server | ≈80 µs/op | 129 B/op | 2 allocs/op |
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
@@ -60,8 +60,10 @@ go test -run=^$ -bench=. -benchmem ./...
   （长度前缀 + zlib + 帧写出）。
 - `BenchmarkEncodeEntityPositionSync` / `BenchmarkEncodeAddEntity`：高频实体包的编码成本
   （含 LpVec3）。
-- `BenchmarkServerTick`：`Server.tick()` 一次，含 32 只僵尸的游荡移动、卡住判定与
-  广播筛选；场景中无玩家（走游荡分支）。**不覆盖**追击/攻击分支、区块加载/保存、
+- `BenchmarkServerTick`：`Server.tick()` 一次，含 32 只僵尸的游荡移动、受阻时的
+  A* 寻路（4 邻接地表网格，512 节点上限）与广播筛选；场景中无玩家（走游荡分支）。
+  开阔地形走直线（与寻路引入前同量级成本），分配主要来自寻路搜索的临时结构；
+  按 20 TPS 折算 32 生物约 0.38 ms/s。**不覆盖**追击/攻击分支、区块加载/保存、
   玩家会话与网络发送。
 - `BenchmarkItemTick`：`Server.tick()` 一次，含 128 个掉落物的年龄/拾取延迟、
   重力与摩擦、合并扫描与拾取判定；场景中无玩家（走不拾取分支）。
@@ -484,6 +486,28 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 - 包类型（字节）：ChunkData 75.9%、EntityPositionSync 22.6%；包数上实体同步
   与头部朝向占 99%。
 - 仍为单机 loopback（客户端与服务端共享 CPU/内存），不代表真实网络环境。
+
+### 3.14 生物 A* 寻路与移动成本（本批，实测）
+
+本批把“直线追击 + 被挡侧移”升级为 A* 地表寻路（`internal/world/pathfind.go`，
+4 邻接、512 节点/48 格上限、上跳 1 格/下落 ≤3 格），并针对 Tick 成本做了两轮实测：
+
+| 实现 | `BenchmarkServerTick`（32 生物） |
+| --- | --- |
+| 寻路前（直线 AI） | ≈6.3 µs/op（历史值，见 3.10） |
+| 朴素 A*（每 10 tick 无条件重算） | 304.3 µs/op，155 KB/op，1784 allocs/op |
+| 直线优先 + 路径跟随（最终） | 18.8 µs/op，8.6 KB/op，75 allocs/op |
+
+优化手段（均有 pprof 依据，热点为 `FindPath` → `ColumnAt` 的区块锁与列查询）：
+
+- **直线优先**：开阔地形先按旧方式直线移动，只有移动被挡住时才做 A*；
+  墙后等受阻场景由路径接手。
+- **路径跟随至完成**：路径不再按时间过期（时间过期 + 直线回退会造成障碍
+  边缘的往返振荡，曾使绕墙测试失败）；目标移动超过 2 格才重算。
+- **失败冷却**：搜索失败（不可达）后 `mobPathRefreshTicks` 内不重复搜索。
+
+按 20 TPS 折算，32 只生物约 0.38 ms/s（<0.1% CPU）；受阻场景（绕墙测试）
+在 1500 tick 内完成绕行。
 
 ## 4. 尚未覆盖
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

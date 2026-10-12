@@ -18,6 +18,13 @@ import (
 // 后台实体 Tick 被禁用，测试通过 instance.tick() 手动驱动以获得确定性。
 func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn) {
 	t.Helper()
+	return joinServerObserved(t, cfg, name)
+}
+
+// joinServerObserved 与 joinServer 相同，但把加入流程中的每个 Play 数据包
+// 交给 observers（用于断言脚本外的初始数据包，如配方书）。
+func joinServerObserved(t *testing.T, cfg config.Config, name string, observers ...func(id int32, payload []byte)) (*Server, net.Conn) {
+	t.Helper()
 	cfg.ViewDistance = 2 // 测试用小视距，减少区块生成量
 	instance, err := New(cfg)
 	if err != nil {
@@ -48,7 +55,7 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 		}
 	})
 
-	return instance, joinAt(t, cfg, listener.Addr().String(), name)
+	return instance, joinAt(t, cfg, listener.Addr().String(), name, observers...)
 }
 
 // joinAt 连接到地址 addr 上的测试服务器并完成完整进入世界流程

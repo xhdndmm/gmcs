@@ -245,6 +245,12 @@ func (s *Server) openCraftingTable(player *session) {
 	if player.getOpenCraft() != nil {
 		s.closeCrafting(player, false)
 	}
+	if player.getStonecutter() != nil {
+		s.closeStonecutter(player, false)
+	}
+	if player.getSmithing() != nil {
+		s.closeSmithing(player, false)
+	}
 	menuType, ok := registry.StaticEntryID("minecraft:menu", "minecraft:crafting")
 	if !ok {
 		return
