@@ -39,8 +39,9 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈6.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈53.7 ns/op | 80 B/op | 1 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈70–75 µs/op | 17–250 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈18.8 µs/op | ≈8.6 KB/op | 75 allocs/op |
-| `BenchmarkItemTick`（128 掉落物） | server | ≈80 µs/op | 129 B/op | 2 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈25.5 µs/op | ≈13.1 KB/op | 83 allocs/op |
+| `BenchmarkItemTick`（128 掉落物） | server | ≈80 µs/op | 201 B/op | 3 allocs/op |
+| `BenchmarkEntityInsideBlocks`（32 包围盒） | server | ≈1.46 µs/op | 0 B/op | 0 allocs/op |
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
 增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
@@ -61,12 +62,16 @@ go test -run=^$ -bench=. -benchmem ./...
 - `BenchmarkEncodeEntityPositionSync` / `BenchmarkEncodeAddEntity`：高频实体包的编码成本
   （含 LpVec3）。
 - `BenchmarkServerTick`：`Server.tick()` 一次，含 32 只僵尸的游荡移动、受阻时的
-  A* 寻路（4 邻接地表网格，512 节点上限）与广播筛选；场景中无玩家（走游荡分支）。
+  A* 寻路（4 邻接地表网格，512 节点上限）与广播筛选，以及实体进入方块（压力板）
+  扫描与经验球 Tick；场景中无玩家（走游荡分支、无经验球）。
   开阔地形走直线（与寻路引入前同量级成本），分配主要来自寻路搜索的临时结构；
-  按 20 TPS 折算 32 生物约 0.38 ms/s。**不覆盖**追击/攻击分支、区块加载/保存、
+  按 20 TPS 折算 32 生物约 0.51 ms/s。**不覆盖**追击/攻击分支、区块加载/保存、
   玩家会话与网络发送。
 - `BenchmarkItemTick`：`Server.tick()` 一次，含 128 个掉落物的年龄/拾取延迟、
   重力与摩擦、合并扫描与拾取判定；场景中无玩家（走不拾取分支）。
+- `BenchmarkEntityInsideBlocks`：对 32 个生物包围盒各调用一次实体进入方块扫描
+  （普通地表、无压力板），覆盖区块解析、按列批量读取与状态数组过滤的常见路径
+  （≈46 ns/包围盒、零分配）。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
 按编码 49 µs/区块计算约 22 ms 纯编码时间（不含地形生成与网络 IO）。
@@ -508,6 +513,40 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 
 按 20 TPS 折算，32 只生物约 0.38 ms/s（<0.1% CPU）；受阻场景（绕墙测试）
 在 1500 tick 内完成绕行。
+
+### 3.15 压力板与实体进入方块扫描（本批，实测）
+
+压力板要求“实体进入方块”检测（原版 `Entity.checkInsideBlocks`）：玩家移动、
+生物/掉落物/经验球位置推进后都要扫描实体包围盒覆盖的方块。朴素实现
+（逐格 `World.BlockAt` + map 查表）在 `BenchmarkServerTick`（32 只持续移动的
+僵尸）使 Tick 从 20.1 µs 涨到 29.4 µs（pprof：`entityInsideBlocks` 占 26.9%，
+其中 75% 在 `BlockAt`）。优化分三层，全部保持语义等价：
+
+| 版本 | `BenchmarkServerTick` |
+| --- | --- |
+| 本批基线（无压力板扫描；stash 复测） | 20.1 µs/op，9.7 KB/op，89 allocs/op |
+| 朴素扫描（逐格 `BlockAt` + map 过滤） | 29.4 µs/op，12.5 KB/op，86 allocs/op |
+| 数组查表 + 复用已解析世界 | 26.5 µs/op，12.6 KB/op，77 allocs/op |
+| 再叠加按列批量读取（最终） | 25.5 µs/op，13.1 KB/op，83 allocs/op |
+
+- **状态数组查表**：压力板状态表（`plateStateTable`）额外构建一个
+  `[65536]uint8` 过滤表（`plateStateFast`，64 KB 只读），热路径一次数组访问
+  即可排除空气/石头等全部非压力板状态，省掉每格一次 map 查询。
+- **复用已解析的世界**：`entityInsideBlocks` 接收调用方已解析的 `*world.World`
+  （生物/掉落物/经验球/玩家都在自己的推进路径里已有世界指针），去掉每次扫描的
+  `worldFor` 取世界开销。
+- **按列批量读取**：世界层新增 `World.LoadedColumn` / `Chunk.CopyColumn`
+  （区块只解析一次、加锁一次，一列连续 y 一次读完），扫描改为
+  x→z→y 的列优先遍历；未加载区块直接跳过（与原版一致：未加载区块不触发
+  实体进入方块，也避免实体扫描意外生成区块）。
+- **区块读取快路径**（同时惠及其他逐格读取路径）：`World.BlockAt` 在区块
+  已加载时用读锁查询（`sync.RWMutex`），不再每格走 `Chunk()` 的排他锁与
+  加载/生成分支；`Chunk.GetBlockState` 去掉 defer 解锁。
+
+最终净成本：32 只持续移动的僵尸下 Tick +5.4 µs（≈0.11 ms/s，20 TPS 折算），
+其中扫描约 3.5 µs；新增微基准 `BenchmarkEntityInsideBlocks`（32 个生物包围盒
+一次扫描）为 1.46 µs/op、0 allocs/op，即约 **46 ns/包围盒**（普通地表、无压力板
+的常见路径）。
 
 ## 4. 尚未覆盖
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
