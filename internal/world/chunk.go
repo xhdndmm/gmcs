@@ -196,8 +196,25 @@ func blockIndex(x, y, z int) int {
 // GetBlockState 返回世界坐标处的方块状态；越界或未分配返回空气。
 func (c *Chunk) GetBlockState(x, y, z int) uint16 {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.getBlockStateLocked(x, y, z)
+	state := c.getBlockStateLocked(x, y, z)
+	c.mu.RUnlock()
+	return state
+}
+
+// CopyColumn 把 (x, z) 列上 y ∈ [y1, y2] 闭区间内的方块状态按从低到高的顺序
+// 写入 dst（最多 len(dst) 个），返回写入数量。单次加锁读取；越界位置写入空气。
+func (c *Chunk) CopyColumn(x, y1, y2, z int, dst []uint16) int {
+	if y2 < y1 || len(dst) == 0 {
+		return 0
+	}
+	c.mu.RLock()
+	n := 0
+	for y := y1; y <= y2 && n < len(dst); y++ {
+		dst[n] = c.getBlockStateLocked(x, y, z)
+		n++
+	}
+	c.mu.RUnlock()
+	return n
 }
 
 // getBlockStateLocked 是 GetBlockState 的无锁实现；调用方必须持有 c.mu。

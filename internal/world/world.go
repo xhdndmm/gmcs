@@ -27,7 +27,7 @@ type World struct {
 	// 网络编码按维度裁剪 section 范围）。
 	dimension Dimension
 
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	chunks map[ChunkPos]*Chunk
 	dirty  map[ChunkPos]struct{}
 	closed bool
@@ -227,11 +227,39 @@ func (w *World) BlockAt(x, y, z int) uint16 {
 	if _, ok := SectionIndex(y); !ok {
 		return AirBlock
 	}
-	chunk, err := w.Chunk(floorDiv(x, SectionSize), floorDiv(z, SectionSize))
+	cx, cz := floorDiv(x, SectionSize), floorDiv(z, SectionSize)
+	localX, localZ := floorMod(x, SectionSize), floorMod(z, SectionSize)
+	// 快路径：区块已加载时用读锁查询（实体物理/实体进入方块扫描等逐格读取
+	// 非常频繁，避免每格取得排他锁与加载/生成分支）。
+	w.mu.RLock()
+	chunk, ok := w.chunks[ChunkPos{X: cx, Z: cz}]
+	w.mu.RUnlock()
+	if ok {
+		return chunk.GetBlockState(localX, y, localZ)
+	}
+	// 慢路径：区块不在内存中时保持原有语义（从磁盘加载或生成）。
+	loaded, err := w.Chunk(cx, cz)
 	if err != nil {
 		return AirBlock
 	}
-	return chunk.GetBlockState(floorMod(x, SectionSize), y, floorMod(z, SectionSize))
+	return loaded.GetBlockState(localX, y, localZ)
+}
+
+// LoadedColumn 读取已加载区块上 (x, z) 列在 y ∈ [y1, y2] 闭区间内的方块状态，
+// 按从低到高的顺序写入 dst（最多 len(dst) 个），返回写入数量；区块未加载时
+// 返回 0。与逐格调用 BlockAt 相比，区块只解析/加锁一次，适合实体物理与
+// 实体进入方块扫描这类小范围连续读取；不触发区块加载或地形生成。
+func (w *World) LoadedColumn(x, y1, y2, z int, dst []uint16) int {
+	if y2 < y1 || len(dst) == 0 {
+		return 0
+	}
+	w.mu.RLock()
+	chunk, ok := w.chunks[ChunkPos{X: floorDiv(x, SectionSize), Z: floorDiv(z, SectionSize)}]
+	w.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+	return chunk.CopyColumn(floorMod(x, SectionSize), y1, y2, floorMod(z, SectionSize), dst)
 }
 
 // SetBlock 设置世界坐标处方块的状态并标记区块待保存（下一次 Flush/卸载时落盘）。
