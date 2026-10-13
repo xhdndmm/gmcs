@@ -134,6 +134,17 @@ type Server struct {
 	xpOrbsEnabled bool
 	xpOrbs        map[int32]*xpOrb
 
+	// 漏斗传输：hoppers 是已注册的漏斗运行时状态（受 hopperMu 保护）；
+	// containerTransferMu 串行化“从方块实体载入容器内容”与漏斗搬运事务。
+	hopperMu            sync.Mutex
+	hoppers             map[containerKey]*hopperState
+	hopperTypeID        int32
+	hoppersEnabled      bool
+	hopperScanCounter   int
+	containerTransferMu sync.Mutex
+	// gameTicks 是单调递增的游戏刻计数（漏斗错峰规则用）。
+	gameTicks atomic.Int64
+
 	// 压力板点击音效（按木质/石质/金属分组；缺失时播放时静默跳过）。
 	plateClickOn  [plateSoundGroups]int32
 	plateClickOff [plateSoundGroups]int32
@@ -248,6 +259,8 @@ func (s *Server) worldForLocked(dim world.Dimension) *world.World {
 		slog.Error("打开维度世界失败，回退到主世界", "dimension", dim, "error", err)
 		return s.worlds[world.DimensionOverworld]
 	}
+	// 区块加载跟踪：新加载的区块里可能有漏斗，需要在加载后立即注册。
+	gameWorld.EnableChunkLoadTracking()
 	s.worlds[dim] = gameWorld
 	slog.Info("dimension loaded", "dimension", dim, "dir", dir)
 	return gameWorld
@@ -330,6 +343,8 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 区块加载跟踪：新加载的区块里可能有漏斗，需要在加载后立即注册。
+	gameWorld.EnableChunkLoadTracking()
 	// 在线模式：为加密握手生成服务器密钥对（1024 位，与客户端兼容）。
 	var rsaKey *rsa.PrivateKey
 	if cfg.OnlineMode {
@@ -348,6 +363,7 @@ func New(cfg config.Config) (*Server, error) {
 		mobs:                   make(map[int32]*mob),
 		items:                  make(map[int32]*itemEntity),
 		xpOrbs:                 make(map[int32]*xpOrb),
+		hoppers:                make(map[containerKey]*hopperState),
 		tickInterval:           defaultTickInterval,
 		chunkUnloadInterval:    defaultChunkUnloadInterval,
 		unloadNow:              make(chan struct{}, 1),
@@ -368,6 +384,7 @@ func New(cfg config.Config) (*Server, error) {
 	server.resolvePlayerEntityType()
 	server.resolveItemRegistryIDs()
 	server.resolveXPOrbRegistryIDs()
+	server.resolveHopperRegistryIDs()
 	server.resolvePlateSounds()
 	server.resolveFallDamageBlocks()
 	server.resolveContainerDefs()
@@ -389,6 +406,9 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	if !server.xpOrbsEnabled {
 		slog.Warn("经验球系统已禁用：注册表数据缺失")
+	}
+	if !server.hoppersEnabled {
+		slog.Warn("漏斗传输已禁用：注册表数据缺失")
 	}
 	// 恢复上次保存的生物与掉落物（各维度的 entities.json；不存在时不做任何事）。
 	// 下界/末地在对应维度第一次被访问时加载（见 worldFor/ensureEntitiesLoaded）。

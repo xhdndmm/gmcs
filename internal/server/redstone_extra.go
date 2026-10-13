@@ -376,6 +376,13 @@ func (s *Server) containerAnalogSignal(w *world.World, pos [3]int) int {
 			slots[i] = opened.furnace.slots[i]
 		}
 		opened.furnace.mu.Unlock()
+	case opened != nil && opened.hopper != nil:
+		// 漏斗槽位由 hopperState 权威持有（与传输 Tick 共用），在其锁内读取。
+		opened.hopper.mu.Lock()
+		for i := 0; i < def.Slots && i < len(opened.hopper.slots); i++ {
+			slots[i] = opened.hopper.slots[i]
+		}
+		opened.hopper.mu.Unlock()
 	case opened != nil:
 		opened.mu.Lock()
 		for i := 0; i < def.Slots && i < len(opened.slots); i++ {

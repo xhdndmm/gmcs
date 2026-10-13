@@ -234,6 +234,18 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 11059, Props: map[string]string{"power": "14"}},
 		{ID: 11060, Props: map[string]string{"power": "15"}},
 	},
+	"minecraft:hopper": {
+		{ID: 11111, Props: map[string]string{"enabled": "true", "facing": "down"}},
+		{ID: 11112, Props: map[string]string{"enabled": "true", "facing": "north"}},
+		{ID: 11113, Props: map[string]string{"enabled": "true", "facing": "south"}},
+		{ID: 11114, Props: map[string]string{"enabled": "true", "facing": "west"}},
+		{ID: 11115, Props: map[string]string{"enabled": "true", "facing": "east"}},
+		{ID: 11116, Props: map[string]string{"enabled": "false", "facing": "down"}},
+		{ID: 11117, Props: map[string]string{"enabled": "false", "facing": "north"}},
+		{ID: 11118, Props: map[string]string{"enabled": "false", "facing": "south"}},
+		{ID: 11119, Props: map[string]string{"enabled": "false", "facing": "west"}},
+		{ID: 11120, Props: map[string]string{"enabled": "false", "facing": "east"}},
+	},
 	"minecraft:jungle_button": {
 		{ID: 10545, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
 		{ID: 10546, Props: map[string]string{"face": "floor", "facing": "north", "powered": "false"}},

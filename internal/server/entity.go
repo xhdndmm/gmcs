@@ -298,6 +298,7 @@ func (s *Server) playerSnapshot() []*session {
 // tick 推进一帧世界逻辑（玩家生命恢复、生物 AI、生成与清理、掉落物、世界时间）。
 // 由 tickLoop 按 tickInterval 调用，测试中可直接调用以获得确定性。
 func (s *Server) tick() {
+	s.gameTicks.Add(1)
 	players := s.playerSnapshot()
 	s.tickHunger(players)
 	s.tickPlayerEnvironment(players)
@@ -305,6 +306,7 @@ func (s *Server) tick() {
 	s.tickArrows(players)
 	s.tickItems(players)
 	s.tickXPOrbs(players)
+	s.tickHoppers()
 	s.tickWorldTime(players)
 	s.tickFurnaces()
 	s.tickRedstone()

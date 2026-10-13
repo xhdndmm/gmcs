@@ -40,6 +40,8 @@ type containerDef struct {
 	CookKind registry.CookingKind
 	// IsFurnace 标记熔炉类容器（有燃烧/烹饪进度，独立 Tick）。
 	IsFurnace bool
+	// IsHopper 标记漏斗（槽位由 hopperState 权威持有，参与物品传输 Tick）。
+	IsHopper bool
 }
 
 // containerKey 是容器在某个维度中的方块坐标。
@@ -56,7 +58,9 @@ type containerState struct {
 	def *containerDef
 	// furnace 非空时表示熔炉类容器：槽位与进度由 furnaceState 权威持有。
 	furnace *furnaceState
-	slots   []item.Stack
+	// hopper 非空时表示漏斗：槽位由 hopperState 权威持有（与传输 Tick 共享）。
+	hopper *hopperState
+	slots  []item.Stack
 	// viewers 是当前打开该容器的玩家会话。
 	viewers map[*session]struct{}
 	// closed 表示容器方块已被破坏（窗口数据不再有效）。
@@ -101,7 +105,13 @@ func (s *Server) resolveContainerDefs() {
 	add("minecraft:barrel", "minecraft:barrel", "minecraft:generic_9x3", "Barrel", 27)
 	add("minecraft:dispenser", "minecraft:dispenser", "minecraft:generic_3x3", "Dispenser", 9)
 	add("minecraft:dropper", "minecraft:dropper", "minecraft:generic_3x3", "Dropper", 9)
-	add("minecraft:hopper", "minecraft:hopper", "minecraft:hopper", "Hopper", 5)
+	// 漏斗：槽位由 hopperState 权威持有（参与物品传输 Tick）。
+	if def, ok := resolveContainerDef("minecraft:hopper", "minecraft:hopper", "minecraft:hopper", "Hopper", 5); ok {
+		def.IsHopper = true
+		defs["minecraft:hopper"] = def
+	} else {
+		slog.Warn("容器类型不可用：注册表数据缺失", "block", "minecraft:hopper")
+	}
 	// 熔炉类：3 槽（原料/燃料/产物）+ 36 背包；带燃烧/烹饪进度。
 	addFurnace := func(blockName, blockEntityName, menuName, title string, kind registry.CookingKind) {
 		def, ok := resolveContainerDef(blockName, blockEntityName, menuName, title, 3)
@@ -158,8 +168,12 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	}
 
 	dim := player.dimensionID()
+	// 与进行中的漏斗搬运事务串行化：载入内容与登记视图期间不允许搬运写回，
+	// 否则窗口内的副本会覆盖搬运结果（或反之）。
+	s.containerTransferMu.Lock()
 	state, err := s.worldFor(dim).BlockEntityAt(x, y, z)
 	if err != nil {
+		s.containerTransferMu.Unlock()
 		slog.Debug("无法读取容器内容", "name", player.name, "error", err)
 		return
 	}
@@ -174,11 +188,19 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	}
 
 	container := s.registerViewer(dim, x, y, z, def, items, player)
+	s.containerTransferMu.Unlock()
 	if def.IsFurnace {
 		container.furnace = s.registerFurnace(dim, x, y, z)
 		if container.furnace != nil {
 			// 槽位统一由 furnaceState 持有（Tick 与窗口共用一份状态）。
 			container.slots = container.furnace.slots[:]
+		}
+	}
+	if def.IsHopper {
+		container.hopper = s.registerHopper(dim, x, y, z)
+		if container.hopper != nil {
+			// 槽位统一由 hopperState 持有（传输 Tick 与窗口共用一份状态）。
+			container.slots = container.hopper.slots[:]
 		}
 	}
 	player.openContainer = container
@@ -291,8 +313,26 @@ func (s *Server) destroyContainer(dim world.Dimension, breaker *session, x, y, z
 		container.mu.Lock()
 		container.closed = true
 		// 内容已掉落到世界：清空服务器侧副本，关闭窗口时不会写回物品。
-		for i := range container.slots {
-			container.slots[i] = item.Empty()
+		switch {
+		case container.hopper != nil:
+			// 漏斗槽位由 hopperState 权威持有（与传输 Tick 共用），在其锁内清空。
+			container.hopper.mu.Lock()
+			for i := range container.hopper.slots {
+				container.hopper.slots[i] = item.Empty()
+			}
+			container.hopper.mu.Unlock()
+		case container.furnace != nil:
+			// 熔炉槽位同理由 furnaceState 权威持有（与燃烧 Tick 共用）。
+			container.furnace.mu.Lock()
+			for i := range container.furnace.slots {
+				container.furnace.slots[i] = item.Empty()
+			}
+			container.furnace.dirty = true
+			container.furnace.mu.Unlock()
+		default:
+			for i := range container.slots {
+				container.slots[i] = item.Empty()
+			}
 		}
 		viewers := make([]*session, 0, len(container.viewers))
 		for viewer := range container.viewers {
@@ -557,6 +597,9 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 		}
 		if container.furnace != nil {
 			backing = furnaceSlotBacking{player: player, state: container.furnace}
+		} else if container.hopper != nil {
+			// 漏斗槽位由 hopperState 权威持有（与传输 Tick 共享同一份状态）。
+			backing = hopperSlotBacking{server: s, player: player, state: container.hopper}
 		} else {
 			backing = containerSlotBacking{server: s, player: player, container: container}
 		}

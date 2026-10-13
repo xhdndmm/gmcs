@@ -662,6 +662,8 @@ func (s *Server) refreshRedstoneConsumers(w *world.World, dim world.Dimension, p
 			s.checkDiodeUpdate(w, dim, candidate, state)
 		case isTorchState(state):
 			s.checkTorchUpdate(w, dim, candidate, state)
+		case isHopperState(state):
+			s.refreshHopperEnabled(w, candidate, state)
 		}
 	}
 	// 活塞：变更点与其邻居处的活塞（普通供电），以及它们下方的活塞（准连接）。

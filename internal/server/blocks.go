@@ -100,9 +100,12 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	}
 	// 破坏容器方块：先关闭观察窗口，再把内容物掉落到世界中（与原版一致）。
 	if def, _, ok := s.containerForState(current); ok {
-		if def.IsFurnace {
+		switch {
+		case def.IsFurnace:
 			s.destroyFurnace(dim, player, action.X, action.Y, action.Z, def)
-		} else {
+		case def.IsHopper:
+			s.destroyHopper(dim, player, action.X, action.Y, action.Z, def)
+		default:
 			s.destroyContainer(dim, player, action.X, action.Y, action.Z, def)
 		}
 	}
@@ -221,11 +224,21 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	// 红石类方向方块（中继器/比较器/侦测器/活塞）按玩家视线方向设置朝向。
 	_, _, _, placeYaw, placePitch := player.playerPosition()
 	state = orientPlacementState(state, placeYaw, placePitch)
+	if blockName, hasName := s.blockNameOf(state); hasName && blockName == hopperBlockName {
+		// 漏斗：按点击面决定朝向（原版 HopperBlock.getStateForPlacement）。
+		if hopperState, ok := orientHopperPlacement(int(use.Direction)); ok {
+			state = hopperState
+		}
+	}
 	if !w.SetBlock(placeX, placeY, placeZ, state) {
 		return
 	}
 	s.broadcastBlockUpdate(dim, placeX, placeY, placeZ, int32(state))
 	s.updateRedstoneAround(dim, placeX, placeY, placeZ)
+	if blockName, hasName := s.blockNameOf(state); hasName && blockName == hopperBlockName {
+		// 新放置的漏斗立即注册（无需等待周期扫描）。
+		s.registerHopper(dim, placeX, placeY, placeZ)
+	}
 	// 方块落入实体体积时把实体推到方块顶面（原版 pushEntitiesUp 行为）：
 	// 否则站在其上的玩家会嵌入方块并被反穿墙校验反复回拉。
 	s.pushEntitiesUp(dim, w, placeX, placeY, placeZ, state)

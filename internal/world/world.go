@@ -44,6 +44,12 @@ type World struct {
 
 	// unloadMu 串行化区块卸载与关闭，避免卸载与最终保存交错造成数据丢失。
 	unloadMu sync.Mutex
+
+	// 区块加载跟踪：开启后（EnableChunkLoadTracking）把新进入内存缓存的区块
+	// 位置记入 loadedChunks，由上层用 TakeLoadedChunks 取走并按需注册方块级
+	// 运行时状态（例如漏斗）。未开启时不记录，避免无人消费时持续增长。
+	trackChunks  bool
+	loadedChunks []ChunkPos
 }
 
 // chunkFuture 表示一次进行中的区块加载/生成；done 关闭后可从 chunks 读取
@@ -56,6 +62,41 @@ type chunkFuture struct {
 // AsyncPrefetchWorkers 是异步预生成的 worker 数量上限。
 // 生成是 CPU 密集型纯函数（只读种子），可以安全并行。
 const AsyncPrefetchWorkers = 8
+
+// chunkLoadTrackLimit 是待消费“新加载区块”列表的长度上限。
+// 超过后丢弃多余记录（调用方应配合低频全量扫描兜底）。
+const chunkLoadTrackLimit = 8192
+
+// EnableChunkLoadTracking 开启区块加载跟踪：此后每个进入内存缓存的区块
+// （从磁盘加载或由生成器生成）都会被记录，直到 TakeLoadedChunks 取走。
+// 用于上层在区块加载后同步方块级运行时状态（例如漏斗注册表）。
+func (w *World) EnableChunkLoadTracking() {
+	w.mu.Lock()
+	w.trackChunks = true
+	w.mu.Unlock()
+}
+
+// TakeLoadedChunks 返回并清空自上次调用以来新进入内存缓存的区块位置；
+// 未开启跟踪时返回 nil。列表最多保留 chunkLoadTrackLimit 项，超出部分
+// 被丢弃（调用方应有低频全量扫描兜底）。
+func (w *World) TakeLoadedChunks() []ChunkPos {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.loadedChunks) == 0 {
+		return nil
+	}
+	chunks := w.loadedChunks
+	w.loadedChunks = nil
+	return chunks
+}
+
+// trackChunkLoaded 记录新加载的区块（调用方持有 w.mu 写锁）。
+func (w *World) trackChunkLoaded(pos ChunkPos) {
+	if !w.trackChunks || len(w.loadedChunks) >= chunkLoadTrackLimit {
+		return
+	}
+	w.loadedChunks = append(w.loadedChunks, pos)
+}
 
 // prefetchQueueLimit 是预生成队列长度上限；队列满时丢弃请求（调用方
 // 回退到同步生成）。
@@ -157,6 +198,7 @@ func (w *World) prefetchWorker() {
 				chunk.SetDimension(w.dimension)
 			}
 			w.chunks[pos] = chunk
+			w.trackChunkLoaded(pos)
 			if generated {
 				w.dirty[pos] = struct{}{}
 			}
@@ -366,6 +408,7 @@ func (w *World) Chunk(x, z int) (*Chunk, error) {
 				chunk.SetDimension(w.dimension)
 			}
 			w.chunks[pos] = chunk
+			w.trackChunkLoaded(pos)
 			w.mu.Unlock()
 			return chunk, nil
 		}
@@ -418,6 +461,65 @@ func (w *World) FurnaceBlockPositions(typeIDs map[int32]bool) [][3]int {
 			result = append(result, [3]int{pos.X*SectionSize + x, y, pos.Z*SectionSize + z})
 		}
 		chunk.mu.RUnlock()
+	}
+	return result
+}
+
+// BlockStatePositions 返回当前已加载区块中含有满足 match 的方块状态的坐标快照
+// （先用 section 调色板快速排除不含目标状态的 section；直连（16 位）模式逐格检查）。
+// 用于按方块种类注册运行时状态（例如尚无方块实体记录的空漏斗）。
+func (w *World) BlockStatePositions(match func(uint16) bool) [][3]int {
+	w.mu.RLock()
+	chunks := make(map[ChunkPos]*Chunk, len(w.chunks))
+	for pos, chunk := range w.chunks {
+		chunks[pos] = chunk
+	}
+	w.mu.RUnlock()
+	var result [][3]int
+	for pos, chunk := range chunks {
+		chunk.mu.RLock()
+		result = appendSectionMatches(result, chunk, pos, match)
+		chunk.mu.RUnlock()
+	}
+	return result
+}
+
+// ChunkBlockStatePositions 返回指定区块（区块坐标）中匹配 match 的方块坐标快照；
+// 区块不在内存缓存中时返回 nil（不触发加载或生成）。
+func (w *World) ChunkBlockStatePositions(cx, cz int, match func(uint16) bool) [][3]int {
+	pos := ChunkPos{X: cx, Z: cz}
+	w.mu.RLock()
+	chunk := w.chunks[pos]
+	w.mu.RUnlock()
+	if chunk == nil {
+		return nil
+	}
+	chunk.mu.RLock()
+	defer chunk.mu.RUnlock()
+	return appendSectionMatches(nil, chunk, pos, match)
+}
+
+// appendSectionMatches 把 chunk 中匹配 match 的方块坐标追加到 result
+// （调用方持有 chunk.mu 读锁）。先用 section 的调色板排除不含目标状态的
+// section，再在命中的 section 内逐格检查。
+func appendSectionMatches(result [][3]int, chunk *Chunk, pos ChunkPos, match func(uint16) bool) [][3]int {
+	for sectionIndex, section := range chunk.sections {
+		if section == nil || section.storage.allAir() {
+			continue
+		}
+		if !section.storage.mayContainState(match) {
+			continue
+		}
+		baseY := WorldMinY + sectionIndex*SectionSize
+		for index := 0; index < SectionVolume; index++ {
+			if !match(section.storage.at(index)) {
+				continue
+			}
+			x := index & 0xF
+			z := (index >> 4) & 0xF
+			y := (index >> 8) + baseY
+			result = append(result, [3]int{pos.X*SectionSize + x, y, pos.Z*SectionSize + z})
+		}
 	}
 	return result
 }

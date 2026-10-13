@@ -287,6 +287,8 @@ func (s *Server) unloadFarChunks() error {
 		}
 		// 区块帧缓存持有 *world.Chunk 指针；卸载后必须同步驱逐，
 		// 否则缓存会阻止已卸载区块被 GC（内存随探索持续增长）。
+		// 漏斗注册同理需要丢弃（内容已随卸载写盘，重新加载时重新读取）。
+		s.dropHoppersInChunks(dim, unloaded)
 		for _, pos := range unloaded {
 			s.evictChunkPacket(dim, pos)
 		}
@@ -327,6 +329,7 @@ func (s *Server) unloadAllChunks() error {
 			}
 			continue
 		}
+		s.dropHoppersInChunks(dim, unloaded)
 		for _, pos := range unloaded {
 			s.evictChunkPacket(dim, pos)
 		}

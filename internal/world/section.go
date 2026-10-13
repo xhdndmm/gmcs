@@ -67,6 +67,24 @@ func (st *sectionStorage) allAir() bool {
 	return st.bits == 0 && st.uniform == AirBlock
 }
 
+// mayContainState 报告存储是否可能含有满足 match 的方块状态：调色板模式下列出
+// 调色板项判定，直连（16 位）模式返回 true（需逐格检查）。
+func (st *sectionStorage) mayContainState(match func(uint16) bool) bool {
+	switch {
+	case st.bits == 0:
+		return match(st.uniform)
+	case st.palette != nil:
+		for _, state := range st.palette {
+			if match(state) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
 // at 返回第 i 个方块状态。
 func (st *sectionStorage) at(i int) uint16 {
 	switch st.bits {

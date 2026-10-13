@@ -36,6 +36,7 @@ var propStateBlocks = []string{
 	"minecraft:dark_oak_pressure_plate",
 	"minecraft:end_portal_frame",
 	"minecraft:heavy_weighted_pressure_plate",
+	"minecraft:hopper",
 	"minecraft:jungle_button",
 	"minecraft:jungle_pressure_plate",
 	"minecraft:lever",
