@@ -42,6 +42,9 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkServerTick`（32 生物） | server | ≈25.5 µs/op | ≈13.1 KB/op | 83 allocs/op |
 | `BenchmarkItemTick`（128 掉落物） | server | ≈80 µs/op | 201 B/op | 3 allocs/op |
 | `BenchmarkEntityInsideBlocks`（32 包围盒） | server | ≈1.46 µs/op | 0 B/op | 0 allocs/op |
+| `BenchmarkHopperTick`（64 漏斗） | server | ≈22.6 µs/op | 557 B/op | 2 allocs/op |
+| `BenchmarkHopperChunkScan`（1 区块 16 漏斗） | server | ≈36.4 µs/op | 720 B/op | 4 allocs/op |
+| `BenchmarkHopperScan`（64 漏斗全量扫描） | server | ≈251 µs/op | 3.0 KB/op | 7 allocs/op |
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
 增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
@@ -72,6 +75,13 @@ go test -run=^$ -bench=. -benchmem ./...
 - `BenchmarkEntityInsideBlocks`：对 32 个生物包围盒各调用一次实体进入方块扫描
   （普通地表、无压力板），覆盖区块解析、按列批量读取与状态数组过滤的常见路径
   （≈46 ns/包围盒、零分配）。
+- `BenchmarkHopperTick`：64 个漏斗（每个下方有箱子、内含 64 个物品）各推进一
+  `tickHoppers`，覆盖冷却递减、搬运与写回方块实体（≈0.35 µs/漏斗/tick；
+  含按位置排序的确定推进顺序；场景中无玩家，广播走“无接收者”分支）。
+- `BenchmarkHopperChunkScan`：区块加载时的增量注册路径（单区块扫描 +
+  16 个漏斗逐个注册），成本与新增区块数成正比（≈36.4 µs/区块）。
+- `BenchmarkHopperScan`：600 tick 一次的全量扫描兜底（64 漏斗 + 64 箱子场景），
+  按 20 TPS 折算均值 ≈0.42 µs/tick（见 3.16）。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
 按编码 49 µs/区块计算约 22 ms 纯编码时间（不含地形生成与网络 IO）。
@@ -548,8 +558,33 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 一次扫描）为 1.46 µs/op、0 allocs/op，即约 **46 ns/包围盒**（普通地表、无压力板
 的常见路径）。
 
-## 4. 尚未覆盖
-- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
+### 3.16 漏斗传输的注册与 Tick 成本（本批，实测）
+
+漏斗是方块级状态（无实体），需要两件事：**找到已加载区块里的漏斗**（注册）
+与**每 tick 推进已注册漏斗**。
+
+注册策略（避免每 20 tick 扫全世界的方块）：
+
+| 方案 | 成本 | 说明 |
+| --- | --- | --- |
+| 每 20 tick 全量扫描（初版） | 257 µs/扫描（本基准场景） | 与区块总体积成正比，大视距下会成为周期尖峰 |
+| 新加载区块增量注册（最终） | 36.4 µs/新增区块 | 只在区块进入内存时扫描该区块一次 |
+| 全量扫描（600 tick 兜底，最终保留） | 251 µs/600 tick ≈ 0.42 µs/tick | 覆盖命令等非交互写入路径与极端溢出 |
+
+- 增量路径靠世界层新增的区块加载跟踪：`World.EnableChunkLoadTracking` +
+  `TakeLoadedChunks`（在 `Chunk()` 同步加载与预生成 worker 发布结果时记录，
+  队列上限 8192 项且有低频全量扫描兜底），服务器每 tick 取走新加载区块并用
+  `World.ChunkBlockStatePositions`（单区块、共享 section 调色板预筛）注册其中的漏斗。
+- 区块卸载时（`UnloadFar`/`UnloadAll` 返回值）丢弃对应注册，避免注册表随跑图增长；
+  内容已在每次变更后写回方块实体，卸载时无需再写盘。
+- `BenchmarkHopperTick`（64 漏斗，其中多数处于冷却期）22.6 µs/op ≈
+  **0.35 µs/漏斗/tick**，20 TPS 折算 0.45 ms/s；其中按位置排序（保证推进顺序
+  确定，不随 map 迭代顺序变化）约占 2 µs/op。`BenchmarkServerTick`（32 僵尸、
+  无漏斗场景）在插入漏斗 Tick（空注册表：一次取队列 + 一次 map 迭代）前后
+  5 次采样区间重叠（基线 26.6–28.2 µs，本批 25.8–29.8 µs），差异在当前测量
+  噪声范围内。
+
+## 4. 尚未覆盖- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家与 100 玩家 × 5 分钟 loopback 压测
   （见 3.7、3.13），真实网络 / 真实客户端渲染仍待验证
 - `go tool trace` 调度与阻塞分析
