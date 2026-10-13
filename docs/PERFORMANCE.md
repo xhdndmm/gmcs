@@ -39,12 +39,17 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈6.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈53.7 ns/op | 80 B/op | 1 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈70–75 µs/op | 17–250 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈25.5 µs/op | ≈13.1 KB/op | 83 allocs/op |
-| `BenchmarkItemTick`（128 掉落物） | server | ≈80 µs/op | 201 B/op | 3 allocs/op |
-| `BenchmarkEntityInsideBlocks`（32 包围盒） | server | ≈1.46 µs/op | 0 B/op | 0 allocs/op |
-| `BenchmarkHopperTick`（64 漏斗） | server | ≈22.6 µs/op | 557 B/op | 2 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈11.6 µs/op | 44 B/op | 1 allocs/op |
+| `BenchmarkItemTick`（128 掉落物） | server | ≈34.1 µs/op | 90 B/op | 2 allocs/op |
+| `BenchmarkItemMergeScan`（256 掉落物） | server | ≈87.5 µs/op | 13.7 KB/op | 214 allocs/op |
+| `BenchmarkEntityInsideBlocks`（32 包围盒） | server | ≈1.35 µs/op | 0 B/op | 0 allocs/op |
+| `BenchmarkHopperTick`（64 漏斗） | server | ≈18.8 µs/op | 557 B/op | 2 allocs/op |
 | `BenchmarkHopperChunkScan`（1 区块 16 漏斗） | server | ≈36.4 µs/op | 720 B/op | 4 allocs/op |
 | `BenchmarkHopperScan`（64 漏斗全量扫描） | server | ≈251 µs/op | 3.0 KB/op | 7 allocs/op |
+| `BenchmarkFindPath`（绕墙 ≈32 步） | world | ≈7.6 µs/op | 769 B/op | 1 allocs/op |
+| `BenchmarkFindPathUnreachable`（512 节点耗尽） | world | ≈16.5 µs/op | 0 B/op | 0 allocs/op |
+| `BenchmarkCollides`（单盒相交检测） | world | ≈50.1 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkClipMove`（单轴扫掠裁剪） | world | ≈94.2 ns/op | 0 B/op | 0 allocs/op |
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
 增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
@@ -65,13 +70,14 @@ go test -run=^$ -bench=. -benchmem ./...
 - `BenchmarkEncodeEntityPositionSync` / `BenchmarkEncodeAddEntity`：高频实体包的编码成本
   （含 LpVec3）。
 - `BenchmarkServerTick`：`Server.tick()` 一次，含 32 只僵尸的游荡移动、受阻时的
-  A* 寻路（4 邻接地表网格，512 节点上限）与广播筛选，以及实体进入方块（压力板）
-  扫描与经验球 Tick；场景中无玩家（走游荡分支、无经验球）。
-  开阔地形走直线（与寻路引入前同量级成本），分配主要来自寻路搜索的临时结构；
-  按 20 TPS 折算 32 生物约 0.51 ms/s。**不覆盖**追击/攻击分支、区块加载/保存、
+  A* 寻路（4 邻接地表网格，512 节点上限，复用搜索工作区）与广播筛选，以及实体
+  进入方块（压力板）扫描与经验球 Tick；场景中无玩家（走游荡分支、无经验球）。
+  开阔地形走直线（与寻路引入前同量级成本），每帧仅 1 次分配（寻路返回的路径）；
+  按 20 TPS 折算 32 生物约 0.23 ms/s。**不覆盖**追击/攻击分支、区块加载/保存、
   玩家会话与网络发送。
 - `BenchmarkItemTick`：`Server.tick()` 一次，含 128 个掉落物的年龄/拾取延迟、
-  重力与摩擦、合并扫描与拾取判定；场景中无玩家（走不拾取分支）。
+  重力与摩擦、合并扫描（每 4 tick 一轮，空间索引）与拾取判定；场景中无玩家
+  （走不拾取分支）。
 - `BenchmarkEntityInsideBlocks`：对 32 个生物包围盒各调用一次实体进入方块扫描
   （普通地表、无压力板），覆盖区块解析、按列批量读取与状态数组过滤的常见路径
   （≈46 ns/包围盒、零分配）。
@@ -82,6 +88,13 @@ go test -run=^$ -bench=. -benchmem ./...
   16 个漏斗逐个注册），成本与新增区块数成正比（≈36.4 µs/区块）。
 - `BenchmarkHopperScan`：600 tick 一次的全量扫描兜底（64 漏斗 + 64 箱子场景），
   按 20 TPS 折算均值 ≈0.42 µs/tick（见 3.16）。
+- `BenchmarkItemMergeScan`：256 个掉落物按 0.5 格间距密集排布（同类型间距
+  1.0 格超出合并半径，种群稳定不合并），覆盖“密集物品”下每 4 tick 一轮的
+  合并扫描（空间索引重建 + 逐物品邻桶扫描），见 3.17。
+- `BenchmarkFindPath` / `BenchmarkFindPathUnreachable`：A* 寻路的单次成本
+  （绕墙 ≈32 步；目标不可达时 512 节点耗尽的最坏情形），见 3.17。
+- `BenchmarkCollides` / `BenchmarkClipMove`：单个实体碰撞盒的相交检测与
+  单轴扫掠裁剪（普通地表），见 3.17。
 
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
 按编码 49 µs/区块计算约 22 ms 纯编码时间（不含地形生成与网络 IO）。
@@ -584,11 +597,64 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
   5 次采样区间重叠（基线 26.6–28.2 µs，本批 25.8–29.8 µs），差异在当前测量
   噪声范围内。
 
-## 4. 尚未覆盖- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
+### 3.17 Tick 热路径：寻路、列读取、切片复用与合并索引（本批，实测）
+
+本批以 CPU + 分配 profile 定位（当前代码未优化前：`FindPath` 占服务器 Tick CPU
+的 50%，`tickMobs` 占分配的 49.6%，`mergeItems` 全表扫描与逐格 `BlockAt` 的
+锁竞争次之），做了四组独立优化。同机、同基准、`-count=3` 中位数对照（基线
+=34fad95）：
+
+| 基准 | 优化前 | 优化后 | 变化 |
+| --- | --- | --- | --- |
+| `BenchmarkFindPath` | 78.0 µs/op，969 allocs | 7.6 µs/op，1 allocs | ≈10.2× |
+| `BenchmarkFindPathUnreachable` | 171.7 µs/op，2028 allocs | 16.5 µs/op，0 allocs | ≈10.4× |
+| `BenchmarkServerTick`（32 生物） | 25.8 µs/op，82–95 allocs | 11.6 µs/op，1 allocs | ≈2.2× |
+| `BenchmarkItemTick`（128 掉落物） | 77.9 µs/op | 34.1 µs/op | ≈2.3× |
+| `BenchmarkItemMergeScan`（256 掉落物） | 243.5 µs/op，232 allocs | 87.5 µs/op，214 allocs | ≈2.8× |
+| `BenchmarkHopperTick`（64 漏斗） | 21.1 µs/op | 18.8 µs/op | ≈11% |
+| `BenchmarkCollides` | 136.8 ns/op | 50.1 ns/op | ≈2.7× |
+| `BenchmarkClipMove` | 269.4 ns/op | 94.2 ns/op | ≈2.9× |
+
+1. **A* 寻路重写**（`internal/world/pathfind.go`）：原实现每节点分配
+   `*pathInfo`（map 指针值）+ `container/heap` 接口装箱（Pop/Push 经由 `any`），
+   不可达情形单次搜索分配 169 KB。新实现：
+   - 用 `sync.Pool` 复用搜索工作区（开放寻址哈希表 + 显式二叉堆，无接口装箱）；
+   - 表按 (x, z) 索引——网格对同一列总是返回同一个脚部 Y，因此每列（含不可行走
+     的列）每次搜索最多查询一次网格，消除了扩展时对同一列的重复 `ColumnAt`；
+   - 世代号区分两次搜索的表内容，避免每次清零；容量按最大插入量推导，
+     保证探测不会遇到满表；
+   - 返回路径仍为新分配切片（调用方持有），单次搜索 1 allocs。
+2. **区块读取快路径**：`Chunk.Column` 缓存命中改走读锁（原先逐次排他锁）；
+   `World.ChunkLoaded` 改读锁；`World.worldFor` 增加已创建维度的读锁快路径
+   （原先每实体每帧一次排他锁 + map）——三者都在 tick 热路径上（寻路网格、
+   掉落物/经验球的区块冻结检查、逐实体取世界）。
+3. **Tick 临时切片复用**：`tickMobs`/`tickItems`/`tickXPOrbs` 的 pending 切片
+   （移动/移除/拾取/压力板通知等）原为每帧重新分配，现改为 `Server.tickScratch`
+   复用缓冲（入口截断、退出写回；tick 由单 goroutine 驱动）。
+4. **掉落物/经验球合并空间索引**：`mergeItems` 原为每物品全表 `for range s.items`
+   扫描（O(n²)，且 map 迭代本身开销高于实际合并判定）。改为桶格 2×2 的空间
+   索引：每合并帧重建一次（桶切片跨帧复用，映射膨胀时换新防无界增长），
+   扫描时按 3×3 邻桶取候选；索引是建桶时刻快照，已被合并掉的条目通过
+   “仍在本表”校验跳过。桶格 2 格 + 邻域 1 格保证相对水平位移远小于 3 格/帧
+   的候选不会漏检。经验球合并（`mergeXPOrbs`）同策略改造。
+5. **碰撞/物理按列批量读取**：`Collides`/`ClipMove`/`SurfaceBelow` 原逐格
+   `BlockAt`（每格两次 RWMutex + 一次 map 哈希），改为按 (x, z) 列一次
+   `LoadedColumn`（区块解析一次、单次加锁、连续 y 读取）；区块不在内存时
+   回退逐格查询，保持按需加载语义。另将掉落物 Tick 中破坏性方块与水中
+   判定合并为同一次读取。
+
+正确性：`./scripts/test.sh`（gofmt/build/vet/test/race）全绿；新增三个合并
+回归测试（`TestItemMergeAcrossBuckets`、`TestItemMergeStableWithFullStack`、
+`TestXPOrbMergeAcrossBuckets`）与两组寻路基准；协议输出与游戏行为不变。
+
+## 4. 尚未覆盖
+
+- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家与 100 玩家 × 5 分钟 loopback 压测
   （见 3.7、3.13），真实网络 / 真实客户端渲染仍待验证
 - `go tool trace` 调度与阻塞分析
 - 区块保存/加载（区域文件读写）路径的 benchmark
 - 端到端连接压测（真实 socket + 加密 + 多包交织；当前仅覆盖编解码与压缩）
 - 内存随在线时长/跑图的持续观测（当前仅区块卸载演示与快照测量）
-- 掉落物高密度场景（数百掉落物的物理与广播）与长时间运行的内存增长观测
+- 掉落物高密度场景的物理与广播（合并扫描已有 `BenchmarkItemMergeScan` 覆盖，
+  见 3.17；广播路径与长时间运行的内存增长仍待观测）

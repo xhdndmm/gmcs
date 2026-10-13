@@ -229,6 +229,12 @@
   区块加载时增量注册（`world.TakeLoadedChunks` + 单区块扫描）、
   卸载时丢弃注册、每 600 tick 全量扫描兜底
   （`TestHopper*`/`TestChunkLoadTracking`/`TestChunkBlockStatePositions`）
+- [x] Tick 热路径优化（以 CPU/分配 profile 定位，实测见 docs/PERFORMANCE.md 3.17）：
+  A* 寻路改为复用工作区（开放寻址表 + 显式堆，无逐节点堆分配与接口装箱；
+  单次搜索 78 µs→7.6 µs、969→1 allocs）；`Chunk.Column`/`ChunkLoaded`/`worldFor`
+  读锁快路径；tickMobs/tickItems/tickXPOrbs 临时切片复用（ServerTick 85→1 allocs）；
+  掉落物/经验球合并改为空间索引（逐物品全表 O(n²) → 3×3 邻桶，256 物品
+  243→87 µs）；碰撞查询按列批量读取（Collides 137→50 ns、ClipMove 269→94 ns）
 
 ## 待完成
 
