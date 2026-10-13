@@ -141,7 +141,7 @@ func (s *Server) hopperBlockEntityLocked(state *hopperState) world.BlockEntity {
 		Items:  make([]world.ContainerItem, hopperSlots),
 	}
 	for i, stack := range state.slots {
-		entity.Items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count}
+		entity.Items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID}
 	}
 	return entity
 }
@@ -365,7 +365,7 @@ func (s *Server) hopperPush(state *hopperState, facing string) bool {
 		if stack.IsEmpty() {
 			continue
 		}
-		taken := item.Stack{ItemID: stack.ItemID, Count: 1}
+		taken := item.Stack{ItemID: stack.ItemID, Count: 1, PotionID: stack.PotionID}
 		leftover := target.insert(taken, direction)
 		if !leftover.IsEmpty() {
 			continue // 该槽位物品放不进去：尝试下一个槽位
@@ -403,7 +403,7 @@ func (s *Server) hopperSuck(state *hopperState, w *world.World) bool {
 			if !ok {
 				continue // 漏斗放不下这种物品：尝试下一个槽位（原版行为）
 			}
-			taken := item.Stack{ItemID: stack.ItemID, Count: 1}
+			taken := item.Stack{ItemID: stack.ItemID, Count: 1, PotionID: stack.PotionID}
 			target.removeOne(index)
 			hopperInsertAt(state, slot, taken)
 			target.commit()
@@ -522,7 +522,7 @@ func hopperAcceptSlot(state *hopperState, stack item.Stack) (int, bool) {
 		if existing.IsEmpty() {
 			return i, true
 		}
-		if existing.ItemID == stack.ItemID && existing.Count < existing.MaxStack() {
+		if existing.SameKind(stack) && existing.Count < existing.MaxStack() {
 			return i, true
 		}
 	}
@@ -552,7 +552,7 @@ func hopperInsert(state *hopperState, stack item.Stack) item.Stack {
 			state.slots[i] = stack
 			return item.Empty()
 		}
-		if existing.ItemID != stack.ItemID {
+		if !existing.SameKind(stack) {
 			continue
 		}
 		limit := existing.MaxStack()
@@ -579,6 +579,9 @@ const (
 	transferHopper
 	// transferFurnace 是熔炉类（上方只能进原料、侧面只能进燃料、产物槽只出不进）。
 	transferFurnace
+	// transferBrewing 是酿造台（上方只能进材料；侧面/下方可抽瓶子，
+	// 下方还可抽材料槽的玻璃瓶）。
+	transferBrewing
 )
 
 // transferSlotIndices 是槽位下标表（供箱子类/漏斗返回全部槽位）。
@@ -670,6 +673,17 @@ func (t *transferTarget) slotsForFace(dir string) []int {
 		default:
 			return []int{1}
 		}
+	case transferBrewing:
+		// 原版 BrewingStandBlockEntity.getSlotsForFace：上方只进材料，
+		// 下方可抽三个瓶子与材料，其余面可抽瓶子与燃料。
+		switch dir {
+		case "up":
+			return []int{3}
+		case "down":
+			return []int{0, 1, 2, 3}
+		default:
+			return []int{0, 1, 2, 4}
+		}
 	default:
 		return transferSlotIndices[:len(t.items)]
 	}
@@ -677,22 +691,44 @@ func (t *transferTarget) slotsForFace(dir string) []int {
 
 // canPlace 报告槽位是否可插入该物品（原版 canPlaceItem）。
 func (t *transferTarget) canPlace(index int, stack item.Stack) bool {
-	if t.kind != transferFurnace {
+	switch t.kind {
+	case transferFurnace:
+		switch index {
+		case 1:
+			// 燃料槽只接受燃料（原版 isFuel）。
+			return registry.FuelBurnTicks(stack.ItemID) > 0
+		case 2:
+			return false // 产物槽不可插入
+		}
 		return true
-	}
-	switch index {
-	case 1:
-		// 燃料槽只接受燃料（原版 isFuel）。
-		return registry.FuelBurnTicks(stack.ItemID) > 0
-	case 2:
-		return false // 产物槽不可插入
+	case transferBrewing:
+		// 对照原版 BrewingStandBlockEntity.canPlaceItem。
+		switch index {
+		case 0, 1, 2:
+			if !registry.BrewingIsContainerItem(stack.ItemID) && stack.ItemID != glassBottleItemID {
+				return false
+			}
+			return t.items[index].IsEmpty()
+		case 3:
+			return registry.BrewingIsIngredient(stack.ItemID)
+		case 4:
+			return stack.ItemID == blazePowderItemID
+		}
+		return true
 	}
 	return true
 }
 
 // canTake 报告槽位是否可被抽出（原版 canTakeItemThroughFace；
-// 漏斗从下方抽取熔炉燃料槽时，空桶/水桶等桶装物不可抽走）。
+// 漏斗从下方抽取熔炉燃料槽时，空桶/水桶等桶装物不可抽走；
+// 从下方抽取酿造台材料槽时只允许玻璃瓶）。
 func (t *transferTarget) canTake(index int, stack item.Stack) bool {
+	if t.kind == transferBrewing {
+		if index == 3 {
+			return stack.ItemID == glassBottleItemID
+		}
+		return true
+	}
 	if t.kind != transferFurnace || index != 1 {
 		return true
 	}
@@ -729,7 +765,7 @@ func (t *transferTarget) insert(stack item.Stack, dir string) item.Stack {
 			t.markTouched(index)
 			return item.Empty()
 		}
-		if existing.ItemID != stack.ItemID || !t.canPlace(index, stack) {
+		if !existing.SameKind(stack) || !t.canPlace(index, stack) {
 			continue
 		}
 		limit := existing.MaxStack()
@@ -805,6 +841,19 @@ func (s *Server) acquireTransferTarget(dim world.Dimension, pos [3]int) *transfe
 		}
 		furnace.mu.Unlock()
 		return target
+	case name == brewingStandBlockName:
+		brewing := s.registerBrewing(dim, pos[0], pos[1], pos[2])
+		if brewing == nil {
+			return nil
+		}
+		brewing.mu.Lock()
+		target := &transferTarget{
+			kind:  transferBrewing,
+			items: append([]item.Stack(nil), brewing.slots[:]...),
+			inner: &brewingTransferCommit{server: s, state: brewing},
+		}
+		brewing.mu.Unlock()
+		return target
 	default:
 		def, known := s.containerDefs[name]
 		if !known || def.IsFurnace {
@@ -848,7 +897,7 @@ func (s *Server) acquireChestTarget(dim world.Dimension, pos [3]int, def *contai
 	slots := make([]item.Stack, def.Slots)
 	for i := range slots {
 		if i < len(entity.Items) {
-			slots[i] = item.Stack{ItemID: entity.Items[i].ItemID, Count: entity.Items[i].Count}
+			slots[i] = item.Stack{ItemID: entity.Items[i].ItemID, Count: entity.Items[i].Count, PotionID: entity.Items[i].PotionID}
 		}
 	}
 	return &transferTarget{
@@ -913,6 +962,29 @@ func (c *furnaceTransferCommit) setHopperCooldown(int64) {}
 
 func (c *furnaceTransferCommit) close() {}
 
+// brewingTransferCommit 提交对酿造台目标的事务。
+type brewingTransferCommit struct {
+	server *Server
+	state  *brewingState
+}
+
+func (c *brewingTransferCommit) apply(target *transferTarget) {
+	c.state.mu.Lock()
+	for _, index := range target.touched {
+		if index < len(c.state.slots) {
+			c.state.slots[index] = target.items[index]
+		}
+	}
+	c.state.dirty = true
+	c.state.mu.Unlock()
+	c.server.flushBrewing(c.state)
+	c.server.refreshBrewingWindow(c.state)
+}
+
+func (c *brewingTransferCommit) setHopperCooldown(int64) {}
+
+func (c *brewingTransferCommit) close() {}
+
 // chestTransferCommit 提交对“已打开窗口”的箱子类容器事务。
 type chestTransferCommit struct {
 	server    *Server
@@ -962,7 +1034,7 @@ func (c *chestEntityTransferCommit) apply(target *transferTarget) {
 		Items:  make([]world.ContainerItem, len(target.items)),
 	}
 	for i, stack := range target.items {
-		entity.Items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count}
+		entity.Items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID}
 	}
 	if err := c.server.worldFor(c.dim).SetBlockEntity(c.pos[0], c.pos[1], c.pos[2], entity); err != nil {
 		slog.Error("写回容器内容失败", "x", c.pos[0], "y", c.pos[1], "z", c.pos[2], "error", err)

@@ -98,6 +98,16 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 6664, Props: map[string]string{"powered": "true"}},
 		{ID: 6665, Props: map[string]string{"powered": "false"}},
 	},
+	"minecraft:brewing_stand": {
+		{ID: 9251, Props: map[string]string{"has_bottle_0": "true", "has_bottle_1": "true", "has_bottle_2": "true"}},
+		{ID: 9252, Props: map[string]string{"has_bottle_0": "true", "has_bottle_1": "true", "has_bottle_2": "false"}},
+		{ID: 9253, Props: map[string]string{"has_bottle_0": "true", "has_bottle_1": "false", "has_bottle_2": "true"}},
+		{ID: 9254, Props: map[string]string{"has_bottle_0": "true", "has_bottle_1": "false", "has_bottle_2": "false"}},
+		{ID: 9255, Props: map[string]string{"has_bottle_0": "false", "has_bottle_1": "true", "has_bottle_2": "true"}},
+		{ID: 9256, Props: map[string]string{"has_bottle_0": "false", "has_bottle_1": "true", "has_bottle_2": "false"}},
+		{ID: 9257, Props: map[string]string{"has_bottle_0": "false", "has_bottle_1": "false", "has_bottle_2": "true"}},
+		{ID: 9258, Props: map[string]string{"has_bottle_0": "false", "has_bottle_1": "false", "has_bottle_2": "false"}},
+	},
 	"minecraft:cherry_button": {
 		{ID: 10593, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
 		{ID: 10594, Props: map[string]string{"face": "floor", "facing": "north", "powered": "false"}},

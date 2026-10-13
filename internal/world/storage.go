@@ -88,14 +88,16 @@ func ReleaseRegionHandles() {
 //
 // 区块负载为 gmcs 自有格式（不是原版 NBT，不能与原版互读）：
 //
-//		magic "GMCS" (4B) | version u16 | x i32 | z i32 | 24 × section
-//		section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
-//		(version 4+) 16 × u16 群系网格（4×4 列分辨率，索引见 biomeCellIndex）
-//		(version 2+) blockEntityCount varint | 每项: packedXZ u8 | y i16 | type varint//     | slotCount varint | slotCount × (itemID varint, count varint)
-//	  (version 3+) 熔炉类方块实体追加: burnRemaining varint | burnTotal varint
-//	    | cookProgress varint | cookTotal varint//	                                          | itemCount varint | (itemID varint | count varint)*
+//	magic "GMCS" (4B) | version u16 | x i32 | z i32 | 24 × section
+//	section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
+//	(version 4+) 16 × u16 群系网格（4×4 列分辨率，索引见 biomeCellIndex）
+//	(version 2+) blockEntityCount varint | 每项: index uvarint | type varint
+//	  | slotCount varint | slotCount × (itemID varint, count varint[, potionID varint])
+//	  | (version 3+) burnRemaining | burnTotal | cookProgress | cookTotal（均为 varint）
+//	  | (version 5+) brewTime | brewFuel（均为 varint）
 //
-// version 1 的负载不含方块实体（读取时视为空），version 2 起追加。
+// version 1 的负载不含方块实体（读取时视为空），version 2 起追加；
+// version 5 起槽位携带药水 ID、方块实体携带酿造台进度。
 // 所有多字节整数均为大端；负载使用 zlib 压缩（区域文件压缩类型 2）。
 const (
 	regionShift   = 5
@@ -103,8 +105,9 @@ const (
 	sectorSize    = 4096
 	headerSectors = 2
 	// chunkVersion 是当前存储负载版本：v2 追加方块实体，v3 追加熔炉进度，
-	// v4 追加 4×4 群系网格（section 内的 biome 字段仅作兼容保留）。
-	chunkVersion = 4
+	// v4 追加 4×4 群系网格（section 内的 biome 字段仅作兼容保留），
+	// v5 追加槽位药水 ID 与酿造台进度。
+	chunkVersion = 5
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 )
@@ -429,17 +432,21 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 		// 导致重新加载后按世界 Y 查询不到方块实体。
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(index)))
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(int64(entity.TypeID))))
-		// 槽位数量与内容。
+		// 槽位数量与内容（v5 起含药水 ID）。
 		offset += binary.PutUvarint(dst[offset:], uint64(len(entity.Items)))
 		for _, slot := range entity.Items {
 			offset += binary.PutUvarint(dst[offset:], uint64(uint32(slot.ItemID)))
 			offset += binary.PutUvarint(dst[offset:], uint64(slot.Count))
+			offset += binary.PutUvarint(dst[offset:], uint64(uint32(slot.PotionID)))
 		}
 		// 熔炉类进度（非熔炉为 0，仍写出以保证格式统一）。
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BurnRemaining)))
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BurnTotal)))
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.CookProgress)))
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.CookTotal)))
+		// 酿造台进度（v5；非酿造台为 0，仍写出以保证格式统一）。
+		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BrewTime)))
+		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BrewFuel)))
 	}
 	return offset
 }
@@ -542,7 +549,8 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 	return chunk, nil
 }
 
-// decodeBlockEntities 解析版本 2+ 负载中的方块实体部分（v3 起含熔炉进度）。
+// decodeBlockEntities 解析版本 2+ 负载中的方块实体部分
+// （v3 起含熔炉进度，v5 起槽位含药水 ID 且含酿造台进度）。
 func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint16) (int, error) {
 	count, size := binary.Uvarint(payload[offset:])
 	if size <= 0 {
@@ -597,7 +605,15 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint1
 					return 0, fmt.Errorf("容器槽位数量无效")
 				}
 				offset += size
-				entity.Items[slot] = ContainerItem{ItemID: int32(itemID), Count: int32(itemCount)}
+				potionID := uint64(0)
+				if version >= 5 {
+					potionID, size = binary.Uvarint(payload[offset:])
+					if size <= 0 {
+						return 0, fmt.Errorf("容器槽位药水 ID 无效")
+					}
+					offset += size
+				}
+				entity.Items[slot] = ContainerItem{ItemID: int32(itemID), Count: int32(itemCount), PotionID: int32(potionID)}
 			}
 		}
 		if version >= 3 {
@@ -612,6 +628,18 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint1
 			}
 			entity.BurnRemaining, entity.BurnTotal = values[0], values[1]
 			entity.CookProgress, entity.CookTotal = values[2], values[3]
+		}
+		if version >= 5 {
+			var values [2]int32
+			for i := range values {
+				value, size := binary.Uvarint(payload[offset:])
+				if size <= 0 {
+					return 0, fmt.Errorf("酿造台进度字段无效")
+				}
+				offset += size
+				values[i] = int32(uint32(value))
+			}
+			entity.BrewTime, entity.BrewFuel = values[0], values[1]
 		}
 		if chunk.blockEntities == nil {
 			chunk.blockEntities = make(map[int]BlockEntity)

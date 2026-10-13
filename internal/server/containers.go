@@ -42,6 +42,8 @@ type containerDef struct {
 	IsFurnace bool
 	// IsHopper 标记漏斗（槽位由 hopperState 权威持有，参与物品传输 Tick）。
 	IsHopper bool
+	// IsBrewing 标记酿造台（槽位由 brewingState 权威持有，参与酿造 Tick）。
+	IsBrewing bool
 }
 
 // containerKey 是容器在某个维度中的方块坐标。
@@ -60,7 +62,9 @@ type containerState struct {
 	furnace *furnaceState
 	// hopper 非空时表示漏斗：槽位由 hopperState 权威持有（与传输 Tick 共享）。
 	hopper *hopperState
-	slots  []item.Stack
+	// brewing 非空时表示酿造台：槽位与进度由 brewingState 权威持有（与酿造 Tick 共享）。
+	brewing *brewingState
+	slots   []item.Stack
 	// viewers 是当前打开该容器的玩家会话。
 	viewers map[*session]struct{}
 	// closed 表示容器方块已被破坏（窗口数据不再有效）。
@@ -126,6 +130,13 @@ func (s *Server) resolveContainerDefs() {
 	addFurnace("minecraft:furnace", "minecraft:furnace", "minecraft:furnace", "Furnace", registry.CookingSmelting)
 	addFurnace("minecraft:blast_furnace", "minecraft:blast_furnace", "minecraft:blast_furnace", "Blast Furnace", registry.CookingBlasting)
 	addFurnace("minecraft:smoker", "minecraft:smoker", "minecraft:smoker", "Smoker", registry.CookingSmoking)
+	// 酿造台：5 槽（3 瓶子 + 材料 + 燃料）；槽位由 brewingState 权威持有。
+	if def, ok := resolveContainerDef("minecraft:brewing_stand", "minecraft:brewing_stand", "minecraft:brewing_stand", "Brewing Stand", brewingSlots); ok {
+		def.IsBrewing = true
+		defs["minecraft:brewing_stand"] = def
+	} else {
+		slog.Warn("容器类型不可用：注册表数据缺失", "block", "minecraft:brewing_stand")
+	}
 	for _, name := range []string{
 		"minecraft:shulker_box",
 		"minecraft:white_shulker_box", "minecraft:orange_shulker_box", "minecraft:magenta_shulker_box",
@@ -182,7 +193,7 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 		if i < len(state.Items) {
 			slot := state.Items[i]
 			if !slot.IsEmpty() {
-				items[i] = item.Stack{ItemID: slot.ItemID, Count: slot.Count}
+				items[i] = item.Stack{ItemID: slot.ItemID, Count: slot.Count, PotionID: slot.PotionID}
 			}
 		}
 	}
@@ -203,6 +214,13 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 			container.slots = container.hopper.slots[:]
 		}
 	}
+	if def.IsBrewing {
+		container.brewing = s.registerBrewing(dim, x, y, z)
+		if container.brewing != nil {
+			// 槽位统一由 brewingState 持有（酿造 Tick 与窗口共用一份状态）。
+			container.slots = container.brewing.slots[:]
+		}
+	}
 	player.openContainer = container
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
@@ -211,6 +229,10 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 		return
 	}
 	s.sendContainerContent(player, container)
+	if container.brewing != nil {
+		// 打开窗口时下发初始酿造进度与燃料次数。
+		s.sendBrewingProperties(player, container.brewing)
+	}
 	// 开合动画广播给附近所有玩家（包括打开者本人）。
 	s.broadcastContainerAction(container, true, nil)
 }
@@ -273,10 +295,13 @@ func (s *Server) closeContainer(player *session, sendClose bool) {
 	container.mu.Unlock()
 
 	if !closed {
-		// 容器仍有效：把内容写回区块（熔炉额外写回燃烧/烹饪进度）。
-		if container.furnace != nil {
+		// 容器仍有效：把内容写回区块（熔炉/酿造台额外写回进度）。
+		switch {
+		case container.furnace != nil:
 			s.flushFurnace(container.furnace)
-		} else {
+		case container.brewing != nil:
+			s.flushBrewing(container.brewing)
+		default:
 			s.flushContainer(container)
 		}
 	}
@@ -329,6 +354,14 @@ func (s *Server) destroyContainer(dim world.Dimension, breaker *session, x, y, z
 			}
 			container.furnace.dirty = true
 			container.furnace.mu.Unlock()
+		case container.brewing != nil:
+			// 酿造台槽位同理由 brewingState 权威持有（与酿造 Tick 共用）。
+			container.brewing.mu.Lock()
+			for i := range container.brewing.slots {
+				container.brewing.slots[i] = item.Empty()
+			}
+			container.brewing.dirty = true
+			container.brewing.mu.Unlock()
 		default:
 			for i := range container.slots {
 				container.slots[i] = item.Empty()
@@ -431,7 +464,7 @@ func (s *Server) flushContainer(container *containerState) {
 	container.mu.Lock()
 	items := make([]world.ContainerItem, len(container.slots))
 	for i, stack := range container.slots {
-		items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count}
+		items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID}
 	}
 	dim := container.dim
 	pos := container.pos
@@ -458,7 +491,7 @@ func (s *Server) dropContainerContents(dim world.Dimension, x, y, z int, def *co
 		if slot.IsEmpty() {
 			continue
 		}
-		stack := item.Stack{ItemID: slot.ItemID, Count: slot.Count}
+		stack := item.Stack{ItemID: slot.ItemID, Count: slot.Count, PotionID: slot.PotionID}
 		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		s.spawnItem(dim, stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayPlayer)
@@ -600,6 +633,9 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 		} else if container.hopper != nil {
 			// 漏斗槽位由 hopperState 权威持有（与传输 Tick 共享同一份状态）。
 			backing = hopperSlotBacking{server: s, player: player, state: container.hopper}
+		} else if container.brewing != nil {
+			// 酿造台槽位由 brewingState 权威持有（与酿造 Tick 共享同一份状态）。
+			backing = brewingSlotBacking{server: s, player: player, state: container.brewing}
 		} else {
 			backing = containerSlotBacking{server: s, player: player, container: container}
 		}
@@ -670,12 +706,27 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 // containerReach 是打开容器后允许的最大距离（与原版 8 格一致的近似值）。
 const containerReach = 8.0
 
+// slotPlacer 是可选接口：窗口 backing 可限制可放入槽位的物品
+// （原版 Slot.mayPlace）。仅“放入/交换”路径调用；取出不受限。
+type slotPlacer interface {
+	CanPlace(slot int, stack item.Stack) bool
+}
+
+// canPlaceInto 检查 backing 是否允许把 stack 放入槽位（未实现 slotPlacer 时恒允许）。
+func canPlaceInto(backing slotBacking, slot int, stack item.Stack) bool {
+	placer, ok := backing.(slotPlacer)
+	if !ok || stack.IsEmpty() {
+		return true
+	}
+	return placer.CanPlace(slot, stack)
+}
+
 // applyContainerClick 在 working 副本上执行一次点击，返回新的光标物品。
 // 行为对齐原版 AbstractContainerMenu#doClick 的主要模式。
 func (s *Server) applyContainerClick(player *session, backing slotBacking, working []item.Stack, cursor item.Stack, click protocol.ContainerClick) item.Stack {
 	slot := int(click.Slot)
 	if click.Mode == protocol.ClickModeQuickCraft {
-		return s.applyQuickCraft(player, working, cursor, click)
+		return s.applyQuickCraft(player, backing, working, cursor, click)
 	}
 	if slot < 0 || slot >= len(working) || !backing.Supported(slot) {
 		return cursor
@@ -686,10 +737,11 @@ func (s *Server) applyContainerClick(player *session, backing slotBacking, worki
 	}
 	switch click.Mode {
 	case protocol.ClickModePickup:
+		canPlace := func(stack item.Stack) bool { return canPlaceInto(backing, slot, stack) }
 		if click.MouseButton == 0 {
-			return clickPickupLeft(working, slot, cursor, limit)
+			return clickPickupLeft(working, slot, cursor, limit, canPlace)
 		}
-		return clickPickupRight(working, slot, cursor, limit)
+		return clickPickupRight(working, slot, cursor, limit, canPlace)
 	case protocol.ClickModeQuickMove:
 		quickMove(player, backing, working, slot)
 		return cursor
@@ -700,6 +752,10 @@ func (s *Server) applyContainerClick(player *session, backing slotBacking, worki
 		}
 		hotbarSlot := swapHotbarIndex(backing, hotbar)
 		if hotbarSlot < 0 || hotbarSlot == slot {
+			return cursor
+		}
+		// 快捷栏物品将被换入槽位：按原版 Slot.mayPlace 校验。
+		if !canPlaceInto(backing, slot, working[hotbarSlot]) {
 			return cursor
 		}
 		working[hotbarSlot], working[slot] = working[slot], working[hotbarSlot]
@@ -749,6 +805,8 @@ func swapHotbarIndex(backing slotBacking, hotbar int) int {
 		return 37 + hotbar
 	case furnaceSlotBacking:
 		return 30 + hotbar
+	case brewingSlotBacking:
+		return brewingSlots + 27 + hotbar
 	case enderSlotBacking:
 		return enderChestSlots + 27 + hotbar
 	case stonecutterSlotBacking:
@@ -760,16 +818,20 @@ func swapHotbarIndex(backing slotBacking, hotbar int) int {
 }
 
 // clickPickupLeft 处理左键取放（mode 0、button 0）。
-func clickPickupLeft(working []item.Stack, slot int, cursor item.Stack, limit int32) item.Stack {
+// canPlace 在“放入/交换”时校验目标槽位是否接受该物品（原版 Slot.mayPlace）。
+func clickPickupLeft(working []item.Stack, slot int, cursor item.Stack, limit int32, canPlace func(item.Stack) bool) item.Stack {
 	current := working[slot]
 	switch {
 	case cursor.IsEmpty():
 		working[slot] = item.Empty()
 		return current
 	case current.IsEmpty():
+		if !canPlace(cursor) {
+			return cursor
+		}
 		working[slot] = cursor
 		return item.Empty()
-	case current.ItemID == cursor.ItemID:
+	case current.SameKind(cursor):
 		space := limit - current.Count
 		moved := min(space, cursor.Count)
 		current.Count += moved
@@ -780,13 +842,16 @@ func clickPickupLeft(working []item.Stack, slot int, cursor item.Stack, limit in
 		}
 		return cursor
 	default:
+		if !canPlace(cursor) {
+			return cursor
+		}
 		working[slot] = cursor
 		return current
 	}
 }
 
 // clickPickupRight 处理右键取放（mode 0、button 1）：取一半 / 放一个。
-func clickPickupRight(working []item.Stack, slot int, cursor item.Stack, limit int32) item.Stack {
+func clickPickupRight(working []item.Stack, slot int, cursor item.Stack, limit int32, canPlace func(item.Stack) bool) item.Stack {
 	current := working[slot]
 	switch {
 	case cursor.IsEmpty():
@@ -805,13 +870,16 @@ func clickPickupRight(working []item.Stack, slot int, cursor item.Stack, limit i
 	case current.IsEmpty():
 		placed := cursor
 		placed.Count = 1
+		if !canPlace(placed) {
+			return cursor
+		}
 		cursor.Count--
 		working[slot] = placed
 		if cursor.Count <= 0 {
 			return item.Empty()
 		}
 		return cursor
-	case current.ItemID == cursor.ItemID && current.Count < limit:
+	case current.SameKind(cursor) && current.Count < limit:
 		current.Count++
 		cursor.Count--
 		working[slot] = current
@@ -833,7 +901,7 @@ func clickPickupAll(working []item.Stack, cursor item.Stack, limit int32) item.S
 			break
 		}
 		stack := working[i]
-		if stack.IsEmpty() || stack.ItemID != cursor.ItemID {
+		if stack.IsEmpty() || !stack.SameKind(cursor) {
 			continue
 		}
 		moved := min(limit-cursor.Count, stack.Count)
@@ -863,7 +931,7 @@ func quickCraftStage(button int8) int { return int(button) & 3 }
 // 的 QUICK_CRAFT 分支：阶段序列非法或光标为空时放弃这次拖拽（客户端在窗口外
 // 按住鼠标拖动会发 slot=-999 的开始包，此时光标通常为空）；只有“经过”阶段才
 // 解析槽位（结束阶段的 slot=-999 表示鼠标在窗口外释放）。
-func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor item.Stack, click protocol.ContainerClick) item.Stack {
+func (s *Server) applyQuickCraft(player *session, backing slotBacking, working []item.Stack, cursor item.Stack, click protocol.ContainerClick) item.Stack {
 	stage := quickCraftStage(click.MouseButton)
 	previous := 0
 	if player.drag != nil {
@@ -930,10 +998,12 @@ func (s *Server) applyQuickCraft(player *session, working []item.Stack, cursor i
 			stack := working[index]
 			current := int32(0)
 			if !stack.IsEmpty() {
-				if stack.ItemID != cursor.ItemID {
+				if !stack.SameKind(cursor) {
 					continue
 				}
 				current = stack.Count
+			} else if !canPlaceInto(backing, index, cursor) {
+				continue // 目标槽不接受该物品（原版 Slot.mayPlace）
 			}
 			target := perSlot + current
 			if limit := cursor.MaxStack(); target > limit {
@@ -1012,6 +1082,17 @@ func quickMoveTargets(backing slotBacking, slot int) [][2]int {
 			return [][2]int{{3, 30}}
 		}
 		return nil
+	case brewingSlotBacking:
+		if slot < brewingSlots {
+			return [][2]int{{brewingSlots, brewingSlots + 27}, {brewingSlots + 27, brewingSlots + 36}} // 酿造槽 → 背包
+		}
+		switch {
+		case slot >= brewingSlots && slot <= brewingSlots+26: // 主背包 → 快捷栏
+			return [][2]int{{brewingSlots + 27, brewingSlots + 36}}
+		case slot >= brewingSlots+27 && slot <= brewingSlots+35: // 快捷栏 → 主背包
+			return [][2]int{{brewingSlots, brewingSlots + 27}}
+		}
+		return nil
 	case craftSlotBacking:
 		if slot == 0 {
 			return nil // 结果槽由合成路径处理
@@ -1074,7 +1155,7 @@ func mergeIntoArea(working []item.Stack, stack item.Stack, start, end int) item.
 	// 先并入同类未满堆叠。
 	for i := start; i < end && stack.Count > 0; i++ {
 		current := working[i]
-		if current.IsEmpty() || current.ItemID != stack.ItemID || current.Count >= limit {
+		if current.IsEmpty() || !current.SameKind(stack) || current.Count >= limit {
 			continue
 		}
 		moved := min(limit-current.Count, stack.Count)

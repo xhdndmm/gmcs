@@ -309,6 +309,7 @@ func (s *Server) tick() {
 	s.tickHoppers()
 	s.tickWorldTime(players)
 	s.tickFurnaces()
+	s.tickBrewingStands()
 	s.tickRedstone()
 	s.tickPortals(players)
 	s.spawnTicks++

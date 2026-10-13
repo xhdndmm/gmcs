@@ -395,7 +395,7 @@ func (s *Server) containerAnalogSignal(w *world.World, pos [3]int) int {
 			return 0
 		}
 		for i := 0; i < def.Slots && i < len(entity.Items); i++ {
-			slots[i] = item.Stack{ItemID: entity.Items[i].ItemID, Count: entity.Items[i].Count}
+			slots[i] = item.Stack{ItemID: entity.Items[i].ItemID, Count: entity.Items[i].Count, PotionID: entity.Items[i].PotionID}
 		}
 	}
 

@@ -9,10 +9,12 @@ import "gmcs/internal/protocol"
 // 「open」）。本实现只保存槽位内容（类型由方块本身决定），不保存自定义名称、
 // 锁定标记等原版字段。
 
-// ContainerItem 是容器槽位中的物品（物品注册表 ID + 数量）。
+// ContainerItem 是容器槽位中的物品（物品注册表 ID + 数量 + 药水内容）。
 type ContainerItem struct {
 	ItemID int32
 	Count  int32
+	// PotionID 是药水内容覆盖（0 = 无；N > 0 表示药水注册表 ID N-1）。
+	PotionID int32
 }
 
 // IsEmpty 报告槽位是否为空。
@@ -32,11 +34,15 @@ type BlockEntity struct {
 	// CookProgress / CookTotal 是熔炉类方块的烹饪进度/总时长（tick）。
 	CookProgress int32
 	CookTotal    int32
+	// BrewTime / BrewFuel 是酿造台方块的酿造进度（tick，400 → 0）
+	// 与剩余酿造次数（1 个烈焰粉 = 20 次）。
+	BrewTime int32
+	BrewFuel int32
 }
 
-// Empty 报告方块实体是否没有任何内容（槽位全空且无熔炉进度）。
+// Empty 报告方块实体是否没有任何内容（槽位全空且无处理进度）。
 func (b BlockEntity) Empty() bool {
-	if b.BurnRemaining > 0 || b.CookProgress > 0 {
+	if b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 {
 		return false
 	}
 	for _, slot := range b.Items {

@@ -27,6 +27,7 @@ var propStateBlocks = []string{
 	"minecraft:bamboo_pressure_plate",
 	"minecraft:birch_button",
 	"minecraft:birch_pressure_plate",
+	"minecraft:brewing_stand",
 	"minecraft:cherry_button",
 	"minecraft:cherry_pressure_plate",
 	"minecraft:comparator",

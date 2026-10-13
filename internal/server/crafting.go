@@ -177,7 +177,7 @@ func fitsInArea(working []item.Stack, start, end int, stack item.Stack) bool {
 		if current.IsEmpty() {
 			return true
 		}
-		if current.ItemID == stack.ItemID && current.Count+stack.Count <= limit {
+		if current.SameKind(stack) && current.Count+stack.Count <= limit {
 			return true
 		}
 	}

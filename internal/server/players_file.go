@@ -65,10 +65,12 @@ type playerRecord struct {
 }
 
 // playerItem 是物品栏中的一个堆栈；Item 为命名空间 ID。
+// Potion 是药水内容（0 = 无；N > 0 表示药水注册表 ID N-1）。
 type playerItem struct {
-	Slot  int    `json:"slot"`
-	Item  string `json:"item"`
-	Count int32  `json:"count"`
+	Slot   int    `json:"slot"`
+	Item   string `json:"item"`
+	Count  int32  `json:"count"`
+	Potion int32  `json:"potion,omitempty"`
 }
 
 // loadPlayerData 从世界目录读取玩家数据；文件不存在时保持为空。
@@ -215,7 +217,7 @@ func playerRecordFromSession(player *session) playerRecord {
 		if !ok {
 			continue
 		}
-		items = append(items, playerItem{Slot: slot, Item: name, Count: stack.Count})
+		items = append(items, playerItem{Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID})
 	}
 	return playerRecord{
 		UUID:       hex.EncodeToString(player.uuid[:]),
@@ -249,7 +251,7 @@ func enderItemsOf(player *session) []playerItem {
 		if !ok {
 			continue
 		}
-		items = append(items, playerItem{Slot: slot, Item: name, Count: stack.Count})
+		items = append(items, playerItem{Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID})
 	}
 	return items
 }
@@ -312,6 +314,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 			slog.Warn("跳过未知的末影箱物品", "name", s.name, "item", stored.Item, "error", err)
 			continue
 		}
+		stack.PotionID = stored.Potion
 		s.enderChest.Set(stored.Slot, stack)
 	}
 	for _, stored := range record.Inventory {
@@ -323,6 +326,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 			slog.Warn("跳过未知的持久化物品", "name", s.name, "item", stored.Item, "error", err)
 			continue
 		}
+		stack.PotionID = stored.Potion
 		s.inventory.Set(stored.Slot, stack)
 	}
 }

@@ -48,7 +48,7 @@ func (inv *Inventory) Add(stack Stack) (remaining int32, changed []int) {
 	// 先并入同类未满堆栈。
 	for slot := SlotHotbarStart; slot <= SlotMainEnd && remaining > 0; slot++ {
 		existing := inv.slots[slot]
-		if existing.IsEmpty() || existing.ItemID != stack.ItemID || existing.Count >= limit {
+		if existing.IsEmpty() || !existing.SameKind(stack) || existing.Count >= limit {
 			continue
 		}
 		moved := min(limit-existing.Count, remaining)
@@ -62,9 +62,10 @@ func (inv *Inventory) Add(stack Stack) (remaining int32, changed []int) {
 		if !inv.slots[slot].IsEmpty() {
 			continue
 		}
-		placed := min(limit, remaining)
-		inv.slots[slot] = Stack{ItemID: stack.ItemID, Count: placed}
-		remaining -= placed
+		placed := stack
+		placed.Count = min(limit, remaining)
+		inv.slots[slot] = placed
+		remaining -= placed.Count
 		changed = append(changed, slot)
 	}
 	return remaining, changed

@@ -22,6 +22,8 @@ const (
 	// PlayPacketIDBlockAction 是 Block Action（方块动画，如箱子开合）。
 	PlayPacketIDBlockAction    = 0x07 // clientbound
 	PlayPacketIDRemoveEntities = 0x4B // clientbound
+	// PlayPacketIDWorldEvent 是 World Event（方块/世界事件，如酿造完成音效与粒子）。
+	PlayPacketIDWorldEvent = 0x2D // clientbound
 	// PlayPacketIDForgetLevelChunk 是 Forget Level Chunk（卸载客户端区块缓存）。
 	PlayPacketIDForgetLevelChunk   = 0x25 // clientbound
 	PlayPacketIDSetCenterChunk     = 0x5C // clientbound
@@ -401,6 +403,18 @@ func EncodeBlockAction(x, y, z int, paramA, paramB uint8, blockID int32) []byte 
 	packet = AppendInt64(packet, PackPosition(x, y, z))
 	packet = append(packet, paramA, paramB)
 	return AppendVarInt(packet, blockID)
+}
+
+// WorldEventBrewingStandBrew 是酿造完成的世界事件（音效与粒子）。
+const WorldEventBrewingStandBrew = 1035
+
+// EncodeWorldEvent 编码 World Event 包（effectID、位置、数据与全局标志）。
+func EncodeWorldEvent(effectID int32, x, y, z int, data int32, global bool) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDWorldEvent))
+	packet = AppendInt32(packet, effectID)
+	packet = AppendInt64(packet, PackPosition(x, y, z))
+	packet = AppendInt32(packet, data)
+	return AppendBool(packet, global)
 }
 
 // ParsePlayerInput 解析 Player Input 包，返回原始输入位标志。

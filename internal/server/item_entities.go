@@ -273,7 +273,7 @@ func (s *Server) mergeItems(e *itemEntity, updates [][]byte, removals []int32) (
 		for dcz := -1; dcz <= 1 && e.Stack.Count < limit; dcz++ {
 			key := entityBucketKey(e.Dim, baseX+dcx, baseZ+dcz)
 			for _, other := range index[key] {
-				if other == e || other.Stack.ItemID != e.Stack.ItemID || other.Dim != e.Dim {
+				if other == e || !other.Stack.SameKind(e.Stack) || other.Dim != e.Dim {
 					continue
 				}
 				// 索引是建桶时刻的快照：已被合并掉的条目不再处理。

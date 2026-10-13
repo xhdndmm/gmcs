@@ -105,6 +105,8 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 			s.destroyFurnace(dim, player, action.X, action.Y, action.Z, def)
 		case def.IsHopper:
 			s.destroyHopper(dim, player, action.X, action.Y, action.Z, def)
+		case def.IsBrewing:
+			s.destroyBrewing(dim, player, action.X, action.Y, action.Z, def)
 		default:
 			s.destroyContainer(dim, player, action.X, action.Y, action.Z, def)
 		}

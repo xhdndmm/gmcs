@@ -172,6 +172,12 @@ type Server struct {
 	cookKinds          map[int32]registry.CookingKind
 	furnaceScanCounter int
 
+	// 酿造台系统：brewings 是已注册的酿造台运行时状态（按维度 + 方块坐标索引），
+	// 受 brewingMu 保护。
+	brewingMu          sync.Mutex
+	brewings           map[containerKey]*brewingState
+	brewingScanCounter int
+
 	// fallDamageMultipliers 是落点方块的摔落伤害倍率（New 中解析）。
 	fallDamageMultipliers map[uint16]float32
 
@@ -403,6 +409,8 @@ func New(cfg config.Config) (*Server, error) {
 	server.initFurnaceKinds()
 	server.buildRecipeBook()
 	server.furnaces = make(map[containerKey]*furnaceState)
+	server.brewings = make(map[containerKey]*brewingState)
+	server.initBrewingItems()
 	bucketItemID, bucketLavaItemID = initFurnaceItems()
 	if server.registryPackets, server.tagsPacket, err = buildRegistryPackets(); err != nil {
 		return nil, fmt.Errorf("构造注册表数据包：%w", err)
