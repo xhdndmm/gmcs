@@ -35,7 +35,8 @@ type Server struct {
 	clients chan struct{}
 
 	// worlds 是各维度的世界（惰性创建）；worldMu 保护 worlds 与 spawns。
-	worldMu sync.Mutex
+	// 读多写少（tick 热路径按实体取世界），使用读写锁。
+	worldMu sync.RWMutex
 	worlds  map[world.Dimension]*world.World
 	spawns  map[world.Dimension]spawnPoint
 
@@ -144,6 +145,9 @@ type Server struct {
 	containerTransferMu sync.Mutex
 	// gameTicks 是单调递增的游戏刻计数（漏斗错峰规则用）。
 	gameTicks atomic.Int64
+	// tickScratch 是 tick 热路径复用的临时切片（由单线程 tick 驱动填充，
+	// 见 tickScratch 的说明）。
+	tickScratch tickScratch
 
 	// 压力板点击音效（按木质/石质/金属分组；缺失时播放时静默跳过）。
 	plateClickOn  [plateSoundGroups]int32
@@ -209,6 +213,14 @@ type spawnPoint struct {
 // 避免不进入这些维度的服务器/测试承担启动成本）。无法创建时回退主世界。
 // 首次创建维度时加载该维度的实体数据。
 func (s *Server) worldFor(dim world.Dimension) *world.World {
+	// 快路径：已创建的维度直接返回（tick 热路径每个实体每帧调用一次，
+	// 避免逐次取得排他锁与重复的惰性创建检查）。
+	s.worldMu.RLock()
+	if existing, ok := s.worlds[dim]; ok {
+		s.worldMu.RUnlock()
+		return existing
+	}
+	s.worldMu.RUnlock()
 	s.worldMu.Lock()
 	_, existed := s.worlds[dim]
 	gameWorld := s.worldForLocked(dim)

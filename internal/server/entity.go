@@ -374,27 +374,26 @@ func (s *Server) tickMobs(players []*session) {
 	if !s.mobsEnabled {
 		return
 	}
-	type pendingMove struct {
-		id         int32
-		dim        world.Dimension
-		x, y, z    float64
-		yaw, pitch float32
-	}
-	type insideCheck struct {
-		dim world.Dimension
-		box world.Box
-		w   *world.World
-	}
-	var (
-		attacks    []pendingAttack
-		arrows     []pendingArrow
-		priming    []pendingPriming
-		explosions []pendingExplosion
-		moves      []pendingMove
-		heads      []pendingMove
-		removals   []int32
-		insides    []insideCheck
-	)
+	// 复用临时切片：入口截断、退出时把结果写回（容量保留供下一帧使用）。
+	scratch := &s.tickScratch
+	attacks := scratch.attacks[:0]
+	arrows := scratch.arrows[:0]
+	priming := scratch.priming[:0]
+	explosions := scratch.explosions[:0]
+	moves := scratch.moves[:0]
+	heads := scratch.heads[:0]
+	removals := scratch.removals[:0]
+	insides := scratch.insides[:0]
+	defer func() {
+		scratch.attacks = attacks
+		scratch.arrows = arrows
+		scratch.priming = priming
+		scratch.explosions = explosions
+		scratch.moves = moves
+		scratch.heads = heads
+		scratch.removals = removals
+		scratch.insides = insides
+	}()
 
 	s.entityMu.Lock()
 	for id, m := range s.mobs {

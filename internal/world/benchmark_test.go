@@ -63,3 +63,53 @@ func BenchmarkEncodeCompressedChunkPayload(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkFindPath 衡量 A* 寻路的单次成本：x = 5 处有一堵 z ≤ 10 的墙，
+// 起点 (0,0,0) 到目标 (10,0,0) 必须绕到 z = 11 的缺口（约 32 步），
+// 覆盖网格查询、节点扩展、松弛与路径重建。
+func BenchmarkFindPath(b *testing.B) {
+	grid := func(x, z int) (int, bool) {
+		if x == 5 && z <= 10 {
+			return 0, false
+		}
+		return 64, true
+	}
+	from := PathNode{X: 0, Y: 64, Z: 0}
+	goal := PathNode{X: 10, Y: 64, Z: 0}
+	limits := DefaultPathLimits()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		path := FindPath(grid, from, goal, limits)
+		if len(path) == 0 {
+			b.Fatal("未找到路径")
+		}
+	}
+}
+
+// BenchmarkFindPathUnreachable 衡量无路径时的最坏情形成本：目标被完全
+// 围住，搜索耗尽 MaxNodes 节点后返回 nil。
+func BenchmarkFindPathUnreachable(b *testing.B) {
+	grid := func(x, z int) (int, bool) {
+		if x == 20 && z == 20 {
+			return 64, true
+		}
+		if (x >= 19 && x <= 21) && (z >= 19 && z <= 21) {
+			return 0, false // 内圈围死
+		}
+		if (x >= 18 && x <= 22) && (z >= 18 && z <= 22) {
+			return 64, true // 外圈可走（可接近但到不了目标）
+		}
+		return 64, true
+	}
+	from := PathNode{X: 0, Y: 64, Z: 0}
+	goal := PathNode{X: 20, Y: 64, Z: 20}
+	limits := DefaultPathLimits()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if path := FindPath(grid, from, goal, limits); path != nil {
+			b.Fatalf("不应找到路径，得到 %d 步", len(path))
+		}
+	}
+}

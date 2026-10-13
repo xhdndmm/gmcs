@@ -199,3 +199,44 @@ func TestXPOrbMerge(t *testing.T) {
 		t.Fatalf("合并后计数 = %d, want 2", mergedCount)
 	}
 }
+
+// TestXPOrbMergeAcrossBuckets 验证经验球合并空间索引的相邻桶扫描：
+// 两个同值同组经验球位于桶格边界两侧（间距 0.2 格）时必须合并
+// （回归：分桶不能漏检邻桶候选）。
+func TestXPOrbMergeAcrossBuckets(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "OrbBucket")
+	player := findSession(t, instance, "OrbBucket")
+	x, y, z, _, _ := player.playerPosition()
+
+	// 取一个偶数桶格边界：two = 2×floor((x+20)/2)，两个坐标分别位于
+	// two+1.9 与 two+2.1（0.2 格间距、跨桶格）。
+	base := 2 * math.Floor((x+20)/2)
+	first := base + 1.9
+	second := base + 2.1
+	if entityBucketCoord(first) == entityBucketCoord(second) {
+		t.Fatalf("测试前提不成立：两坐标应在不同桶格（%v/%v）", first, second)
+	}
+	// 同组：41 % 40 == 81 % 40（直接构造实体以固定 ID 分组）。
+	instance.entityMu.Lock()
+	orbA := &xpOrb{ID: 41, Dim: world.DimensionOverworld, Value: 7, Count: 1, X: first, Y: y + 1, Z: z}
+	orbB := &xpOrb{ID: 81, Dim: world.DimensionOverworld, Value: 7, Count: 1, X: second, Y: y + 1, Z: z}
+	instance.xpOrbs[orbA.ID] = orbA
+	instance.xpOrbs[orbB.ID] = orbB
+	instance.entityMu.Unlock()
+
+	// 合并扫描发生在年龄 % 20 == 1（首 tick 即满足）。
+	instance.tick()
+	instance.entityMu.Lock()
+	remaining := len(instance.xpOrbs)
+	mergedCount := int32(0)
+	for _, orb := range instance.xpOrbs {
+		mergedCount = orb.Count
+	}
+	instance.entityMu.Unlock()
+	if remaining != 1 || mergedCount != 2 {
+		t.Fatalf("跨桶格合并失败：remaining = %d, count = %d, want 1/2", remaining, mergedCount)
+	}
+}

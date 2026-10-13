@@ -52,14 +52,43 @@ func (b Box) cellRange() (x1, y1, z1, x2, y2, z2 int) {
 	return
 }
 
+// collisionColumnMaxSpan 是批量列读取的栈缓冲上限；超出时退化为逐格查询
+// （实体的碰撞盒不会达到该高度）。
+const collisionColumnMaxSpan = 32
+
+// collisionColumn 读取列 (x, z) 上 y ∈ [y1, y2] 的方块状态（按区块加载
+// 缓存一次解析、单次加锁）。返回覆盖 [y1, y2] 的缓冲；缓冲区不足或区块
+// 不在内存中时返回 false，调用方回退到 BlockAt 的逐格查询以保持原有
+// “按需加载区块”语义。
+func (w *World) collisionColumn(buf []uint16, x, y1, y2, z int) ([]uint16, bool) {
+	span := y2 - y1 + 1
+	if span <= 0 || span > len(buf) {
+		return nil, false
+	}
+	n := w.LoadedColumn(x, y1, y2, z, buf[:span])
+	return buf[:n], n == span
+}
+
 // Collides 报告碰撞盒是否与世界中任意碰撞形状相交（相触不算）。
 func (w *World) Collides(b Box) bool {
 	x1, y1, z1, x2, y2, z2 := b.cellRange()
+	var stackBuf [collisionColumnMaxSpan]uint16
 	for bx := x1; bx <= x2; bx++ {
-		for by := y1; by <= y2; by++ {
-			for bz := z1; bz <= z2; bz++ {
-				for _, s := range registry.BlockStateShape(w.BlockAt(bx, by, bz)) {
-					if b.shapeOverlaps(bx, by, bz, s) {
+		for bz := z1; bz <= z2; bz++ {
+			column, ok := w.collisionColumn(stackBuf[:], bx, y1, y2, bz)
+			if !ok {
+				for by := y1; by <= y2; by++ {
+					for _, s := range registry.BlockStateShape(w.BlockAt(bx, by, bz)) {
+						if b.shapeOverlaps(bx, by, bz, s) {
+							return true
+						}
+					}
+				}
+				continue
+			}
+			for i := 0; i < len(column); i++ {
+				for _, s := range registry.BlockStateShape(column[i]) {
+					if b.shapeOverlaps(bx, y1+i, bz, s) {
 						return true
 					}
 				}
@@ -98,11 +127,21 @@ func (w *World) ClipMove(b Box, axis int, delta float64) float64 {
 		}
 	}
 	x1, y1, z1, x2, y2, z2 := swept.cellRange()
+	var stackBuf [collisionColumnMaxSpan]uint16
 	for bx := x1; bx <= x2; bx++ {
-		for by := y1; by <= y2; by++ {
-			for bz := z1; bz <= z2; bz++ {
-				for _, s := range registry.BlockStateShape(w.BlockAt(bx, by, bz)) {
-					delta = clipAgainst(b, axis, delta, bx, by, bz, s)
+		for bz := z1; bz <= z2; bz++ {
+			column, ok := w.collisionColumn(stackBuf[:], bx, y1, y2, bz)
+			if !ok {
+				for by := y1; by <= y2; by++ {
+					for _, s := range registry.BlockStateShape(w.BlockAt(bx, by, bz)) {
+						delta = clipAgainst(b, axis, delta, bx, by, bz, s)
+					}
+				}
+				continue
+			}
+			for i := 0; i < len(column); i++ {
+				for _, s := range registry.BlockStateShape(column[i]) {
+					delta = clipAgainst(b, axis, delta, bx, y1+i, bz, s)
 				}
 			}
 		}
@@ -169,30 +208,40 @@ func (w *World) SurfaceBelow(b Box, gap float64) (float64, uint16, bool) {
 	y1 := int(math.Floor(low - shapeMaxRise))
 	y2 := int(math.Floor(b.MinY))
 	best, bestState, found := 0.0, uint16(0), false
+	var stackBuf [collisionColumnMaxSpan]uint16
+	check := func(bx, by, bz int, state uint16) {
+		for _, s := range registry.BlockStateShape(state) {
+			sx1 := float64(bx) + float64(s.X1)/16
+			sy1 := float64(by) + float64(s.Y1)/16
+			sz1 := float64(bz) + float64(s.Z1)/16
+			sx2 := float64(bx) + float64(s.X2)/16
+			top := float64(by) + float64(s.Y2)/16
+			sz2 := float64(bz) + float64(s.Z2)/16
+			if b.MinX > sx2 || b.MaxX < sx1 || b.MinZ > sz2 || b.MaxZ < sz1 {
+				continue
+			}
+			if top < low || top > b.MinY+touchEpsilon {
+				continue
+			}
+			if sy1 > b.MinY+touchEpsilon {
+				continue // 形状整体高于脚底（属于侧向形状）
+			}
+			if !found || top > best {
+				best, bestState, found = top, state, true
+			}
+		}
+	}
 	for bx := x1; bx <= x2; bx++ {
-		for by := y1; by <= y2; by++ {
-			for bz := z1; bz <= z2; bz++ {
-				state := w.BlockAt(bx, by, bz)
-				for _, s := range registry.BlockStateShape(state) {
-					sx1 := float64(bx) + float64(s.X1)/16
-					sy1 := float64(by) + float64(s.Y1)/16
-					sz1 := float64(bz) + float64(s.Z1)/16
-					sx2 := float64(bx) + float64(s.X2)/16
-					top := float64(by) + float64(s.Y2)/16
-					sz2 := float64(bz) + float64(s.Z2)/16
-					if b.MinX > sx2 || b.MaxX < sx1 || b.MinZ > sz2 || b.MaxZ < sz1 {
-						continue
-					}
-					if top < low || top > b.MinY+touchEpsilon {
-						continue
-					}
-					if sy1 > b.MinY+touchEpsilon {
-						continue // 形状整体高于脚底（属于侧向形状）
-					}
-					if !found || top > best {
-						best, bestState, found = top, state, true
-					}
+		for bz := z1; bz <= z2; bz++ {
+			column, ok := w.collisionColumn(stackBuf[:], bx, y1, y2, bz)
+			if !ok {
+				for by := y1; by <= y2; by++ {
+					check(bx, by, bz, w.BlockAt(bx, by, bz))
 				}
+				continue
+			}
+			for i := 0; i < len(column); i++ {
+				check(bx, y1+i, bz, column[i])
 			}
 		}
 	}

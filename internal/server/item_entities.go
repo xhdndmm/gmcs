@@ -208,9 +208,10 @@ func moveItemAxis(w *world.World, e *itemEntity, axis int, delta float64) bool {
 	return clipped != delta
 }
 
-// itemHazardAt 报告掉落物所在位置的破坏性方块（岩浆/火/灵魂火/仙人掌）。
-func (s *Server) itemHazardAt(w *world.World, x, y, z float64) bool {
-	name, ok := s.blockNameOf(w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))))
+// itemHazardState 报告掉落物所在位置的方块状态是否为破坏性方块
+// （岩浆/火/灵魂火/仙人掌）。与是否在水中的判断共用同一次方块读取。
+func (s *Server) itemHazardState(state uint16) bool {
+	name, ok := s.blockNameOf(state)
 	if !ok {
 		return false
 	}
@@ -221,48 +222,90 @@ func (s *Server) itemHazardAt(w *world.World, x, y, z float64) bool {
 	return false
 }
 
-// itemInWater 报告掉落物是否位于水中（漂浮：不受重力、缓慢上浮）。
-func itemInWater(w *world.World, x, y, z float64) bool {
-	return w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))) == world.WaterBlock
+// entityBucketCoord 返回合并索引的桶格坐标（桶格 2×2；只在 X/Z 上分桶，
+// Y 由距离检查兜底）。
+func entityBucketCoord(v float64) int {
+	return int(math.Floor(v * 0.5))
+}
+
+// entityBucketKey 打包合并索引的桶键：(维度, 桶格 X, 桶格 Z)。
+func entityBucketKey(dim world.Dimension, cx, cz int) uint64 {
+	return uint64(uint32(int32(cx)))<<32 | (uint64(uint32(int32(cz)))&0x3FFFFFFF)<<2 | uint64(dim&0x3)
+}
+
+// rebuildItemMergeIndex 重建掉落物合并空间索引。桶格 2 格 + 扫描邻域
+// 1 格：合并帧内任意扫描时刻与建桶时刻的相对水平位移上界（远小于 3 格）
+// 不会漏检；桶的底层切片跨帧复用，映射膨胀时换新映射防止无界增长。
+// 调用方必须持有 entityMu。
+func (s *Server) rebuildItemMergeIndex() {
+	m := s.tickScratch.itemBuckets
+	if m == nil || len(m) > 4*len(s.items)+64 {
+		m = make(map[uint64][]*itemEntity, len(s.items))
+		s.tickScratch.itemBuckets = m
+	} else {
+		for key, bucket := range m {
+			m[key] = bucket[:0]
+		}
+	}
+	for _, it := range s.items {
+		key := entityBucketKey(it.Dim, entityBucketCoord(it.X), entityBucketCoord(it.Z))
+		m[key] = append(m[key], it)
+	}
 }
 
 // mergeItems 执行一次周期合并：把同类型、0.5 格内且视线可通的掉落物
 // 合并进当前堆叠（上限 64），保留较长的拾取延迟与较短的存在时间。
-// 调用方必须持有 entityMu。返回需要广播的元数据更新与移除列表。
-func (s *Server) mergeItems(e *itemEntity) (updates [][]byte, removals []int32) {
+// 候选来自本帧的空间索引（见 rebuildItemMergeIndex）：索引是建桶时刻的
+// 快照，已被并入其他堆叠的条目通过“仍在本表中”校验跳过。结果就地追加到
+// updates/removals（通常指向 tickItems 的复用缓冲，避免每次合并的切片分配）。
+// 调用方必须持有 entityMu。
+func (s *Server) mergeItems(e *itemEntity, updates [][]byte, removals []int32) ([][]byte, []int32) {
 	limit := e.Stack.MaxStack()
 	if e.Stack.Count >= limit {
-		return nil, nil
+		return updates, removals
 	}
+	// 世界只解析一次：候选循环里不再逐次调用 worldFor。
+	mergeWorld := s.worldFor(e.Dim)
+	index := s.tickScratch.itemBuckets
 	changed := false
-	for id, other := range s.items {
-		if other == e || other.Stack.ItemID != e.Stack.ItemID || other.Dim != e.Dim {
-			continue
-		}
-		if math.Abs(other.X-e.X) > itemMergeRange || math.Abs(other.Y-e.Y) > itemMergeRange ||
-			math.Abs(other.Z-e.Z) > itemMergeRange {
-			continue
-		}
-		if other.Stack.Count >= limit {
-			continue
-		}
-		if !attackPathClear(s.worldFor(e.Dim), e.X, e.Y+0.1, e.Z, other.X, other.Y+0.1, other.Z) {
-			continue // 隔墙不合并（与原版 Paper 的修复一致）
-		}
-		total := e.Stack.Count + other.Stack.Count
-		e.Stack.Count = min(total, limit)
-		other.Stack.Count = total - e.Stack.Count
-		e.PickupDelayTicks = max(e.PickupDelayTicks, other.PickupDelayTicks)
-		e.AgeTicks = min(e.AgeTicks, other.AgeTicks)
-		changed = true
-		if other.Stack.Count <= 0 {
-			delete(s.items, id)
-			removals = append(removals, id)
-		} else {
-			updates = append(updates, protocol.EncodeEntityMetadataItem(other.ID, other.Stack.AppendSlot(nil)))
-		}
-		if e.Stack.Count >= limit {
-			break
+	baseX, baseZ := entityBucketCoord(e.X), entityBucketCoord(e.Z)
+	for dcx := -1; dcx <= 1 && e.Stack.Count < limit; dcx++ {
+		for dcz := -1; dcz <= 1 && e.Stack.Count < limit; dcz++ {
+			key := entityBucketKey(e.Dim, baseX+dcx, baseZ+dcz)
+			for _, other := range index[key] {
+				if other == e || other.Stack.ItemID != e.Stack.ItemID || other.Dim != e.Dim {
+					continue
+				}
+				// 索引是建桶时刻的快照：已被合并掉的条目不再处理。
+				if current, ok := s.items[other.ID]; !ok || current != other {
+					continue
+				}
+				if other.Stack.Count >= limit {
+					continue
+				}
+				if math.Abs(other.X-e.X) > itemMergeRange || math.Abs(other.Y-e.Y) > itemMergeRange ||
+					math.Abs(other.Z-e.Z) > itemMergeRange {
+					continue
+				}
+				if !attackPathClear(mergeWorld, e.X, e.Y+0.1, e.Z, other.X, other.Y+0.1, other.Z) {
+					continue // 隔墙不合并（与原版 Paper 的修复一致）
+				}
+				total := e.Stack.Count + other.Stack.Count
+				e.Stack.Count = min(total, limit)
+				other.Stack.Count = total - e.Stack.Count
+				e.PickupDelayTicks = max(e.PickupDelayTicks, other.PickupDelayTicks)
+				e.AgeTicks = min(e.AgeTicks, other.AgeTicks)
+				changed = true
+				if other.Stack.Count <= 0 {
+					delete(s.items, other.ID)
+					removals = append(removals, other.ID)
+				} else {
+					updates = append(updates, protocol.EncodeEntityMetadataItem(other.ID, other.Stack.AppendSlot(nil)))
+				}
+				if e.Stack.Count >= limit {
+					break
+				}
+			}
 		}
 	}
 	if changed {
@@ -286,23 +329,21 @@ func (s *Server) tickItems(players []*session) {
 	if !s.itemsEnabled {
 		return
 	}
-	type itemMove struct {
-		dim    world.Dimension
-		packet []byte
-		x, z   float64
-	}
-	type insideCheck struct {
-		dim world.Dimension
-		box world.Box
-		w   *world.World
-	}
-	var (
-		moves    []itemMove
-		removals []int32
-		updates  [][]byte
-		pickups  []itemPickup
-		insides  []insideCheck
-	)
+	// 复用临时切片：入口截断、退出时写回（容量保留供下一帧使用）。
+	scratch := &s.tickScratch
+	moves := scratch.itemMoves[:0]
+	removals := scratch.itemRemovals[:0]
+	updates := scratch.itemUpdates[:0]
+	pickups := scratch.itemPickups[:0]
+	insides := scratch.itemInsides[:0]
+	defer func() {
+		scratch.itemMoves = moves
+		scratch.itemRemovals = removals
+		scratch.itemUpdates = updates
+		scratch.itemPickups = pickups
+		scratch.itemInsides = insides
+	}()
+	mergeIndexBuilt := false
 
 	s.entityMu.Lock()
 	for id, e := range s.items {
@@ -320,21 +361,25 @@ func (s *Server) tickItems(players []*session) {
 		if !w.ChunkLoaded(int(math.Floor(e.X)), int(math.Floor(e.Z))) {
 			continue
 		}
-		// 破坏性方块（岩浆/火/仙人掌）销毁掉落物。
-		if s.itemHazardAt(w, e.X, e.Y, e.Z) {
+		// 破坏性方块（岩浆/火/仙人掌）销毁掉落物；同一次读取也用于判断
+		// 是否在水中（两者坐标一致，合并后每帧每物品少一次区块读取）。
+		state := w.BlockAt(int(math.Floor(e.X)), int(math.Floor(e.Y+0.1)), int(math.Floor(e.Z)))
+		if s.itemHazardState(state) {
 			delete(s.items, id)
 			removals = append(removals, id)
 			continue
 		}
-		// 周期合并（每 4 tick，与原版一致）。
+		// 周期合并（每 4 tick，与原版一致）：本帧首次合并前惰性重建空间索引。
 		if e.AgeTicks%itemMergeIntervalTicks == 0 {
-			mergedUpdates, mergedRemovals := s.mergeItems(e)
-			updates = append(updates, mergedUpdates...)
-			removals = append(removals, mergedRemovals...)
+			if !mergeIndexBuilt {
+				s.rebuildItemMergeIndex()
+				mergeIndexBuilt = true
+			}
+			updates, removals = s.mergeItems(e, updates, removals)
 		}
 
 		startX, startY, startZ := e.X, e.Y, e.Z
-		inWater := itemInWater(w, e.X, e.Y, e.Z)
+		inWater := state == world.WaterBlock
 		if inWater {
 			// 漂浮：缓慢上浮 + 强阻力。
 			e.VelY += itemWaterBuoyancy
@@ -383,7 +428,7 @@ func (s *Server) tickItems(players []*session) {
 			continue
 		}
 		if e.X != startX || e.Y != startY || e.Z != startZ {
-			moves = append(moves, itemMove{
+			moves = append(moves, pendingPacket{
 				dim:    e.Dim,
 				packet: protocol.EncodeEntityPositionSync(e.ID, e.X, e.Y, e.Z, e.VelX, e.VelY, e.VelZ, 0, 0, true),
 				x:      e.X,

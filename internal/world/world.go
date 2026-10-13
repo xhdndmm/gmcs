@@ -527,8 +527,8 @@ func appendSectionMatches(result [][3]int, chunk *Chunk, pos ChunkPos, match fun
 // ChunkLoaded 报告方块坐标 (x, z) 所在区块当前是否在内存缓存中
 // （不触发加载或生成）。注意入参是方块坐标而非区块坐标。
 func (w *World) ChunkLoaded(x, z int) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	_, ok := w.chunks[ChunkPos{X: floorDiv(x, SectionSize), Z: floorDiv(z, SectionSize)}]
 	return ok
 }

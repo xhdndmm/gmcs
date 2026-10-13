@@ -295,3 +295,68 @@ func BenchmarkHopperChunkScan(b *testing.B) {
 		b.Fatalf("增量注册 %d，期望 16（基准可能未在测量真实路径）", registered)
 	}
 }
+
+// BenchmarkItemMergeScan 衡量物品合并扫描的成本：256 个堆叠按 0.5 格间距
+// 一字排开、石头/泥土交替（同类型相距 1.0 格，超出 0.5 的合并半径，因此
+// 种群稳定、不发生合并），覆盖“密集物品但无可合并对象”的持续负载——
+// 每 4 tick 一轮合并扫描（旧实现为逐物品全表 O(n²) 扫描，新实现为
+// 空间索引重建 + 逐物品邻桶扫描）。
+func BenchmarkItemMergeScan(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	stone, err := item.FromName("minecraft:stone", 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	dirt, err := item.FromName("minecraft:dirt", 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	spawnX, _, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	gameWorld := instance.worldFor(world.DimensionOverworld)
+	for i := 0; i < 256; i++ {
+		x := spawnX + float64(i)*0.5
+		z := spawnZ
+		groundY, ok := gameWorld.GroundY(int(math.Floor(x)), int(math.Floor(z)))
+		if !ok {
+			b.Fatal("no ground at spawn area")
+		}
+		stack := stone
+		if i%2 == 1 {
+			stack = dirt
+		}
+		e := instance.spawnItem(world.DimensionOverworld, stack, x, groundY+1, z, 0, 0, 0, itemPickupDelayMining)
+		if e == nil {
+			b.Fatal("spawnItem returned nil")
+		}
+		e.AgeTicks = -1 << 30 // 基准期间不允许到期消失
+	}
+
+	instance.entityMu.Lock()
+	spawned := len(instance.items)
+	instance.entityMu.Unlock()
+	if spawned != 256 {
+		b.Fatalf("掉落物 %d，期望 256", spawned)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		instance.tick()
+	}
+	b.StopTimer()
+
+	instance.entityMu.Lock()
+	remaining := len(instance.items)
+	instance.entityMu.Unlock()
+	if remaining != 256 {
+		b.Fatalf("剩余掉落物 %d，期望 256（基准可能未在测量真实路径）", remaining)
+	}
+}

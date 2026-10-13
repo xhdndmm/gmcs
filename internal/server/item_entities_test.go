@@ -241,3 +241,85 @@ func TestDeathDropsInventory(t *testing.T) {
 		t.Fatalf("dropped total = %d, want 5", total)
 	}
 }
+
+// TestItemMergeAcrossBuckets 验证合并空间索引的相邻桶扫描：两个掉落物
+// 位于桶格边界两侧（间距 0.2 格）时必须合并（回归：分桶不能漏检邻桶候选）。
+func TestItemMergeAcrossBuckets(t *testing.T) {
+	instance := newHopperTestServer(t)
+	groundY := hopperTestPad(t, instance, 101, 100, 3)
+
+	// 桶格 2 格：101.9 → 格 50、102.1 → 格 51，正好跨边界。
+	if entityBucketCoord(101.9) == entityBucketCoord(102.1) {
+		t.Fatal("测试前提不成立：两坐标应在不同桶格")
+	}
+	stack, err := item.FromName("minecraft:stone", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	y := float64(groundY) + 1.5
+	if instance.spawnItem(world.DimensionOverworld, stack, 101.9, y, 100.5, 0, 0, 0, itemPickupDelayMining) == nil {
+		t.Fatal("spawnItem returned nil")
+	}
+	if instance.spawnItem(world.DimensionOverworld, stack, 102.1, y, 100.5, 0, 0, 0, itemPickupDelayMining) == nil {
+		t.Fatal("spawnItem returned nil")
+	}
+
+	// 周期合并（每 4 tick）。
+	for i := 0; i < itemMergeIntervalTicks; i++ {
+		instance.tick()
+	}
+
+	instance.entityMu.Lock()
+	count := len(instance.items)
+	var total int32
+	for _, e := range instance.items {
+		total += e.Stack.Count
+	}
+	instance.entityMu.Unlock()
+	if count != 1 || total != 20 {
+		t.Fatalf("跨桶格合并失败：entities = %d, total = %d, want 1/20", count, total)
+	}
+}
+
+// TestItemMergeStableWithFullStack 验证容量上限下的合并稳定性：10 个 7 的
+// 堆叠（总 70）在任何处理顺序下都合并为 64 + 6，且后续合并帧不再变化
+// （回归：空间索引快照的残留条目不能让计数漂移）。
+func TestItemMergeStableWithFullStack(t *testing.T) {
+	instance := newHopperTestServer(t)
+	groundY := hopperTestPad(t, instance, 100, 100, 3)
+
+	stack, err := item.FromName("minecraft:stone", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	y := float64(groundY) + 1.5
+	for i := 0; i < 10; i++ {
+		if instance.spawnItem(world.DimensionOverworld, stack, 100.5, y, 100.5, 0, 0, 0, itemPickupDelayMining) == nil {
+			t.Fatal("spawnItem returned nil")
+		}
+	}
+
+	for i := 0; i < itemMergeIntervalTicks; i++ {
+		instance.tick()
+	}
+	assertItemTotals := func(round string) {
+		t.Helper()
+		instance.entityMu.Lock()
+		count := len(instance.items)
+		var total int32
+		for _, e := range instance.items {
+			total += e.Stack.Count
+		}
+		instance.entityMu.Unlock()
+		if count != 2 || total != 70 {
+			t.Fatalf("%s：entities = %d, total = %d, want 2/70", round, count, total)
+		}
+	}
+	assertItemTotals("首轮合并后")
+
+	// 再推进一个合并周期：满堆叠不再吸收、残留堆叠无可合并对象，计数必须不变。
+	for i := 0; i < itemMergeIntervalTicks; i++ {
+		instance.tick()
+	}
+	assertItemTotals("次轮合并后")
+}

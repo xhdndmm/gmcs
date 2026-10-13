@@ -10,8 +10,17 @@ package world
 // 限制：只考虑地表列高度（不含头顶净空、水中游泳与飞行），
 // 因此适用于地表行走的生物；搜索规模由 MaxNodes/MaxRange 约束，
 // 超限返回 nil（调用方回退到直线移动）。
+//
+// 实现说明：每次搜索使用复用的工作区（sync.Pool），其中包含开放寻址
+// 哈希表与显式二叉堆。表按 (x, z) 索引——网格对同一列总是返回同一个
+// 脚部 Y，因此每列（包括不可行走的列）在一次搜索中最多查询一次网格；
+// 与最初 map[PathNode]*pathInfo + container/heap 的实现相比，既消除了
+// 每节点的堆分配与接口装箱，也避免了相邻扩展时的重复列查询。
 
-import "container/heap"
+import (
+	"math"
+	"sync"
+)
 
 // PathNode 是寻路中的一个格子位置（Y 为脚部坐标）。
 type PathNode struct{ X, Y, Z int }
@@ -52,32 +61,159 @@ func DefaultPathLimits() PathLimits {
 	return PathLimits{MaxNodes: 512, MaxRange: 48, MaxStepUp: 1, MaxFall: 3}
 }
 
-// pathInfo 是 A* 的节点状态。
-type pathInfo struct {
+// pathSlot 是哈希表中的一个格子状态。
+type pathSlot struct {
+	key    uint64 // 打包的列坐标（高 32 位 X、低 32 位 Z）
+	feetY  int32  // 列的脚部 Y（walked 为 false 时无意义）
+	parent int32  // 父槽位下标；起点为 -1
 	g      float64
-	parent PathNode
-	closed bool
+	gen    uint32 // 所属搜索的世代号（不等于当前世代即为空槽）
+	walked bool   // 列可行走
+	closed bool   // 已扩展
 }
 
-// pathQueueItem 是优先级队列元素。
-type pathQueueItem struct {
-	node PathNode
+// pathHeapItem 是显式最小堆元素（按 f 排序）。
+type pathHeapItem struct {
+	slot int32
 	f    float64
 }
 
-// pathQueue 是按 f 值的最小堆。
-type pathQueue []pathQueueItem
+// pathSearch 是复用的 A* 工作区。
+type pathSearch struct {
+	slots      []pathSlot
+	heap       []pathHeapItem
+	generation uint32
+}
 
-func (q pathQueue) Len() int           { return len(q) }
-func (q pathQueue) Less(i, j int) bool { return q[i].f < q[j].f }
-func (q pathQueue) Swap(i, j int)      { q[i], q[j] = q[j], q[i] }
-func (q *pathQueue) Push(x any)        { *q = append(*q, x.(pathQueueItem)) }
-func (q *pathQueue) Pop() any {
-	old := *q
-	n := len(old)
-	item := old[n-1]
-	*q = old[:n-1]
-	return item
+var pathSearchPool = sync.Pool{New: func() any { return &pathSearch{} }}
+
+// pathKey 把列坐标 (x, z) 打包为哈希键。
+func pathKey(x, z int) uint64 {
+	return uint64(uint32(int32(x)))<<32 | uint64(uint32(int32(z)))
+}
+
+// pathUnpackX 从键还原 X，pathUnpackZ 还原 Z。
+func pathUnpackX(key uint64) int { return int(int32(key >> 32)) }
+func pathUnpackZ(key uint64) int { return int(int32(key & 0xFFFFFFFF)) }
+
+// pathHash 是键的混合哈希（splitmix64 终轧，低冲突）。
+func pathHash(key uint64) uint64 {
+	h := key * 0x9E3779B97F4A7C15
+	h ^= h >> 29
+	h *= 0xBF58476D1CE4E5B9
+	h ^= h >> 32
+	return h
+}
+
+// reset 为一次新搜索准备容量充足的工作区。不清零旧数据，用世代号区分
+// 新旧内容；容量按最大插入量推导：每次扩展最多写入 4 个新槽位、扩展
+// 次数不超过 maxNodes，因此插入量 ≤ 4·maxNodes+1，取容量 ≥ 6·maxNodes+16
+// 的上幂可保证负载始终不超过 75%（探测一定能遇到空槽）。
+func (ps *pathSearch) reset(maxNodes int) {
+	need := 16
+	for need < 6*maxNodes+16 {
+		need <<= 1
+	}
+	if cap(ps.slots) < need {
+		ps.slots = make([]pathSlot, need)
+	} else {
+		ps.slots = ps.slots[:need]
+	}
+	ps.heap = ps.heap[:0]
+	ps.generation++
+	if ps.generation == 0 {
+		// 世代号回绕：清空一次以区分残留内容（约 40 亿次搜索后才发生）。
+		clear(ps.slots)
+		ps.generation = 1
+	}
+}
+
+// find 返回键对应的槽位下标；键不在表中时返回 -1。
+func (ps *pathSearch) find(key uint64) int32 {
+	mask := uint64(len(ps.slots) - 1)
+	for i := pathHash(key) & mask; ; i = (i + 1) & mask {
+		slot := &ps.slots[i]
+		if slot.gen != ps.generation {
+			return -1
+		}
+		if slot.key == key {
+			return int32(i)
+		}
+	}
+}
+
+// insert 写入新槽位并返回其下标；调用方必须保证键不在表中。
+func (ps *pathSearch) insert(key uint64, feetY int32, walked bool, g float64, parent int32) int32 {
+	mask := uint64(len(ps.slots) - 1)
+	for i := pathHash(key) & mask; ; i = (i + 1) & mask {
+		slot := &ps.slots[i]
+		if slot.gen != ps.generation {
+			slot.gen = ps.generation
+			slot.key = key
+			slot.feetY = feetY
+			slot.walked = walked
+			slot.g = g
+			slot.parent = parent
+			slot.closed = false
+			return int32(i)
+		}
+	}
+}
+
+// push 把槽位按 f 值送入最小堆。
+func (ps *pathSearch) push(slot int32, f float64) {
+	ps.heap = append(ps.heap, pathHeapItem{slot: slot, f: f})
+	i := len(ps.heap) - 1
+	for i > 0 {
+		parent := (i - 1) / 2
+		if ps.heap[parent].f <= ps.heap[i].f {
+			break
+		}
+		ps.heap[parent], ps.heap[i] = ps.heap[i], ps.heap[parent]
+		i = parent
+	}
+}
+
+// pop 弹出并返回 f 值最小的元素；调用方必须保证堆非空。
+func (ps *pathSearch) pop() pathHeapItem {
+	top := ps.heap[0]
+	last := len(ps.heap) - 1
+	ps.heap[0] = ps.heap[last]
+	ps.heap = ps.heap[:last]
+	i := 0
+	for {
+		left := 2*i + 1
+		if left >= len(ps.heap) {
+			break
+		}
+		smallest := left
+		if right := left + 1; right < len(ps.heap) && ps.heap[right].f < ps.heap[left].f {
+			smallest = right
+		}
+		if ps.heap[i].f <= ps.heap[smallest].f {
+			break
+		}
+		ps.heap[i], ps.heap[smallest] = ps.heap[smallest], ps.heap[i]
+		i = smallest
+	}
+	return top
+}
+
+// reconstruct 从终点沿父链回溯，返回不含起点的正向路径（新分配，可安全
+// 逃逸到调用方；工作区随后归还池中）。
+func (ps *pathSearch) reconstruct(end, start int32) []PathNode {
+	count := 0
+	for slot := end; slot != start; slot = ps.slots[slot].parent {
+		count++
+	}
+	path := make([]PathNode, count)
+	slot := end
+	for i := count - 1; i >= 0; i-- {
+		state := &ps.slots[slot]
+		path[i] = PathNode{X: pathUnpackX(state.key), Y: int(state.feetY), Z: pathUnpackZ(state.key)}
+		slot = state.parent
+	}
+	return path
 }
 
 // manhattanDistance 返回水平曼哈顿距离。
@@ -157,21 +293,25 @@ func FindPath(grid PathGrid, from, goal PathNode, limits PathLimits) []PathNode 
 		return []PathNode{}
 	}
 
-	info := map[PathNode]*pathInfo{from: {g: 0}}
-	queue := &pathQueue{{node: from, f: pathHeuristic(from, goal)}}
-	heap.Init(queue)
+	search := pathSearchPool.Get().(*pathSearch)
+	defer pathSearchPool.Put(search)
+	search.reset(limits.MaxNodes)
+
+	start := search.insert(pathKey(from.X, from.Z), int32(from.Y), true, 0, -1)
+	search.push(start, pathHeuristic(from, goal))
+
 	visited := 0
 	neighbors := [4][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
 
-	for queue.Len() > 0 {
-		item := heap.Pop(queue).(pathQueueItem)
-		current := item.node
-		state := info[current]
-		if state == nil || state.closed {
-			continue
+	for len(search.heap) > 0 {
+		item := search.pop()
+		state := &search.slots[item.slot]
+		if state.closed {
+			continue // 懒删除：槽位可能以更优代价被重新入堆
 		}
+		current := PathNode{X: pathUnpackX(state.key), Y: int(state.feetY), Z: pathUnpackZ(state.key)}
 		if pathArrived(current, goal) {
-			return reconstructPath(info, current, from)
+			return search.reconstruct(item.slot, start)
 		}
 		state.closed = true
 		visited++
@@ -180,40 +320,33 @@ func FindPath(grid PathGrid, from, goal PathNode, limits PathLimits) []PathNode 
 		}
 		for _, d := range neighbors {
 			nx, nz := current.X+d[0], current.Z+d[1]
-			feet, ok := grid(nx, nz)
-			if !ok {
+			key := pathKey(nx, nz)
+			next := search.find(key)
+			if next < 0 {
+				// 首次访问该列：查询网格并缓存（不可行走的列同样缓存，
+				// 避免相邻扩展时反复查询同一列）。
+				feet, ok := grid(nx, nz)
+				if !ok {
+					search.insert(key, 0, false, 0, -1)
+					continue
+				}
+				next = search.insert(key, int32(feet), true, math.Inf(1), -1)
+			} else if !search.slots[next].walked {
 				continue
 			}
-			dy := feet - current.Y
+			nextState := &search.slots[next]
+			dy := int(nextState.feetY) - current.Y
 			if dy > limits.MaxStepUp || dy < -limits.MaxFall {
 				continue
 			}
-			next := PathNode{X: nx, Y: feet, Z: nz}
 			g := state.g + pathStepCost(dy)
-			if old, ok := info[next]; ok && (old.closed || old.g <= g) {
+			if nextState.closed || nextState.g <= g {
 				continue
 			}
-			info[next] = &pathInfo{g: g, parent: current}
-			heap.Push(queue, pathQueueItem{node: next, f: g + pathHeuristic(next, goal)})
+			nextState.g = g
+			nextState.parent = item.slot
+			search.push(next, g+pathHeuristic(PathNode{X: nx, Y: int(nextState.feetY), Z: nz}, goal))
 		}
 	}
 	return nil
-}
-
-// reconstructPath 从终点回溯到起点，返回不含起点的正向路径。
-func reconstructPath(info map[PathNode]*pathInfo, end, from PathNode) []PathNode {
-	var reversed []PathNode
-	for current := end; current != from; {
-		reversed = append(reversed, current)
-		state := info[current]
-		if state == nil {
-			return nil
-		}
-		current = state.parent
-	}
-	// 反转。
-	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
-		reversed[i], reversed[j] = reversed[j], reversed[i]
-	}
-	return reversed
 }

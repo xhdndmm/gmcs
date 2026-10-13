@@ -240,22 +240,19 @@ func (s *Server) tickXPOrbs(players []*session) {
 	if !s.xpOrbsEnabled {
 		return
 	}
-	type orbMove struct {
-		dim    world.Dimension
-		packet []byte
-		x, z   float64
-	}
-	type insideCheck struct {
-		dim world.Dimension
-		box world.Box
-		w   *world.World
-	}
-	var (
-		moves    []orbMove
-		removals []int32
-		pickups  []xpOrbPickup
-		insides  []insideCheck
-	)
+	// 复用临时切片：入口截断、退出时写回（容量保留供下一帧使用）。
+	scratch := &s.tickScratch
+	moves := scratch.orbMoves[:0]
+	removals := scratch.orbRemovals[:0]
+	pickups := scratch.orbPickups[:0]
+	insides := scratch.orbInsides[:0]
+	defer func() {
+		scratch.orbMoves = moves
+		scratch.orbRemovals = removals
+		scratch.orbPickups = pickups
+		scratch.orbInsides = insides
+	}()
+	mergeIndexBuilt := false
 
 	s.entityMu.Lock()
 	for id, orb := range s.xpOrbs {
@@ -273,7 +270,11 @@ func (s *Server) tickXPOrbs(players []*session) {
 			continue // 区块未加载时冻结
 		}
 		if orb.AgeTicks%xpOrbMergeInterval == 1 {
-			removals = append(removals, s.mergeXPOrbs(orb)...)
+			if !mergeIndexBuilt {
+				s.rebuildXPOrbMergeIndex()
+				mergeIndexBuilt = true
+			}
+			removals = s.mergeXPOrbs(orb, removals)
 		}
 		startX, startY, startZ := orb.X, orb.Y, orb.Z
 
@@ -334,7 +335,7 @@ func (s *Server) tickXPOrbs(players []*session) {
 			continue
 		}
 		if orb.X != startX || orb.Y != startY || orb.Z != startZ {
-			moves = append(moves, orbMove{
+			moves = append(moves, pendingPacket{
 				dim:    orb.Dim,
 				packet: protocol.EncodeEntityPositionSync(orb.ID, orb.X, orb.Y, orb.Z, orb.VelX, orb.VelY, orb.VelZ, 0, 0, orb.Grounded),
 				x:      orb.X,
@@ -399,12 +400,8 @@ func (s *Server) tickXPOrbs(players []*session) {
 	if len(removals) > 0 {
 		s.broadcastPacket(protocol.EncodeEntityDestroy(removals))
 	}
-	// 拾取结算：发放经验并同步经验条。
-	type xpGain struct {
-		player *session
-		amount int32
-	}
-	var gains []xpGain
+	// 拾取结算：发放经验并同步经验条（同一玩家的多次拾取先合并）。
+	gains := scratch.orbGains[:0]
 	for _, pickup := range pickups {
 		merged := false
 		for i := range gains {
@@ -422,31 +419,62 @@ func (s *Server) tickXPOrbs(players []*session) {
 		bar, level, total := gain.player.addExperience(gain.amount)
 		gain.player.tryWrite(protocol.EncodeSetExperience(bar, level, total))
 	}
+	scratch.orbGains = gains
 }
 
 // mergeXPOrbs 执行一次合并扫描（原版 ExperienceOrb 周期性的
 // tryMergeToExisting）：把 0.5 格内同组（实体 ID % 40）同值的经验球并入自身。
-// 返回被合并掉的实体 ID（调用方广播移除）。调用方持有 entityMu。
-func (s *Server) mergeXPOrbs(orb *xpOrb) []int32 {
+// 候选来自本帧的空间索引（见 rebuildXPOrbMergeIndex），被并入的条目通过
+// “仍在本表中”校验跳过。被合并掉的实体 ID 就地追加到 removals（调用方广播移除）。
+// 调用方持有 entityMu。
+func (s *Server) mergeXPOrbs(orb *xpOrb, removals []int32) []int32 {
 	group := int32(orb.ID % xpOrbGroupsPerArea)
-	var merged []int32
-	for id, other := range s.xpOrbs {
-		if other == orb || other.Dim != orb.Dim || other.Value != orb.Value {
-			continue
+	index := s.tickScratch.orbBuckets
+	baseX, baseZ := entityBucketCoord(orb.X), entityBucketCoord(orb.Z)
+	for dcx := -1; dcx <= 1; dcx++ {
+		for dcz := -1; dcz <= 1; dcz++ {
+			key := entityBucketKey(orb.Dim, baseX+dcx, baseZ+dcz)
+			for _, other := range index[key] {
+				if other == orb || other.Dim != orb.Dim || other.Value != orb.Value {
+					continue
+				}
+				if other.ID%xpOrbGroupsPerArea != group {
+					continue
+				}
+				// 索引是建桶时刻的快照：已被合并掉的条目不再处理。
+				if current, ok := s.xpOrbs[other.ID]; !ok || current != other {
+					continue
+				}
+				if math.Abs(other.X-orb.X) > xpOrbMergeRange || math.Abs(other.Y-orb.Y) > xpOrbMergeRange ||
+					math.Abs(other.Z-orb.Z) > xpOrbMergeRange {
+					continue
+				}
+				orb.Count += other.Count
+				orb.AgeTicks = min(orb.AgeTicks, other.AgeTicks)
+				delete(s.xpOrbs, other.ID)
+				removals = append(removals, other.ID)
+			}
 		}
-		if other.ID%xpOrbGroupsPerArea != group {
-			continue
-		}
-		if math.Abs(other.X-orb.X) > xpOrbMergeRange || math.Abs(other.Y-orb.Y) > xpOrbMergeRange ||
-			math.Abs(other.Z-orb.Z) > xpOrbMergeRange {
-			continue
-		}
-		orb.Count += other.Count
-		orb.AgeTicks = min(orb.AgeTicks, other.AgeTicks)
-		delete(s.xpOrbs, id)
-		merged = append(merged, id)
 	}
-	return merged
+	return removals
+}
+
+// rebuildXPOrbMergeIndex 重建经验球合并空间索引（桶策略与掉落物相同，
+// 见 rebuildItemMergeIndex）。调用方必须持有 entityMu。
+func (s *Server) rebuildXPOrbMergeIndex() {
+	m := s.tickScratch.orbBuckets
+	if m == nil || len(m) > 4*len(s.xpOrbs)+64 {
+		m = make(map[uint64][]*xpOrb, len(s.xpOrbs))
+		s.tickScratch.orbBuckets = m
+	} else {
+		for key, bucket := range m {
+			m[key] = bucket[:0]
+		}
+	}
+	for _, orb := range s.xpOrbs {
+		key := entityBucketKey(orb.Dim, entityBucketCoord(orb.X), entityBucketCoord(orb.Z))
+		m[key] = append(m[key], orb)
+	}
 }
 
 // updateXPOrbFollow 更新经验球追踪的玩家：目标失效（死亡/跨维度/离开 64

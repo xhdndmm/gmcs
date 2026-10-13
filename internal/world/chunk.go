@@ -322,11 +322,24 @@ type Column struct {
 }
 
 // Column 返回列 (x, z) 的高度信息；结果按列缓存，方块修改后自动失效。
-// 越界坐标返回空列。
+// 越界坐标返回空列。缓存命中走只读锁（实体移动与寻路的高频路径，避免
+// 逐次取得排他锁）。
 func (c *Chunk) Column(x, z int) Column {
 	if x < 0 || x >= SectionSize || z < 0 || z >= SectionSize {
 		return Column{}
 	}
+	index := (z << 4) | x
+	c.mu.RLock()
+	if c.heights != nil {
+		topValue := c.heights.top[index]
+		solidValue := c.heights.solid[index]
+		if topValue != 0 && solidValue != 0 {
+			column := c.columnFromValuesLocked(x, z, topValue, solidValue)
+			c.mu.RUnlock()
+			return column
+		}
+	}
+	c.mu.RUnlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.columnLocked(x, z)
@@ -345,6 +358,12 @@ func (c *Chunk) columnLocked(x, z int) Column {
 		c.heights.top[index] = topValue
 		c.heights.solid[index] = solidValue
 	}
+	return c.columnFromValuesLocked(x, z, topValue, solidValue)
+}
+
+// columnFromValuesLocked 由缓存值（y - WorldMinY + 1；0 未计算、-1 无）
+// 构造列信息。调用方必须持有 c.mu（读锁或写锁均可）。
+func (c *Chunk) columnFromValuesLocked(x, z int, topValue, solidValue int16) Column {
 	column := Column{}
 	if topValue > 0 {
 		y := WorldMinY + int(topValue) - 1
