@@ -108,6 +108,9 @@ func (s *Server) openEnderChest(player *session) {
 	if player.getAnvil() != nil {
 		s.closeAnvil(player, false)
 	}
+	if player.getEnchanting() != nil {
+		s.closeEnchanting(player, false)
+	}
 	menuType, ok := registry.StaticEntryID("minecraft:menu", "minecraft:generic_9x3")
 	if !ok {
 		menuType = protocol.MenuTypeGeneric9x3

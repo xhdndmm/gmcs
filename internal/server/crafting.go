@@ -214,7 +214,7 @@ func (s *Server) craftResultClick(player *session, b craftSlotBacking, working [
 				if !fitsInArea(working, target[0], target[1], result) {
 					continue
 				}
-				mergeIntoArea(working, result, target[0], target[1])
+				mergeIntoArea(b, working, result, target[0], target[1])
 				b.consumeGrid(working)
 				moved = true
 				break
@@ -253,6 +253,9 @@ func (s *Server) openCraftingTable(player *session) {
 	}
 	if player.getAnvil() != nil {
 		s.closeAnvil(player, false)
+	}
+	if player.getEnchanting() != nil {
+		s.closeEnchanting(player, false)
 	}
 	menuType, ok := registry.StaticEntryID("minecraft:menu", "minecraft:crafting")
 	if !ok {

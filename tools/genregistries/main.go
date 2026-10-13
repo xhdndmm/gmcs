@@ -224,7 +224,7 @@ func main() {
 		len(recipeTables.shaped), len(recipeTables.shapeless), len(recipeTables.cooking),
 		len(recipeTables.stonecutting), len(recipeTables.smithing))
 	if *itemsPath != "" {
-		foods, stackSizes, maxDamages, repairItems, err := loadItemComponents(*itemsPath)
+		foods, stackSizes, maxDamages, repairItems, enchantable, err := loadItemComponents(*itemsPath)
 		if err != nil {
 			fatal("读取物品组件：%v", err)
 		}
@@ -236,12 +236,33 @@ func main() {
 		if err != nil {
 			fatal("读取附魔书物品：%v", err)
 		}
-		if err := writeItemComponents(filepath.Dir(*outPath), *version, foods, stackSizes, maxDamages, repairItems, displayNames, storedEnch, itemIDs, itemTags); err != nil {
+		if err := writeItemComponents(filepath.Dir(*outPath), *version, foods, stackSizes, maxDamages, repairItems, enchantable, displayNames, storedEnch, itemIDs, itemTags); err != nil {
 			fatal("写入物品组件表：%v", err)
 		}
-		fmt.Printf("已生成物品组件表（%d 种食物、%d 项堆叠上限、%d 项耐久上限、%d 项修复材料、%d 项显示名、%d 项附魔书）\n",
-			len(foods), len(stackSizes), len(maxDamages), len(repairItems), len(displayNames), len(storedEnch))
+		fmt.Printf("已生成物品组件表（%d 种食物、%d 项堆叠上限、%d 项耐久上限、%d 项修复材料、%d 项附魔能力、%d 项显示名、%d 项附魔书）\n",
+			len(foods), len(stackSizes), len(maxDamages), len(repairItems), len(enchantable), len(displayNames), len(storedEnch))
 	}
+	// 附魔表：附魔定义（注册表 ID = 文件路径字典序）与书架/透光方块标签。
+	enchantOrder := generated.entries["minecraft:enchantment"]
+	enchantments, err := loadEnchantments(&reader.Reader, enchantOrder)
+	if err != nil {
+		fatal("读取附魔定义：%v", err)
+	}
+	enchantIndex := make(map[string]int32, len(enchantOrder))
+	for i, name := range enchantOrder {
+		enchantIndex[name] = int32(i)
+	}
+	if err := writeEnchants(filepath.Dir(*outPath), *version, &enchantSource{
+		enchants:  enchantments,
+		enchIndex: enchantIndex,
+		enchTags:  tagEntries(generated.tags["minecraft:enchantment"]),
+		blockTags: tagEntries(generated.tags["minecraft:block"]),
+		itemIDs:   itemIDs,
+		itemTags:  itemTags,
+	}); err != nil {
+		fatal("写入附魔表：%v", err)
+	}
+	fmt.Printf("已生成附魔表（%d 个附魔）\n", len(enchantments))
 	fmt.Printf("已生成 %s：%d 个同步注册表，%d 个注册表含 tags（其中 %d 个静态注册表使用内置 ID）\n",
 		*outPath, len(generated.entries), len(generated.tags), len(generated.staticSizes))
 	fmt.Printf("已生成方块状态表（%d 项）、物品表（%d 项）与静态 ID 表（%d 个注册表）\n",
@@ -378,6 +399,8 @@ func collect(reader *zip.Reader, reports *reportsData) (*generated, error) {
 			index:        index,
 			memo:         make(map[string][]int32, len(raw)),
 			visiting:     make(map[string]bool),
+			// 附魔标签保留定义顺序：in_enchanting_table 的顺序决定附魔台随机序列。
+			preserveOrder: registryName == "minecraft:enchantment",
 		}
 		names := make([]string, 0, len(raw))
 		for tagName := range raw {
@@ -572,21 +595,22 @@ type foodValue struct {
 // loadItemComponents 从 reports/items.json 提取食物数值、堆叠上限、耐久上限与修复材料。
 // 全部数据来自官方服务端数据生成器报告，保证与版本一致。
 // repairItems 保留原始条目引用（物品名或 #标签名），由 writeItemComponents 展开。
-func loadItemComponents(path string) (map[string]foodValue, map[string]int32, map[string]int32, map[string][]string, error) {
+func loadItemComponents(path string) (map[string]foodValue, map[string]int32, map[string]int32, map[string][]string, map[string]int32, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	var file map[string]struct {
 		Components map[string]json.RawMessage `json:"components"`
 	}
 	if err := json.Unmarshal(content, &file); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	foods := make(map[string]foodValue)
 	stackSizes := make(map[string]int32)
 	maxDamages := make(map[string]int32)
 	repairItems := make(map[string][]string)
+	enchantable := make(map[string]int32)
 	for name, item := range file {
 		if raw, ok := item.Components["minecraft:food"]; ok {
 			var food struct {
@@ -594,21 +618,21 @@ func loadItemComponents(path string) (map[string]foodValue, map[string]int32, ma
 				Saturation float32 `json:"saturation"`
 			}
 			if err := json.Unmarshal(raw, &food); err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("解析 %s 的食物组件：%w", name, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的食物组件：%w", name, err)
 			}
 			foods[name] = foodValue{Nutrition: food.Nutrition, Saturation: food.Saturation}
 		}
 		if raw, ok := item.Components["minecraft:max_stack_size"]; ok {
 			var size int32
 			if err := json.Unmarshal(raw, &size); err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("解析 %s 的堆叠上限：%w", name, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的堆叠上限：%w", name, err)
 			}
 			stackSizes[name] = size
 		}
 		if raw, ok := item.Components["minecraft:max_damage"]; ok {
 			var maxDamage int32
 			if err := json.Unmarshal(raw, &maxDamage); err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("解析 %s 的耐久上限：%w", name, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的耐久上限：%w", name, err)
 			}
 			maxDamages[name] = maxDamage
 		}
@@ -617,16 +641,25 @@ func loadItemComponents(path string) (map[string]foodValue, map[string]int32, ma
 				Items json.RawMessage `json:"items"`
 			}
 			if err := json.Unmarshal(raw, &repairable); err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("解析 %s 的修复材料：%w", name, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的修复材料：%w", name, err)
 			}
 			items, err := parseItemList(repairable.Items)
 			if err != nil {
-				return nil, nil, nil, nil, fmt.Errorf("解析 %s 的修复材料条目：%w", name, err)
+				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的修复材料条目：%w", name, err)
 			}
 			repairItems[name] = items
 		}
+		if raw, ok := item.Components["minecraft:enchantable"]; ok {
+			var ench struct {
+				Value int32 `json:"value"`
+			}
+			if err := json.Unmarshal(raw, &ench); err != nil {
+				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的附魔能力：%w", name, err)
+			}
+			enchantable[name] = ench.Value
+		}
 	}
-	return foods, stackSizes, maxDamages, repairItems, nil
+	return foods, stackSizes, maxDamages, repairItems, enchantable, nil
 }
 
 // parseItemList 解析组件数据中的物品（或标签）引用，支持单值与数组两种形式。
@@ -714,8 +747,8 @@ func loadStoredEnchantmentItems(itemsPath string) (map[string]bool, error) {
 	return result, nil
 }
 
-// writeItemComponents 生成 item_components_generated.go：食物数值、堆叠上限、耐久上限、修复材料与显示名。
-func writeItemComponents(outDir, version string, foods map[string]foodValue, stackSizes, maxDamages map[string]int32, repairItems map[string][]string, displayNames map[string]string, storedEnch map[string]bool, itemIDs map[string]int32, itemTags map[string][]int32) error {
+// writeItemComponents 生成 item_components_generated.go：食物数值、堆叠上限、耐久上限、修复材料、附魔能力与显示名。
+func writeItemComponents(outDir, version string, foods map[string]foodValue, stackSizes, maxDamages map[string]int32, repairItems map[string][]string, enchantable map[string]int32, displayNames map[string]string, storedEnch map[string]bool, itemIDs map[string]int32, itemTags map[string][]int32) error {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "// Code generated by tools/genregistries from Minecraft %s reports/items.json; DO NOT EDIT.\n", version)
 	buf.WriteString("//\n")
@@ -756,6 +789,13 @@ func writeItemComponents(outDir, version string, foods map[string]foodValue, sta
 			fmt.Fprintf(&buf, "%d, ", id)
 		}
 		buf.WriteString("},\n")
+	}
+	buf.WriteString("}\n\n")
+	buf.WriteString("// EnchantableValues 保存物品的附魔能力值（minecraft:enchantable 组件的 value；\n")
+	buf.WriteString("// 未列出的物品不可在附魔台附魔）。\n")
+	buf.WriteString("var EnchantableValues = map[string]int32{\n")
+	for _, name := range sortedKeys(enchantable) {
+		fmt.Fprintf(&buf, "\t%q: %d,\n", name, enchantable[name])
 	}
 	buf.WriteString("}\n\n")
 	buf.WriteString("// ItemDisplayNames 保存物品在服务端 en_us 语言文件中的悬停名\n")
@@ -838,6 +878,9 @@ type tagResolver struct {
 	index        map[string]int32
 	memo         map[string][]int32
 	visiting     map[string]bool
+	// preserveOrder 为 true 时保持标签定义顺序（不排序）；
+	// 附魔台的 in_enchanting_table 依赖该顺序生成随机序列。
+	preserveOrder bool
 }
 
 func (r *tagResolver) resolve(name string) ([]int32, error) {
@@ -883,8 +926,45 @@ func (r *tagResolver) resolve(name string) ([]int32, error) {
 		add(id)
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	if r.preserveOrder {
+		// 保序模式：按定义顺序重建（嵌套 tag 递归同样保序）。
+		ordered := make([]int32, 0, len(values))
+		for _, value := range raw.values {
+			if strings.HasPrefix(value.id, "#") {
+				nested, err := r.resolve(normalizeTagName(value.id[1:]))
+				if err != nil {
+					return nil, err
+				}
+				ordered = appendOrdered(ordered, nested)
+				continue
+			}
+			id, ok := r.index[normalizeEntryName(value.id)]
+			if !ok {
+				continue
+			}
+			ordered = appendOrdered(ordered, []int32{id})
+		}
+		values = ordered
+	}
 	r.memo[name] = values
 	return values, nil
+}
+
+// appendOrdered 把 ids 中尚未出现的元素按序追加到 values（与去重集合共享语义）。
+func appendOrdered(values []int32, ids []int32) []int32 {
+	for _, id := range ids {
+		found := false
+		for _, existing := range values {
+			if existing == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			values = append(values, id)
+		}
+	}
+	return values
 }
 
 func normalizeEntryName(name string) string {

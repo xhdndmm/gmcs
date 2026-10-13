@@ -180,6 +180,9 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	if player.getAnvil() != nil {
 		s.closeAnvil(player, false)
 	}
+	if player.getEnchanting() != nil {
+		s.closeEnchanting(player, false)
+	}
 
 	dim := player.dimensionID()
 	// 与进行中的漏斗搬运事务串行化：载入内容与登记视图期间不允许搬运写回，
@@ -464,18 +467,32 @@ func containerPlayerInvSlot(index int) int {
 
 // stackFromContainer 把容器槽位数据转换为物品堆栈（保留全部组件覆盖）。
 func stackFromContainer(slot world.ContainerItem) item.Stack {
-	return item.Stack{
+	stack := item.Stack{
 		ItemID: slot.ItemID, Count: slot.Count, PotionID: slot.PotionID,
 		Damage: slot.Damage, RepairCost: slot.RepairCost, CustomName: slot.CustomName,
 	}
+	if len(slot.Enchantments) > 0 {
+		stack.Enchantments = make([]item.EnchantmentEntry, len(slot.Enchantments))
+		for i, ench := range slot.Enchantments {
+			stack.Enchantments[i] = item.EnchantmentEntry{ID: ench.ID, Level: ench.Level}
+		}
+	}
+	return stack
 }
 
 // containerItemFromStack 把物品堆栈转换为容器槽位数据（保留全部组件覆盖）。
 func containerItemFromStack(stack item.Stack) world.ContainerItem {
-	return world.ContainerItem{
+	slot := world.ContainerItem{
 		ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID,
 		Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
 	}
+	if len(stack.Enchantments) > 0 {
+		slot.Enchantments = make([]world.EnchantedItem, len(stack.Enchantments))
+		for i, ench := range stack.Enchantments {
+			slot.Enchantments[i] = world.EnchantedItem{ID: ench.ID, Level: ench.Level}
+		}
+	}
+	return slot
 }
 
 // flushContainer 把容器内容写回区块的方块实体并标记待保存。
@@ -510,7 +527,7 @@ func (s *Server) dropContainerContents(dim world.Dimension, x, y, z int, def *co
 		if slot.IsEmpty() {
 			continue
 		}
-		stack := item.Stack{ItemID: slot.ItemID, Count: slot.Count, PotionID: slot.PotionID}
+		stack := stackFromContainer(slot)
 		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		s.spawnItem(dim, stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayPlayer)
@@ -555,7 +572,7 @@ func (b containerSlotBacking) Get(index int) item.Stack {
 func (b containerSlotBacking) Set(index int, stack item.Stack) {
 	if index < len(b.container.slots) {
 		b.container.mu.Lock()
-		changed := b.container.slots[index] != stack
+		changed := !b.container.slots[index].Equal(stack)
 		b.container.slots[index] = stack
 		b.container.mu.Unlock()
 		if changed {
@@ -638,6 +655,15 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 			return
 		}
 		backing = anvilSlotBacking{player: player, state: state}
+		windowID = player.windowID
+	case player.getEnchanting() != nil && click.WindowID == player.windowID:
+		state := player.getEnchanting()
+		// 方块仍是附魔台且在交互距离内时窗口有效（原版 EnchantmentMenu.stillValid）。
+		if !s.enchantingStillValid(player, state) {
+			s.closeEnchanting(player, true)
+			return
+		}
+		backing = enchantingSlotBacking{player: player, state: state}
 		windowID = player.windowID
 	case player.openContainer != nil && click.WindowID == player.windowID:
 		container := player.openContainer
@@ -732,15 +758,22 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 		anvil.state.setInputs(working[anvilInputSlot], working[anvilAdditionSlot])
 		working[anvilResultSlot] = s.refreshAnvil(player, anvil.state).result
 	}
+	if enchanting, ok := backing.(enchantingSlotBacking); ok {
+		// 输入变化后重算选项（原版 slotsChanged）并同步数据槽。
+		enchanting.state.setInput(enchantingInputSlot, working[enchantingInputSlot])
+		enchanting.state.setInput(enchantingLapisSlot, working[enchantingLapisSlot])
+		s.refreshEnchantingOptions(enchanting.state)
+		s.sendEnchantingProperties(player, enchanting.state)
+	}
 
 	player.windowState++
 	for i := range working {
-		if working[i] != before[i] {
+		if !working[i].Equal(before[i]) {
 			backing.Set(i, working[i])
 			player.tryWrite(protocol.EncodeSetContainerSlot(windowID, player.windowState, int16(i), working[i].AppendSlot(nil)))
 		}
 	}
-	if cursor != player.getCursor() {
+	if !cursor.Equal(player.getCursor()) {
 		player.setCursor(cursor)
 		player.tryWrite(protocol.EncodeSetCursorItem(cursor.AppendSlot(nil)))
 	}
@@ -753,6 +786,25 @@ const containerReach = 8.0
 // （原版 Slot.mayPlace）。仅“放入/交换”路径调用；取出不受限。
 type slotPlacer interface {
 	CanPlace(slot int, stack item.Stack) bool
+}
+
+// slotLimiter 是可选接口：窗口 backing 可限制槽位的堆叠数量上限
+// （原版 Slot.getMaxStackSize；附魔台输入槽为 1）。仅“放入/合并/快速移动”
+// 路径调用；<= 0 表示使用物品自身的堆叠上限。
+type slotLimiter interface {
+	SlotLimit(slot int) int32
+}
+
+// slotLimitAt 返回槽位的堆叠数量上限（未实现接口或返回 <= 0 时用 fallback）。
+func slotLimitAt(backing slotBacking, slot int, fallback int32) int32 {
+	limiter, ok := backing.(slotLimiter)
+	if !ok {
+		return fallback
+	}
+	if limit := limiter.SlotLimit(slot); limit > 0 {
+		return limit
+	}
+	return fallback
 }
 
 // canPlaceInto 检查 backing 是否允许把 stack 放入槽位（未实现 slotPlacer 时恒允许）。
@@ -778,6 +830,7 @@ func (s *Server) applyContainerClick(player *session, backing slotBacking, worki
 	if cursor.IsEmpty() {
 		limit = working[slot].MaxStack()
 	}
+	limit = slotLimitAt(backing, slot, limit)
 	switch click.Mode {
 	case protocol.ClickModePickup:
 		canPlace := func(stack item.Stack) bool { return canPlaceInto(backing, slot, stack) }
@@ -1081,7 +1134,7 @@ func quickMove(player *session, backing slotBacking, working []item.Stack, slot 
 		return
 	}
 	for _, target := range quickMoveTargets(backing, slot) {
-		stack = mergeIntoArea(working, stack, target[0], target[1])
+		stack = mergeIntoArea(backing, working, stack, target[0], target[1])
 		if stack.IsEmpty() {
 			break
 		}
@@ -1177,6 +1230,17 @@ func quickMoveTargets(backing slotBacking, slot int) [][2]int {
 		case slot >= 29 && slot <= 37: // 快捷栏 → 主背包
 			return [][2]int{{2, 29}}
 		}
+	case enchantingSlotBacking:
+		// 输入/青金石 → 背包（主背包 → 快捷栏）。
+		if slot == enchantingInputSlot || slot == enchantingLapisSlot {
+			return [][2]int{{2, 29}, {29, 38}}
+		}
+		// 背包物品：青金石放入青金石槽；其余尝试输入槽。原版 quickMoveStack
+		// 在输入槽被占用时快速移动不生效，与目标区间失败后留在原槽的语义一致。
+		if stack := backing.Get(slot); stack.ItemID == enchantingLapisItemID() {
+			return [][2]int{{enchantingLapisSlot, enchantingLapisSlot + 1}}
+		}
+		return [][2]int{{enchantingInputSlot, enchantingInputSlot + 1}}
 	case smithingSlotBacking:
 		if slot == smithingResultSlot {
 			return nil
@@ -1207,26 +1271,30 @@ func quickMoveTargets(backing slotBacking, slot int) [][2]int {
 }
 
 // mergeIntoArea 把 stack 合并/放入 [start, end) 区间，返回剩余部分。
-func mergeIntoArea(working []item.Stack, stack item.Stack, start, end int) item.Stack {
+func mergeIntoArea(backing slotBacking, working []item.Stack, stack item.Stack, start, end int) item.Stack {
 	limit := stack.MaxStack()
 	// 先并入同类未满堆叠。
 	for i := start; i < end && stack.Count > 0; i++ {
 		current := working[i]
-		if current.IsEmpty() || !current.SameKind(stack) || current.Count >= limit {
+		if current.IsEmpty() || !current.SameKind(stack) || !canPlaceInto(backing, i, stack) {
 			continue
 		}
-		moved := min(limit-current.Count, stack.Count)
+		slotLimit := slotLimitAt(backing, i, limit)
+		if current.Count >= slotLimit {
+			continue
+		}
+		moved := min(slotLimit-current.Count, stack.Count)
 		current.Count += moved
 		stack.Count -= moved
 		working[i] = current
 	}
 	// 再放入空槽位。
 	for i := start; i < end && stack.Count > 0; i++ {
-		if !working[i].IsEmpty() {
+		if !working[i].IsEmpty() || !canPlaceInto(backing, i, stack) {
 			continue
 		}
 		placed := stack
-		placed.Count = min(limit, stack.Count)
+		placed.Count = min(slotLimitAt(backing, i, limit), stack.Count)
 		working[i] = placed
 		stack.Count -= placed.Count
 	}

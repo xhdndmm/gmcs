@@ -67,11 +67,11 @@ func TestInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	inv.Set(SlotHotbarStart, stone)
-	if got := inv.Get(SlotHotbarStart); got != stone {
+	if got := inv.Get(SlotHotbarStart); !got.Equal(stone) {
 		t.Fatalf("stored stack mismatch: %+v", got)
 	}
 	inv.Set(SlotOffhand, stone)
-	if got := inv.Get(SlotOffhand); got != stone {
+	if got := inv.Get(SlotOffhand); !got.Equal(stone) {
 		t.Fatalf("offhand mismatch: %+v", got)
 	}
 	// 越界操作被忽略。

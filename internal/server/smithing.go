@@ -123,6 +123,9 @@ func (s *Server) openSmithing(player *session) {
 	if player.getAnvil() != nil {
 		s.closeAnvil(player, false)
 	}
+	if player.getEnchanting() != nil {
+		s.closeEnchanting(player, false)
+	}
 	menuType, ok := registry.StaticEntryID("minecraft:menu", "minecraft:smithing")
 	if !ok {
 		return
@@ -191,7 +194,7 @@ func (s *Server) smithingResultClick(player *session, b smithingSlotBacking, wor
 		}
 		stack := result
 		for _, target := range [][2]int{{4, 31}, {31, 40}} {
-			stack = mergeIntoArea(working, stack, target[0], target[1])
+			stack = mergeIntoArea(b, working, stack, target[0], target[1])
 			if stack.IsEmpty() {
 				break
 			}

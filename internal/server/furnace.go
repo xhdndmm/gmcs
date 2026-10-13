@@ -465,7 +465,7 @@ func (s *Server) furnaceResultClick(player *session, b furnaceSlotBacking, worki
 			if !fitsInArea(working, target[0], target[1], result) {
 				continue
 			}
-			mergeIntoArea(working, result, target[0], target[1])
+			mergeIntoArea(b, working, result, target[0], target[1])
 			working[2] = item.Empty()
 			s.awardFurnaceXP(player, b.state)
 			break

@@ -428,6 +428,26 @@ func parseSlotWithComponents(t *testing.T, payload []byte, offset int) (item.Sta
 			}
 			stack.CustomName = string(payload[offset : offset+length])
 			offset += length
+		case 13: // enchantments：VarInt 数量 + 每项 (VarInt(id+1), VarInt(level))
+			count, size, err := protocol.DecodeVarInt(payload[offset:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			offset += size
+			for j := int32(0); j < count; j++ {
+				enchID, size, err := protocol.DecodeVarInt(payload[offset:])
+				if err != nil {
+					t.Fatal(err)
+				}
+				offset += size
+				level, size, err := protocol.DecodeVarInt(payload[offset:])
+				if err != nil {
+					t.Fatal(err)
+				}
+				offset += size
+				stack.Enchantments = append(stack.Enchantments,
+					item.EnchantmentEntry{ID: enchID - 1, Level: level})
+			}
 		case 19: // repair_cost
 			value, size, err := protocol.DecodeVarInt(payload[offset:])
 			if err != nil {
@@ -435,6 +455,8 @@ func parseSlotWithComponents(t *testing.T, payload []byte, offset int) (item.Sta
 			}
 			offset += size
 			stack.RepairCost = value
+		case 49: // potion_contents：测试不检查药水内容（避免错误解析）
+			t.Fatal("测试不支持解析 potion_contents 组件")
 		default:
 			t.Fatalf("未预期的组件 ID %d", componentID)
 		}

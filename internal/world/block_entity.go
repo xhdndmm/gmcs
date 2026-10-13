@@ -21,6 +21,14 @@ type ContainerItem struct {
 	RepairCost int32
 	// CustomName 是自定义名称（minecraft:custom_name；空 = 无）。
 	CustomName string
+	// Enchantments 是附魔（minecraft:enchantments）；按附魔 ID 升序。
+	Enchantments []EnchantedItem
+}
+
+// EnchantedItem 是一个附魔条目（附魔注册表 ID 与等级）。
+type EnchantedItem struct {
+	ID    int32
+	Level int32
 }
 
 // IsEmpty 报告槽位是否为空。

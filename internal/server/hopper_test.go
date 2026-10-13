@@ -603,7 +603,7 @@ func TestHopperSlotBackingSharesState(t *testing.T) {
 		t.Fatal(err)
 	}
 	backing.Set(0, stone)
-	if got := hopperSlotAt(hopper, 0); got != stone {
+	if got := hopperSlotAt(hopper, 0); !got.Equal(stone) {
 		t.Fatalf("窗口写入后搬运状态 = %+v, want %+v", got, stone)
 	}
 	entity, err := instance.testWorld().BlockEntityAt(x, groundY, z)
@@ -619,7 +619,7 @@ func TestHopperSlotBackingSharesState(t *testing.T) {
 		t.Fatal(err)
 	}
 	setHopperSlot(hopper, 1, dirt)
-	if got := backing.Get(1); got != dirt {
+	if got := backing.Get(1); !got.Equal(dirt) {
 		t.Fatalf("窗口读取搬运状态 = %+v, want %+v", got, dirt)
 	}
 }
@@ -634,10 +634,10 @@ func TestHopperSlotBackingPlayerSlots(t *testing.T) {
 	}
 	// 窗口槽位 5 起为玩家主背包（内部槽位 9 起）。
 	backing.Set(hopperSlots, tool)
-	if got := player.inventory.Get(item.SlotMainStart); got != tool {
+	if got := player.inventory.Get(item.SlotMainStart); !got.Equal(tool) {
 		t.Fatalf("主背包槽位 = %+v, want %+v", got, tool)
 	}
-	if got := backing.Get(hopperSlots); got != tool {
+	if got := backing.Get(hopperSlots); !got.Equal(tool) {
 		t.Fatalf("窗口读取主背包 = %+v, want %+v", got, tool)
 	}
 }

@@ -123,6 +123,18 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 			}
 		}
 	}
+	// 破坏附魔台：关闭破坏者正在使用的附魔台窗口（其他玩家的窗口在下次交互时
+	// 通过 stillValid 校验关闭）。
+	if isEnchantingTableState(current) {
+		if state := player.getEnchanting(); state != nil {
+			state.mu.Lock()
+			enchantingDim, enchantingPos := state.dim, state.pos
+			state.mu.Unlock()
+			if enchantingDim == dim && enchantingPos == [3]int{action.X, action.Y, action.Z} {
+				s.closeEnchanting(player, false)
+			}
+		}
+	}
 	if !w.SetBlock(action.X, action.Y, action.Z, world.AirBlock) {
 		return
 	}
@@ -203,6 +215,11 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		// 右键铁砧：打开修复/重命名窗口。
 		if hasName && isAnvilBlockName(name) {
 			s.openAnvil(player, use.X, use.Y, use.Z)
+			return
+		}
+		// 右键附魔台：打开附魔窗口。
+		if hasName && name == enchantingTableName {
+			s.openEnchanting(player, use.X, use.Y, use.Z)
 			return
 		}
 		// 右键末影箱：打开玩家自己的末影箱（内容随玩家）。

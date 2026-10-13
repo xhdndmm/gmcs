@@ -67,15 +67,47 @@ type playerRecord struct {
 // playerItem 是物品栏中的一个堆栈；Item 为命名空间 ID。
 // Potion 是药水内容（0 = 无；N > 0 表示药水注册表 ID N-1）；
 // Damage 是耐久损耗（0 = 无）；RepairCost 是铁砧累积惩罚（0 = 无）；
-// CustomName 是自定义名称（空 = 无）。
+// CustomName 是自定义名称（空 = 无）；Enchantments 是附魔列表（按附魔 ID 升序）。
 type playerItem struct {
-	Slot       int    `json:"slot"`
-	Item       string `json:"item"`
-	Count      int32  `json:"count"`
-	Potion     int32  `json:"potion,omitempty"`
-	Damage     int32  `json:"damage,omitempty"`
-	RepairCost int32  `json:"repair_cost,omitempty"`
-	CustomName string `json:"custom_name,omitempty"`
+	Slot         int                 `json:"slot"`
+	Item         string              `json:"item"`
+	Count        int32               `json:"count"`
+	Potion       int32               `json:"potion,omitempty"`
+	Damage       int32               `json:"damage,omitempty"`
+	RepairCost   int32               `json:"repair_cost,omitempty"`
+	CustomName   string              `json:"custom_name,omitempty"`
+	Enchantments []storedEnchantment `json:"enchantments,omitempty"`
+}
+
+// storedEnchantment 是持久化的一个附魔条目。
+type storedEnchantment struct {
+	ID    int32 `json:"id"`
+	Level int32 `json:"level"`
+}
+
+// storedEnchantments 把附魔列表转为持久化格式。
+func storedEnchantments(entries []item.EnchantmentEntry) []storedEnchantment {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]storedEnchantment, len(entries))
+	for i, entry := range entries {
+		out[i] = storedEnchantment{ID: entry.ID, Level: entry.Level}
+	}
+	return out
+}
+
+// itemEnchantments 把持久化附魔列表转为物品附魔（跳过未知/非法条目，按 ID 升序）。
+func itemEnchantments(entries []storedEnchantment) []item.EnchantmentEntry {
+	out := make([]item.EnchantmentEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.ID < 0 || entry.ID >= registry.EnchantmentCount || entry.Level <= 0 {
+			continue
+		}
+		out = append(out, item.EnchantmentEntry{ID: entry.ID, Level: entry.Level})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 // loadPlayerData 从世界目录读取玩家数据；文件不存在时保持为空。
@@ -225,6 +257,7 @@ func playerRecordFromSession(player *session) playerRecord {
 		items = append(items, playerItem{
 			Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID,
 			Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
+			Enchantments: storedEnchantments(stack.Enchantments),
 		})
 	}
 	return playerRecord{
@@ -262,6 +295,7 @@ func enderItemsOf(player *session) []playerItem {
 		items = append(items, playerItem{
 			Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID,
 			Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
+			Enchantments: storedEnchantments(stack.Enchantments),
 		})
 	}
 	return items
@@ -329,6 +363,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		stack.Damage = stored.Damage
 		stack.RepairCost = stored.RepairCost
 		stack.CustomName = stored.CustomName
+		stack.Enchantments = itemEnchantments(stored.Enchantments)
 		s.enderChest.Set(stored.Slot, stack)
 	}
 	for _, stored := range record.Inventory {
@@ -344,6 +379,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		stack.Damage = stored.Damage
 		stack.RepairCost = stored.RepairCost
 		stack.CustomName = stored.CustomName
+		stack.Enchantments = itemEnchantments(stored.Enchantments)
 		s.inventory.Set(stored.Slot, stack)
 	}
 }

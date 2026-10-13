@@ -227,7 +227,7 @@ func (s *Server) handlePlaceRecipe(player *session, windowID, displayID int32, m
 		if stack.IsEmpty() {
 			continue
 		}
-		stack = mergeIntoArea(working, stack, invStart, invEnd)
+		stack = mergeIntoArea(backing, working, stack, invStart, invEnd)
 		if !stack.IsEmpty() {
 			return
 		}
@@ -258,7 +258,7 @@ func (s *Server) handlePlaceRecipe(player *session, windowID, displayID int32, m
 			}
 			stack := result
 			for _, target := range ranges {
-				stack = mergeIntoArea(working, stack, target[0], target[1])
+				stack = mergeIntoArea(backing, working, stack, target[0], target[1])
 				if stack.IsEmpty() {
 					break
 				}

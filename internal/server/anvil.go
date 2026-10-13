@@ -45,9 +45,10 @@ const (
 	anvilCostLimit = 40
 	// anvilCostRepairSacrifice 是同物品合并（牺牲）的等级成本。
 	anvilCostRepairSacrifice = 2
-	// anvilReach 是窗口有效距离（原版 ItemCombinerMenu.stillValid 用
-	// 玩家与方块中心的 4 格；本实现与普通容器一致，按水平/垂直距离近似）。
-	anvilReach = 4.0
+	// anvilReach 是窗口有效距离：原版 ItemCombinerMenu.stillValid 用
+	// canInteractWithBlock(pos, 4.0)，即「方块交互距离属性（默认 4.5）+ 4.0」
+	// ≈ 8.5 格；与普通容器一致，按水平/垂直距离用 8.0 盒近似。
+	anvilReach = 8.0
 )
 
 // anvilState 是一个打开的铁砧窗口状态。
@@ -363,6 +364,9 @@ func (s *Server) openAnvil(player *session, x, y, z int) {
 	if player.getAnvil() != nil {
 		s.closeAnvil(player, false)
 	}
+	if player.getEnchanting() != nil {
+		s.closeEnchanting(player, false)
+	}
 	menuType, ok := registry.StaticEntryID("minecraft:menu", "minecraft:anvil")
 	if !ok {
 		return
@@ -547,7 +551,7 @@ func (s *Server) anvilResultClick(player *session, b anvilSlotBacking, working [
 			}
 			stack := res.result
 			for _, target := range [][2]int{{3, 30}, {30, 39}} {
-				stack = mergeIntoArea(working, stack, target[0], target[1])
+				stack = mergeIntoArea(b, working, stack, target[0], target[1])
 				if stack.IsEmpty() {
 					break
 				}

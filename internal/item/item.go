@@ -3,6 +3,7 @@ package item
 
 import (
 	"fmt"
+	"slices"
 
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
@@ -11,10 +12,10 @@ import (
 // Stack 是一个物品堆栈。
 //
 // 携带的组件覆盖：耐久损耗（minecraft:damage）、自定义名称
-// （minecraft:custom_name）、铁砧累积惩罚（minecraft:repair_cost）与药水内容
-// （minecraft:potion_contents）；其余组件由客户端使用物品默认组件（来自
-// Known Packs 的内置数据）；堆叠上限按官方物品数据（registry.MaxStackSize）
-// 处理，其余组件派生属性暂不校验。
+// （minecraft:custom_name）、附魔（minecraft:enchantments）、铁砧累积惩罚
+// （minecraft:repair_cost）与药水内容（minecraft:potion_contents）；其余组件
+// 由客户端使用物品默认组件（来自 Known Packs 的内置数据）；堆叠上限按官方
+// 物品数据（registry.MaxStackSize）处理，其余组件派生属性暂不校验。
 type Stack struct {
 	// ItemID 是物品的注册表 ID（客户端内置全局 ID）。
 	ItemID int32
@@ -30,6 +31,15 @@ type Stack struct {
 	RepairCost int32
 	// CustomName 是自定义名称（minecraft:custom_name）：空表示无组件。
 	CustomName string
+	// Enchantments 是附魔（minecraft:enchantments）：nil 或空表示无组件；
+	// 必须按附魔 ID 升序排列（SameKind 按顺序比较，各写入路径都保持有序）。
+	Enchantments []EnchantmentEntry
+}
+
+// EnchantmentEntry 是一个附魔条目（附魔注册表 ID 与等级）。
+type EnchantmentEntry struct {
+	ID    int32
+	Level int32
 }
 
 // Empty 返回空堆栈。
@@ -61,12 +71,69 @@ func FromName(name string, count int32) (Stack, error) {
 
 // SameKind 报告两个堆栈是否同类（同物品且同组件覆盖）。
 // 物品合并、堆叠与拖拽收集必须用它而非仅比较 ItemID：
-// 不同药水的 potion 物品共享同一 ItemID，耐久/改名/铁砧惩罚不同的
+// 不同药水的 potion 物品共享同一 ItemID，附魔/耐久/改名/铁砧惩罚不同的
 // 工具也不能堆叠。
 func (s Stack) SameKind(other Stack) bool {
 	return s.ItemID == other.ItemID && s.PotionID == other.PotionID &&
 		s.Damage == other.Damage && s.RepairCost == other.RepairCost &&
-		s.CustomName == other.CustomName
+		s.CustomName == other.CustomName && slices.Equal(s.Enchantments, other.Enchantments)
+}
+
+// Equal 报告两个堆栈是否完全相等（含全部组件与数量）。
+// Enchantments 是切片，Stack 不再可直接用 == 比较，此类判断一律用本方法。
+func (s Stack) Equal(other Stack) bool {
+	return s.ItemID == other.ItemID && s.Count == other.Count &&
+		s.PotionID == other.PotionID && s.Damage == other.Damage &&
+		s.RepairCost == other.RepairCost && s.CustomName == other.CustomName &&
+		slices.Equal(s.Enchantments, other.Enchantments)
+}
+
+// EqualStacks 报告两个堆栈切片是否逐项相等（用于物品栏快照比较）。
+func EqualStacks(a, b []Stack) bool {
+	return slices.EqualFunc(a, b, func(x, y Stack) bool { return x.Equal(y) })
+}
+
+// EnchantmentLevel 返回指定附魔的等级（未附魔为 0）。
+func (s Stack) EnchantmentLevel(id int32) int32 {
+	for _, entry := range s.Enchantments {
+		if entry.ID == id {
+			return entry.Level
+		}
+		if entry.ID > id {
+			break
+		}
+	}
+	return 0
+}
+
+// WithEnchantment 返回把指定附魔设为给定等级的堆栈副本（含并发安全考量，
+// 总是新建切片）。等级 <= 0 表示移除该附魔。
+func (s Stack) WithEnchantment(id, level int32) Stack {
+	entries := make([]EnchantmentEntry, 0, len(s.Enchantments)+1)
+	replaced := false
+	for _, entry := range s.Enchantments {
+		switch {
+		case entry.ID == id:
+			if level > 0 {
+				entries = append(entries, EnchantmentEntry{ID: id, Level: level})
+			}
+			replaced = true
+		case entry.ID > id && !replaced:
+			if level > 0 {
+				entries = append(entries, EnchantmentEntry{ID: id, Level: level})
+			}
+			replaced = true
+			entries = append(entries, entry)
+		default:
+			entries = append(entries, entry)
+		}
+	}
+	if !replaced && level > 0 {
+		entries = append(entries, EnchantmentEntry{ID: id, Level: level})
+	}
+	clone := s
+	clone.Enchantments = entries
+	return clone
 }
 
 // HoverName 返回物品的服务端悬停名（原版 ItemStack.getHoverName().getString()）：
@@ -88,6 +155,7 @@ func (s Stack) HoverName() string {
 const (
 	damageComponentID         = 3
 	customNameComponentID     = 6
+	enchantmentsComponentID   = 13
 	repairCostComponentID     = 19
 	potionContentsComponentID = 49
 )
@@ -96,15 +164,15 @@ const (
 //
 // Slot 结构：count（VarInt）；count != 0 时依次为 itemId（VarInt）、
 // 添加的组件数、移除的组件数、组件的补丁数据。组件按类型 ID 升序写出：
-// damage（VarInt）、custom_name（NBT 文本组件）、repair_cost（VarInt）、
-// potion_contents（自定义结构，见 appendPotionContents）。
+// damage（VarInt）、custom_name（NBT 文本组件）、enchantments（自定义结构）、
+// repair_cost（VarInt）、potion_contents（自定义结构，见 appendPotionContents）。
 func (s Stack) AppendSlot(dst []byte) []byte {
 	if s.IsEmpty() {
 		return protocol.AppendVarInt(dst, 0)
 	}
 	dst = protocol.AppendVarInt(dst, s.Count)
 	dst = protocol.AppendVarInt(dst, s.ItemID)
-	if s.Damage == 0 && s.CustomName == "" && s.RepairCost == 0 && s.PotionID == 0 {
+	if s.Damage == 0 && s.CustomName == "" && s.RepairCost == 0 && s.PotionID == 0 && len(s.Enchantments) == 0 {
 		dst = protocol.AppendVarInt(dst, 0)  // 添加的组件数
 		return protocol.AppendVarInt(dst, 0) // 移除的组件数
 	}
@@ -113,6 +181,9 @@ func (s Stack) AppendSlot(dst []byte) []byte {
 		components++
 	}
 	if s.CustomName != "" {
+		components++
+	}
+	if len(s.Enchantments) > 0 {
 		components++
 	}
 	if s.RepairCost > 0 {
@@ -131,12 +202,32 @@ func (s Stack) AppendSlot(dst []byte) []byte {
 		dst = protocol.AppendVarInt(dst, customNameComponentID)
 		dst = protocol.AppendNBTString(dst, s.CustomName)
 	}
+	if len(s.Enchantments) > 0 {
+		dst = appendEnchantments(dst, s.Enchantments)
+	}
 	if s.RepairCost > 0 {
 		dst = protocol.AppendVarInt(dst, repairCostComponentID)
 		dst = protocol.AppendVarInt(dst, s.RepairCost)
 	}
 	if s.PotionID > 0 {
 		dst = appendPotionContents(dst, s.PotionID-1)
+	}
+	return dst
+}
+
+// appendEnchantments 追加一个 minecraft:enchantments 组件：
+// 组件 ID（VarInt）+ ItemEnchantments 的网络编码。
+//
+// 网络编码（对照 1.21.11 反编译的 ItemEnchantments.STREAM_CODEC =
+// ByteBufCodecs.map(sizeFunction, Enchantments.HOLDER_CODEC, VAR_INT)）：
+// VarInt 条目数 + 条目数 ×（Holder<Enchantment>：VarInt(注册表 ID + 1)；
+// 等级：VarInt）。Holder 编码与药水一致（0 保留给内联值）。
+func appendEnchantments(dst []byte, entries []EnchantmentEntry) []byte {
+	dst = protocol.AppendVarInt(dst, enchantmentsComponentID)
+	dst = protocol.AppendVarInt(dst, int32(len(entries)))
+	for _, entry := range entries {
+		dst = protocol.AppendVarInt(dst, entry.ID+1) // Holder：注册表 ID + 1
+		dst = protocol.AppendVarInt(dst, entry.Level)
 	}
 	return dst
 }

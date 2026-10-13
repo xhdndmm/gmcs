@@ -30,7 +30,7 @@ func (b hopperSlotBacking) Get(index int) item.Stack {
 func (b hopperSlotBacking) Set(index int, stack item.Stack) {
 	if index < hopperSlots {
 		b.state.mu.Lock()
-		changed := b.state.slots[index] != stack
+		changed := !b.state.slots[index].Equal(stack)
 		b.state.slots[index] = stack
 		b.state.mu.Unlock()
 		if changed {

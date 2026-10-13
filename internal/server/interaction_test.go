@@ -372,7 +372,7 @@ func TestSetCreativeModeSlotMenuMapping(t *testing.T) {
 	sendSetCreativeSlotMenu(t, conn, 20, stone, 100)
 	sendChatCommand(t, conn, "/list")
 	expectSystemChat(t, conn, "当前有")
-	if after := player.inventory.Slots(); after != before {
+	if after := player.inventory.Slots(); !item.EqualStacks(after[:], before[:]) {
 		t.Fatalf("合成格/非法槽位不应改动物品栏")
 	}
 
@@ -391,7 +391,7 @@ func TestSetCreativeModeSlotMenuMapping(t *testing.T) {
 	if droppedCount != 1 || dropped.ItemID != stone || dropped.Count != 5 {
 		t.Fatalf("负数槽位丢弃 = %d 个实体、堆叠 %+v, want 1 个石头 x5", droppedCount, dropped)
 	}
-	if after := player.inventory.Slots(); after != beforeDrop {
+	if after := player.inventory.Slots(); !item.EqualStacks(after[:], beforeDrop[:]) {
 		t.Fatal("负数槽位不应改动物品栏")
 	}
 }

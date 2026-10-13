@@ -105,6 +105,11 @@ type session struct {
 	smithing    *smithingState
 	// anvil 是铁砧窗口的临时状态（随窗口生命周期）。
 	anvil *anvilState
+	// enchanting 是附魔台窗口的临时状态（随窗口生命周期）。
+	enchanting *enchantingState
+	// enchantmentSeed 是玩家的附魔种子（原版 Player.enchantmentSeed）：
+	// 决定附魔台选项的随机序列，每次附魔后重播。
+	enchantmentSeed int32
 	// recipeBookOpen/Filtering 记录客户端上报的配方书开关与过滤状态（仅记录）。
 	recipeBookOpen      [4]bool
 	recipeBookFiltering [4]bool
@@ -228,6 +233,8 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		air:             maxPlayerAir,
 		envAirSynced:    maxPlayerAir,
 		sentChunks:      make(map[world.ChunkPos]struct{}),
+		// 附魔种子与原版一致在会话创建时随机初始化（Player.enchantmentSeed）。
+		enchantmentSeed: int32(server.nextRandom()),
 	}
 }
 
@@ -1351,6 +1358,7 @@ func (s *session) runPlay() {
 	s.server.closeStonecutter(s, false)
 	s.server.closeSmithing(s, false)
 	s.server.closeAnvil(s, false)
+	s.server.closeEnchanting(s, false)
 	s.server.closeEnderChest(s, false)
 	s.server.returnInventoryCraft(s)
 	s.server.auditLog("leave", "player", s.name, "uuid", uuidString(s.uuid))
@@ -1581,6 +1589,9 @@ func (s *session) playReadLoop() {
 			if s.getStonecutter() != nil && windowID == s.windowID {
 				s.server.handleStonecutterButton(s, buttonID)
 			}
+			if s.getEnchanting() != nil && windowID == s.windowID {
+				s.server.handleEnchantingButton(s, buttonID)
+			}
 		case protocol.PlayServerboundPacketIDPlaceRecipe:
 			windowID, displayID, makeAll, err := protocol.ParsePlaceRecipe(packet)
 			if err != nil {
@@ -1614,6 +1625,9 @@ func (s *session) playReadLoop() {
 			}
 			if s.getAnvil() != nil && windowID == s.windowID {
 				s.server.closeAnvil(s, false)
+			}
+			if s.getEnchanting() != nil && windowID == s.windowID {
+				s.server.closeEnchanting(s, false)
 			}
 			if s.getOpenEnder() && windowID == s.windowID {
 				s.server.closeEnderChest(s, false)
@@ -1702,6 +1716,36 @@ func (s *session) getAnvil() *anvilState {
 func (s *session) setAnvil(state *anvilState) {
 	s.stateMu.Lock()
 	s.anvil = state
+	s.stateMu.Unlock()
+}
+
+// getEnchanting 返回打开的附魔台状态（线程安全）。
+func (s *session) getEnchanting() *enchantingState {
+	s.stateMu.Lock()
+	state := s.enchanting
+	s.stateMu.Unlock()
+	return state
+}
+
+// setEnchanting 设置打开的附魔台状态（线程安全）。
+func (s *session) setEnchanting(state *enchantingState) {
+	s.stateMu.Lock()
+	s.enchanting = state
+	s.stateMu.Unlock()
+}
+
+// getEnchantmentSeed 返回玩家的附魔种子（线程安全）。
+func (s *session) getEnchantmentSeed() int32 {
+	s.stateMu.Lock()
+	seed := s.enchantmentSeed
+	s.stateMu.Unlock()
+	return seed
+}
+
+// setEnchantmentSeed 设置玩家的附魔种子（线程安全）。
+func (s *session) setEnchantmentSeed(seed int32) {
+	s.stateMu.Lock()
+	s.enchantmentSeed = seed
 	s.stateMu.Unlock()
 }
 
