@@ -153,11 +153,12 @@ func (s Stack) HoverName() string {
 
 // 物品组件类型 ID（reports/registries.json 的 minecraft:data_component_type，1.21.11）。
 const (
-	damageComponentID         = 3
-	customNameComponentID     = 6
-	enchantmentsComponentID   = 13
-	repairCostComponentID     = 19
-	potionContentsComponentID = 49
+	damageComponentID             = 3
+	customNameComponentID         = 6
+	enchantmentsComponentID       = 13
+	repairCostComponentID         = 19
+	storedEnchantmentsComponentID = 41
+	potionContentsComponentID     = 49
 )
 
 // AppendSlot 按 1.21.11 的 Slot 结构把堆栈追加到 dst。
@@ -165,7 +166,9 @@ const (
 // Slot 结构：count（VarInt）；count != 0 时依次为 itemId（VarInt）、
 // 添加的组件数、移除的组件数、组件的补丁数据。组件按类型 ID 升序写出：
 // damage（VarInt）、custom_name（NBT 文本组件）、enchantments（自定义结构）、
-// repair_cost（VarInt）、potion_contents（自定义结构，见 appendPotionContents）。
+// repair_cost（VarInt）、stored_enchantments（附魔书）与 potion_contents
+// （自定义结构，见 appendPotionContents）。附魔组件与原版一致按物品选择：
+// 附魔书使用 stored_enchantments（41），其余物品使用 enchantments（13）。
 func (s Stack) AppendSlot(dst []byte) []byte {
 	if s.IsEmpty() {
 		return protocol.AppendVarInt(dst, 0)
@@ -202,12 +205,17 @@ func (s Stack) AppendSlot(dst []byte) []byte {
 		dst = protocol.AppendVarInt(dst, customNameComponentID)
 		dst = protocol.AppendNBTString(dst, s.CustomName)
 	}
-	if len(s.Enchantments) > 0 {
-		dst = appendEnchantments(dst, s.Enchantments)
+	// 原版：附魔书用 stored_enchantments，其余物品用 enchantments（组件 ID 升序）。
+	book := registry.HasStoredEnchantments(s.ItemID)
+	if len(s.Enchantments) > 0 && !book {
+		dst = appendEnchantments(dst, enchantmentsComponentID, s.Enchantments)
 	}
 	if s.RepairCost > 0 {
 		dst = protocol.AppendVarInt(dst, repairCostComponentID)
 		dst = protocol.AppendVarInt(dst, s.RepairCost)
+	}
+	if len(s.Enchantments) > 0 && book {
+		dst = appendEnchantments(dst, storedEnchantmentsComponentID, s.Enchantments)
 	}
 	if s.PotionID > 0 {
 		dst = appendPotionContents(dst, s.PotionID-1)
@@ -215,15 +223,15 @@ func (s Stack) AppendSlot(dst []byte) []byte {
 	return dst
 }
 
-// appendEnchantments 追加一个 minecraft:enchantments 组件：
+// appendEnchantments 追加一个附魔组件（enchantments 13 或 stored_enchantments 41）：
 // 组件 ID（VarInt）+ ItemEnchantments 的网络编码。
 //
 // 网络编码（对照 1.21.11 反编译的 ItemEnchantments.STREAM_CODEC =
 // ByteBufCodecs.map(sizeFunction, Enchantments.HOLDER_CODEC, VAR_INT)）：
 // VarInt 条目数 + 条目数 ×（Holder<Enchantment>：VarInt(注册表 ID + 1)；
 // 等级：VarInt）。Holder 编码与药水一致（0 保留给内联值）。
-func appendEnchantments(dst []byte, entries []EnchantmentEntry) []byte {
-	dst = protocol.AppendVarInt(dst, enchantmentsComponentID)
+func appendEnchantments(dst []byte, componentID int, entries []EnchantmentEntry) []byte {
+	dst = protocol.AppendVarInt(dst, int32(componentID))
 	dst = protocol.AppendVarInt(dst, int32(len(entries)))
 	for _, entry := range entries {
 		dst = protocol.AppendVarInt(dst, entry.ID+1) // Holder：注册表 ID + 1

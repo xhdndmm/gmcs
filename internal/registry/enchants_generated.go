@@ -208,6 +208,56 @@ var EnchantmentSupportedItems = [][]int32{
 	{1223},
 }
 
+// EnchantmentPrimaryItems 保存每个附魔 primary_items 的展开（升序去重；nil 表示定义缺省）。
+// 原版附魔台要求物品命中 supported_items，且 primary_items 存在时必须同时命中
+// primary_items（Enchantment 字节码：supported && (primary 为空 || 命中)）；
+// 铁砧/命令等路径只要求 supported_items。
+var EnchantmentPrimaryItems = [][]int32{
+	nil,
+	{911, 916, 921, 926, 931, 936, 941, 1296, 1297, 1298, 1299, 1300, 1301, 1302},
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	{911, 916, 921, 926, 931, 936, 941, 1296, 1297, 1298, 1299, 1300, 1301, 1302},
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	nil,
+	{911, 916, 921, 926, 931, 936, 941, 1296, 1297, 1298, 1299, 1300, 1301, 1302},
+	nil,
+	{911, 916, 921, 926, 931, 936, 941, 1296, 1297, 1298, 1299, 1300, 1301, 1302},
+	nil,
+	nil,
+	nil,
+	{955, 959, 963, 967, 971, 975, 979},
+	nil,
+	nil,
+	nil,
+}
+
 // EnchantmentExclusive 保存每个附魔的互斥附魔 ID 集合（exclusive_set 展开，
 // 升序；判定时双向检查）。
 var EnchantmentExclusive = [][]int32{

@@ -3,6 +3,9 @@ package item
 import (
 	"bytes"
 	"testing"
+
+	"gmcs/internal/protocol"
+	"gmcs/internal/registry"
 )
 
 // TestEnchantmentsComponentEncoding 逐字节验证 minecraft:enchantments 组件
@@ -64,5 +67,33 @@ func TestStackEnchantmentOps(t *testing.T) {
 	// Equal 含数量。
 	if stack.Equal(other.WithEnchantment(40, 1)) {
 		t.Fatal("附魔等级不同的堆栈不应相等")
+	}
+}
+
+// TestStoredEnchantmentsComponentEncoding 验证附魔书使用 minecraft:stored_enchantments
+// （组件 ID 41）编码；组件仍按类型 ID 升序（repair_cost 19 在前）。
+func TestStoredEnchantmentsComponentEncoding(t *testing.T) {
+	book, err := FromName("minecraft:enchanted_book", 1)
+	if err != nil {
+		t.Fatalf("缺少附魔书：%v", err)
+	}
+	if !registry.HasStoredEnchantments(book.ItemID) {
+		t.Fatal("minecraft:enchanted_book 应使用 stored_enchantments")
+	}
+	book.RepairCost = 5
+	book.Enchantments = []EnchantmentEntry{{ID: 33, Level: 1}}
+	got := book.AppendSlot(nil)
+	want := protocol.AppendVarInt(nil, 1)
+	want = protocol.AppendVarInt(want, book.ItemID)
+	want = protocol.AppendVarInt(want, 2) // 添加的组件数
+	want = protocol.AppendVarInt(want, 0) // 移除的组件数
+	want = protocol.AppendVarInt(want, 19)
+	want = protocol.AppendVarInt(want, 5)
+	want = protocol.AppendVarInt(want, 41)
+	want = protocol.AppendVarInt(want, 1)
+	want = protocol.AppendVarInt(want, 34) // Holder：33 + 1
+	want = protocol.AppendVarInt(want, 1)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("AppendSlot = % x, want % x", got, want)
 	}
 }

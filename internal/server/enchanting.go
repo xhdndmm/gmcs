@@ -462,7 +462,9 @@ func availableEnchantmentsByLevel(level int32, stack item.Stack) []enchantmentIn
 	var out []enchantmentInstance
 	// 保持 in_enchanting_table 的标签定义顺序（影响加权随机的序列）。
 	for _, id := range registry.EnchantmentsInEnchantingTable {
-		if !isBook && !registry.EnchantmentSupported(id, stack.ItemID) {
+		// 原版筛选：supported_items 含物品且（primary_items 缺省或命中）；
+		// 普通书不受限制。
+		if !isBook && !registry.EnchantmentTableApplicable(id, stack.ItemID) {
 			continue
 		}
 		maxLevel, ok := registry.EnchantmentMaxLevel(id)

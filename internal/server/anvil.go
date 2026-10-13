@@ -2,6 +2,7 @@ package server
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -22,15 +23,18 @@ import (
 //     有效果时成本 +2；
 //   - 重命名：名称与物品当前悬停名不同时设置 custom_name、成本 +1；
 //     未输入名称（或全空白）时移除已有 custom_name、成本 +1；
+//   - 耐久合并：同物品（非附魔书）合并时剩余耐久相加并奖励 12% 最大耐久；
+//   - 附魔合并：逐个处理添加物附魔，目标等级取高等级（同级 +1）并钳制到最大
+//     等级，冲突附魔追加成本但不生效（详见 anvilMergeEnchantments）；
 //   - 成本上限：达到 40 级且非创造模式时无法取走（纯重命名降为 39 级上限）；
 //   - 累积惩罚（repair_cost）：非纯重命名时按 min(2n+1, MaxInt32) 递增。
 //
 // 与切石机/锻造台一致，输入槽是窗口临时状态（原版 AnvilMenu 的输入容器不
 // 持久化），关闭窗口时归还背包（放不下则掉落）。
 //
-// 已知限制（见 docs/TODO.md）：附魔合并没有实现——gmcs 的物品模型尚无附魔数据
-// （全部物品的 enchantments/stored_enchantments 视为空），空数据下本实现与原版
-// 行为一致（附魔合并段为空操作），但带附魔物品的合并不可用。
+// 附魔合并读取物品自带的 enchantments/stored_enchantments 组件（见 item.Stack）；
+// 附魔书入库/取出使用 stored_enchantments（41），其余物品使用 enchantments（13），
+// 与附魔台产出一致。
 
 // 铁砧窗口的槽位布局。
 const (
@@ -161,11 +165,12 @@ func computeAnvilResult(input, additional item.Stack, name string, nameSet, crea
 				return res // 无法合并：无结果
 			}
 			if resultDamageable && !rightIsBook {
-				// 同物品合并：剩余耐久相加，附加 12% 最大耐久奖励。
+				// 同物品合并：剩余耐久相加，附加 12% 最大耐久奖励（原版奖励基于
+				// 结果的 max_damage；同物品时与添加物的 max_damage 相同）。
 				additionalMaxDamage, _ := registry.MaxDamage(additional.ItemID)
 				remainLeft := inputMaxDamage - input.Damage
 				remainRight := additionalMaxDamage - additional.Damage
-				bonus := remainRight + additionalMaxDamage*12/100
+				bonus := remainRight + resultMaxDamage*12/100
 				newDamage := resultMaxDamage - (remainLeft + bonus)
 				if newDamage < 0 {
 					newDamage = 0
@@ -175,9 +180,15 @@ func computeAnvilResult(input, additional item.Stack, name string, nameSet, crea
 					cost += anvilCostRepairSacrifice
 				}
 			}
-			// 附魔合并（原版字节码 434-726）：gmcs 无附魔数据，该段为空操作
-			// （对原版而言，输入不带附魔数据时该段同样不产生任何效果）。
-			// 附魔系统实现后必须在此补上（含附魔书减半与 40 级特例）。
+			// 附魔合并（原版字节码 434-726）。
+			if len(additional.Enchantments) > 0 {
+				merge := anvilMergeEnchantments(input, additional, rightIsBook, creative)
+				if merge.conflictOnly {
+					return res // 全部附魔都因冲突未生效：无结果、成本 0
+				}
+				result.Enchantments = merge.enchantments
+				cost += merge.costDelta
+			}
 		}
 	}
 
@@ -236,6 +247,100 @@ func computeAnvilResult(input, additional item.Stack, name string, nameSet, crea
 	res.result = result
 	res.cost = finalCost
 	return res
+}
+
+// anvilEnchantMerge 是附魔合并的结果（anvilMergeEnchantments 的输出）。
+type anvilEnchantMerge struct {
+	// enchantments 是合并后的附魔列表（按附魔 ID 升序；输入自带的附魔即使
+	// 本轮没有生效条目也会原样返回）。
+	enchantments []item.EnchantmentEntry
+	// costDelta 是附魔合并追加的等级成本。
+	costDelta int64
+	// conflictOnly 表示「存在冲突且没有任何附魔生效」（原版此时结果无效）。
+	conflictOnly bool
+}
+
+// anvilMergeEnchantments 复刻原版 AnvilMenu.createResult 的附魔合并段
+// （dhm 字节码 434-726）。规则：
+//   - 逐个处理添加物（附魔书取 stored_enchantments，其余取 enchantments）的
+//     附魔：目标等级为同名附魔的较高等级，两者相同时 +1（再钳制到最大等级）；
+//   - 附魔必须可作用于输入物品（supported_items；创造模式或输入物品本身是
+//     附魔书时豁免），并与结果已有附魔互相兼容：每个冲突追加 1 点成本，且该
+//     附魔不生效；
+//   - 生效附魔按 anvil_cost × 目标等级计入成本；添加物为附魔书时 anvil_cost
+//     折半（至少 1）；输入堆叠数大于 1 时成本直接为 40（原版特例）；
+//   - 所有附魔都因冲突未生效时整体无效（conflictOnly）。
+//
+// 原版逐个附魔使用哈希表迭代序，多冲突并存时保留哪些附魔取决于该顺序；
+// gmcs 按物品组件的升序 ID 迭代（确定性），平局取舍可能与原版不同。
+func anvilMergeEnchantments(input, additional item.Stack, additionIsBook, creative bool) anvilEnchantMerge {
+	// 输入为附魔书时全部附魔可用（书可以承载任意附魔组合）。
+	inputIsBook := registry.HasStoredEnchantments(input.ItemID)
+	merged := make(map[int32]int32, len(input.Enchantments)+len(additional.Enchantments))
+	for _, entry := range input.Enchantments {
+		if existing, ok := merged[entry.ID]; !ok || entry.Level > existing {
+			merged[entry.ID] = entry.Level
+		}
+	}
+	var (
+		cost     int64
+		applied  bool
+		conflict bool
+	)
+	for _, entry := range additional.Enchantments {
+		current := merged[entry.ID]
+		level := entry.Level
+		switch {
+		case current == level: // 同名同级：提升一级
+			level++
+		case current > level: // 已有更高等级：保留
+			level = current
+		}
+		applicable := registry.EnchantmentSupported(entry.ID, input.ItemID)
+		if creative || inputIsBook {
+			applicable = true
+		}
+		for existingID := range merged {
+			if existingID == entry.ID {
+				continue
+			}
+			if !registry.EnchantmentCompatible(entry.ID, existingID) {
+				applicable = false
+				cost++ // 每个冲突附魔各追加 1 点成本（原版无 break）
+			}
+		}
+		if !applicable {
+			conflict = true
+			continue // 冲突附魔不生效（原版 flag 不置位）
+		}
+		applied = true
+		if maxLevel, ok := registry.EnchantmentMaxLevel(entry.ID); ok && level > maxLevel {
+			level = maxLevel
+		}
+		merged[entry.ID] = level
+		anvilCost, _ := registry.EnchantmentAnvilCost(entry.ID)
+		if additionIsBook {
+			anvilCost = max(1, anvilCost/2) // 附魔书减半（至少 1）
+		}
+		cost += int64(anvilCost) * int64(level)
+		if input.Count > 1 {
+			cost = 40 // 原版特例：输入堆叠数大于 1 时成本直接为 40
+		}
+	}
+	if conflict && !applied {
+		return anvilEnchantMerge{conflictOnly: true}
+	}
+	// item.Stack 约定：附魔按 ID 升序。
+	ids := make([]int32, 0, len(merged))
+	for id := range merged {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	enchantments := make([]item.EnchantmentEntry, 0, len(ids))
+	for _, id := range ids {
+		enchantments = append(enchantments, item.EnchantmentEntry{ID: id, Level: merged[id]})
+	}
+	return anvilEnchantMerge{enchantments: enchantments, costDelta: cost}
 }
 
 // increasedRepairCost 返回铁砧累积惩罚的下一级

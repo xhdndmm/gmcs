@@ -37,6 +37,24 @@ func EnchantmentSupported(enchantID, itemID int32) bool {
 	return sortedContains(EnchantmentSupportedItems[enchantID], itemID)
 }
 
+// EnchantmentTableApplicable 报告附魔台是否可向物品提供该附魔
+// （原版 Enchantment 字节码：supported_items 含物品，且 primary_items
+// 存在时必须同时命中 primary_items；普通书由调用方另行放行）。
+// 铁砧/命令等路径只用 EnchantmentSupported（不带 primary 限制）。
+func EnchantmentTableApplicable(enchantID, itemID int32) bool {
+	if !EnchantmentSupported(enchantID, itemID) {
+		return false
+	}
+	if enchantID < 0 || int(enchantID) >= len(EnchantmentPrimaryItems) {
+		return true
+	}
+	primary := EnchantmentPrimaryItems[enchantID]
+	if len(primary) == 0 {
+		return true
+	}
+	return sortedContains(primary, itemID)
+}
+
 // EnchantmentCompatible 报告两个附魔是否可以共存（原版 Enchantment.areCompatible：
 // 相同附魔不兼容；任一方的 exclusive_set 包含对方则不兼容）。
 func EnchantmentCompatible(a, b int32) bool {

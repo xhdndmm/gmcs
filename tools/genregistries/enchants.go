@@ -95,6 +95,9 @@ func loadEnchantments(reader *zip.Reader, order []string) ([]parsedEnchantment, 
 		if err != nil {
 			return nil, fmt.Errorf("解析 %s 的 primary_items：%w", file.Name, err)
 		}
+		if len(raw.Primary) > 0 && string(raw.Primary) != "null" && len(primary) == 0 {
+			return nil, fmt.Errorf("附魔 %s 的 primary_items 显式为空（不支持该形式）", fullName)
+		}
 		if len(supported) == 0 {
 			return nil, fmt.Errorf("附魔 %s 的 supported_items 为空", fullName)
 		}
@@ -237,6 +240,31 @@ func writeEnchants(outDir, version string, src *enchantSource) error {
 		ids, err := expandItemRefs(ench.supported, src.itemIDs, src.itemTags)
 		if err != nil {
 			return fmt.Errorf("展开 %s 的 supported_items：%w", ench.name, err)
+		}
+		buf.WriteString("\t{")
+		for i, id := range ids {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			fmt.Fprintf(&buf, "%d", id)
+		}
+		buf.WriteString("},\n")
+	}
+	buf.WriteString("}\n\n")
+
+	buf.WriteString("// EnchantmentPrimaryItems 保存每个附魔 primary_items 的展开（升序去重；nil 表示定义缺省）。\n")
+	buf.WriteString("// 原版附魔台要求物品命中 supported_items，且 primary_items 存在时必须同时命中\n")
+	buf.WriteString("// primary_items（Enchantment 字节码：supported && (primary 为空 || 命中)）；\n")
+	buf.WriteString("// 铁砧/命令等路径只要求 supported_items。\n")
+	buf.WriteString("var EnchantmentPrimaryItems = [][]int32{\n")
+	for _, ench := range src.enchants {
+		if len(ench.primaryItems) == 0 {
+			buf.WriteString("\tnil,\n")
+			continue
+		}
+		ids, err := expandItemRefs(ench.primaryItems, src.itemIDs, src.itemTags)
+		if err != nil {
+			return fmt.Errorf("展开 %s 的 primary_items：%w", ench.name, err)
 		}
 		buf.WriteString("\t{")
 		for i, id := range ids {

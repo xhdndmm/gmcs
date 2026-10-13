@@ -174,6 +174,91 @@ func TestAvailableEnchantmentsByLevel(t *testing.T) {
 	}
 }
 
+// TestEnchantingTablePrimaryItems 回归：附魔台过滤器除 supported_items 外还要求
+// primary_items 命中（对照 1.21.11 Enchantment.a(dlt) 字节码）。斧头虽然
+// supported_items 含锋利，但 primary_items（melee_weapon）不含斧，附魔台不应
+// 提供锋利（铁砧书仍可）；荆棘只对胸甲提供。
+func TestEnchantingTablePrimaryItems(t *testing.T) {
+	sharpnessID, ok := registry.SyncEntryID("minecraft:enchantment", "minecraft:sharpness")
+	if !ok {
+		t.Fatal("缺少 sharpness 附魔")
+	}
+	thornsID, ok := registry.SyncEntryID("minecraft:enchantment", "minecraft:thorns")
+	if !ok {
+		t.Fatal("缺少 thorns 附魔")
+	}
+	axe, err := item.FromName("minecraft:diamond_axe", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sword, err := item.FromName("minecraft:diamond_sword", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chest, err := item.FromName("minecraft:diamond_chestplate", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legs, err := item.FromName("minecraft:diamond_leggings", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// primary_items 数据存在（锋利属于 melee_weapon，荆棘属于 chest_armor）。
+	if id := int(sharpnessID); id >= len(registry.EnchantmentPrimaryItems) || len(registry.EnchantmentPrimaryItems[id]) == 0 {
+		t.Fatal("锋利应有 primary_items")
+	}
+	if id := int(thornsID); id >= len(registry.EnchantmentPrimaryItems) || len(registry.EnchantmentPrimaryItems[id]) == 0 {
+		t.Fatal("荆棘应有 primary_items")
+	}
+
+	// 斧：supported 命中（铁砧可用）但 primary 不命中（附魔台不可用）。
+	if !registry.EnchantmentSupported(sharpnessID, axe.ItemID) {
+		t.Fatal("斧的 supported_items 应含锋利（铁砧/命令可用）")
+	}
+	if registry.EnchantmentTableApplicable(sharpnessID, axe.ItemID) {
+		t.Fatal("附魔台不应向斧提供锋利（primary_items 不含斧）")
+	}
+	if !registry.EnchantmentTableApplicable(sharpnessID, sword.ItemID) {
+		t.Fatal("附魔台应向剑提供锋利")
+	}
+	axeList := availableEnchantmentsByLevel(50, axe)
+	if len(axeList) == 0 {
+		t.Fatal("等级 50 的钻石斧应至少有一个候选")
+	}
+	for _, inst := range axeList {
+		if inst.id == sharpnessID {
+			t.Fatal("斧的附魔台候选不应包含锋利")
+		}
+		if !registry.EnchantmentTableApplicable(inst.id, axe.ItemID) {
+			t.Fatalf("候选 %d 不满足附魔台筛选（primary_items）", inst.id)
+		}
+	}
+
+	// 荆棘：primary_items = chest_armor，仅胸甲可通过附魔台获得。
+	if !registry.EnchantmentTableApplicable(thornsID, chest.ItemID) {
+		t.Fatal("附魔台应向胸甲提供荆棘")
+	}
+	if registry.EnchantmentTableApplicable(thornsID, legs.ItemID) {
+		t.Fatal("附魔台不应向护腿提供荆棘（primary_items = chest_armor）")
+	}
+
+	// 书不受 supported/primary 限制（普通书可附魔为任意附魔书）。
+	book, err := item.FromName("minecraft:book", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, inst := range availableEnchantmentsByLevel(50, book) {
+		if inst.id == sharpnessID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("书的附魔台候选应包含锋利")
+	}
+}
+
 // TestEnchantingResultsDeterministic 验证结果确定性与合法性：
 // 同种子同输入结果一致；结果内附魔两两兼容；书至多一个附魔。
 func TestEnchantingResultsDeterministic(t *testing.T) {

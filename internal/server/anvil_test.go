@@ -428,7 +428,8 @@ func parseSlotWithComponents(t *testing.T, payload []byte, offset int) (item.Sta
 			}
 			stack.CustomName = string(payload[offset : offset+length])
 			offset += length
-		case 13: // enchantments：VarInt 数量 + 每项 (VarInt(id+1), VarInt(level))
+		case 13, 41: // enchantments / stored_enchantments：编码相同
+			// VarInt 数量 + 每项 (VarInt(id+1), VarInt(level))
 			count, size, err := protocol.DecodeVarInt(payload[offset:])
 			if err != nil {
 				t.Fatal(err)
@@ -656,4 +657,273 @@ func TestAnvilCloseReturnsInputs(t *testing.T) {
 		}
 		return total == 3
 	}, "关闭铁砧窗口应归还输入槽物品")
+}
+
+// TestAnvilMergeEnchantments 单元验证附魔合并（对照 dhm 字节码 434-726）：
+// 等级合并规则、附魔书成本减半、冲突附魔不生效与整单失效、创造模式/附魔书豁免、
+// supported_items 限制（不受 primary_items 影响）与堆叠特例。
+func TestAnvilMergeEnchantments(t *testing.T) {
+	enchant := func(name string) int32 {
+		t.Helper()
+		id, ok := registry.SyncEntryID("minecraft:enchantment", name)
+		if !ok {
+			t.Fatalf("缺少附魔 %s", name)
+		}
+		return id
+	}
+	sharpness := enchant("minecraft:sharpness")
+	smite := enchant("minecraft:smite")
+	sharpnessCost, _ := registry.EnchantmentAnvilCost(sharpness)
+	bookSharpness := int64(max(1, sharpnessCost/2)) // 附魔书成本减半（至少 1）
+
+	sword := testStack(t, "minecraft:diamond_sword", 1)
+	book := func(entries ...item.EnchantmentEntry) item.Stack {
+		b := testStack(t, "minecraft:enchanted_book", 1)
+		b.Enchantments = entries
+		return b
+	}
+
+	// 锋利 I 书 → 剑：应用锋利 I，成本按书（减半）计。
+	merge := anvilMergeEnchantments(sword, book(item.EnchantmentEntry{ID: sharpness, Level: 1}), true, false)
+	if merge.conflictOnly || len(merge.enchantments) != 1 ||
+		merge.enchantments[0] != (item.EnchantmentEntry{ID: sharpness, Level: 1}) {
+		t.Fatalf("剑 + 锋利 I 书 = %+v", merge)
+	}
+	if merge.costDelta != bookSharpness {
+		t.Fatalf("成本 = %d, want %d", merge.costDelta, bookSharpness)
+	}
+
+	// 锋利 I 剑 + 锋利 I 书：同名同级提升为 II。
+	sharpSword := sword
+	sharpSword.Enchantments = []item.EnchantmentEntry{{ID: sharpness, Level: 1}}
+	merge = anvilMergeEnchantments(sharpSword, book(item.EnchantmentEntry{ID: sharpness, Level: 1}), true, false)
+	if merge.conflictOnly || len(merge.enchantments) != 1 || merge.enchantments[0].Level != 2 {
+		t.Fatalf("锋利 I + 锋利 I = %+v", merge)
+	}
+	if merge.costDelta != bookSharpness*2 {
+		t.Fatalf("成本 = %d, want %d", merge.costDelta, bookSharpness*2)
+	}
+
+	// 锋利 III 剑 + 锋利 I 书：保留更高等级 III（成本按 III 计）。
+	sharpSword.Enchantments = []item.EnchantmentEntry{{ID: sharpness, Level: 3}}
+	merge = anvilMergeEnchantments(sharpSword, book(item.EnchantmentEntry{ID: sharpness, Level: 1}), true, false)
+	if merge.conflictOnly || merge.enchantments[0].Level != 3 {
+		t.Fatalf("锋利 III + 锋利 I = %+v", merge)
+	}
+	if merge.costDelta != bookSharpness*3 {
+		t.Fatalf("成本 = %d, want %d", merge.costDelta, bookSharpness*3)
+	}
+
+	// 锋利 V 剑 + 锋利 V 书：提升被钳制回最大等级 V。
+	sharpSword.Enchantments = []item.EnchantmentEntry{{ID: sharpness, Level: 5}}
+	merge = anvilMergeEnchantments(sharpSword, book(item.EnchantmentEntry{ID: sharpness, Level: 5}), true, false)
+	if merge.conflictOnly || len(merge.enchantments) != 1 || merge.enchantments[0].Level != 5 {
+		t.Fatalf("锋利 V + 锋利 V = %+v", merge)
+	}
+	if merge.costDelta != bookSharpness*5 {
+		t.Fatalf("成本 = %d, want %d", merge.costDelta, bookSharpness*5)
+	}
+
+	// 冲突（锋利 vs 亡灵杀手）且无其他提示：整单无效。
+	merge = anvilMergeEnchantments(sharpSword, book(item.EnchantmentEntry{ID: smite, Level: 1}), true, false)
+	if !merge.conflictOnly || len(merge.enchantments) != 0 {
+		t.Fatalf("全冲突应整单无效：%+v", merge)
+	}
+
+	// 部分冲突：亡灵杀手被丢弃（追加 1 点成本），锋利正常升级为 II。
+	partial := sword
+	partial.Enchantments = []item.EnchantmentEntry{{ID: sharpness, Level: 1}}
+	merge = anvilMergeEnchantments(partial, book(
+		item.EnchantmentEntry{ID: smite, Level: 3},
+		item.EnchantmentEntry{ID: sharpness, Level: 1},
+	), true, false)
+	if merge.conflictOnly || len(merge.enchantments) != 1 ||
+		merge.enchantments[0] != (item.EnchantmentEntry{ID: sharpness, Level: 2}) {
+		t.Fatalf("部分冲突 = %+v", merge)
+	}
+	if merge.costDelta != 1+bookSharpness*2 {
+		t.Fatalf("部分冲突成本 = %d, want %d", merge.costDelta, 1+bookSharpness*2)
+	}
+
+	// 不适用物品：锋利书不能用于胸甲（supported_items 不含胸甲）→ 整单无效；
+	// 创造模式跳过 supported 限制。
+	chest := testStack(t, "minecraft:diamond_chestplate", 1)
+	merge = anvilMergeEnchantments(chest, book(item.EnchantmentEntry{ID: sharpness, Level: 1}), true, false)
+	if !merge.conflictOnly {
+		t.Fatalf("胸甲 + 锋利书应无效：%+v", merge)
+	}
+	merge = anvilMergeEnchantments(chest, book(item.EnchantmentEntry{ID: sharpness, Level: 1}), true, true)
+	if merge.conflictOnly || len(merge.enchantments) != 1 {
+		t.Fatalf("创造模式胸甲 + 锋利书应应用：%+v", merge)
+	}
+
+	// 铁砧只受 supported_items 限制（不受 primary_items）：斧可以附锋利
+	// （supported_items 含斧，primary_items 仅限制附魔台）。
+	axe := testStack(t, "minecraft:diamond_axe", 1)
+	merge = anvilMergeEnchantments(axe, book(item.EnchantmentEntry{ID: sharpness, Level: 1}), true, false)
+	if merge.conflictOnly || len(merge.enchantments) != 1 {
+		t.Fatalf("斧 + 锋利书应应用（铁砧不受 primary_items 限制）：%+v", merge)
+	}
+
+	// 附魔书 + 附魔书：输入是附魔书时豁免 supported（书可承载任意附魔）；
+	// 不同附魔（锋利 + 耐久）互不冲突，全部保留。
+	unbreaking := enchant("minecraft:unbreaking")
+	unbreakingCost, _ := registry.EnchantmentAnvilCost(unbreaking)
+	bookUnbreaking := int64(max(1, unbreakingCost/2))
+	enchantedBook := testStack(t, "minecraft:enchanted_book", 1)
+	enchantedBook.Enchantments = []item.EnchantmentEntry{{ID: sharpness, Level: 1}}
+	merge = anvilMergeEnchantments(enchantedBook, book(item.EnchantmentEntry{ID: unbreaking, Level: 2}), true, false)
+	if merge.conflictOnly || len(merge.enchantments) != 2 {
+		t.Fatalf("附魔书 + 附魔书 = %+v", merge)
+	}
+	// 仅添加物的附魔计入成本（输入的锋利 I 不计）。
+	if merge.costDelta != bookUnbreaking*2 {
+		t.Fatalf("书 + 书成本 = %d, want %d", merge.costDelta, bookUnbreaking*2)
+	}
+
+	// 输入堆叠数大于 1：成本直接为 40（原版特例）。
+	stacked := sword
+	stacked.Count = 2
+	merge = anvilMergeEnchantments(stacked, book(item.EnchantmentEntry{ID: sharpness, Level: 1}), true, false)
+	if merge.costDelta != 40 {
+		t.Fatalf("堆叠输入成本 = %d, want 40", merge.costDelta)
+	}
+}
+
+// TestComputeAnvilResultEnchantmentMerge 验证铁砧整体计算结果中的附魔合并接线：
+// 附魔生效、成本与累积惩罚递增；全部冲突时结果为空、成本 0。
+func TestComputeAnvilResultEnchantmentMerge(t *testing.T) {
+	enchant := func(name string) int32 {
+		t.Helper()
+		id, ok := registry.SyncEntryID("minecraft:enchantment", name)
+		if !ok {
+			t.Fatalf("缺少附魔 %s", name)
+		}
+		return id
+	}
+	sharpness := enchant("minecraft:sharpness")
+	smite := enchant("minecraft:smite")
+
+	sword := testStack(t, "minecraft:diamond_sword", 1)
+	sword.Damage = 100
+	book := testStack(t, "minecraft:enchanted_book", 1)
+	book.Enchantments = []item.EnchantmentEntry{{ID: sharpness, Level: 1}}
+	res := computeAnvilResult(sword, book, "", false, false)
+	sharpnessCost, _ := registry.EnchantmentAnvilCost(sharpness)
+	if want := int32(max(1, sharpnessCost/2)); res.cost != want {
+		t.Fatalf("成本 = %d, want %d", res.cost, want)
+	}
+	if res.result.IsEmpty() || res.result.Damage != 100 || res.result.RepairCost != 1 ||
+		len(res.result.Enchantments) != 1 ||
+		res.result.Enchantments[0] != (item.EnchantmentEntry{ID: sharpness, Level: 1}) {
+		t.Fatalf("结果 = %+v", res.result)
+	}
+
+	// 全部冲突：锋利剑 + 亡灵杀手书 → 空结果、成本 0。
+	conflictSword := sword
+	conflictSword.Enchantments = []item.EnchantmentEntry{{ID: sharpness, Level: 1}}
+	smiteBook := testStack(t, "minecraft:enchanted_book", 1)
+	smiteBook.Enchantments = []item.EnchantmentEntry{{ID: smite, Level: 1}}
+	res = computeAnvilResult(conflictSword, smiteBook, "", false, false)
+	if !res.result.IsEmpty() || res.cost != 0 {
+		t.Fatalf("冲突应无结果，得到 cost=%d result=%+v", res.cost, res.result)
+	}
+}
+
+// TestAnvilWindowEnchantMerge 验证铁砧附魔合并的窗口全流程：
+// 放入受损剑与锋利 I 附魔书 → 成本同步为 1、结果槽出现带附魔的剑 → 取走扣 1 级。
+func TestAnvilWindowEnchantMerge(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "AnvilEnchanter")
+	defer conn.Close()
+
+	ax, ay, az := chestPositions(t, instance)
+	placeBlockAt(t, instance, ax, ay, az, anvilBlockName)
+	sendUseItemOn(t, conn, ax, ay, az, 1)
+	windowID, _ := openScreen(t, conn)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDContainerSetContent)
+
+	sharpness, ok := registry.SyncEntryID("minecraft:enchantment", "minecraft:sharpness")
+	if !ok {
+		t.Fatal("缺少 sharpness 附魔")
+	}
+	player := activeSession(t, instance, "AnvilEnchanter")
+	sword := testStack(t, "minecraft:diamond_sword", 1)
+	sword.Damage = 100
+	book := testStack(t, "minecraft:enchanted_book", 1)
+	book.Enchantments = []item.EnchantmentEntry{{ID: sharpness, Level: 1}}
+	player.inventory.Set(item.SlotHotbarStart, sword)
+	player.inventory.Set(item.SlotHotbarStart+1, book)
+	player.giveExperienceLevels(10)
+
+	// 快捷栏 0（剑）→ 输入槽 0。
+	sendContainerClick(t, conn, windowID, 0, 3+27, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+	sendContainerClick(t, conn, windowID, 0, anvilInputSlot, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+
+	// 快捷栏 1（附魔书）→ 添加槽 1；成本属性同步为 1。
+	sendContainerClick(t, conn, windowID, 0, 3+28, 0, protocol.ClickModePickup)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+	sendContainerClick(t, conn, windowID, 0, anvilAdditionSlot, 0, protocol.ClickModePickup)
+	property := expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerProperty)
+	_, offset, err := protocol.DecodeVarInt(property)
+	if err != nil {
+		t.Fatal(err)
+	}
+	propWindow, size, err := protocol.DecodeVarInt(property[offset:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset += size
+	propID := int16(uint16(property[offset])<<8 | uint16(property[offset+1]))
+	propValue := int16(uint16(property[offset+2])<<8 | uint16(property[offset+3]))
+	if propWindow != windowID || propID != 0 || propValue != 1 {
+		t.Fatalf("成本属性 = (%d, %d, %d), want (%d, 0, 1)", propWindow, propID, propValue, windowID)
+	}
+	// 添加槽收到附魔书（stored_enchantments 组件）。
+	if _, _, slot, stack := setContainerSlotStack(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)); slot != anvilAdditionSlot ||
+		len(stack.Enchantments) != 1 || stack.Enchantments[0].Level != 1 {
+		t.Fatalf("添加槽 = slot=%d stack=%+v", slot, stack)
+	}
+	// 结果槽出现带附魔与累积惩罚的剑。
+	if _, _, slot, stack := setContainerSlotStack(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)); slot != anvilResultSlot ||
+		len(stack.Enchantments) != 1 || stack.Enchantments[0].ID != sharpness || stack.Enchantments[0].Level != 1 ||
+		stack.Damage != 100 || stack.RepairCost != 1 {
+		t.Fatalf("结果槽 = slot=%d stack=%+v", slot, stack)
+	}
+	expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+
+	// 光标空时点击结果槽取走：扣 1 级、输入清空、光标获得附魔剑。
+	sendContainerClick(t, conn, windowID, 0, anvilResultSlot, 0, protocol.ClickModePickup)
+	bar, level, total := parseSetExperience(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetExperience))
+	if level != 9 || bar != 0 || total != experienceForLevel(9) {
+		t.Fatalf("取走应扣 1 级：(bar %v, level %d, total %d)", bar, level, total)
+	}
+	// 成本回落为 0，三个容器槽清空（输入槽 / 添加槽 / 结果槽按序同步）。
+	zeroProp := expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerProperty)
+	if len(zeroProp) < 2 || zeroProp[len(zeroProp)-2] != 0 || zeroProp[len(zeroProp)-1] != 0 {
+		t.Fatalf("取走后成本应回落 0：% x", zeroProp)
+	}
+	for want := int16(anvilInputSlot); want <= int16(anvilResultSlot); want++ {
+		if _, _, slot, stack := setContainerSlotStack(t, expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerSlot)); slot != want || !stack.IsEmpty() {
+			t.Fatalf("槽 %d 应清空：slot=%d stack=%+v", want, slot, stack)
+		}
+	}
+	cursor := expectPlayPacket(t, conn, protocol.PlayPacketIDSetCursorItem)
+	_, cursorOffset, err := protocol.DecodeVarInt(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursorItem, _ := parseSlotWithComponents(t, cursor, cursorOffset)
+	if cursorItem.Damage != 100 || len(cursorItem.Enchantments) != 1 ||
+		cursorItem.Enchantments[0].ID != sharpness || cursorItem.Enchantments[0].Level != 1 ||
+		cursorItem.RepairCost != 1 {
+		t.Fatalf("光标应为附魔剑：%+v", cursorItem)
+	}
 }
