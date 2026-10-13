@@ -109,7 +109,7 @@ func (s *Server) registerHopper(dim world.Dimension, x, y, z int) *hopperState {
 	}
 	for i := range state.slots {
 		if i < len(entity.Items) {
-			state.slots[i] = item.Stack{ItemID: entity.Items[i].ItemID, Count: entity.Items[i].Count}
+			state.slots[i] = stackFromContainer(entity.Items[i])
 		}
 	}
 
@@ -141,7 +141,7 @@ func (s *Server) hopperBlockEntityLocked(state *hopperState) world.BlockEntity {
 		Items:  make([]world.ContainerItem, hopperSlots),
 	}
 	for i, stack := range state.slots {
-		entity.Items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID}
+		entity.Items[i] = containerItemFromStack(stack)
 	}
 	return entity
 }
@@ -365,7 +365,8 @@ func (s *Server) hopperPush(state *hopperState, facing string) bool {
 		if stack.IsEmpty() {
 			continue
 		}
-		taken := item.Stack{ItemID: stack.ItemID, Count: 1, PotionID: stack.PotionID}
+		taken := stack
+		taken.Count = 1
 		leftover := target.insert(taken, direction)
 		if !leftover.IsEmpty() {
 			continue // 该槽位物品放不进去：尝试下一个槽位
@@ -403,7 +404,8 @@ func (s *Server) hopperSuck(state *hopperState, w *world.World) bool {
 			if !ok {
 				continue // 漏斗放不下这种物品：尝试下一个槽位（原版行为）
 			}
-			taken := item.Stack{ItemID: stack.ItemID, Count: 1, PotionID: stack.PotionID}
+			taken := stack
+			taken.Count = 1
 			target.removeOne(index)
 			hopperInsertAt(state, slot, taken)
 			target.commit()
@@ -897,7 +899,7 @@ func (s *Server) acquireChestTarget(dim world.Dimension, pos [3]int, def *contai
 	slots := make([]item.Stack, def.Slots)
 	for i := range slots {
 		if i < len(entity.Items) {
-			slots[i] = item.Stack{ItemID: entity.Items[i].ItemID, Count: entity.Items[i].Count, PotionID: entity.Items[i].PotionID}
+			slots[i] = stackFromContainer(entity.Items[i])
 		}
 	}
 	return &transferTarget{
@@ -1034,7 +1036,7 @@ func (c *chestEntityTransferCommit) apply(target *transferTarget) {
 		Items:  make([]world.ContainerItem, len(target.items)),
 	}
 	for i, stack := range target.items {
-		entity.Items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID}
+		entity.Items[i] = containerItemFromStack(stack)
 	}
 	if err := c.server.worldFor(c.dim).SetBlockEntity(c.pos[0], c.pos[1], c.pos[2], entity); err != nil {
 		slog.Error("写回容器内容失败", "x", c.pos[0], "y", c.pos[1], "z", c.pos[2], "error", err)

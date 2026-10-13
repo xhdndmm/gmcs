@@ -38,6 +38,12 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 6668, Props: map[string]string{"powered": "true"}},
 		{ID: 6669, Props: map[string]string{"powered": "false"}},
 	},
+	"minecraft:anvil": {
+		{ID: 10993, Props: map[string]string{"facing": "north"}},
+		{ID: 10994, Props: map[string]string{"facing": "south"}},
+		{ID: 10995, Props: map[string]string{"facing": "west"}},
+		{ID: 10996, Props: map[string]string{"facing": "east"}},
+	},
 	"minecraft:bamboo_button": {
 		{ID: 10689, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
 		{ID: 10690, Props: map[string]string{"face": "floor", "facing": "north", "powered": "false"}},
@@ -138,6 +144,12 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 6670, Props: map[string]string{"powered": "true"}},
 		{ID: 6671, Props: map[string]string{"powered": "false"}},
 	},
+	"minecraft:chipped_anvil": {
+		{ID: 10997, Props: map[string]string{"facing": "north"}},
+		{ID: 10998, Props: map[string]string{"facing": "south"}},
+		{ID: 10999, Props: map[string]string{"facing": "west"}},
+		{ID: 11000, Props: map[string]string{"facing": "east"}},
+	},
 	"minecraft:comparator": {
 		{ID: 11061, Props: map[string]string{"facing": "north", "mode": "compare", "powered": "true"}},
 		{ID: 11062, Props: map[string]string{"facing": "north", "mode": "compare", "powered": "false"}},
@@ -185,6 +197,12 @@ var BlockPropertyStates = map[string][]PropertyState{
 	"minecraft:crimson_pressure_plate": {
 		{ID: 20844, Props: map[string]string{"powered": "true"}},
 		{ID: 20845, Props: map[string]string{"powered": "false"}},
+	},
+	"minecraft:damaged_anvil": {
+		{ID: 11001, Props: map[string]string{"facing": "north"}},
+		{ID: 11002, Props: map[string]string{"facing": "south"}},
+		{ID: 11003, Props: map[string]string{"facing": "west"}},
+		{ID: 11004, Props: map[string]string{"facing": "east"}},
 	},
 	"minecraft:dark_oak_button": {
 		{ID: 10617, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},

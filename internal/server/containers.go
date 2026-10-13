@@ -177,6 +177,9 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	if player.getSmithing() != nil {
 		s.closeSmithing(player, false)
 	}
+	if player.getAnvil() != nil {
+		s.closeAnvil(player, false)
+	}
 
 	dim := player.dimensionID()
 	// 与进行中的漏斗搬运事务串行化：载入内容与登记视图期间不允许搬运写回，
@@ -193,7 +196,7 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 		if i < len(state.Items) {
 			slot := state.Items[i]
 			if !slot.IsEmpty() {
-				items[i] = item.Stack{ItemID: slot.ItemID, Count: slot.Count, PotionID: slot.PotionID}
+				items[i] = stackFromContainer(slot)
 			}
 		}
 	}
@@ -459,12 +462,28 @@ func containerPlayerInvSlot(index int) int {
 	return index - 27
 }
 
+// stackFromContainer 把容器槽位数据转换为物品堆栈（保留全部组件覆盖）。
+func stackFromContainer(slot world.ContainerItem) item.Stack {
+	return item.Stack{
+		ItemID: slot.ItemID, Count: slot.Count, PotionID: slot.PotionID,
+		Damage: slot.Damage, RepairCost: slot.RepairCost, CustomName: slot.CustomName,
+	}
+}
+
+// containerItemFromStack 把物品堆栈转换为容器槽位数据（保留全部组件覆盖）。
+func containerItemFromStack(stack item.Stack) world.ContainerItem {
+	return world.ContainerItem{
+		ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID,
+		Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
+	}
+}
+
 // flushContainer 把容器内容写回区块的方块实体并标记待保存。
 func (s *Server) flushContainer(container *containerState) {
 	container.mu.Lock()
 	items := make([]world.ContainerItem, len(container.slots))
 	for i, stack := range container.slots {
-		items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID}
+		items[i] = containerItemFromStack(stack)
 	}
 	dim := container.dim
 	pos := container.pos
@@ -611,6 +630,15 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 	case player.getSmithing() != nil && click.WindowID == player.windowID:
 		backing = smithingSlotBacking{player: player, state: player.getSmithing()}
 		windowID = player.windowID
+	case player.getAnvil() != nil && click.WindowID == player.windowID:
+		state := player.getAnvil()
+		// 方块仍是铁砧且在交互距离内时窗口有效（原版 ItemCombinerMenu.stillValid）。
+		if !s.anvilStillValid(player, state) {
+			s.closeAnvil(player, true)
+			return
+		}
+		backing = anvilSlotBacking{player: player, state: state}
+		windowID = player.windowID
 	case player.openContainer != nil && click.WindowID == player.windowID:
 		container := player.openContainer
 		// 容器方块已被破坏：清理窗口状态（内容已掉落）。
@@ -675,6 +703,12 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 			break
 		}
 		cursor = s.applyContainerClick(player, backing, working, cursor, click)
+	case click.Slot == anvilResultSlot:
+		if anvil, ok := backing.(anvilSlotBacking); ok {
+			cursor = s.anvilResultClick(player, anvil, working, cursor, click)
+			break
+		}
+		cursor = s.applyContainerClick(player, backing, working, cursor, click)
 	default:
 		cursor = s.applyContainerClick(player, backing, working, cursor, click)
 	}
@@ -687,7 +721,16 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 		working[stonecutterResultSlot] = stonecutter.state.resultStack()
 	}
 	if smithing, ok := backing.(smithingSlotBacking); ok {
+		// 输入变化后同步输入再刷新结果槽（结果依赖当前输入）。
+		for i := 0; i < 3; i++ {
+			smithing.state.setInput(i, working[i])
+		}
 		working[smithingResultSlot] = smithing.state.resultStack()
+	}
+	if anvil, ok := backing.(anvilSlotBacking); ok {
+		// 输入/名称变化后重算结果与成本（结果槽随工作副本刷新）。
+		anvil.state.setInputs(working[anvilInputSlot], working[anvilAdditionSlot])
+		working[anvilResultSlot] = s.refreshAnvil(player, anvil.state).result
 	}
 
 	player.windowState++
@@ -813,6 +856,8 @@ func swapHotbarIndex(backing slotBacking, hotbar int) int {
 		return 2 + 27 + hotbar
 	case smithingSlotBacking:
 		return 4 + 27 + hotbar
+	case anvilSlotBacking:
+		return 3 + 27 + hotbar
 	}
 	return -1
 }
@@ -1144,6 +1189,18 @@ func quickMoveTargets(backing slotBacking, slot int) [][2]int {
 			return [][2]int{{31, 40}}
 		case slot >= 31 && slot <= 39: // 快捷栏 → 主背包
 			return [][2]int{{4, 31}}
+		}
+	case anvilSlotBacking:
+		if slot == anvilResultSlot {
+			return nil // 结果槽由专用路径处理
+		}
+		switch {
+		case slot == anvilInputSlot || slot == anvilAdditionSlot: // 输入 → 背包
+			return [][2]int{{3, 30}, {30, 39}}
+		case slot >= 3 && slot <= 29: // 主背包 → 输入槽，再 → 快捷栏
+			return [][2]int{{0, 2}, {30, 39}}
+		case slot >= 30 && slot <= 38: // 快捷栏 → 输入槽，再 → 主背包
+			return [][2]int{{0, 2}, {3, 30}}
 		}
 	}
 	return nil

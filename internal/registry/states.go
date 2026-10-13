@@ -135,3 +135,28 @@ func stateCacheKey(name string, props map[string]string) string {
 	}
 	return builder.String()
 }
+
+// AnvilDamageNext 返回铁砧受损后应替换的方块状态（原版 AnvilBlock.damage）：
+// anvil → chipped_anvil → damaged_anvil（保留 facing）；已损坏返回 false。
+func AnvilDamageNext(state uint16) (uint16, bool) {
+	name, props, ok := StateProps(state)
+	if !ok {
+		return 0, false
+	}
+	var next string
+	switch name {
+	case "minecraft:anvil":
+		next = "minecraft:chipped_anvil"
+	case "minecraft:chipped_anvil":
+		next = "minecraft:damaged_anvil"
+	default:
+		return 0, false
+	}
+	facing := props["facing"]
+	for _, state := range BlockPropertyStates[next] {
+		if state.Props["facing"] == facing {
+			return state.ID, true
+		}
+	}
+	return 0, false
+}

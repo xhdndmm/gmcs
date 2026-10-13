@@ -99,7 +99,7 @@ func (s *Server) registerFurnace(dim world.Dimension, x, y, z int) *furnaceState
 	}
 	for i := range state.slots {
 		if i < len(entity.Items) {
-			state.slots[i] = item.Stack{ItemID: entity.Items[i].ItemID, Count: entity.Items[i].Count, PotionID: entity.Items[i].PotionID}
+			state.slots[i] = stackFromContainer(entity.Items[i])
 		}
 	}
 
@@ -353,7 +353,7 @@ func (s *Server) flushFurnace(state *furnaceState) {
 		CookTotal:     state.cookTotal,
 	}
 	for i, stack := range state.slots {
-		entity.Items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID}
+		entity.Items[i] = containerItemFromStack(stack)
 	}
 	state.dirty = false
 	state.mu.Unlock()

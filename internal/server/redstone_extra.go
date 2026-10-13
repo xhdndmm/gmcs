@@ -127,6 +127,9 @@ func orientPlacementState(state uint16, yaw, pitch float32) uint16 {
 		}
 		next["facing"] = oppositeDir(look)
 		next["extended"] = "false"
+	case anvilBlockName, chippedAnvilBlockName, damagedAnvilBlockName:
+		// 铁砧：facing = 玩家视线方向的顺时针（原版 AnvilBlock.getStateForPlacement）。
+		next["facing"] = clockwiseDir(yawToFacing(yaw))
 	default:
 		return state
 	}
@@ -395,7 +398,7 @@ func (s *Server) containerAnalogSignal(w *world.World, pos [3]int) int {
 			return 0
 		}
 		for i := 0; i < def.Slots && i < len(entity.Items); i++ {
-			slots[i] = item.Stack{ItemID: entity.Items[i].ItemID, Count: entity.Items[i].Count, PotionID: entity.Items[i].PotionID}
+			slots[i] = stackFromContainer(entity.Items[i])
 		}
 	}
 

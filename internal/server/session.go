@@ -103,6 +103,8 @@ type session struct {
 	// stonecutter / smithing 是切石机与锻造台窗口的临时状态（随窗口生命周期）。
 	stonecutter *stonecutterState
 	smithing    *smithingState
+	// anvil 是铁砧窗口的临时状态（随窗口生命周期）。
+	anvil *anvilState
 	// recipeBookOpen/Filtering 记录客户端上报的配方书开关与过滤状态（仅记录）。
 	recipeBookOpen      [4]bool
 	recipeBookFiltering [4]bool
@@ -725,6 +727,31 @@ func (s *session) addExperience(points int32) (bar float32, level, total int32) 
 	return s.experienceBar, level, s.experience
 }
 
+// giveExperienceLevels 增减经验等级（对应原版 Player.giveExperienceLevels）：
+// 等级按 amount 调整、经验条进度保留；等级降为负数时清零（进度与总量一并归零）。
+// gmcs 用总经验单字段模型，这里按“保留进度”重建总量（原版保持总经验不变，
+// 仅显示字段略有差异；等级与进度条行为一致）。
+func (s *session) giveExperienceLevels(amount int32) (bar float32, level, total int32) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	currentLevel, progress := experienceLevel(s.experience)
+	newLevel := currentLevel + amount
+	if newLevel < 0 {
+		s.experience = 0
+		s.experienceBar = 0
+		return 0, 0, 0
+	}
+	cost := experienceCost(newLevel)
+	extra := int32(float64(progress)*float64(cost) + 0.5)
+	if cost > 0 && extra >= cost {
+		extra = cost - 1
+	}
+	s.experience = experienceForLevel(newLevel) + extra
+	finalLevel, finalProgress := experienceLevel(s.experience)
+	s.experienceBar = finalProgress
+	return finalProgress, finalLevel, s.experience
+}
+
 // experienceStatus 返回当前经验条状态。
 func (s *session) experienceStatus() (bar float32, level, total int32) {
 	s.stateMu.Lock()
@@ -770,6 +797,27 @@ func experienceCost(level int32) int32 {
 		return 5*level - 38
 	default:
 		return 2*level + 7
+	}
+}
+
+// experienceForLevel 返回升到指定等级所需的总经验（experienceLevel 的逆函数）。
+func experienceForLevel(level int32) int32 {
+	switch {
+	case level <= 0:
+		return 0
+	case level <= 16:
+		// Σ_{i<16}(2i+7) = level² + 6·level。
+		return level*level + 6*level
+	case level <= 31:
+		// 前 16 级 352，加上 Σ_{i=16}^{level-1}(5i-38)。
+		n := int64(level)
+		sum := 352 + 5*(n+15)*(n-16)/2 - 38*(n-16)
+		return int32(sum)
+	default:
+		// 前 31 级 1507，加上 Σ_{i=31}^{level-1}(9i-158)。
+		n := int64(level)
+		sum := 1507 + 9*(n+30)*(n-31)/2 - 158*(n-31)
+		return int32(sum)
 	}
 }
 
@@ -1302,6 +1350,7 @@ func (s *session) runPlay() {
 	s.server.closeCrafting(s, false)
 	s.server.closeStonecutter(s, false)
 	s.server.closeSmithing(s, false)
+	s.server.closeAnvil(s, false)
 	s.server.closeEnderChest(s, false)
 	s.server.returnInventoryCraft(s)
 	s.server.auditLog("leave", "player", s.name, "uuid", uuidString(s.uuid))
@@ -1518,6 +1567,11 @@ func (s *session) playReadLoop() {
 				continue
 			}
 			s.server.handleContainerClick(s, click)
+		case protocol.PlayServerboundPacketIDRenameItem:
+			// 铁砧重命名输入。
+			if name, err := protocol.ParseRenameItem(packet); err == nil {
+				s.server.handleRenameItem(s, name)
+			}
 		case protocol.PlayServerboundPacketIDContainerButtonClick:
 			// 容器按钮（切石机选择配方等）。
 			windowID, buttonID, err := protocol.ParseContainerButtonClick(packet)
@@ -1557,6 +1611,9 @@ func (s *session) playReadLoop() {
 			}
 			if s.getSmithing() != nil && windowID == s.windowID {
 				s.server.closeSmithing(s, false)
+			}
+			if s.getAnvil() != nil && windowID == s.windowID {
+				s.server.closeAnvil(s, false)
 			}
 			if s.getOpenEnder() && windowID == s.windowID {
 				s.server.closeEnderChest(s, false)
@@ -1630,6 +1687,21 @@ func (s *session) getSmithing() *smithingState {
 func (s *session) setSmithing(state *smithingState) {
 	s.stateMu.Lock()
 	s.smithing = state
+	s.stateMu.Unlock()
+}
+
+// getAnvil 返回打开的铁砧状态（线程安全）。
+func (s *session) getAnvil() *anvilState {
+	s.stateMu.Lock()
+	state := s.anvil
+	s.stateMu.Unlock()
+	return state
+}
+
+// setAnvil 设置打开的铁砧状态（线程安全）。
+func (s *session) setAnvil(state *anvilState) {
+	s.stateMu.Lock()
+	s.anvil = state
 	s.stateMu.Unlock()
 }
 

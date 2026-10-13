@@ -92,12 +92,14 @@ func ReleaseRegionHandles() {
 //	section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
 //	(version 4+) 16 × u16 群系网格（4×4 列分辨率，索引见 biomeCellIndex）
 //	(version 2+) blockEntityCount varint | 每项: index uvarint | type varint
-//	  | slotCount varint | slotCount × (itemID varint, count varint[, potionID varint])
+//	  | slotCount varint | slotCount × (itemID varint, count varint[, potionID varint]
+//	    [, damage varint, repairCost varint, nameLen varint + name]）
 //	  | (version 3+) burnRemaining | burnTotal | cookProgress | cookTotal（均为 varint）
 //	  | (version 5+) brewTime | brewFuel（均为 varint）
 //
 // version 1 的负载不含方块实体（读取时视为空），version 2 起追加；
-// version 5 起槽位携带药水 ID、方块实体携带酿造台进度。
+// version 5 起槽位携带药水 ID、方块实体携带酿造台进度；
+// version 6 起槽位携带耐久损耗、铁砧累积惩罚与自定义名称。
 // 所有多字节整数均为大端；负载使用 zlib 压缩（区域文件压缩类型 2）。
 const (
 	regionShift   = 5
@@ -106,10 +108,12 @@ const (
 	headerSectors = 2
 	// chunkVersion 是当前存储负载版本：v2 追加方块实体，v3 追加熔炉进度，
 	// v4 追加 4×4 群系网格（section 内的 biome 字段仅作兼容保留），
-	// v5 追加槽位药水 ID 与酿造台进度。
-	chunkVersion = 5
+	// v5 追加槽位药水 ID 与酿造台进度，v6 追加槽位耐久/铁砧惩罚/自定义名称。
+	chunkVersion = 6
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
+	// maxStoredNameLength 是容器槽位自定义名称的存储长度上限（协议字符串上限）。
+	maxStoredNameLength = 0xFFFF
 )
 
 // regionSlot 返回区块在区域文件中的槽位（0..1023）。
@@ -432,12 +436,16 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 		// 导致重新加载后按世界 Y 查询不到方块实体。
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(index)))
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(int64(entity.TypeID))))
-		// 槽位数量与内容（v5 起含药水 ID）。
+		// 槽位数量与内容（v5 起含药水 ID，v6 起含耐久/铁砧惩罚/名称）。
 		offset += binary.PutUvarint(dst[offset:], uint64(len(entity.Items)))
 		for _, slot := range entity.Items {
 			offset += binary.PutUvarint(dst[offset:], uint64(uint32(slot.ItemID)))
 			offset += binary.PutUvarint(dst[offset:], uint64(slot.Count))
 			offset += binary.PutUvarint(dst[offset:], uint64(uint32(slot.PotionID)))
+			offset += binary.PutUvarint(dst[offset:], uint64(uint32(slot.Damage)))
+			offset += binary.PutUvarint(dst[offset:], uint64(uint32(slot.RepairCost)))
+			offset += binary.PutUvarint(dst[offset:], uint64(len(slot.CustomName)))
+			offset += copy(dst[offset:], slot.CustomName)
 		}
 		// 熔炉类进度（非熔炉为 0，仍写出以保证格式统一）。
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BurnRemaining)))
@@ -613,7 +621,32 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint1
 					}
 					offset += size
 				}
-				entity.Items[slot] = ContainerItem{ItemID: int32(itemID), Count: int32(itemCount), PotionID: int32(potionID)}
+				damage, repairCost := uint64(0), uint64(0)
+				customName := ""
+				if version >= 6 {
+					if damage, size = binary.Uvarint(payload[offset:]); size <= 0 {
+						return 0, fmt.Errorf("容器槽位耐久无效")
+					}
+					offset += size
+					if repairCost, size = binary.Uvarint(payload[offset:]); size <= 0 {
+						return 0, fmt.Errorf("容器槽位铁砧惩罚无效")
+					}
+					offset += size
+					nameLen, nameSize := binary.Uvarint(payload[offset:])
+					if nameSize <= 0 {
+						return 0, fmt.Errorf("容器槽位名称长度无效")
+					}
+					offset += nameSize
+					if nameLen > maxStoredNameLength || uint64(len(payload)-offset) < nameLen {
+						return 0, fmt.Errorf("容器槽位名称越界")
+					}
+					customName = string(payload[offset : offset+int(nameLen)])
+					offset += int(nameLen)
+				}
+				entity.Items[slot] = ContainerItem{
+					ItemID: int32(itemID), Count: int32(itemCount), PotionID: int32(potionID),
+					Damage: int32(damage), RepairCost: int32(repairCost), CustomName: customName,
+				}
 			}
 		}
 		if version >= 3 {

@@ -65,12 +65,17 @@ type playerRecord struct {
 }
 
 // playerItem 是物品栏中的一个堆栈；Item 为命名空间 ID。
-// Potion 是药水内容（0 = 无；N > 0 表示药水注册表 ID N-1）。
+// Potion 是药水内容（0 = 无；N > 0 表示药水注册表 ID N-1）；
+// Damage 是耐久损耗（0 = 无）；RepairCost 是铁砧累积惩罚（0 = 无）；
+// CustomName 是自定义名称（空 = 无）。
 type playerItem struct {
-	Slot   int    `json:"slot"`
-	Item   string `json:"item"`
-	Count  int32  `json:"count"`
-	Potion int32  `json:"potion,omitempty"`
+	Slot       int    `json:"slot"`
+	Item       string `json:"item"`
+	Count      int32  `json:"count"`
+	Potion     int32  `json:"potion,omitempty"`
+	Damage     int32  `json:"damage,omitempty"`
+	RepairCost int32  `json:"repair_cost,omitempty"`
+	CustomName string `json:"custom_name,omitempty"`
 }
 
 // loadPlayerData 从世界目录读取玩家数据；文件不存在时保持为空。
@@ -217,7 +222,10 @@ func playerRecordFromSession(player *session) playerRecord {
 		if !ok {
 			continue
 		}
-		items = append(items, playerItem{Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID})
+		items = append(items, playerItem{
+			Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID,
+			Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
+		})
 	}
 	return playerRecord{
 		UUID:       hex.EncodeToString(player.uuid[:]),
@@ -251,7 +259,10 @@ func enderItemsOf(player *session) []playerItem {
 		if !ok {
 			continue
 		}
-		items = append(items, playerItem{Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID})
+		items = append(items, playerItem{
+			Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID,
+			Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
+		})
 	}
 	return items
 }
@@ -315,6 +326,9 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 			continue
 		}
 		stack.PotionID = stored.Potion
+		stack.Damage = stored.Damage
+		stack.RepairCost = stored.RepairCost
+		stack.CustomName = stored.CustomName
 		s.enderChest.Set(stored.Slot, stack)
 	}
 	for _, stored := range record.Inventory {
@@ -327,6 +341,9 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 			continue
 		}
 		stack.PotionID = stored.Potion
+		stack.Damage = stored.Damage
+		stack.RepairCost = stored.RepairCost
+		stack.CustomName = stored.CustomName
 		s.inventory.Set(stored.Slot, stack)
 	}
 }

@@ -22,7 +22,23 @@ const (
 	PlayServerboundPacketIDContainerClick = 0x11
 	// PlayServerboundPacketIDContainerClose 是 Container Close（serverbound）。
 	PlayServerboundPacketIDContainerClose = 0x12
+	// PlayServerboundPacketIDRenameItem 是 Rename Item（serverbound，铁砧窗口的重命名输入）。
+	PlayServerboundPacketIDRenameItem = 0x2F
 )
+
+// ParseRenameItem 解析 Rename Item 包：单个字符串（窗口内输入的新名称）。
+// 名称的长度与空白处理由菜单层按原版规则进行（AnvilMenu.setItemName）。
+func ParseRenameItem(packet []byte) (string, error) {
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDRenameItem {
+		return "", fmt.Errorf("invalid rename item packet")
+	}
+	name, _, err := readStringAt(packet, offset)
+	if err != nil {
+		return "", fmt.Errorf("rename item name: %w", err)
+	}
+	return name, nil
+}
 
 // 原版菜单类型 ID（静态注册表 minecraft:menu 的 protocol_id；
 // 客户端用它决定窗口布局）。

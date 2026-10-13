@@ -309,7 +309,8 @@ func placeFromWorking(working []item.Stack, start, end int, candidates []int32, 
 		if !matched {
 			continue
 		}
-		taken := item.Stack{ItemID: stack.ItemID, Count: 1}
+		taken := stack
+		taken.Count = 1
 		stack.Count--
 		if stack.Count <= 0 {
 			stack = item.Empty()

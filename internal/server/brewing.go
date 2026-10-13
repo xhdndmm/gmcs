@@ -317,7 +317,7 @@ func (s *Server) flushBrewing(state *brewingState) {
 		BrewFuel: state.fuel,
 	}
 	for i, stack := range state.slots {
-		entity.Items[i] = world.ContainerItem{ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID}
+		entity.Items[i] = containerItemFromStack(stack)
 	}
 	state.dirty = false
 	state.mu.Unlock()

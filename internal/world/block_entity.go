@@ -9,12 +9,18 @@ import "gmcs/internal/protocol"
 // 「open」）。本实现只保存槽位内容（类型由方块本身决定），不保存自定义名称、
 // 锁定标记等原版字段。
 
-// ContainerItem 是容器槽位中的物品（物品注册表 ID + 数量 + 药水内容）。
+// ContainerItem 是容器槽位中的物品（物品注册表 ID + 数量 + 组件覆盖）。
 type ContainerItem struct {
 	ItemID int32
 	Count  int32
 	// PotionID 是药水内容覆盖（0 = 无；N > 0 表示药水注册表 ID N-1）。
 	PotionID int32
+	// Damage 是耐久损耗（minecraft:damage；0 = 未损耗）。
+	Damage int32
+	// RepairCost 是铁砧累积惩罚（minecraft:repair_cost；0 = 无）。
+	RepairCost int32
+	// CustomName 是自定义名称（minecraft:custom_name；空 = 无）。
+	CustomName string
 }
 
 // IsEmpty 报告槽位是否为空。

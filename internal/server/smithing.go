@@ -120,6 +120,9 @@ func (s *Server) openSmithing(player *session) {
 	if player.getSmithing() != nil {
 		s.closeSmithing(player, false)
 	}
+	if player.getAnvil() != nil {
+		s.closeAnvil(player, false)
+	}
 	menuType, ok := registry.StaticEntryID("minecraft:menu", "minecraft:smithing")
 	if !ok {
 		return

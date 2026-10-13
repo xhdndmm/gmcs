@@ -111,6 +111,18 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 			s.destroyContainer(dim, player, action.X, action.Y, action.Z, def)
 		}
 	}
+	// 破坏铁砧：关闭破坏者正在使用的铁砧窗口（其他玩家的窗口在下次交互时
+	// 通过 stillValid 校验关闭；破坏位置与窗口不符时不影响）。
+	if isAnvilState(current) {
+		if state := player.getAnvil(); state != nil {
+			state.mu.Lock()
+			anvilDim, anvilPos := state.dim, state.pos
+			state.mu.Unlock()
+			if anvilDim == dim && anvilPos == [3]int{action.X, action.Y, action.Z} {
+				s.closeAnvil(player, false)
+			}
+		}
+	}
 	if !w.SetBlock(action.X, action.Y, action.Z, world.AirBlock) {
 		return
 	}
@@ -186,6 +198,11 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		}
 		if hasName && name == "minecraft:smithing_table" {
 			s.openSmithing(player)
+			return
+		}
+		// 右键铁砧：打开修复/重命名窗口。
+		if hasName && isAnvilBlockName(name) {
+			s.openAnvil(player, use.X, use.Y, use.Z)
 			return
 		}
 		// 右键末影箱：打开玩家自己的末影箱（内容随玩家）。

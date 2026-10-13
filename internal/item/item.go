@@ -10,9 +10,11 @@ import (
 
 // Stack 是一个物品堆栈。
 //
-// 仅携带一种物品组件覆盖（药水内容 PotionID），其余组件（客户端使用物品
-// 默认组件，来自 Known Packs 的内置数据）；堆叠上限按官方物品数据
-// （registry.MaxStackSize）处理，其余组件派生属性（如工具耐久）暂不校验。
+// 携带的组件覆盖：耐久损耗（minecraft:damage）、自定义名称
+// （minecraft:custom_name）、铁砧累积惩罚（minecraft:repair_cost）与药水内容
+// （minecraft:potion_contents）；其余组件由客户端使用物品默认组件（来自
+// Known Packs 的内置数据）；堆叠上限按官方物品数据（registry.MaxStackSize）
+// 处理，其余组件派生属性暂不校验。
 type Stack struct {
 	// ItemID 是物品的注册表 ID（客户端内置全局 ID）。
 	ItemID int32
@@ -22,6 +24,12 @@ type Stack struct {
 	// 0 表示未覆盖（药水物品等效于水瓶，其余物品无组件）；
 	// N > 0 表示药水注册表 ID N-1（registry.PotionWater 等）。
 	PotionID int32
+	// Damage 是耐久损耗（minecraft:damage）：0 表示未损耗（不发送组件）。
+	Damage int32
+	// RepairCost 是铁砧累积惩罚（minecraft:repair_cost）：0 表示无（不发送组件）。
+	RepairCost int32
+	// CustomName 是自定义名称（minecraft:custom_name）：空表示无组件。
+	CustomName string
 }
 
 // Empty 返回空堆栈。
@@ -39,13 +47,6 @@ func (s Stack) MaxStack() int32 {
 	return registry.MaxStackSize(s.ItemID)
 }
 
-// SameKind 报告两个堆栈是否同类（同物品且同药水内容）。
-// 物品合并、堆叠与拖拽收集必须用它而非仅比较 ItemID：
-// 不同药水的 potion 物品共享同一 ItemID。
-func (s Stack) SameKind(other Stack) bool {
-	return s.ItemID == other.ItemID && s.PotionID == other.PotionID
-}
-
 // FromName 按命名空间 ID 与数量创建堆栈。
 func FromName(name string, count int32) (Stack, error) {
 	if count <= 0 {
@@ -58,29 +59,86 @@ func FromName(name string, count int32) (Stack, error) {
 	return Stack{ItemID: id, Count: count}, nil
 }
 
-// potionContentsComponentID 是 minecraft:potion_contents 数据组件类型 ID
-// （reports/registries.json 的 minecraft:data_component_type，1.21.11）。
-const potionContentsComponentID = 49
+// SameKind 报告两个堆栈是否同类（同物品且同组件覆盖）。
+// 物品合并、堆叠与拖拽收集必须用它而非仅比较 ItemID：
+// 不同药水的 potion 物品共享同一 ItemID，耐久/改名/铁砧惩罚不同的
+// 工具也不能堆叠。
+func (s Stack) SameKind(other Stack) bool {
+	return s.ItemID == other.ItemID && s.PotionID == other.PotionID &&
+		s.Damage == other.Damage && s.RepairCost == other.RepairCost &&
+		s.CustomName == other.CustomName
+}
+
+// HoverName 返回物品的服务端悬停名（原版 ItemStack.getHoverName().getString()）：
+// 自定义名称优先，否则为服务端语言文件中的物品名。
+func (s Stack) HoverName() string {
+	if s.CustomName != "" {
+		return s.CustomName
+	}
+	if display, ok := registry.ItemDisplayName(s.ItemID); ok {
+		return display
+	}
+	if name, ok := registry.ItemName(s.ItemID); ok {
+		return name
+	}
+	return ""
+}
+
+// 物品组件类型 ID（reports/registries.json 的 minecraft:data_component_type，1.21.11）。
+const (
+	damageComponentID         = 3
+	customNameComponentID     = 6
+	repairCostComponentID     = 19
+	potionContentsComponentID = 49
+)
 
 // AppendSlot 按 1.21.11 的 Slot 结构把堆栈追加到 dst。
 //
 // Slot 结构：count（VarInt）；count != 0 时依次为 itemId（VarInt）、
-// 添加的组件数、移除的组件数、组件的补丁数据。PotionID > 0 时添加一个
-// minecraft:potion_contents 组件（负载见 appendPotionContents），
-// 其余情况不带组件。
+// 添加的组件数、移除的组件数、组件的补丁数据。组件按类型 ID 升序写出：
+// damage（VarInt）、custom_name（NBT 文本组件）、repair_cost（VarInt）、
+// potion_contents（自定义结构，见 appendPotionContents）。
 func (s Stack) AppendSlot(dst []byte) []byte {
 	if s.IsEmpty() {
 		return protocol.AppendVarInt(dst, 0)
 	}
 	dst = protocol.AppendVarInt(dst, s.Count)
 	dst = protocol.AppendVarInt(dst, s.ItemID)
-	if s.PotionID > 0 {
-		dst = protocol.AppendVarInt(dst, 1) // 添加的组件数
-		dst = protocol.AppendVarInt(dst, 0) // 移除的组件数
-		return appendPotionContents(dst, s.PotionID-1)
+	if s.Damage == 0 && s.CustomName == "" && s.RepairCost == 0 && s.PotionID == 0 {
+		dst = protocol.AppendVarInt(dst, 0)  // 添加的组件数
+		return protocol.AppendVarInt(dst, 0) // 移除的组件数
 	}
-	dst = protocol.AppendVarInt(dst, 0)  // 添加的组件数
-	return protocol.AppendVarInt(dst, 0) // 移除的组件数
+	components := int32(0)
+	if s.Damage > 0 {
+		components++
+	}
+	if s.CustomName != "" {
+		components++
+	}
+	if s.RepairCost > 0 {
+		components++
+	}
+	if s.PotionID > 0 {
+		components++
+	}
+	dst = protocol.AppendVarInt(dst, components)
+	dst = protocol.AppendVarInt(dst, 0) // 移除的组件数
+	if s.Damage > 0 {
+		dst = protocol.AppendVarInt(dst, damageComponentID)
+		dst = protocol.AppendVarInt(dst, s.Damage)
+	}
+	if s.CustomName != "" {
+		dst = protocol.AppendVarInt(dst, customNameComponentID)
+		dst = protocol.AppendNBTString(dst, s.CustomName)
+	}
+	if s.RepairCost > 0 {
+		dst = protocol.AppendVarInt(dst, repairCostComponentID)
+		dst = protocol.AppendVarInt(dst, s.RepairCost)
+	}
+	if s.PotionID > 0 {
+		dst = appendPotionContents(dst, s.PotionID-1)
+	}
+	return dst
 }
 
 // appendPotionContents 追加一个 minecraft:potion_contents 组件：

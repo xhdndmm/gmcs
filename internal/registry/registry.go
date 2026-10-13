@@ -86,6 +86,52 @@ func MaxStackSize(itemID int32) int32 {
 	return 64
 }
 
+// MaxDamage 返回物品的耐久上限；不可损坏物品返回 false。
+func MaxDamage(itemID int32) (int32, bool) {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return 0, false
+	}
+	value, ok := MaxDamages[name]
+	return value, ok
+}
+
+// IsRepairMaterial 报告 material 是否为 item 在铁砧中接受的修复材料
+// （minecraft:repairable 组件；其中的标签引用已在生成时展开）。
+func IsRepairMaterial(itemID, materialID int32) bool {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return false
+	}
+	for _, id := range RepairItems[name] {
+		if id == materialID {
+			return true
+		}
+	}
+	return false
+}
+
+// ItemDisplayName 返回物品在服务端语言文件中的悬停名
+// （原版 ItemStack.getHoverName().getString()；缺翻译时为翻译键）。
+func ItemDisplayName(itemID int32) (string, bool) {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return "", false
+	}
+	display, ok := ItemDisplayNames[name]
+	return display, ok
+}
+
+// HasStoredEnchantments 报告物品是否携带 stored_enchantments 组件
+// （1.21.11 为附魔书；铁砧的 rightIsBook 判定）。
+func HasStoredEnchantments(itemID int32) bool {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return false
+	}
+	return StoredEnchantmentItems[name]
+}
+
 var cachedTags = sync.OnceValue(func() []RegistryTags {
 	names := make([]string, 0, len(allTags))
 	for name := range allTags {
