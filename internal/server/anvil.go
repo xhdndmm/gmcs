@@ -472,6 +472,9 @@ func (s *Server) openAnvil(player *session, x, y, z int) {
 	if player.getEnchanting() != nil {
 		s.closeEnchanting(player, false)
 	}
+	if player.getGrindstone() != nil {
+		s.closeGrindstone(player, false)
+	}
 	menuType, ok := registry.StaticEntryID("minecraft:menu", "minecraft:anvil")
 	if !ok {
 		return

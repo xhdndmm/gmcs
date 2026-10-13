@@ -180,6 +180,9 @@ func (s *Server) openContainer(player *session, x, y, z int, def *containerDef, 
 	if player.getAnvil() != nil {
 		s.closeAnvil(player, false)
 	}
+	if player.getGrindstone() != nil {
+		s.closeGrindstone(player, false)
+	}
 	if player.getEnchanting() != nil {
 		s.closeEnchanting(player, false)
 	}
@@ -656,6 +659,15 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 		}
 		backing = anvilSlotBacking{player: player, state: state}
 		windowID = player.windowID
+	case player.getGrindstone() != nil && click.WindowID == player.windowID:
+		state := player.getGrindstone()
+		// 方块仍是砂轮机且在交互距离内时窗口有效（原版 ItemCombinerMenu.stillValid）。
+		if !s.grindstoneStillValid(player, state) {
+			s.closeGrindstone(player, true)
+			return
+		}
+		backing = grindstoneSlotBacking{player: player, state: state}
+		windowID = player.windowID
 	case player.getEnchanting() != nil && click.WindowID == player.windowID:
 		state := player.getEnchanting()
 		// 方块仍是附魔台且在交互距离内时窗口有效（原版 EnchantmentMenu.stillValid）。
@@ -734,6 +746,10 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 			cursor = s.anvilResultClick(player, anvil, working, cursor, click)
 			break
 		}
+		if grindstone, ok := backing.(grindstoneSlotBacking); ok {
+			cursor = s.grindstoneResultClick(player, grindstone, working, cursor, click)
+			break
+		}
 		cursor = s.applyContainerClick(player, backing, working, cursor, click)
 	default:
 		cursor = s.applyContainerClick(player, backing, working, cursor, click)
@@ -757,6 +773,11 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 		// 输入/名称变化后重算结果与成本（结果槽随工作副本刷新）。
 		anvil.state.setInputs(working[anvilInputSlot], working[anvilAdditionSlot])
 		working[anvilResultSlot] = s.refreshAnvil(player, anvil.state).result
+	}
+	if grindstone, ok := backing.(grindstoneSlotBacking); ok {
+		// 输入变化后重算结果（结果槽随工作副本刷新）。
+		grindstone.state.setInputs(working[grindstoneInputSlot], working[grindstoneAdditionSlot])
+		working[grindstoneResultSlot] = grindstone.state.refreshResult()
 	}
 	if enchanting, ok := backing.(enchantingSlotBacking); ok {
 		// 输入变化后重算选项（原版 slotsChanged）并同步数据槽。
@@ -910,6 +931,8 @@ func swapHotbarIndex(backing slotBacking, hotbar int) int {
 	case smithingSlotBacking:
 		return 4 + 27 + hotbar
 	case anvilSlotBacking:
+		return 3 + 27 + hotbar
+	case grindstoneSlotBacking:
 		return 3 + 27 + hotbar
 	}
 	return -1
@@ -1260,6 +1283,18 @@ func quickMoveTargets(backing slotBacking, slot int) [][2]int {
 		}
 		switch {
 		case slot == anvilInputSlot || slot == anvilAdditionSlot: // 输入 → 背包
+			return [][2]int{{3, 30}, {30, 39}}
+		case slot >= 3 && slot <= 29: // 主背包 → 输入槽，再 → 快捷栏
+			return [][2]int{{0, 2}, {30, 39}}
+		case slot >= 30 && slot <= 38: // 快捷栏 → 输入槽，再 → 主背包
+			return [][2]int{{0, 2}, {3, 30}}
+		}
+	case grindstoneSlotBacking:
+		if slot == grindstoneResultSlot {
+			return nil // 结果槽由专用路径处理
+		}
+		switch {
+		case slot == grindstoneInputSlot || slot == grindstoneAdditionSlot: // 输入 → 背包
 			return [][2]int{{3, 30}, {30, 39}}
 		case slot >= 3 && slot <= 29: // 主背包 → 输入槽，再 → 快捷栏
 			return [][2]int{{0, 2}, {30, 39}}

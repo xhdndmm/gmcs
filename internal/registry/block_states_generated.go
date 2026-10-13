@@ -168,6 +168,17 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 11075, Props: map[string]string{"facing": "east", "mode": "subtract", "powered": "true"}},
 		{ID: 11076, Props: map[string]string{"facing": "east", "mode": "subtract", "powered": "false"}},
 	},
+	"minecraft:composter": {
+		{ID: 21541, Props: map[string]string{"level": "0"}},
+		{ID: 21542, Props: map[string]string{"level": "1"}},
+		{ID: 21543, Props: map[string]string{"level": "2"}},
+		{ID: 21544, Props: map[string]string{"level": "3"}},
+		{ID: 21545, Props: map[string]string{"level": "4"}},
+		{ID: 21546, Props: map[string]string{"level": "5"}},
+		{ID: 21547, Props: map[string]string{"level": "6"}},
+		{ID: 21548, Props: map[string]string{"level": "7"}},
+		{ID: 21549, Props: map[string]string{"level": "8"}},
+	},
 	"minecraft:crimson_button": {
 		{ID: 21264, Props: map[string]string{"face": "floor", "facing": "north", "powered": "true"}},
 		{ID: 21265, Props: map[string]string{"face": "floor", "facing": "north", "powered": "false"}},

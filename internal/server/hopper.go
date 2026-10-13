@@ -584,6 +584,12 @@ const (
 	// transferBrewing 是酿造台（上方只能进材料；侧面/下方可抽瓶子，
 	// 下方还可抽材料槽的玻璃瓶）。
 	transferBrewing
+	// transferComposterInput 是堆肥桶输入容器（level < 7）：只有上方可插入
+	// 可堆肥物品（原版 ComposterBlock.InputContainer）。
+	transferComposterInput
+	// transferComposterOutput 是堆肥桶产出容器（level == 8）：只有下方可抽出
+	// 骨粉（原版 ComposterBlock.OutputContainer）。
+	transferComposterOutput
 )
 
 // transferSlotIndices 是槽位下标表（供箱子类/漏斗返回全部槽位）。
@@ -686,6 +692,18 @@ func (t *transferTarget) slotsForFace(dir string) []int {
 		default:
 			return []int{0, 1, 2, 4}
 		}
+	case transferComposterInput:
+		// 原版 InputContainer.getSlotsForFace：只有上方（level == 7 时无槽位）。
+		if dir == "up" && len(t.items) > 0 {
+			return []int{0}
+		}
+		return nil
+	case transferComposterOutput:
+		// 原版 OutputContainer.getSlotsForFace：只有下方。
+		if dir == "down" && len(t.items) > 0 {
+			return []int{0}
+		}
+		return nil
 	default:
 		return transferSlotIndices[:len(t.items)]
 	}
@@ -717,6 +735,12 @@ func (t *transferTarget) canPlace(index int, stack item.Stack) bool {
 			return stack.ItemID == blazePowderItemID
 		}
 		return true
+	case transferComposterInput:
+		// 原版 InputContainer.canPlaceItem：只有上方、可堆肥物品。
+		return index == 0 && registry.CompostChance(stack.ItemID) > 0
+	case transferComposterOutput:
+		// 原版 OutputContainer.canPlaceItem：恒 false（只能抽取）。
+		return false
 	}
 	return true
 }
@@ -725,6 +749,14 @@ func (t *transferTarget) canPlace(index int, stack item.Stack) bool {
 // 漏斗从下方抽取熔炉燃料槽时，空桶/水桶等桶装物不可抽走；
 // 从下方抽取酿造台材料槽时只允许玻璃瓶）。
 func (t *transferTarget) canTake(index int, stack item.Stack) bool {
+	if t.kind == transferComposterInput {
+		// 原版 InputContainer.canTakeItemThroughFace：恒 false。
+		return false
+	}
+	if t.kind == transferComposterOutput {
+		// 原版 OutputContainer.canTakeItemThroughFace：只允许骨粉。
+		return index == 0 && stack.ItemID == boneMealItemID()
+	}
 	if t.kind == transferBrewing {
 		if index == 3 {
 			return stack.ItemID == glassBottleItemID
@@ -856,6 +888,8 @@ func (s *Server) acquireTransferTarget(dim world.Dimension, pos [3]int) *transfe
 		}
 		brewing.mu.Unlock()
 		return target
+	case name == composterBlockName:
+		return s.acquireComposterTarget(dim, pos, state)
 	default:
 		def, known := s.containerDefs[name]
 		if !known || def.IsFurnace {

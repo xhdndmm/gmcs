@@ -1,5 +1,7 @@
 package registry
 
+import "sync"
+
 // 附魔系统的运行时查询辅助；数据来自 enchants_generated.go（由 genregistries 生成）。
 //
 // 附魔注册表 ID 等于数据包文件路径的字典序下标（与客户端内置注册表一致）。
@@ -68,6 +70,25 @@ func EnchantmentCompatible(a, b int32) bool {
 		return false
 	}
 	return true
+}
+
+// curseEnchantments 是 #minecraft:curse 标签的附魔 ID 集合（诅咒无法被砂轮机移除）。
+var curseEnchantments = sync.OnceValue(func() map[int32]bool {
+	ids := make(map[int32]bool)
+	for _, tag := range allTags["minecraft:enchantment"] {
+		if tag.name != "minecraft:curse" {
+			continue
+		}
+		for _, id := range tag.entries {
+			ids[id] = true
+		}
+	}
+	return ids
+})
+
+// EnchantmentIsCurse 报告附魔是否属于 #minecraft:curse 标签（绑定诅咒/消失诅咒）。
+func EnchantmentIsCurse(enchantID int32) bool {
+	return curseEnchantments()[enchantID]
 }
 
 // InEnchantingTable 报告附魔是否出现在附魔台的可选集合（in_enchanting_table

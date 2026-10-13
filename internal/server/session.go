@@ -105,6 +105,8 @@ type session struct {
 	smithing    *smithingState
 	// anvil 是铁砧窗口的临时状态（随窗口生命周期）。
 	anvil *anvilState
+	// grindstone 是砂轮机窗口的临时状态（随窗口生命周期）。
+	grindstone *grindstoneState
 	// enchanting 是附魔台窗口的临时状态（随窗口生命周期）。
 	enchanting *enchantingState
 	// enchantmentSeed 是玩家的附魔种子（原版 Player.enchantmentSeed）：
@@ -1358,6 +1360,7 @@ func (s *session) runPlay() {
 	s.server.closeStonecutter(s, false)
 	s.server.closeSmithing(s, false)
 	s.server.closeAnvil(s, false)
+	s.server.closeGrindstone(s, false)
 	s.server.closeEnchanting(s, false)
 	s.server.closeEnderChest(s, false)
 	s.server.returnInventoryCraft(s)
@@ -1626,6 +1629,9 @@ func (s *session) playReadLoop() {
 			if s.getAnvil() != nil && windowID == s.windowID {
 				s.server.closeAnvil(s, false)
 			}
+			if s.getGrindstone() != nil && windowID == s.windowID {
+				s.server.closeGrindstone(s, false)
+			}
 			if s.getEnchanting() != nil && windowID == s.windowID {
 				s.server.closeEnchanting(s, false)
 			}
@@ -1716,6 +1722,21 @@ func (s *session) getAnvil() *anvilState {
 func (s *session) setAnvil(state *anvilState) {
 	s.stateMu.Lock()
 	s.anvil = state
+	s.stateMu.Unlock()
+}
+
+// getGrindstone 返回打开的砂轮机状态（线程安全）。
+func (s *session) getGrindstone() *grindstoneState {
+	s.stateMu.Lock()
+	state := s.grindstone
+	s.stateMu.Unlock()
+	return state
+}
+
+// setGrindstone 设置打开的砂轮机状态（线程安全）。
+func (s *session) setGrindstone(state *grindstoneState) {
+	s.stateMu.Lock()
+	s.grindstone = state
 	s.stateMu.Unlock()
 }
 

@@ -123,6 +123,16 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 			}
 		}
 	}
+	// 破坏砂轮机：关闭破坏者正在使用的砂轮机窗口（其他玩家的窗口在下次交互时
+	// 通过 stillValid 校验关闭）。
+	if state := player.getGrindstone(); state != nil {
+		state.mu.Lock()
+		grindstoneDim, grindstonePos := state.dim, state.pos
+		state.mu.Unlock()
+		if grindstoneDim == dim && grindstonePos == [3]int{action.X, action.Y, action.Z} {
+			s.closeGrindstone(player, false)
+		}
+	}
 	// 破坏附魔台：关闭破坏者正在使用的附魔台窗口（其他玩家的窗口在下次交互时
 	// 通过 stillValid 校验关闭）。
 	if isEnchantingTableState(current) {
@@ -188,6 +198,13 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 			}
 		}
 	}
+	// 右键堆肥桶：填入可堆肥物品 / 取出骨粉（原版 ComposterBlock.useItemOn 与
+	// useWithoutItem 的组合语义；潜行不影响）。
+	if name, ok := s.blockNameOf(current); ok && name == composterBlockName {
+		if s.tryComposterUse(player, w, use.X, use.Y, use.Z, current) {
+			return
+		}
+	}
 	if !player.sneaking {
 		// 拉杆/按钮：切换红石状态。
 		if s.handleRedstoneUse(w, use.X, use.Y, use.Z, current) {
@@ -215,6 +232,11 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		// 右键铁砧：打开修复/重命名窗口。
 		if hasName && isAnvilBlockName(name) {
 			s.openAnvil(player, use.X, use.Y, use.Z)
+			return
+		}
+		// 右键砂轮机：打开修复/祛魔窗口。
+		if hasName && name == grindstoneBlockName {
+			s.openGrindstone(player, use.X, use.Y, use.Z)
 			return
 		}
 		// 右键附魔台：打开附魔窗口。

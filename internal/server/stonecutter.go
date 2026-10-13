@@ -183,6 +183,9 @@ func (s *Server) openStonecutter(player *session) {
 	if player.getAnvil() != nil {
 		s.closeAnvil(player, false)
 	}
+	if player.getGrindstone() != nil {
+		s.closeGrindstone(player, false)
+	}
 	if player.getEnchanting() != nil {
 		s.closeEnchanting(player, false)
 	}

@@ -159,6 +159,9 @@ func (s *Server) openEnchanting(player *session, x, y, z int) {
 	if player.getAnvil() != nil {
 		s.closeAnvil(player, false)
 	}
+	if player.getGrindstone() != nil {
+		s.closeGrindstone(player, false)
+	}
 	if player.getEnchanting() != nil {
 		s.closeEnchanting(player, false)
 	}

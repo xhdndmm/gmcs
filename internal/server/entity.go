@@ -307,6 +307,7 @@ func (s *Server) tick() {
 	s.tickItems(players)
 	s.tickXPOrbs(players)
 	s.tickHoppers()
+	s.tickComposters()
 	s.tickWorldTime(players)
 	s.tickFurnaces()
 	s.tickBrewingStands()

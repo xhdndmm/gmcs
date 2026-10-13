@@ -145,6 +145,11 @@ type Server struct {
 	containerTransferMu sync.Mutex
 	// gameTicks 是单调递增的游戏刻计数（漏斗错峰规则用）。
 	gameTicks atomic.Int64
+	// 堆肥桶定时转换：composterDue 是待转换堆肥桶的到期表（受 composterMu
+	// 保护）；composterScanCounter 是 level-7 兜底扫描计数。
+	composterMu          sync.Mutex
+	composterDue         map[composterKey]int64
+	composterScanCounter int
 	// tickScratch 是 tick 热路径复用的临时切片（由单线程 tick 驱动填充，
 	// 见 tickScratch 的说明）。
 	tickScratch tickScratch

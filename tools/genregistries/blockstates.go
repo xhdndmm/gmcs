@@ -33,6 +33,7 @@ var propStateBlocks = []string{
 	"minecraft:cherry_pressure_plate",
 	"minecraft:chipped_anvil",
 	"minecraft:comparator",
+	"minecraft:composter",
 	"minecraft:crimson_button",
 	"minecraft:crimson_pressure_plate",
 	"minecraft:damaged_anvil",
