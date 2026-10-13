@@ -241,22 +241,30 @@
   （含 `TestBrewing*`/`TestHopperIntoBrewingStand` 测试）
 - [x] 铁砧（对照 1.21.11 反编译的 `AnvilMenu.createResult`/`onTake` 逐字节码移植）：
   材料修复（每材料修复 min(当前损坏, 耐久上限/4)、成本 +1/个）、同物品合并
-  （剩余耐久 + 12% 上限奖励、成本 +2）、重命名（custom_name、成本 +1；与默认
+  （剩余耐久 + 12% 上限奖励、成本 +2）、附魔合并（同名附魔取高等级/同级 +1
+  并钳制最大等级；supported_items 筛选 + 创造/附魔书豁免；冲突附魔每项 +1 成本
+  且不生效、全部冲突整单无效；anvil_cost × 等级、附魔书减半、堆叠 >1 成本 40）、
+  重命名（custom_name、成本 +1；与默认
   悬停名相同则不设组件；空白输入清除名字）；成本 = 两输入 repair_cost 之和 + 操作成本，
   40 级上限（纯重命名封顶 39）、取走扣等级（创造豁免）/消耗材料/清空输入、
-  12% 损坏降级（事件 1029/1030）；damage/custom_name/repair_cost 组件随
+  12% 损坏降级（事件 1029/1030）；damage/custom_name/repair_cost 与附魔
+  （物品 enchantments 13、附魔书 stored_enchantments 41）组件随
   Slot 编码与存储 v6/玩家数据持久化；放置朝向按原版（视线顺时针）；
-  （含 `TestComputeAnvilResult*`/`TestAnvilWindowRenameAndTake`/`TestAnvilCloseReturnsInputs`）
+  （含 `TestComputeAnvilResult*`/`TestAnvilMergeEnchantments`/
+  `TestComputeAnvilResultEnchantmentMerge`/`TestAnvilWindowRenameAndTake`/
+  `TestAnvilWindowEnchantMerge`/`TestAnvilCloseReturnsInputs`）
 - [x] 附魔台（对照 1.21.11 反编译的 `EnchantmentMenu`/`EnchantmentTableBlock` 逐字节码移植）：
   输入槽（至多 1 个）+ 青金石槽 + 三个随机选项；书架计数（32 偏移、书架 +
   中点 #replaceable，上限 15）；随机序列与 java.util.Random 逐位一致（JDK
   参考值验证）；附魔选取复刻 EnchantmentHelper（等级修正 ±15%、加权随机、
-  互斥过滤、等级减半循环、书特例）；普通书 → 附魔书；`minecraft:enchantments`
-  组件（ID 13）随槽位与存储 v7/玩家数据持久化；扣 id+1 级 + 重播附魔种子；
+  互斥过滤、等级减半循环、书特例）；候选筛选按 supported_items 且
+  primary_items 命中（书不受限制）；普通书 → 附魔书；附魔组件
+  （物品 enchantments 13、附魔书 stored_enchantments 41）随槽位与存储 v7/玩家数据持久化；扣 id+1 级 + 重播附魔种子；
   数据槽 10 个（成本/线索/种子）；音效 block.enchantment_table.use；
   附魔注册表（43 条）与物品池由 genregistries 生成（ID = 文件路径字典序，
   与外部数据源交叉验证）；（含 `TestJavaRandomMatchesJava`/
-  `TestEnchantmentCostFormula`/`TestEnchantingWindowFlow`/`TestEnchantingBookshelfCount`/
+  `TestEnchantmentCostFormula`/`TestEnchantingTablePrimaryItems`/
+  `TestEnchantingWindowFlow`/`TestEnchantingBookshelfCount`/
   `TestEnchantingBookBecomesEnchantedBook` 测试）- [x] Tick 热路径优化（以 CPU/分配 profile 定位，实测见 docs/PERFORMANCE.md 3.17）：
   A* 寻路改为复用工作区（开放寻址表 + 显式堆，无逐节点堆分配与接口装箱；
   单次搜索 78 µs→7.6 µs、969→1 allocs）；`Chunk.Column`/`ChunkLoaded`/`worldFor`
@@ -295,7 +303,7 @@
 - 容器限制：堆肥桶等其余处理型容器未实现；拖拽分发为接近原版的简化实现；
   窗口点击距离上限统一为 8 格近似（原版为交互距离属性 4.5 + 4.0）；自定义名称
   （custom_name）、耐久（damage）、铁砧累积惩罚（repair_cost）与附魔
-  （enchantments）随槽位与持久化保留，其余物品组件不随槽位发送；
+  （物品 enchantments 13、附魔书 stored_enchantments 41）随槽位与持久化保留，其余物品组件不随槽位发送；
   酿造台槽位规则已按原版校验（放入路径），但快速移动（Shift）仍为简化语义
   （背包物品不会被自动尝试放入酿造槽，与熔炉一致）
 - 漏斗传输限制：传送冷却不持久化（重载后按 0 计，只影响节流时序，不会复制或丢失
@@ -316,9 +324,9 @@
   岩浆伤害为 4 点/0.5 秒（受受伤无敌帧限制），死亡消息按原版（岩浆/着火/溺水/岩浆块）
 - 切石机自动选中输入后的第一个配方（原版需客户端选择；客户端列表同步后表现一致）；
   锻造台仅 smithing_transform 升级配方（无纹饰 smithing_trim，纹饰需要物品组件）；
-  铁砧的附魔合并未实现（附魔数据已具备，合并与惩罚递增逻辑待实现）；
   附魔台的附魔数值效果（伤害/保护/挖掘等）未实现（无战斗/挖掘系统），
-  附魔统计、砂轮机与钓鱼等附魔途径未实现；物品耐久尚无消耗途径
+  附魔统计、砂轮机与钓鱼等附魔途径未实现（附魔台与铁砧附魔合并已完成）；
+  物品耐久尚无消耗途径
   （damage 目前只由铁砧产生）；拆卸铁砧/附魔台不主动推送窗口关闭
   （其他玩家的窗口在下次点击时校验关闭）
 - 生物寻路为地表模型：不考虑头顶净空（不能爬楼梯井/穿过 1 格高洞）、
