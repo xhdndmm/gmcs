@@ -17,13 +17,18 @@
 
 ## 快速开始
 
+### 从Github下载
+你可以在[Releases](https://github.com/xhdndmm/gmcs/releases)页面下载编译好的版本，下载适用于你的系统及架构的版本后直接运行即可。
+
+### 手动编译
+
 ```bash
 scripts/build.sh            # 构建当前平台（产物在 dist/）
 scripts/build.sh --all      # 交叉编译全部常用平台
 go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 ```
 
-构建产物为纯 Go 静态二进制（`CGO_ENABLED=0`、`-trimpath`、剥离符号）并默认启用
+>构建产物为纯 Go 静态二进制（`CGO_ENABLED=0`、`-trimpath`、剥离符号）并默认启用
 **PGO**（配置随仓库提交，`scripts/genpgo.sh` 可重新生成；`PGO=off` 可关闭）。
 性能与产物体积数据见 [PERFORMANCE.md](PERFORMANCE.md)。
 
@@ -80,7 +85,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `/dimension <overworld\|the_nether\|the_end>` | 传送到目标维度出生点（等级 3） |
 | `/save-all` | 立即保存全部已加载世界（等级 3） |
 
-命令补全（Tab）覆盖命令名、`/gamemode`/`/time`/`/dimension` 参数与 `/kick`/`/tp`/`/clear`/`/kill` 在线玩家名，聊天输入时还会补全在线玩家名；
+>命令补全（Tab）覆盖命令名、`/gamemode`/`/time`/`/dimension` 参数与 `/kick`/`/tp`/`/clear`/`/kill` 在线玩家名，聊天输入时还会补全在线玩家名；
 `ops` 名单项支持 `name`（等价 4 级）或 `name:level`（1–4 级），命令树按玩家等级过滤并在执行时再次校验
 （`/say`、`/gamemode`、`/seed`、`/tp`、`/give`、`/time`、`/xp`、`/clear` 需 2 级，
 `/kick`、`/kill`、`/dimension`、`/save-all` 需 3 级；`/help`、`/list`、`/spawn` 所有玩家可用）。
@@ -88,7 +93,11 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 `"permissions": {"Alice": "gmcs.command.gamemode", "*": "gmcs.command.spawn"}`）：
 拥有节点即可使用对应命令，节点形式为 `gmcs.command.<命令名>`。
 
+
 ## 功能一览
+
+<details>
+<summary>点击展开查看详情</summary>
 
 ### 世界与地形
 
@@ -284,6 +293,8 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   Initialize Chat 动作分发给其他玩家；但消息签名不做服务器端验证，广播仍按未签名消息发送
   （客户端显示“未验证”标记）。
 - 默认离线模式：UUID 按原版离线规则由用户名推导。
+
+</details>
 
 ## 测试
 
