@@ -238,14 +238,16 @@
   （客户端显示颜色与名称），药水 ID 随区块存储 v5 与玩家数据持久化；
   槽位规则：瓶子槽只接受药水类/玻璃瓶且必须为空、材料槽只接受酿造材料、
   燃料槽只接受烈焰粉；漏斗面规则与抽取过滤同原版
-  （含 `TestBrewing*`/`TestHopperIntoBrewingStand` 测试）- [x] 铁砧（对照 1.21.11 反编译的 `AnvilMenu.createResult`/`onTake` 逐字节码移植）：
+  （含 `TestBrewing*`/`TestHopperIntoBrewingStand` 测试）
+- [x] 铁砧（对照 1.21.11 反编译的 `AnvilMenu.createResult`/`onTake` 逐字节码移植）：
   材料修复（每材料修复 min(当前损坏, 耐久上限/4)、成本 +1/个）、同物品合并
   （剩余耐久 + 12% 上限奖励、成本 +2）、重命名（custom_name、成本 +1；与默认
   悬停名相同则不设组件；空白输入清除名字）；成本 = 两输入 repair_cost 之和 + 操作成本，
   40 级上限（纯重命名封顶 39）、取走扣等级（创造豁免）/消耗材料/清空输入、
   12% 损坏降级（事件 1029/1030）；damage/custom_name/repair_cost 组件随
   Slot 编码与存储 v6/玩家数据持久化；放置朝向按原版（视线顺时针）；
-  （含 `TestComputeAnvilResult*`/`TestAnvilWindowRenameAndTake`/`TestAnvilCloseReturnsInputs`）- [x] 附魔台（对照 1.21.11 反编译的 `EnchantmentMenu`/`EnchantmentTableBlock` 逐字节码移植）：
+  （含 `TestComputeAnvilResult*`/`TestAnvilWindowRenameAndTake`/`TestAnvilCloseReturnsInputs`）
+- [x] 附魔台（对照 1.21.11 反编译的 `EnchantmentMenu`/`EnchantmentTableBlock` 逐字节码移植）：
   输入槽（至多 1 个）+ 青金石槽 + 三个随机选项；书架计数（32 偏移、书架 +
   中点 #replaceable，上限 15）；随机序列与 java.util.Random 逐位一致（JDK
   参考值验证）；附魔选取复刻 EnchantmentHelper（等级修正 ±15%、加权随机、
