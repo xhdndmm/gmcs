@@ -24,8 +24,18 @@ import (
 )
 
 func main() {
-	fmt.Println("Welcome to gmcs 1.21.11!")
-	fmt.Println("https://github.com/xhdndmm/gmcs")
+	fmt.Println(`"
+ #####  #     #  #####   #####  
+#     # ##   ## #     # #     # 
+#       # # # # #       #       
+#  #### #  #  # #        #####  
+#     # #     # #             # 
+#     # #     # #     # #     # 
+ #####  #     #  #####   #####  
+
+Welcome to gmcs 1.21.11!
+https://github.com/xhdndmm/gmcs
+	"`)
 	if err := run(); err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
