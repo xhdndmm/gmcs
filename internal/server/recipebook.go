@@ -84,6 +84,19 @@ func (s *Server) buildRecipeBook() {
 		}
 		return out
 	}
+	// shapedDisplayIngredients 把有序配方的紧凑原料表展开为 Width×Height 的
+	// 行优先网格。客户端的 ShapedCraftingRecipeDisplay 构造函数强制要求
+	// ingredients 数量等于 width*height（空格以 empty 显示占位），否则
+	// Recipe Book Add 整个数据包在客户端解码失败并断开连接。
+	shapedDisplayIngredients := func(recipe registry.ShapedRecipe) [][]int32 {
+		out := make([][]int32, len(recipe.Cells)) // 生成数据保证 len(Cells) == Width*Height
+		for cell, ref := range recipe.Cells {
+			if ref >= 0 {
+				out[cell] = append([]int32(nil), recipe.Ingredients[ref]...)
+			}
+		}
+		return out
+	}
 
 	for i, recipe := range registry.ShapedRecipes {
 		list = append(list, protocol.RecipeListEntry{Name: recipe.Name, Items: []int32{recipe.Result}})
@@ -91,7 +104,7 @@ func (s *Server) buildRecipeBook() {
 			Type:            protocol.RecipeDisplayCraftingShaped,
 			Width:           recipe.Width,
 			Height:          recipe.Height,
-			Ingredients:     copyIngredients(recipe.Ingredients),
+			Ingredients:     shapedDisplayIngredients(recipe),
 			ResultItem:      recipe.Result,
 			ResultCount:     recipe.ResultCount,
 			CraftingStation: craftingTable,

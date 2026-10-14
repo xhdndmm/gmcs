@@ -139,10 +139,11 @@ func EncodeUpdateRecipes(recipes []RecipeListEntry, stonecutter []StonecutterRec
 	}
 	packet = AppendVarInt(packet, int32(len(stonecutter)))
 	for _, entry := range stonecutter {
-		// HolderSet：显式列表为 VarInt(数量+1) + 每项 VarInt(id+1)。
+		// ID Set（HolderSet）：显式列表为 VarInt(数量+1) + 每项注册表 ID。
+		// 0 保留给标签（Tag）形式，物品 ID 本身不带偏移。
 		packet = AppendVarInt(packet, int32(len(entry.Input))+1)
 		for _, id := range entry.Input {
-			packet = AppendVarInt(packet, id+1)
+			packet = AppendVarInt(packet, id)
 		}
 		packet = appendSlotDisplayItemStack(packet, entry.ResultItem, entry.ResultCount)
 	}
