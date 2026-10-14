@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 package world
 
 // 矿物生成：按深度带与数量确定性生成矿脉（普通与深板岩变体）。

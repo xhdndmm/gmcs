@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 package world
 
 // FlatGroundLevel 是超平坦地形草方块层的 Y 坐标（世界最低处往上第 3 格）。

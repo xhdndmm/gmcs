@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // Package item 提供物品堆栈模型、玩家物品栏与协议编解码辅助。
 package item
 

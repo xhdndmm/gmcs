@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 package registry
 
 // 配方匹配：在给定合成格（物品 ID 网格）中查找配方，以及按容器类型查询烹饪配方。

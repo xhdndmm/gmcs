@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 package server
 
 // 附魔台（原版 EnchantmentMenu/EnchantmentTableBlock）：输入槽（最大 1 个）+

@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // Package world 包含 gmcs 的世界数据模型、地形生成、持久化与网络序列化。
 package world
 

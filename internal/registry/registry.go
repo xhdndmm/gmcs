@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // Package registry 提供 1.21.11 注册表数据与标签。
 //
 // 数据由 tools/genregistries 从官方客户端的内置数据包与官方服务端

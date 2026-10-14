@@ -1,4 +1,7 @@
 #!/bin/bash
+#[https://github.com/xhdndmm/gmcs]
+#MIT License
+#Copyright (c) 2026 喜欢电脑的猫咪
 #
 # gmcs 测试脚本：格式检查、构建、vet、单元测试、race 检测与可选 benchmark。
 # 仅依赖 POSIX sh 与 Go 工具链，可在 Linux、macOS、BSD、WSL 与 Git Bash 中运行。

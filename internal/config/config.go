@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // Package config 提供服务器的配置结构与 JSON 文件持久化。
 package config
 

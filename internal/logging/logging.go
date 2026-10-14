@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // Package logging 提供服务器日志的文件输出与大小轮转。
 //
 // 设计：

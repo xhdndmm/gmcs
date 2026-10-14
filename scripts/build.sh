@@ -1,4 +1,7 @@
 #!/bin/bash
+#[https://github.com/xhdndmm/gmcs]
+#MIT License
+#Copyright (c) 2026 喜欢电脑的猫咪
 #
 # gmcs 构建脚本。
 #

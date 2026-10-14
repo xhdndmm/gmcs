@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // gmcsload 是 gmcs 的简易负载压测客户端：模拟若干离线模式客户端完成
 // 握手 → 登录 → 配置 → 进入世界，随后持续移动并回复 Keep Alive /
 // Chunk Batch Received，用于观测服务器在并发连接下的表现。

@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // genregistries 从 Minecraft 客户端 jar 的内置数据包与官方服务端数据生成器报告
 // 生成注册表数据（internal/registry/ 下的 *_generated.go 文件）。
 //

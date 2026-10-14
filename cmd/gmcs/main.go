@@ -24,7 +24,7 @@ import (
 )
 
 func main() {
-	fmt.Println(`"
+	fmt.Println(`
  #####  #     #  #####   #####  
 #     # ##   ## #     # #     # 
 #       # # # # #       #       
@@ -35,7 +35,7 @@ func main() {
 
 Welcome to gmcs 1.21.11!
 https://github.com/xhdndmm/gmcs
-	"`)
+	`)
 	if err := run(); err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
