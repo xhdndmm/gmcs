@@ -234,6 +234,7 @@ func (s *Server) tickFurnace(state *furnaceState) bool {
 		changed = true
 		if state.cookProgress >= recipe.CookTime {
 			state.cookProgress = 0
+			inputID := state.slots[0].ItemID
 			state.slots[0].Count--
 			if state.slots[0].Count <= 0 {
 				state.slots[0] = item.Empty()
@@ -244,6 +245,11 @@ func (s *Server) tickFurnace(state *furnaceState) bool {
 				state.slots[2].Count += recipe.ResultCount
 			}
 			state.cookXP += recipe.Experience
+			// 湿海绵特判（原版 AbstractFurnaceBlockEntity#burn）：烘干后若燃料槽里是
+			// 空桶，把它换成水桶（整个燃料槽会被替换为单个水桶，与原版一致）。
+			if inputID == wetSpongeItemID && !state.slots[1].IsEmpty() && state.slots[1].ItemID == bucketItemID {
+				state.slots[1] = item.Stack{ItemID: bucketWaterItemID, Count: 1}
+			}
 		}
 	} else if state.burnRemaining == 0 && state.cookProgress > 0 {
 		// 熄火：部分进度以 2 倍速度回退（原版行为）。
@@ -282,16 +288,23 @@ func isLavaBucket(itemID int32) bool {
 	return itemID == bucketLavaItemID
 }
 
-// bucketItemID / bucketLavaItemID 由 initFurnaceKinds 解析。
+// bucketItemID / bucketLavaItemID / bucketWaterItemID / wetSpongeItemID 由
+// initFurnaceItems 解析。
 var (
-	bucketItemID     int32
-	bucketLavaItemID int32
+	bucketItemID      int32
+	bucketLavaItemID  int32
+	bucketWaterItemID int32
+	wetSpongeItemID   int32
 )
 
-// initFurnaceItems 解析燃料相关物品 ID。
+// initFurnaceItems 解析燃料与湿海绵特判相关物品 ID。
 func initFurnaceItems() (int32, int32) {
 	bucket, _ := registry.ItemID("minecraft:bucket")
 	lava, _ := registry.ItemID("minecraft:lava_bucket")
+	water, _ := registry.ItemID("minecraft:water_bucket")
+	sponge, _ := registry.ItemID("minecraft:wet_sponge")
+	bucketWaterItemID = water
+	wetSpongeItemID = sponge
 	return bucket, lava
 }
 
@@ -443,6 +456,24 @@ func (b furnaceSlotBacking) Set(index int, stack item.Stack) {
 // Supported 报告槽位是否可交互（产物槽只取不放，由专用路径处理）。
 func (b furnaceSlotBacking) Supported(index int) bool {
 	return index != 2
+}
+
+// CanPlace 限制燃料槽可放入的物品（原版 AbstractFurnaceBlockEntity#canPlaceItem）：
+// 只接受可作为燃料的物品；空桶例外（用于湿海绵烘干，且槽位里不能已有空桶）。
+func (b furnaceSlotBacking) CanPlace(index int, stack item.Stack) bool {
+	if index != 1 {
+		return true
+	}
+	if registry.FuelBurnTicks(stack.ItemID) > 0 {
+		return true
+	}
+	if stack.ItemID != bucketItemID {
+		return false
+	}
+	b.state.mu.Lock()
+	current := b.state.slots[1]
+	b.state.mu.Unlock()
+	return current.IsEmpty() || current.ItemID != bucketItemID
 }
 
 // furnaceResultClick 处理产物槽点击（只取不放），返回新的光标。
