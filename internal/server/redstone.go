@@ -241,6 +241,10 @@ func (s *Server) fireRedstoneTick(key containerKey) {
 		s.tickObserver(w, key.dim, pos, state)
 	case name == pistonName || name == stickyPistonName:
 		s.tickPiston(w, key.dim, pos, state)
+	case isDispenserBlockName(name):
+		s.tickDispenser(w, key.dim, pos, state)
+	case name == fireBlockName || name == soulFireBlockName:
+		s.tickFire(w, key.dim, pos, state)
 	case isButtonName(name):
 		s.tickButton(w, key.dim, pos, state)
 	case isLampState(state):
@@ -668,6 +672,9 @@ func (s *Server) refreshRedstoneConsumers(w *world.World, dim world.Dimension, p
 			s.checkTorchUpdate(w, dim, candidate, state)
 		case isHopperState(state):
 			s.refreshHopperEnabled(w, candidate, state)
+		}
+		if name, _, ok := registry.StateProps(state); ok && isDispenserBlockName(name) {
+			s.refreshDispenser(w, candidate, state)
 		}
 	}
 	// 活塞：变更点与其邻居处的活塞（普通供电），以及它们下方的活塞（准连接）。

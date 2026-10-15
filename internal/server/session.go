@@ -453,11 +453,11 @@ func (s *session) acceptMove(x, y, z float64, now time.Time) bool {
 	return math.Sqrt(distanceSq) <= allowed
 }
 
-// isSolidBlock 报告世界坐标处是否为固体方块（非空气、非水）。
+// isSolidBlock 报告世界坐标处是否为固体方块（非空气、非水/岩浆）。
 // 仅用于视线遮挡等粗略判定；移动碰撞请使用 positionClear（形状级 AABB）。
 func isSolidBlock(w *world.World, x, y, z int) bool {
 	state := w.BlockAt(x, y, z)
-	return state != world.AirBlock && state != world.WaterBlock
+	return state != world.AirBlock && !isWaterState(state) && !isLavaState(state)
 }
 
 // playerBox 返回玩家碰撞盒（宽 0.6、高 1.8，脚底在 y）。
@@ -484,9 +484,9 @@ func supportedAt(w *world.World, x, y, z float64) bool {
 	return ok
 }
 
-// feetInWater 报告玩家脚部是否位于水中（落水重置下落高度）。
+// feetInWater 报告玩家脚部是否位于水中（任何等级；落水重置下落高度）。
 func feetInWater(w *world.World, x, y, z float64) bool {
-	return w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))) == world.WaterBlock
+	return isWaterState(w.BlockAt(int(math.Floor(x)), int(math.Floor(y+0.1)), int(math.Floor(z))))
 }
 
 // resyncPosition 把客户端拉回服务器记录的位置（拒绝越界或无效移动）。

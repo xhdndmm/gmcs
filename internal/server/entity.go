@@ -316,6 +316,8 @@ func (s *Server) tick() {
 	s.tickFurnaces()
 	s.tickBrewingStands()
 	s.tickRedstone()
+	s.tickFluids()
+	s.tickTnts(players)
 	s.tickPortals(players)
 	s.spawnTicks++
 	if s.spawnTicks >= spawnCheckInterval {
@@ -734,7 +736,7 @@ func (s *Server) tryMoveMob(w *world.World, m *mob, newX, newZ float64) bool {
 	}
 	blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
 	column, ok := w.ColumnAt(blockX, blockZ)
-	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
+	if !ok || !column.HasTop || isWaterState(column.TopState) || isLavaState(column.TopState) || !column.HasSolid {
 		return false
 	}
 	groundY := float64(column.SolidY + 1)
@@ -772,7 +774,7 @@ func attackPathClear(w *world.World, fromX, fromY, fromZ, toX, toY, toZ float64)
 		y := int(math.Floor(fromY + (toY-fromY)*t))
 		z := int(math.Floor(fromZ + (toZ-fromZ)*t))
 		state := w.BlockAt(x, y, z)
-		if state != world.AirBlock && state != world.WaterBlock {
+		if state != world.AirBlock && !isWaterState(state) {
 			return false
 		}
 	}
@@ -795,7 +797,7 @@ func (s *Server) knockbackMob(m *mob, fromX, fromZ float64) []byte {
 	w := s.worldFor(m.Dim)
 	blockX, blockZ := int(math.Floor(newX)), int(math.Floor(newZ))
 	column, ok := w.ColumnAt(blockX, blockZ)
-	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
+	if !ok || !column.HasTop || isWaterState(column.TopState) || isLavaState(column.TopState) || !column.HasSolid {
 		return nil
 	}
 	groundY := float64(column.SolidY + 1)
@@ -842,7 +844,7 @@ func (s *Server) teleportEnderman(m *mob) []byte {
 			continue
 		}
 		column, ok := w.ColumnAt(int(math.Floor(newX)), int(math.Floor(newZ)))
-		if !ok || !column.HasTop || !column.HasSolid || column.TopState == world.WaterBlock {
+		if !ok || !column.HasTop || !column.HasSolid || isWaterState(column.TopState) || isLavaState(column.TopState) {
 			continue
 		}
 		groundY := float64(column.SolidY + 1)
@@ -899,10 +901,10 @@ func (s *Server) trySpawnMob(players []*session) {
 
 	w := s.worldFor(dim)
 	column, ok := w.ColumnAt(blockX, blockZ)
-	if !ok || !column.HasTop || column.TopState == world.WaterBlock || !column.HasSolid {
+	if !ok || !column.HasTop || isWaterState(column.TopState) || !column.HasSolid {
 		return
 	}
-	if column.TopState == world.LavaBlock || column.TopState == world.MagmaBlock {
+	if isLavaState(column.TopState) || column.TopState == world.MagmaBlock {
 		return
 	}
 	// 被动生物只在主世界的草方块上生成（近似原版）。
@@ -998,6 +1000,18 @@ func (s *Server) sendExistingEntities(player *session) error {
 			}
 			packets = append(packets, protocol.EncodeAddEntity(
 				a.ID, a.UUID, s.arrowTypeID, a.X, a.Y, a.Z, a.VelX, a.VelY, a.VelZ, 0, 0))
+		}
+	}
+	if s.tntsEnabled {
+		for _, t := range s.tnts {
+			if t.Dim != dim {
+				continue
+			}
+			packets = append(packets,
+				protocol.EncodeAddEntity(t.ID, t.UUID, s.tntTypeID, t.X, t.Y, t.Z, t.VelX, t.VelY, t.VelZ, 0, 0),
+				protocol.EncodeEntityMetadataVarInt(t.ID, 8, int32(t.Fuse)),
+				protocol.EncodeEntityMetadataVarInt(t.ID, 9, int32(tntBlockState())),
+			)
 		}
 	}
 	s.entityMu.Unlock()

@@ -94,8 +94,8 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	dim := player.dimensionID()
 	w := s.worldFor(dim)
 	current := w.BlockAt(action.X, action.Y, action.Z)
-	if current == world.AirBlock || current == world.WaterBlock || current == world.BedrockBlock {
-		return // 空气/水/基岩不可破坏
+	if current == world.AirBlock || isWaterState(current) || isLavaState(current) || current == world.BedrockBlock {
+		return // 空气/流体/基岩不可破坏
 	}
 	// 活塞基座/活塞头联动：破坏基座时头部消失；破坏头部时基座被移除
 	// （原版 PistonHeadBlock 与 PistonBaseBlock 的行为）。
@@ -154,6 +154,7 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	}
 	s.broadcastBlockUpdate(dim, action.X, action.Y, action.Z, int32(world.AirBlock))
 	s.updateRedstoneAround(dim, action.X, action.Y, action.Z)
+	s.updateFluidsAround(dim, action.X, action.Y, action.Z)
 	if current == world.ObsidianBlock {
 		// 破坏黑曜石框后与之相连的传送门熄灭（近似原版行为）。
 		s.clearPortalsNear(dim, action.X, action.Y, action.Z)
@@ -193,6 +194,9 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 			switch heldName {
 			case flintAndSteelName:
 				if s.tryUseFlintAndSteel(player, w, use.X, use.Y, use.Z, current) {
+					return
+				}
+				if s.tryUseFlintAndSteelFire(player, w, use, current) {
 					return
 				}
 			case enderEyeName:
@@ -255,6 +259,10 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		}
 	}
 	offset := blockFaceOffsets[use.Direction]
+	// 桶：放置/收集流体（在容器交互之后、方块放置之前，与原版交互顺序一致）。
+	if s.tryUseBucket(player, w, use) {
+		return
+	}
 	placeX := use.X + offset[0]
 	placeY := use.Y + offset[1]
 	placeZ := use.Z + offset[2]
@@ -262,7 +270,7 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		return
 	}
 	existing := w.BlockAt(placeX, placeY, placeZ)
-	if existing != world.AirBlock && existing != world.WaterBlock {
+	if existing != world.AirBlock && !isWaterState(existing) && !isLavaState(existing) {
 		return // 目标位置不可替换
 	}
 	stack := player.inventory.Get(player.selectedSlot)
@@ -297,6 +305,7 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	}
 	s.broadcastBlockUpdate(dim, placeX, placeY, placeZ, int32(state))
 	s.updateRedstoneAround(dim, placeX, placeY, placeZ)
+	s.updateFluidsAround(dim, placeX, placeY, placeZ)
 	if blockName, hasName := s.blockNameOf(state); hasName && blockName == hopperBlockName {
 		// 新放置的漏斗立即注册（无需等待周期扫描）。
 		s.registerHopper(dim, placeX, placeY, placeZ)

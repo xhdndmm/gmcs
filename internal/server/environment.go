@@ -58,8 +58,8 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 		return
 	}
 	x, y, z, _, _ := s.playerPosition()
-	inLava := fluidAt(w, x, y, z, world.LavaBlock) || fluidAt(w, x, y+1, z, world.LavaBlock)
-	inWater := fluidAt(w, x, y, z, world.WaterBlock) || fluidAt(w, x, y+1, z, world.WaterBlock)
+	inLava := fluidKindAt(w, x, y, z) == lavaBlockName || fluidKindAt(w, x, y+1, z) == lavaBlockName
+	inWater := fluidKindAt(w, x, y, z) == waterBlockName || fluidKindAt(w, x, y+1, z) == waterBlockName
 
 	// 岩浆：点燃 15 秒 + 结算岩浆伤害（无敌帧限制频率）。
 	if inLava {
@@ -128,7 +128,19 @@ func fluidAt(w *world.World, x, y, z float64, state uint16) bool {
 	return w.BlockAt(int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))) == state
 }
 
-// headInWater 报告玩家眼睛位置是否浸水（原版溺水判定按眼睛）。
+// fluidKindAt 返回方块坐标处的流体种类（""=非流体、water、lava；任意等级）。
+func fluidKindAt(w *world.World, x, y, z float64) string {
+	state := w.BlockAt(int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z)))
+	if isWaterState(state) {
+		return waterBlockName
+	}
+	if isLavaState(state) {
+		return lavaBlockName
+	}
+	return ""
+}
+
+// headInWater 报告玩家眼睛位置浸水（原版溺水判定按眼睛；任意等级的水）。
 func headInWater(w *world.World, x, y, z float64) bool {
-	return fluidAt(w, x, y+1.5, z, world.WaterBlock)
+	return fluidKindAt(w, x, y+1.5, z) == waterBlockName
 }

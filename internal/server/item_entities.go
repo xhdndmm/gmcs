@@ -383,7 +383,7 @@ func (s *Server) tickItems(players []*session) {
 		}
 
 		startX, startY, startZ := e.X, e.Y, e.Z
-		inWater := state == world.WaterBlock
+		inWater := isWaterState(state)
 		if inWater {
 			// 漂浮：缓慢上浮 + 强阻力。
 			e.VelY += itemWaterBuoyancy

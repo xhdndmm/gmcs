@@ -5,8 +5,10 @@
 package server
 
 import (
+	"log/slog"
 	"math"
 
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/world"
 )
@@ -222,6 +224,7 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 	rangeInt := int(math.Ceil(float64(radius)))
 	radiusSquared := float64(radius) * float64(radius)
 	var updates [][]byte
+	var destroyedCells [][3]int
 	destroyed := 0
 	for dx := -rangeInt; dx <= rangeInt; dx++ {
 		for dy := -rangeInt; dy <= rangeInt; dy++ {
@@ -234,7 +237,7 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 					continue
 				}
 				state := w.BlockAt(bx, by, bz)
-				if state == world.AirBlock || state == world.WaterBlock || state == world.LavaBlock {
+				if state == world.AirBlock || isWaterState(state) || isLavaState(state) {
 					continue
 				}
 				if name, ok := s.blockNameOf(state); ok && explosionResistantBlocks[name] {
@@ -244,9 +247,18 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 					continue
 				}
 				destroyed++
+				destroyedCells = append(destroyedCells, [3]int{bx, by, bz})
 				updates = append(updates, protocol.EncodeBlockUpdate(bx, by, bz, int32(world.AirBlock)))
+				// 容器/处理型方块被炸毁：注销运行时状态、关闭观察窗口并把
+				// 内容物掉落到世界（原版爆炸摧毁容器会掉落内容物）。
+				s.destroyBlockByExplosion(dim, w, bx, by, bz, state)
 			}
 		}
+	}
+	// 爆炸改变了大量方块：通知周围的流体重新评估（注：邻域扇出可能很大，
+	// 但仅调度计划刻、不在此处扩散）。
+	for _, cell := range destroyedCells {
+		s.updateFluidsAround(dim, cell[0], cell[1], cell[2])
 	}
 
 	explosionPacket := protocol.EncodeExplosion(x, y, z, radius, int32(destroyed), protocol.ParticleExplosionEmitter)
@@ -296,6 +308,114 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 	// 范围内的生物同样受到爆炸伤害；掉落物被炸飞（不销毁）。
 	s.damageMobsInExplosion(dim, x, y, z, float32(damageRadius), power)
 	s.knockbackItemsInExplosion(dim, x, y, z, float32(damageRadius))
+}
+
+// destroyBlockByExplosion 处理爆炸摧毁的方块：注销处理型容器的运行时状态、
+// 关闭打开中的窗口并把内容物掉落到世界（原版爆炸摧毁容器会掉落内容物；
+// 此处不再写回方块实体，因为方块已被置为空气）。
+func (s *Server) destroyBlockByExplosion(dim world.Dimension, w *world.World, x, y, z int, state uint16) {
+	name, hasName := s.blockNameOf(state)
+	if !hasName {
+		return
+	}
+	def, isContainer := s.containerDefs[name]
+	key := containerKey{dim: dim, x: x, y: y, z: z}
+	var dropped []item.Stack
+	stateHandled := false
+	if isContainer {
+		switch {
+		case def.IsFurnace:
+			s.furnaceMu.Lock()
+			state := s.furnaces[key]
+			delete(s.furnaces, key)
+			s.furnaceMu.Unlock()
+			if state != nil {
+				state.mu.Lock()
+				dropped = append(dropped, state.slots[:]...)
+				for i := range state.slots {
+					state.slots[i] = item.Empty()
+				}
+				state.mu.Unlock()
+				stateHandled = true
+			}
+		case def.IsHopper:
+			s.hopperMu.Lock()
+			state := s.hoppers[key]
+			delete(s.hoppers, key)
+			s.hopperMu.Unlock()
+			if state != nil {
+				state.mu.Lock()
+				dropped = append(dropped, state.slots[:]...)
+				for i := range state.slots {
+					state.slots[i] = item.Empty()
+				}
+				state.mu.Unlock()
+				stateHandled = true
+			}
+		case def.IsBrewing:
+			s.brewingMu.Lock()
+			state := s.brewings[key]
+			delete(s.brewings, key)
+			s.brewingMu.Unlock()
+			if state != nil {
+				state.mu.Lock()
+				dropped = append(dropped, state.slots[:]...)
+				for i := range state.slots {
+					state.slots[i] = item.Empty()
+				}
+				state.mu.Unlock()
+				stateHandled = true
+			}
+		}
+		// 打开中的窗口：标记关闭并通知观察者（内容随掉落物离开）。
+		s.containerMu.Lock()
+		container := s.containers[key]
+		if s.containers[key] == container {
+			delete(s.containers, key)
+		}
+		s.containerMu.Unlock()
+		if container != nil {
+			container.mu.Lock()
+			container.closed = true
+			if !stateHandled && container.furnace == nil && container.hopper == nil && container.brewing == nil {
+				dropped = append(dropped, container.slots...)
+				for i := range container.slots {
+					container.slots[i] = item.Empty()
+				}
+				stateHandled = true
+			}
+			viewers := make([]*session, 0, len(container.viewers))
+			for viewer := range container.viewers {
+				viewers = append(viewers, viewer)
+			}
+			container.mu.Unlock()
+			for _, viewer := range viewers {
+				viewer.tryWrite(protocol.EncodeContainerClose(viewer.windowID))
+			}
+			s.broadcastContainerAction(container, false, nil)
+		}
+	}
+	// 未由运行时状态接管的内容：读取方块实体。
+	if !stateHandled {
+		if entity, err := w.BlockEntityAt(x, y, z); err == nil {
+			for _, slot := range entity.Items {
+				if !slot.IsEmpty() {
+					dropped = append(dropped, stackFromContainer(slot))
+				}
+			}
+		}
+	}
+	if err := w.RemoveBlockEntity(x, y, z); err != nil {
+		slog.Error("清除爆炸方块实体失败", "x", x, "y", y, "z", z, "error", err)
+	}
+	for _, stack := range dropped {
+		if stack.IsEmpty() {
+			continue
+		}
+		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
+		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
+		s.spawnItem(dim, stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayPlayer)
+	}
 }
 
 // damageMobsInExplosion 对爆炸范围内的生物结算伤害（按距离线性衰减），

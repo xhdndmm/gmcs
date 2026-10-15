@@ -121,6 +121,13 @@ type Server struct {
 	// arrows 是飞行中的箭矢（受 entityMu 保护）。
 	arrows map[int32]*arrowEntity
 
+	// TNT 实体（发射器/打火石点燃；注册表缺少时禁用）。
+	tntTypeID     int32
+	soundTntPrime int32
+	tntsEnabled   bool
+	// tnts 是点燃中的 TNT（受 entityMu 保护）。
+	tnts map[int32]*primedTnt
+
 	// 传送门音效（点燃/激活/传送；New 中解析）。
 	soundFlintUse           int32
 	soundEndPortalFrameFill int32
@@ -168,6 +175,10 @@ type Server struct {
 	redstoneTicks     map[containerKey]int
 	torchToggles      map[containerKey][]int64
 	redstoneTickCount int64
+
+	// 流体（水/岩浆）计划刻表（受 fluidMu 保护，见 fluids.go）。
+	fluidMu    sync.Mutex
+	fluidTicks map[containerKey]int
 
 	// containers 是已打开容器（按维度 + 方块坐标索引），受 containerMu 保护。
 	containerDefs map[string]*containerDef
@@ -412,6 +423,7 @@ func New(cfg config.Config) (*Server, error) {
 	server.resolveItemRegistryIDs()
 	server.resolveXPOrbRegistryIDs()
 	server.resolveHopperRegistryIDs()
+	server.resolveTntRegistryIDs()
 	server.resolvePlateSounds()
 	server.resolveFallDamageBlocks()
 	server.resolveContainerDefs()

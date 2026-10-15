@@ -843,6 +843,18 @@ func (t *transferTarget) commit() {
 // acquireTransferTarget 解析坐标处的可搬运容器（箱子类/漏斗/熔炉并注册运行时状态）。
 // 非容器返回 nil。调用方必须调用返回值的 close（defer 即可）。
 func (s *Server) acquireTransferTarget(dim world.Dimension, pos [3]int) *transferTarget {
+	return s.acquireTransferTargetInternal(dim, pos, false)
+}
+
+// acquireTransferTargetLocked 与 acquireTransferTarget 相同，但假定调用方已持有
+// containerTransferMu（例如发射器自身槽位的事务），箱子类目标不再重复加锁，
+// 避免自锁（非可重入互斥锁）。
+func (s *Server) acquireTransferTargetLocked(dim world.Dimension, pos [3]int) *transferTarget {
+	return s.acquireTransferTargetInternal(dim, pos, true)
+}
+
+// acquireTransferTargetInternal 实现目标解析；locked 表示已持有 containerTransferMu。
+func (s *Server) acquireTransferTargetInternal(dim world.Dimension, pos [3]int, locked bool) *transferTarget {
 	w := s.worldFor(dim)
 	if w == nil {
 		return nil
@@ -899,7 +911,7 @@ func (s *Server) acquireTransferTarget(dim world.Dimension, pos [3]int) *transfe
 		if !known || def.IsFurnace {
 			return nil
 		}
-		return s.acquireChestTarget(dim, pos, def)
+		return s.acquireChestTarget(dim, pos, def, locked)
 	}
 }
 
@@ -911,10 +923,12 @@ func (s *Server) furnaceKindOfName(name string) bool {
 
 // acquireChestTarget 以事务方式获取箱子类容器的槽位：
 // 容器窗口打开时直接读写 containerState（与点击共用同一把锁），
-// 否则读取方块实体副本并在提交时写回；两种情况下都用 containerTransferMu
-// 与“打开窗口时从方块实体载入”的过程串行化。
-func (s *Server) acquireChestTarget(dim world.Dimension, pos [3]int, def *containerDef) *transferTarget {
-	s.containerTransferMu.Lock()
+// 否则读取方块实体副本并在提交时写回；locked 为 false 时用 containerTransferMu
+// 与“打开窗口时从方块实体载入”的过程串行化（locked 为 true 时调用方已持有）。
+func (s *Server) acquireChestTarget(dim world.Dimension, pos [3]int, def *containerDef, locked bool) *transferTarget {
+	if !locked {
+		s.containerTransferMu.Lock()
+	}
 	key := containerKey{dim: dim, x: pos[0], y: pos[1], z: pos[2]}
 	s.containerMu.Lock()
 	container := s.containers[key]
@@ -924,14 +938,16 @@ func (s *Server) acquireChestTarget(dim world.Dimension, pos [3]int, def *contai
 		target := &transferTarget{
 			kind:  transferChest,
 			items: append([]item.Stack(nil), container.slots...),
-			inner: &chestTransferCommit{server: s, container: container, pos: pos, def: def},
+			inner: &chestTransferCommit{server: s, container: container, pos: pos, def: def, locked: locked},
 		}
 		container.mu.Unlock()
 		return target
 	}
 	entity, err := s.worldFor(dim).BlockEntityAt(pos[0], pos[1], pos[2])
 	if err != nil {
-		s.containerTransferMu.Unlock()
+		if !locked {
+			s.containerTransferMu.Unlock()
+		}
 		return nil
 	}
 	slots := make([]item.Stack, def.Slots)
@@ -943,7 +959,7 @@ func (s *Server) acquireChestTarget(dim world.Dimension, pos [3]int, def *contai
 	return &transferTarget{
 		kind:  transferChest,
 		items: slots,
-		inner: &chestEntityTransferCommit{server: s, dim: dim, pos: pos, def: def},
+		inner: &chestEntityTransferCommit{server: s, dim: dim, pos: pos, def: def, locked: locked},
 	}
 }
 
@@ -1031,6 +1047,8 @@ type chestTransferCommit struct {
 	container *containerState
 	pos       [3]int
 	def       *containerDef
+	// locked 为 true 时 containerTransferMu 由外层持有，close 不解锁。
+	locked bool
 }
 
 func (c *chestTransferCommit) apply(target *transferTarget) {
@@ -1057,7 +1075,9 @@ func (c *chestTransferCommit) apply(target *transferTarget) {
 func (c *chestTransferCommit) setHopperCooldown(int64) {}
 
 func (c *chestTransferCommit) close() {
-	c.server.containerTransferMu.Unlock()
+	if !c.locked {
+		c.server.containerTransferMu.Unlock()
+	}
 }
 
 // chestEntityTransferCommit 提交对“未打开”的箱子类容器事务（读写方块实体）。
@@ -1066,6 +1086,8 @@ type chestEntityTransferCommit struct {
 	dim    world.Dimension
 	pos    [3]int
 	def    *containerDef
+	// locked 为 true 时 containerTransferMu 由外层持有，close 不解锁。
+	locked bool
 }
 
 func (c *chestEntityTransferCommit) apply(target *transferTarget) {
@@ -1084,7 +1106,9 @@ func (c *chestEntityTransferCommit) apply(target *transferTarget) {
 func (c *chestEntityTransferCommit) setHopperCooldown(int64) {}
 
 func (c *chestEntityTransferCommit) close() {
-	c.server.containerTransferMu.Unlock()
+	if !c.locked {
+		c.server.containerTransferMu.Unlock()
+	}
 }
 
 // refreshHopperWindow 在漏斗窗口打开时把槽位同步给观察者。

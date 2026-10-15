@@ -131,6 +131,18 @@ func orientPlacementState(state uint16, yaw, pitch float32) uint16 {
 		}
 		next["facing"] = oppositeDir(look)
 		next["extended"] = "false"
+	case dispenserBlockName, dropperBlockName:
+		// 发射器/投掷器：facing = 玩家最近视线方向的反方向（原版
+		// DispenserBlock.getStateForPlacement），支持上下。
+		look := yawToFacing(yaw)
+		switch {
+		case pitch < -45:
+			look = "up"
+		case pitch > 45:
+			look = "down"
+		}
+		next["facing"] = oppositeDir(look)
+		next["triggered"] = "false"
 	case anvilBlockName, chippedAnvilBlockName, damagedAnvilBlockName:
 		// 铁砧：facing = 玩家视线方向的顺时针（原版 AnvilBlock.getStateForPlacement）。
 		next["facing"] = clockwiseDir(yawToFacing(yaw))

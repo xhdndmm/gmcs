@@ -284,14 +284,14 @@ func (s *Server) tickXPOrbs(players []*session) {
 
 		// 流体与重力（顺序与原版一致：水 → 重力 → 岩浆随机跳）。
 		fluid := xpOrbFluidAt(w, orb.X, orb.Y, orb.Z)
-		if fluid == world.WaterBlock {
+		if isWaterState(fluid) {
 			orb.VelY = math.Min(orb.VelY+0.0005, 0.06)
 			orb.VelX *= 0.99
 			orb.VelZ *= 0.99
 		} else {
 			orb.VelY -= xpOrbGravityPerTick
 		}
-		if fluid == world.LavaBlock {
+		if isLavaState(fluid) {
 			orb.VelX = (randUnit(s) - randUnit(s)) * 0.2
 			orb.VelY = 0.2
 			orb.VelZ = (randUnit(s) - randUnit(s)) * 0.2
