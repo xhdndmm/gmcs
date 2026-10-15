@@ -55,7 +55,6 @@ type Server struct {
 	closing bool
 
 	entityIDs         atomic.Int32
-	chatIndex         atomic.Int32
 	keepAliveInterval time.Duration
 	// worldAge 是世界时间（tick，每次 tick 递增；用于昼夜与 Update Time）。
 	worldAge atomic.Int64
@@ -662,20 +661,44 @@ func (s *Server) broadcastPacketExcluding(packet []byte, except *session) {
 	}
 }
 
-// broadcastChat 广播一条玩家聊天消息。
-// 离线模式下消息未签名，客户端显示为“不安全”消息（与原版离线服务器一致）。
-func (s *Server) broadcastChat(sender *session, message string) {
-	chat := protocol.PlayerChatData{
-		GlobalIndex: s.chatIndex.Add(1) - 1,
-		SenderUUID:  sender.uuid,
-		SenderIndex: sender.chatIndex.Add(1) - 1,
-		Message:     message,
-		Timestamp:   time.Now().UnixMilli(),
-		DisplayName: sender.name,
+// broadcastChatMessage 广播一条已通过校验的玩家聊天消息（含签名与确认窗口转发）。
+//
+// 与原版一致：
+//   - 每条消息为每个接收连接独立编号（Player Chat 的 globalIndex）；
+//   - 收到消息的连接把消息签名记入自己的确认窗口（addPending），
+//     待确认数量超过上限时断开该连接。
+func (s *Server) broadcastChatMessage(sender *session, message playerChatMessage) {
+	s.mu.Lock()
+	targets := make([]*session, 0, len(s.players))
+	for _, player := range s.players {
+		targets = append(targets, player)
 	}
-	s.broadcastPacket(protocol.EncodePlayerChatMessage(chat))
-	slog.Info("chat", "name", sender.name, "message", message)
-	s.auditLog("chat", "player", sender.name, "message", message)
+	s.mu.Unlock()
+	for _, player := range targets {
+		data := protocol.PlayerChatData{
+			GlobalIndex: player.nextChatGlobalIndex(),
+			SenderUUID:  sender.uuid,
+			SenderIndex: message.index,
+			Signature:   message.signature,
+			Message:     message.content,
+			Timestamp:   message.timestampMillis,
+			Salt:        message.salt,
+			LastSeen:    message.lastSeen,
+			DisplayName: sender.name,
+		}
+		player.tryWrite(protocol.EncodePlayerChatMessage(data))
+		if len(message.signature) == protocol.MaxChatSignatureLength {
+			player.recordPendingChatSignature(message.signature)
+		}
+	}
+	slog.Info("chat", "name", sender.name, "message", message.content)
+	s.auditLog("chat", "player", sender.name, "message", message.content)
+}
+
+// secureProfileEnforced 报告服务器是否强制安全档案（原版 enforce-secure-profile）。
+// 原版在离线模式下忽略该选项（客户端无法获取档案密钥）。
+func (s *Server) secureProfileEnforced() bool {
+	return s.config.OnlineMode && s.config.EnforceSecureProfile
 }
 
 func (s *Server) serveClient(conn net.Conn) {
@@ -735,7 +758,7 @@ func (s *Server) handleStatus(conn net.Conn) {
 			Text string `json:"text"`
 		} `json:"description"`
 		// EnforcesSecureChat = true 时客户端把服务器标记为“强制安全档案”
-		// （去掉服务器列表的“未验证”警告）；正版模式为 true。
+		// （去掉服务器列表的“未验证”警告）；正版模式且未关闭强制安全档案时为 true。
 		EnforcesSecureChat bool `json:"enforcesSecureChat"`
 		PreviewsChat       bool `json:"previewsChat"`
 	}{
@@ -750,7 +773,7 @@ func (s *Server) handleStatus(conn net.Conn) {
 		Description: struct {
 			Text string `json:"text"`
 		}{Text: s.config.MOTD},
-		EnforcesSecureChat: s.config.OnlineMode,
+		EnforcesSecureChat: s.secureProfileEnforced(),
 	})
 	if err != nil {
 		return

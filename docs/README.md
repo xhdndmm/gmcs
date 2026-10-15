@@ -53,6 +53,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `max_mobs` | 同时存在的生物上限（0 表示不生成） | `8` |
 | `autosave_seconds` | 自动保存间隔（秒，0 表示禁用） | `300` |
 | `online_mode` | 启用正版验证（通过会话服务器确认账号） | `false` |
+| `enforce_secure_profile` | 强制安全档案（正版模式下校验聊天消息签名，缺失或非法签名按原版断开连接；离线模式忽略） | `true` |
 | `session_server_url` | 会话验证服务基地址（在线模式使用） | `https://sessionserver.mojang.com` |
 | `starting_items` | 新玩家初始物品（命名空间 ID；`name` 或 `name*数量`，数量上限 64；可写数组或单个字符串） | `["minecraft:stone"]` |
 | `ops` | 管理员玩家名列表（使用管理命令；项可写 `name`（等价 4 级）或 `name:level`（1–4）；可写数组或单个字符串） | `[]` |
@@ -357,9 +358,17 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 - 启用后完成 AES-128/CFB8 加密握手并通过 `hasJoined` 验证账号，透传签名属性；
   服务器列表与游戏内标记 `enforcesSecureChat=true`，玩家列表携带皮肤。
 - 聊天会话（`chat_session_update`）：服务器保存客户端上报的会话公钥，并通过 Player Info 的
-  Initialize Chat 动作分发给其他玩家；但消息签名不做服务器端验证，广播仍按未签名消息发送
-  （客户端显示“未验证”标记）。
-- 默认离线模式：UUID 按原版离线规则由用户名推导。
+  Initialize Chat 动作分发给其他玩家。
+- 聊天消息签名（`enforce_secure_profile`）：保存会话后建立消息链，按原版校验每条
+  聊天消息的 RSA-SHA256 签名（签名覆盖发送者 UUID、会话 UUID、链序号、盐、时间戳、
+  消息与确认窗口）与消息确认窗口（offset/位图/校验和）；校验通过后把签名与确认列表
+  转发给所有玩家（安全聊天标记），失败按原版组件断开连接
+  （`chat.disabled.invalid_signature`、`chat.disabled.out_of_order_chat`、
+  `multiplayer.disconnect.chat_validation_failed` 等）。
+- 已知差异：gmcs 没有 Mojang 的会话服务公钥，因此不校验会话公钥的 Mojang 签名
+  （原版会校验 `KeySignature`）；`ServerboundChatCommandSigned` 的命令参数签名也未校验。
+- 默认离线模式：UUID 按原版离线规则由用户名推导，聊天按未签名消息广播
+  （与原版离线服务器一致）。
 
 </details>
 

@@ -8,14 +8,28 @@ import "unicode/utf8"
 
 // 网络 NBT 编码所需的最小支持。1.20.2 起网络 NBT 的字符串使用标准 UTF-8
 // 与 u16 长度前缀（而非 Java 修改版 UTF-8）。
-// 当前仅实现文本组件使用到的 String Tag。
+// 当前实现文本组件的 String Tag 与只含 translate 的 Compound（可翻译组件）。
 
-const nbtTagString = 0x08
+const (
+	nbtTagCompound = 0x0A
+	nbtTagString   = 0x08
+	nbtTagEnd      = 0x00
+)
 
 // AppendNBTString 追加一个只含文本的 NBT String Tag（可用作 Text Component）。
 func AppendNBTString(dst []byte, value string) []byte {
 	dst = append(dst, nbtTagString)
 	return appendNBTStringPayload(dst, value)
+}
+
+// AppendNBTTranslatable 追加一个可翻译文本组件（Compound{"translate": key}）。
+// 原版踢出消息（如 chat.disabled.chain_broken）即使用该形式。
+func AppendNBTTranslatable(dst []byte, key string) []byte {
+	dst = append(dst, nbtTagCompound)
+	dst = append(dst, nbtTagString)
+	dst = appendNBTStringPayload(dst, "translate")
+	dst = appendNBTStringPayload(dst, key)
+	return append(dst, nbtTagEnd)
 }
 
 func appendNBTStringPayload(dst []byte, value string) []byte {

@@ -43,12 +43,11 @@ func TestChatSessionUpdateBroadcast(t *testing.T) {
 	// 第二名玩家先加入，便于观察 First 的会话广播。
 	secondConn := joinAt(t, cfg, addr, "Second")
 
-	session := protocol.ChatSession{
-		SessionUUID:  [16]byte{0xA1, 0xA2},
-		ExpireTime:   1_800_000_000_000,
-		PublicKey:    bytes.Repeat([]byte{0x11}, 294),
-		KeySignature: bytes.Repeat([]byte{0x22}, 256),
-	}
+	// 实时生成一个真实格式的公钥（原版客户端发送的是 X.509 DER 编码的 RSA 公钥；
+	// 无法解析的公钥会按 multiplayer.disconnect.invalid_public_key_signature 断开）。
+	_, session := testChatSession(t)
+	session.SessionUUID = [16]byte{0xA1, 0xA2}
+	session.ExpireTime = 1_800_000_000_000
 	sendChatSessionUpdate(t, firstConn, session)
 
 	// Second 收到 Initialize Chat 动作的数据包。

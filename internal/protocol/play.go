@@ -236,6 +236,13 @@ func EncodePlayDisconnect(reason string) []byte {
 	return AppendNBTString(packet, reason)
 }
 
+// EncodePlayDisconnectTranslatable 编码 Play 阶段的 Disconnect 包，
+// reason 为翻译键（如 chat.disabled.chain_broken），与原版踢出组件一致。
+func EncodePlayDisconnectTranslatable(key string) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDDisconnect))
+	return AppendNBTTranslatable(packet, key)
+}
+
 // EncodeChunkBatchStart 编码 Chunk Batch Start 包（空负载）。
 // 客户端用它测量批次耗时，并向服务器回报期望的每 tick 区块数。
 func EncodeChunkBatchStart() []byte {
@@ -313,35 +320,68 @@ func ParsePlayClientCommand(packet []byte) (int32, error) {
 	return action, nil
 }
 
-// PlayerChatData 是 Player Chat 包（未签名消息）的内容。
-// 服务器在离线模式下无法为消息签名，因此签名与消息链为空，
-// 客户端会将其显示为“不安全”消息（与原版离线服务器一致）。
+// PlayerChatData 是 Player Chat 包的内容。
+// 布局（对照 1.21.11 ClientboundPlayerChatPacket）：
+//
+//	VarInt globalIndex
+//	UUID sender
+//	VarInt index
+//	bool + 256 字节（可选 MessageSignature）
+//	String content、Instant(millis) timestamp、long salt、LastSeenMessages.Packed
+//	bool + Component（可选 unsignedContent）
+//	FilterMask（当前总是 0 = pass_through）
+//	ChatType.Bound：holder + networkName + 可选 networkTargetName
+//
+// 未签名消息（离线服务器/离线玩家）以“无签名 + unsignedContent = 原文”发送，
+// 与原版离线服务器一致；签名消息则转发客户端签名与确认窗口，
+// 使其他客户端能够验证消息链（安全聊天）。
 type PlayerChatData struct {
-	// GlobalIndex 是服务器范围内递增的消息序号。
+	// GlobalIndex 是服务器发给该客户端第几条聊天（每个连接独立计数）。
 	GlobalIndex int32
 	// SenderUUID 是发送者 UUID。
 	SenderUUID [16]byte
-	// SenderIndex 是发送者个人的消息序号（从 0 递增）。
+	// SenderIndex 是发送者会话内的消息序号（SignedMessageLink.index）。
 	SenderIndex int32
+	// Signature 是 256 字节消息签名；nil 表示无签名。
+	Signature []byte
 	// Message 是消息纯文本内容。
 	Message string
 	// Timestamp 是 Unix 毫秒时间戳。
 	Timestamp int64
+	// Salt 是签名盐。
+	Salt int64
+	// LastSeen 是发送者确认过的消息签名列表（按顺序）。
+	// gmcs 不与客户端共享签名索引缓存，因此总是发送完整签名
+	// （原版 MessageSignature.Packed 的 id = -1 形式）。
+	LastSeen [][]byte
 	// DisplayName 是发送者显示名（聊天栏中 <名字> 部分）。
 	DisplayName string
 }
 
-// EncodePlayerChatMessage 编码未签名的 Player Chat 包。
+// EncodePlayerChatMessage 编码 Player Chat 包。
 func EncodePlayerChatMessage(chat PlayerChatData) []byte {
 	packet := AppendVarInt(nil, int32(PlayPacketIDPlayerChat))
 	packet = AppendVarInt(packet, chat.GlobalIndex)
 	packet = append(packet, chat.SenderUUID[:]...)
 	packet = AppendVarInt(packet, chat.SenderIndex)
-	packet = append(packet, 0x00) // 无消息签名
+	if len(chat.Signature) == MaxChatSignatureLength {
+		packet = append(packet, 0x01)
+		packet = append(packet, chat.Signature...)
+	} else {
+		packet = append(packet, 0x00) // 无消息签名
+	}
 	packet = appendString(packet, chat.Message)
 	packet = AppendInt64(packet, chat.Timestamp)
-	packet = AppendInt64(packet, 0)  // salt
-	packet = AppendVarInt(packet, 0) // previousMessages 为空
+	packet = AppendInt64(packet, chat.Salt)
+	// LastSeenMessages.Packed：集合大小 + 每条 MessageSignature.Packed。
+	packet = AppendVarInt(packet, int32(len(chat.LastSeen)))
+	for _, signature := range chat.LastSeen {
+		if len(signature) != MaxChatSignatureLength {
+			continue
+		}
+		packet = AppendVarInt(packet, 0) // id = -1（完整签名）
+		packet = append(packet, signature...)
+	}
 	// unsignedChatContent：Some(消息文本组件)。
 	packet = append(packet, 0x01)
 	packet = AppendNBTString(packet, chat.Message)

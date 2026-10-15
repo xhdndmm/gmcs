@@ -68,10 +68,18 @@ type session struct {
 	// profileProperties 是会话服务器返回的玩家属性（在线模式）。
 	profileProperties []protocol.GameProfileProperty
 
-	// chatSession 是客户端上报的聊天会话公钥（chat_session_update）；
-	// 由会话读循环写入，其他玩家读取时需要加锁。
-	chatSessionMu sync.Mutex
-	chatSession   *protocol.ChatSession
+	// chatMu 保护聊天相关状态（chatSession/chatChain/chatLastSeen/
+	// chatGlobalIndex）：会话读循环写入，广播路径（其他玩家的 goroutine）
+	// 读取或记录待确认消息。
+	chatMu sync.Mutex
+	// chatSession 是客户端上报的聊天会话公钥（chat_session_update）。
+	chatSession *protocol.ChatSession
+	// chatChain 是聊天消息链状态（会话更新时重建；见 chat_validation.go）。
+	chatChain *chatChainState
+	// chatLastSeen 是消息确认窗口（每个连接一份，见 chat_validation.go）。
+	chatLastSeen *chatLastSeenValidator
+	// chatGlobalIndex 是发给该客户端的聊天序号（每个连接独立递增）。
+	chatGlobalIndex int32
 
 	// 区块流式加载状态（由会话 goroutine 串行访问）。
 	sentChunks  map[world.ChunkPos]struct{}
@@ -89,10 +97,8 @@ type session struct {
 
 	// portalCooldown 是传送门冷却剩余 tick（传送后 300 tick）：
 	// 读循环在传送后设置，服务器 Tick 线程递减。
-	portalCooldown atomic.Int32
-
-	// inventory 是玩家物品栏，由会话串行访问。
-	inventory item.Inventory
+	portalCooldown atomic.Int32 // inventory 是玩家物品栏，由会话串行访问。
+	inventory      item.Inventory
 	// selectedSlot 是当前选中的快捷栏槽位（0–8），由会话串行访问。
 	selectedSlot int
 
@@ -134,10 +140,6 @@ type session struct {
 
 	keepAliveMu      sync.Mutex
 	pendingKeepAlive int64
-
-	// chatIndex 是该玩家的聊天消息序号（从 0 递增）。
-	chatIndex atomic.Int32
-
 	// 玩家战斗与位置状态：由读循环与实体 Tick 共同访问，受 stateMu 保护。
 	stateMu    sync.Mutex
 	posX, posY float64
@@ -200,17 +202,10 @@ func (s *session) nextWindowID() int32 {
 	return s.windowCounter
 }
 
-// setChatSession 保存客户端上报的聊天会话公钥。
-func (s *session) setChatSession(session protocol.ChatSession) {
-	s.chatSessionMu.Lock()
-	s.chatSession = &session
-	s.chatSessionMu.Unlock()
-}
-
 // chatSessionSnapshot 返回当前聊天会话（没有时为 nil）。
 func (s *session) chatSessionSnapshot() *protocol.ChatSession {
-	s.chatSessionMu.Lock()
-	defer s.chatSessionMu.Unlock()
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
 	return s.chatSession
 }
 
@@ -1470,17 +1465,38 @@ func (s *session) playReadLoop() {
 				slog.Debug("malformed chat message", "name", s.name, "error", err)
 				continue
 			}
-			s.server.broadcastChat(s, message.Message)
+			// 先校验消息确认窗口（原版 handleChat 的第一步），不一致即断开。
+			lastSeen, err := s.applyChatLastSeenUpdate(message)
+			if err != nil {
+				slog.Info("chat validation failed", "name", s.name, "error", err)
+				s.kickWithComponent("multiplayer.disconnect.chat_validation_failed")
+				return
+			}
+			// 再校验消息签名与消息链（原版 SignedMessageChain.Decoder）。
+			verified, reason := s.resolveChatMessage(message, lastSeen)
+			if reason != "" {
+				slog.Info("chat message rejected", "name", s.name, "reason", reason)
+				s.kickWithComponent(reason)
+				return
+			}
+			s.server.broadcastChatMessage(s, verified)
 		case protocol.PlayServerboundPacketIDChatSessionUpdate:
 			session, err := protocol.ParseChatSessionUpdate(packet)
 			if err != nil {
 				slog.Debug("malformed chat session update", "name", s.name, "error", err)
 				continue
 			}
-			s.setChatSession(session)
-			// 把会话公钥分发给其他玩家（Player Info 的 Initialize Chat），
-			// 使客户端能够识别该玩家的聊天会话信息。
-			s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoChatSession(s.uuid, session), s)
+			switch s.acceptChatSession(session) {
+			case chatSessionAccepted:
+				// 把会话公钥分发给其他玩家（Player Info 的 Initialize Chat），
+				// 使客户端能够识别该玩家的聊天会话信息。
+				s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoChatSession(s.uuid, session), s)
+			case chatSessionDuplicate:
+				// 与原版一致：与现有会话相同的重复上报直接忽略。
+			default:
+				// 会话被拒绝（公钥非法或密钥降级）：可能已经断开连接。
+				return
+			}
 		case protocol.PlayServerboundPacketIDChatCommand, protocol.PlayServerboundPacketIDChatCommandSigned:
 			if !s.chatBudget.allow(time.Now(), chatRate, chatBurst) {
 				continue // 命令洪泛：与聊天同桶限流

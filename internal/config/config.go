@@ -81,6 +81,10 @@ type Config struct {
 	AutosaveSeconds int `json:"autosave_seconds"`
 	// OnlineMode 启用正版验证（通过会话服务器确认玩家身份）。
 	OnlineMode bool `json:"online_mode"`
+	// EnforceSecureProfile 强制安全档案（原版 enforce-secure-profile）：
+	// 开启且启用正版验证时，玩家的聊天消息必须携带有效的消息签名，
+	// 否则断开连接（与原版一致，离线模式忽略该选项）。
+	EnforceSecureProfile bool `json:"enforce_secure_profile"`
 	// SessionServerURL 是会话验证服务基地址（在线模式使用）。
 	SessionServerURL string `json:"session_server_url"`
 	// StartingItems 是新玩家进入世界时获得的物品（命名空间 ID）。
@@ -136,7 +140,8 @@ func Default() Config {
 		SpawnMonsters:   true,
 		MaxMobs:         8,
 		AutosaveSeconds: 300, OnlineMode: false,
-		SessionServerURL: "https://sessionserver.mojang.com", StartingItems: StringList{"minecraft:stone"},
+		EnforceSecureProfile: true,
+		SessionServerURL:     "https://sessionserver.mojang.com", StartingItems: StringList{"minecraft:stone"},
 		LogFile: "logs/gmcs.log", LogLevel: "info", LogMaxSizeMB: 16,
 		AuditLogFile: "logs/audit.jsonl",
 	}
