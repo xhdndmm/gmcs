@@ -3382,6 +3382,186 @@ var PlayerEquippableSlots = map[string]string{
 	"minecraft:zombie_head":           "head",
 }
 
+// ToolComponents 保存工具物品的挖掘数据（minecraft:tool 组件：默认挖掘速度、
+// 每方块耐久损耗、创造模式可破坏标志与按方块标签/列表的规则；
+// 规则顺序与原版一致，取首个匹配规则）。
+var ToolComponents = map[string]ToolComponent{
+	"minecraft:copper_axe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_copper_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/axe", Speed: 5, Correct: true},
+	}},
+	"minecraft:copper_hoe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_copper_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/hoe", Speed: 5, Correct: true},
+	}},
+	"minecraft:copper_pickaxe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_copper_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/pickaxe", Speed: 5, Correct: true},
+	}},
+	"minecraft:copper_shovel": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_copper_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/shovel", Speed: 5, Correct: true},
+	}},
+	"minecraft:copper_sword": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{
+		{BlocksTag: "minecraft:cobweb", Speed: 15, Correct: true},
+		{BlocksTag: "minecraft:sword_instantly_mines", Speed: 3.4028235e+38, Correct: false},
+		{BlocksTag: "minecraft:sword_efficient", Speed: 1.5, Correct: false},
+	}},
+	"minecraft:diamond_axe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_diamond_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/axe", Speed: 8, Correct: true},
+	}},
+	"minecraft:diamond_hoe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_diamond_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/hoe", Speed: 8, Correct: true},
+	}},
+	"minecraft:diamond_pickaxe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_diamond_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/pickaxe", Speed: 8, Correct: true},
+	}},
+	"minecraft:diamond_shovel": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_diamond_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/shovel", Speed: 8, Correct: true},
+	}},
+	"minecraft:diamond_sword": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{
+		{BlocksTag: "minecraft:cobweb", Speed: 15, Correct: true},
+		{BlocksTag: "minecraft:sword_instantly_mines", Speed: 3.4028235e+38, Correct: false},
+		{BlocksTag: "minecraft:sword_efficient", Speed: 1.5, Correct: false},
+	}},
+	"minecraft:golden_axe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_gold_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/axe", Speed: 12, Correct: true},
+	}},
+	"minecraft:golden_hoe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_gold_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/hoe", Speed: 12, Correct: true},
+	}},
+	"minecraft:golden_pickaxe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_gold_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/pickaxe", Speed: 12, Correct: true},
+	}},
+	"minecraft:golden_shovel": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_gold_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/shovel", Speed: 12, Correct: true},
+	}},
+	"minecraft:golden_sword": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{
+		{BlocksTag: "minecraft:cobweb", Speed: 15, Correct: true},
+		{BlocksTag: "minecraft:sword_instantly_mines", Speed: 3.4028235e+38, Correct: false},
+		{BlocksTag: "minecraft:sword_efficient", Speed: 1.5, Correct: false},
+	}},
+	"minecraft:iron_axe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_iron_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/axe", Speed: 6, Correct: true},
+	}},
+	"minecraft:iron_hoe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_iron_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/hoe", Speed: 6, Correct: true},
+	}},
+	"minecraft:iron_pickaxe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_iron_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/pickaxe", Speed: 6, Correct: true},
+	}},
+	"minecraft:iron_shovel": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_iron_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/shovel", Speed: 6, Correct: true},
+	}},
+	"minecraft:iron_sword": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{
+		{BlocksTag: "minecraft:cobweb", Speed: 15, Correct: true},
+		{BlocksTag: "minecraft:sword_instantly_mines", Speed: 3.4028235e+38, Correct: false},
+		{BlocksTag: "minecraft:sword_efficient", Speed: 1.5, Correct: false},
+	}},
+	"minecraft:mace": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{}},
+	"minecraft:netherite_axe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_netherite_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/axe", Speed: 9, Correct: true},
+	}},
+	"minecraft:netherite_hoe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_netherite_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/hoe", Speed: 9, Correct: true},
+	}},
+	"minecraft:netherite_pickaxe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_netherite_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/pickaxe", Speed: 9, Correct: true},
+	}},
+	"minecraft:netherite_shovel": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_netherite_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/shovel", Speed: 9, Correct: true},
+	}},
+	"minecraft:netherite_sword": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{
+		{BlocksTag: "minecraft:cobweb", Speed: 15, Correct: true},
+		{BlocksTag: "minecraft:sword_instantly_mines", Speed: 3.4028235e+38, Correct: false},
+		{BlocksTag: "minecraft:sword_efficient", Speed: 1.5, Correct: false},
+	}},
+	"minecraft:shears": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:cobweb", Speed: 15, Correct: true},
+		{BlocksTag: "minecraft:leaves", Speed: 15, Correct: false},
+		{BlocksTag: "minecraft:wool", Speed: 5, Correct: false},
+		{BlocksTag: "", Speed: 2, Correct: false},
+	}},
+	"minecraft:stone_axe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_stone_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/axe", Speed: 4, Correct: true},
+	}},
+	"minecraft:stone_hoe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_stone_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/hoe", Speed: 4, Correct: true},
+	}},
+	"minecraft:stone_pickaxe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_stone_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/pickaxe", Speed: 4, Correct: true},
+	}},
+	"minecraft:stone_shovel": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_stone_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/shovel", Speed: 4, Correct: true},
+	}},
+	"minecraft:stone_sword": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{
+		{BlocksTag: "minecraft:cobweb", Speed: 15, Correct: true},
+		{BlocksTag: "minecraft:sword_instantly_mines", Speed: 3.4028235e+38, Correct: false},
+		{BlocksTag: "minecraft:sword_efficient", Speed: 1.5, Correct: false},
+	}},
+	"minecraft:trident": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{}},
+	"minecraft:wooden_axe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_wooden_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/axe", Speed: 2, Correct: true},
+	}},
+	"minecraft:wooden_hoe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_wooden_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/hoe", Speed: 2, Correct: true},
+	}},
+	"minecraft:wooden_pickaxe": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_wooden_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/pickaxe", Speed: 2, Correct: true},
+	}},
+	"minecraft:wooden_shovel": {DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true, Rules: []ToolRule{
+		{BlocksTag: "minecraft:incorrect_for_wooden_tool", Speed: 1, Correct: false},
+		{BlocksTag: "minecraft:mineable/shovel", Speed: 2, Correct: true},
+	}},
+	"minecraft:wooden_sword": {DefaultSpeed: 1, DamagePerBlock: 2, CanDestroyInCreative: false, Rules: []ToolRule{
+		{BlocksTag: "minecraft:cobweb", Speed: 15, Correct: true},
+		{BlocksTag: "minecraft:sword_instantly_mines", Speed: 3.4028235e+38, Correct: false},
+		{BlocksTag: "minecraft:sword_efficient", Speed: 1.5, Correct: false},
+	}},
+}
+
+// ToolComponent 是一个工具物品的挖掘数据（原版 Tool 组件）。
+// DamagePerBlock 是挖掘一个方块损耗的耐久（damage_per_block）；
+// CanDestroyInCreative 为 false 时该物品在创造模式不能破坏方块（剑/三叉戟/重锤）。
+type ToolComponent struct {
+	DefaultSpeed         float32
+	DamagePerBlock       int32
+	CanDestroyInCreative bool
+	Rules                []ToolRule
+}
+
+// ToolRule 是一条工具规则：BlocksTag 非空时按方块标签匹配（如
+// minecraft:mineable/pickaxe），否则按 Blocks 列表中的方块名匹配。
+type ToolRule struct {
+	BlocksTag string
+	Blocks    []string
+	Speed     float32
+	Correct   bool
+}
+
 // TrimMaterialItems 保存携带 minecraft:provides_trim_material 组件的物品 →
 // 纹饰材质名（如 minecraft:gold_ingot → minecraft:gold）。
 // 锻造台纹饰配方用它把添加物解析为材质（原版 TrimMaterials.createFromIngredient）。

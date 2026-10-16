@@ -90,6 +90,59 @@ func PlayerEquippableSlot(itemID int32) string {
 	return PlayerEquippableSlots[name]
 }
 
+// ItemTool 返回工具物品的挖掘数据（原版 ItemStack 的 minecraft:tool 组件）；
+// 非工具物品返回 false（此时挖掘速度按 1.0 处理、且不算“正确工具”）。
+func ItemTool(itemID int32) (ToolComponent, bool) {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return ToolComponent{}, false
+	}
+	component, ok := ToolComponents[name]
+	return component, ok
+}
+
+// MiningSpeed 返回该工具对方块状态的挖掘速度倍率（原版 Tool.getMiningSpeed：
+// 取首个匹配规则，未匹配时用 default_mining_speed）。
+func (t ToolComponent) MiningSpeed(state uint16) float32 {
+	for _, rule := range t.Rules {
+		if rule.Matches(state) {
+			return rule.Speed
+		}
+	}
+	return t.DefaultSpeed
+}
+
+// CorrectForDrops 报告该工具对指定方块状态是否算“正确工具”
+// （原版 Tool.isCorrectForDrops：取首个匹配规则，未匹配为 false）。
+func (t ToolComponent) CorrectForDrops(state uint16) bool {
+	for _, rule := range t.Rules {
+		if rule.Matches(state) {
+			return rule.Correct
+		}
+	}
+	return false
+}
+
+// Matches 报告工具规则是否匹配方块状态（标签或方块名列表）。
+func (r ToolRule) Matches(state uint16) bool {
+	if r.BlocksTag != "" {
+		return BlockTagContains(r.BlocksTag, state)
+	}
+	if len(r.Blocks) == 0 {
+		return false
+	}
+	name, ok := BlockNameByState(state)
+	if !ok {
+		return false
+	}
+	for _, candidate := range r.Blocks {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
+}
+
 // MaxStackSize 返回物品的堆叠上限（未收录的物品按 64 处理）。
 func MaxStackSize(itemID int32) int32 {
 	name, ok := ItemName(itemID)

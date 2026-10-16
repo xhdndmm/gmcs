@@ -338,6 +338,13 @@ func TestBlockBreakUnderWaterReflows(t *testing.T) {
 		t.Fatalf("wall out of reach: player at (%v,%v,%v)", float64(baseX)+0.5, float64(floorY), float64(baseZ)+1.5)
 	}
 	instance.handlePlayerAction(player, protocol.PlayerAction{
+		Status: 0, X: wallX, Y: floorY, Z: baseZ,
+	})
+	// 推进挖掘进度（空手挖石头需要 105 tick，200 tick 留出余量）后提交 STOP。
+	// 测试无移动包，显式置位着地状态（悬空挖掘速度 ÷5）。
+	player.setPlayerOnGround(true)
+	runTicks(instance, 200)
+	instance.handlePlayerAction(player, protocol.PlayerAction{
 		Status: 2, X: wallX, Y: floorY, Z: baseZ,
 	})
 	if state := w.BlockAt(wallX, floorY, baseZ); state != world.AirBlock {

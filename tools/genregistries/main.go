@@ -251,11 +251,15 @@ func main() {
 		if err != nil {
 			fatal("读取可装备物品：%v", err)
 		}
-		if err := writeItemComponents(filepath.Dir(*outPath), *version, foods, stackSizes, maxDamages, repairItems, enchantable, displayNames, storedEnch, trimMaterials, equippable, itemIDs, itemTags); err != nil {
+		tools, err := loadToolComponents(*itemsPath)
+		if err != nil {
+			fatal("读取工具组件：%v", err)
+		}
+		if err := writeItemComponents(filepath.Dir(*outPath), *version, foods, stackSizes, maxDamages, repairItems, enchantable, displayNames, storedEnch, trimMaterials, equippable, tools, itemIDs, itemTags); err != nil {
 			fatal("写入物品组件表：%v", err)
 		}
-		fmt.Printf("已生成物品组件表（%d 种食物、%d 项堆叠上限、%d 项耐久上限、%d 项修复材料、%d 项附魔能力、%d 项显示名、%d 项附魔书、%d 项纹饰材质）\n",
-			len(foods), len(stackSizes), len(maxDamages), len(repairItems), len(enchantable), len(displayNames), len(storedEnch), len(trimMaterials))
+		fmt.Printf("已生成物品组件表（%d 种食物、%d 项堆叠上限、%d 项耐久上限、%d 项修复材料、%d 项附魔能力、%d 项显示名、%d 项附魔书、%d 项纹饰材质、%d 项工具）\n",
+			len(foods), len(stackSizes), len(maxDamages), len(repairItems), len(enchantable), len(displayNames), len(storedEnch), len(trimMaterials), len(tools))
 	}
 	// 附魔表：附魔定义（注册表 ID = 文件路径字典序）与书架/透光方块标签。
 	enchantOrder := generated.entries["minecraft:enchantment"]
@@ -846,8 +850,94 @@ func loadEquippableSlots(path string) (map[string]string, error) {
 	return result, nil
 }
 
+// toolRule 是一条工具规则（minecraft:tool 组件的 rules 项）。
+type toolRule struct {
+	BlocksTag string   // 方块标签名（已去掉 "#" 前缀）；为空时用 Blocks 列表
+	Blocks    []string // 直接列出的方块名（少数物品使用列表而非标签）
+	Speed     float32  // 挖掘速度倍率（缺省 1.0）
+	Correct   bool     // correct_for_drops
+}
+
+// toolComponent 是一个工具物品的挖掘数据。
+type toolComponent struct {
+	DefaultSpeed         float32 // default_mining_speed（缺省 1.0）
+	DamagePerBlock       int32   // damage_per_block（缺省 1，挖一个方块损耗的耐久）
+	CanDestroyInCreative bool    // can_destroy_blocks_in_creative（缺省 true）
+	Rules                []toolRule
+}
+
+// loadToolComponents 从 reports/items.json 提取 minecraft:tool 组件
+// （1.21.5+ 的工具数据：默认挖掘速度与按方块标签/列表的规则）。
+// 规则顺序保留原样（原版 Tool.getMiningSpeed/isCorrectForDrops 取首个匹配规则）。
+func loadToolComponents(path string) (map[string]toolComponent, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var file map[string]struct {
+		Components map[string]json.RawMessage `json:"components"`
+	}
+	if err := json.Unmarshal(content, &file); err != nil {
+		return nil, err
+	}
+	result := make(map[string]toolComponent)
+	for name, item := range file {
+		raw, ok := item.Components["minecraft:tool"]
+		if !ok {
+			continue
+		}
+		var tool struct {
+			DefaultSpeed         *float32 `json:"default_mining_speed"`
+			DamagePerBlock       *int32   `json:"damage_per_block"`
+			CanDestroyInCreative *bool    `json:"can_destroy_blocks_in_creative"`
+			Rules                []struct {
+				Blocks      json.RawMessage `json:"blocks"`
+				Speed       *float32        `json:"speed"`
+				CorrectDrop *bool           `json:"correct_for_drops"`
+			} `json:"rules"`
+		}
+		if err := json.Unmarshal(raw, &tool); err != nil {
+			return nil, fmt.Errorf("解析 %s 的工具组件：%w", name, err)
+		}
+		component := toolComponent{DefaultSpeed: 1, DamagePerBlock: 1, CanDestroyInCreative: true}
+		if tool.DefaultSpeed != nil {
+			component.DefaultSpeed = *tool.DefaultSpeed
+		}
+		if tool.DamagePerBlock != nil {
+			component.DamagePerBlock = *tool.DamagePerBlock
+		}
+		if tool.CanDestroyInCreative != nil {
+			component.CanDestroyInCreative = *tool.CanDestroyInCreative
+		}
+		for _, rule := range tool.Rules {
+			parsed := toolRule{Speed: 1, Correct: false}
+			if rule.Speed != nil {
+				parsed.Speed = *rule.Speed
+			}
+			if rule.CorrectDrop != nil {
+				parsed.Correct = *rule.CorrectDrop
+			}
+			if len(rule.Blocks) > 0 {
+				var tag string
+				if err := json.Unmarshal(rule.Blocks, &tag); err == nil {
+					parsed.BlocksTag = strings.TrimPrefix(tag, "#")
+				} else {
+					blocks, err := parseItemList(rule.Blocks)
+					if err != nil {
+						return nil, fmt.Errorf("解析 %s 的工具规则方块：%w", name, err)
+					}
+					parsed.Blocks = blocks
+				}
+			}
+			component.Rules = append(component.Rules, parsed)
+		}
+		result[name] = component
+	}
+	return result, nil
+}
+
 // writeItemComponents 生成 item_components_generated.go：食物数值、堆叠上限、耐久上限、修复材料、附魔能力与显示名。
-func writeItemComponents(outDir, version string, foods map[string]foodValue, stackSizes, maxDamages map[string]int32, repairItems map[string][]string, enchantable map[string]int32, displayNames map[string]string, storedEnch map[string]bool, trimMaterials map[string]string, equippable map[string]string, itemIDs map[string]int32, itemTags map[string][]int32) error {
+func writeItemComponents(outDir, version string, foods map[string]foodValue, stackSizes, maxDamages map[string]int32, repairItems map[string][]string, enchantable map[string]int32, displayNames map[string]string, storedEnch map[string]bool, trimMaterials map[string]string, equippable map[string]string, tools map[string]toolComponent, itemIDs map[string]int32, itemTags map[string][]int32) error {
 	var buf bytes.Buffer
 	buf.WriteString(licenseHeader)
 	fmt.Fprintf(&buf, "// Code generated by tools/genregistries from Minecraft %s reports/items.json; DO NOT EDIT.\n", version)
@@ -920,6 +1010,27 @@ func writeItemComponents(outDir, version string, foods map[string]foodValue, sta
 		fmt.Fprintf(&buf, "\t%q: %q,\n", name, equippable[name])
 	}
 	buf.WriteString("}\n\n")
+	buf.WriteString("// ToolComponents 保存工具物品的挖掘数据（minecraft:tool 组件：默认挖掘速度、\n")
+	buf.WriteString("// 每方块耐久损耗、创造模式可破坏标志与按方块标签/列表的规则；\n")
+	buf.WriteString("// 规则顺序与原版一致，取首个匹配规则）。\n")
+	buf.WriteString("var ToolComponents = map[string]ToolComponent{\n")
+	for _, name := range sortedKeys(tools) {
+		tool := tools[name]
+		fmt.Fprintf(&buf, "\t%q: {DefaultSpeed: %v, DamagePerBlock: %d, CanDestroyInCreative: %v, Rules: []ToolRule{\n",
+			name, tool.DefaultSpeed, tool.DamagePerBlock, tool.CanDestroyInCreative)
+		for _, rule := range tool.Rules {
+			fmt.Fprintf(&buf, "\t\t{BlocksTag: %q, Speed: %v, Correct: %v},\n", rule.BlocksTag, rule.Speed, rule.Correct)
+		}
+		buf.WriteString("\t}},\n")
+	}
+	buf.WriteString("}\n\n")
+	buf.WriteString("// ToolComponent 是一个工具物品的挖掘数据（原版 Tool 组件）。\n")
+	buf.WriteString("// DamagePerBlock 是挖掘一个方块损耗的耐久（damage_per_block）；\n")
+	buf.WriteString("// CanDestroyInCreative 为 false 时该物品在创造模式不能破坏方块（剑/三叉戟/重锤）。\n")
+	buf.WriteString("type ToolComponent struct {\n\tDefaultSpeed float32\n\tDamagePerBlock int32\n\tCanDestroyInCreative bool\n\tRules        []ToolRule\n}\n\n")
+	buf.WriteString("// ToolRule 是一条工具规则：BlocksTag 非空时按方块标签匹配（如\n")
+	buf.WriteString("// minecraft:mineable/pickaxe），否则按 Blocks 列表中的方块名匹配。\n")
+	buf.WriteString("type ToolRule struct {\n\tBlocksTag string\n\tBlocks    []string\n\tSpeed     float32\n\tCorrect   bool\n}\n\n")
 	buf.WriteString("// TrimMaterialItems 保存携带 minecraft:provides_trim_material 组件的物品 →\n")
 	buf.WriteString("// 纹饰材质名（如 minecraft:gold_ingot → minecraft:gold）。\n")
 	buf.WriteString("// 锻造台纹饰配方用它把添加物解析为材质（原版 TrimMaterials.createFromIngredient）。\n")

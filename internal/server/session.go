@@ -176,6 +176,32 @@ type session struct {
 	// 落地/入水时清零。
 	airRise float64
 
+	// 挖掘状态（原版 ServerPlayerGameMode，受 stateMu 保护：读循环处理
+	// START/STOP/ABORT，服务器 Tick 线程推进进度）：
+	// miningDestroying 为正在挖掘；miningPos/miningStartTick 是目标与开始刻；
+	// miningDelayed 是提前停止后的延迟破坏（原版按原开始刻继续计时，
+	// 进度满后破坏）；miningLastProgress 是最近发送的破坏进度（-1 = 未发送，
+	// 与原版 n 字段一致）；miningAckSequence 是待回的 Block Changed Ack 序号
+	// （-1 = 无，原版下一次连接 tick 发送）。
+	miningDestroying       bool
+	miningPos              [3]int
+	miningStartTick        int64
+	miningDelayed          bool
+	miningDelayedPos       [3]int
+	miningDelayedStartTick int64
+	miningLastProgress     int32
+	miningAckSequence      int32
+	// miningDeferredCompletion 表示 Tick 线程不能安全完成的延迟破坏
+	// （破坏会触碰会话窗口状态：容器/铁砧/砂轮机/附魔台/活塞联动），
+	// 交由读循环在下个数据包处完成（见 mining.go）。
+	miningDeferredCompletion bool
+	// miningPendingDamage 是 Tick 线程延迟破坏完成后待补发的工具耐久损耗；
+	// 由读循环在下一个数据包处应用到当前选中槽位。
+	miningPendingDamage atomic.Int32
+	// onGround 记录客户端上报的着地状态（原版 Player.onGround）：挖掘速度在
+	// 悬空时 ÷5（Player.getDestroySpeed）。
+	onGround bool
+
 	// 环境效果状态（仅由服务器 Tick goroutine 访问）：
 	// fireTicks 是剩余着火 tick（岩浆点燃 15 秒；每秒 1 点火焰伤害）；
 	// air 是剩余氧气（300 = 满，头部浸水时下降，低于 -20 后每秒 2 点溺水伤害）；
@@ -241,6 +267,9 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		sentChunks:      make(map[world.ChunkPos]struct{}),
 		// 附魔种子与原版一致在会话创建时随机初始化（Player.enchantmentSeed）。
 		enchantmentSeed: int32(server.nextRandom()),
+		// 破坏进度缓存与原版一致初始为 -1（下一次发送不跳过 0）。
+		miningLastProgress: -1,
+		miningAckSequence:  -1,
 	}
 }
 
@@ -1449,6 +1478,8 @@ func (s *session) keepAliveLoop(stop <-chan struct{}) {
 // playReadLoop 处理 Play 阶段的客户端数据包。
 func (s *session) playReadLoop() {
 	for {
+		// 应用 Tick 线程排队的挖掘副作用（延迟破坏补发、耐久损耗）。
+		s.applyDeferredMiningEffects()
 		packet, err := s.readPacket(playTimeout)
 		if err != nil {
 			return
@@ -1548,16 +1579,18 @@ func (s *session) playReadLoop() {
 				s.desiredChunksPerTick = rate
 			}
 		case protocol.PlayServerboundPacketIDPlayerPosition:
-			x, y, z, _, err := protocol.ParsePlayerPosition(packet)
+			x, y, z, onGround, err := protocol.ParsePlayerPosition(packet)
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
+			s.setPlayerOnGround(onGround)
 			s.handleMove(x, y, z, 0, 0, false, time.Now())
 		case protocol.PlayServerboundPacketIDPlayerPositionRotation:
-			x, y, z, yaw, pitch, _, err := protocol.ParsePlayerPositionRotation(packet)
+			x, y, z, yaw, pitch, onGround, err := protocol.ParsePlayerPositionRotation(packet)
 			if err != nil || !validPlayerY(y) {
 				continue
 			}
+			s.setPlayerOnGround(onGround)
 			s.handleMove(x, y, z, yaw, pitch, true, time.Now())
 		case protocol.PlayServerboundPacketIDPlayerRotation:
 			yaw, pitch, err := protocol.ParsePlayerRotation(packet)

@@ -23,6 +23,10 @@ const (
 	PlayPacketIDPlayerInfoUpdate     = 0x44 // clientbound
 	PlayPacketIDSynchronizePlayerPos = 0x46 // clientbound
 	PlayPacketIDBlockUpdate          = 0x08 // clientbound
+	// PlayPacketIDBlockChangedAck 是 Block Changed Ack（回应玩家动作序号）。
+	PlayPacketIDBlockChangedAck = 0x04 // clientbound
+	// PlayPacketIDBlockDestruction 是 Block Destruction（方块破坏进度动画）。
+	PlayPacketIDBlockDestruction = 0x05 // clientbound
 	// PlayPacketIDBlockAction 是 Block Action（方块动画，如箱子开合）。
 	PlayPacketIDBlockAction    = 0x07 // clientbound
 	PlayPacketIDRemoveEntities = 0x4B // clientbound
@@ -148,6 +152,21 @@ func EncodeGameEvent(event uint8, value float32) []byte {
 // PackPosition 将方块坐标打包为协议的 Position 类型（x 26 位、z 26 位、y 12 位）。
 func PackPosition(x, y, z int) int64 {
 	return int64(x&0x3FFFFFF)<<38 | int64(z&0x3FFFFFF)<<12 | int64(y&0xFFF)
+}
+
+// EncodeBlockChangedAck 编码 Block Changed Ack 包（回应玩家动作的 sequence）。
+func EncodeBlockChangedAck(sequence int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDBlockChangedAck))
+	return AppendVarInt(packet, sequence)
+}
+
+// EncodeBlockDestruction 编码 Block Destruction（方块破坏进度动画）包。
+// progress 为 0–10 的破坏阶段；-1 表示移除动画（原版 destroyBlockProgress）。
+func EncodeBlockDestruction(entityID int32, x, y, z int, progress int8) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDBlockDestruction))
+	packet = AppendVarInt(packet, entityID)
+	packet = AppendInt64(packet, PackPosition(x, y, z))
+	return append(packet, byte(progress))
 }
 
 // EncodeSetDefaultSpawnPosition 编码 Set Default Spawn Position 包。

@@ -29,6 +29,32 @@ func sendPlayerAction(t *testing.T, conn net.Conn, status int32, x, y, z int, fa
 	}
 }
 
+// breakBlockSurvival 以生存挖掘流程破坏方块：发送 START_DESTROY_BLOCK，推进
+// 服务端 tick 使累计进度超过 STOP 阈值（原版客户端在完成时发送 STOP），再发送
+// STOP_DESTROY_BLOCK 完成破坏。默认推进 200 tick（空手挖石头需要 105 tick，
+// 工具更快）；期间产生的挖掘动画/Ack/粒子包由 expectPlayPacket 自动跳过。
+func breakBlockSurvival(t *testing.T, conn net.Conn, instance *Server, player *session, x, y, z int) {
+	t.Helper()
+	breakBlockSurvivalTicks(t, conn, instance, player, x, y, z, 200)
+}
+
+// breakBlockSurvivalTicks 是 breakBlockSurvival 的可控版本（指定推进的 tick 数，
+// 用于测试提前停止与延迟破坏等场景）。
+func breakBlockSurvivalTicks(t *testing.T, conn net.Conn, instance *Server, player *session, x, y, z int, ticks int) {
+	t.Helper()
+	// 客户端在登录与移动包里上报着地状态（悬空挖掘速度 ÷5）；测试无移动包，
+	// 显式置位以模拟站立挖掘。
+	player.setPlayerOnGround(true)
+	sendPlayerAction(t, conn, 0, x, y, z, 1)
+	// /list 往返作为处理屏障：确保 START 已被读循环记录开始刻。
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	for i := 0; i < ticks; i++ {
+		instance.tick()
+	}
+	sendPlayerAction(t, conn, 2, x, y, z, 1)
+}
+
 // sendUseItemOn 发送 Use Item On（block_place）包（主手、光标居中）。
 func sendUseItemOn(t *testing.T, conn net.Conn, x, y, z int, direction int32) {
 	t.Helper()
@@ -241,7 +267,8 @@ func TestHotbarSwitchUsesSelectedSlot(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Switcher")
 
 	x, y, z := findDigTarget(t, instance)
-	sendPlayerAction(t, conn, 2, x, y, z, 1) // 生存模式：客户端完成挖掘后提交
+	// 生存模式：完整挖掘流程（START → 推进进度 → STOP 完成破坏）。
+	breakBlockSurvival(t, conn, instance, activeSession(t, instance, "Switcher"), x, y, z)
 	expectBlockUpdate(t, conn, x, y, z, int32(world.AirBlock))
 
 	// 切到空的快捷栏槽位 4：右键不应放置任何方块（此前槽位号被误读为 0）。
@@ -286,8 +313,8 @@ func TestSurvivalBlockPlaceConsumesItem(t *testing.T) {
 	instance, conn := joinServer(t, cfg, "Miner")
 
 	x, y, z := findDigTarget(t, instance)
-	// 生存模式：客户端完成挖掘后提交 STOP_DESTROY_BLOCK（状态 2）。
-	sendPlayerAction(t, conn, 2, x, y, z, 1)
+	// 生存模式：完整挖掘流程破坏目标方块。
+	breakBlockSurvival(t, conn, instance, activeSession(t, instance, "Miner"), x, y, z)
 	expectBlockUpdate(t, conn, x, y, z, int32(world.AirBlock))
 
 	sendUseItemOn(t, conn, x, y-1, z, 1)
@@ -306,7 +333,7 @@ func TestSurvivalBlockPlaceConsumesItem(t *testing.T) {
 	if x2 == 0 && y2 == 0 && z2 == 0 {
 		t.Fatal("找不到第二个测试目标")
 	}
-	sendPlayerAction(t, conn, 2, x2, y2, z2, 1)
+	breakBlockSurvival(t, conn, instance, activeSession(t, instance, "Miner"), x2, y2, z2)
 	expectBlockUpdate(t, conn, x2, y2, z2, int32(world.AirBlock))
 	sendUseItemOn(t, conn, x2, y2-1, z2, 1)
 	if got := instance.testWorld().BlockAt(x2, y2, z2); got != world.AirBlock {

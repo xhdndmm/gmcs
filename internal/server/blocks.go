@@ -15,30 +15,18 @@ import (
 	"gmcs/internal/world"
 )
 
-// 方块交互：破坏与放置。服务端校验距离与方块后修改世界，并把
-// Block Update 广播给附近玩家；体素修改会随区块保存（Flush/卸载）持久化。
+// 方块交互：破坏与放置。服务端校验距离（原版 4.5/5.0 格 + 1.0 容差）与方块后
+// 修改世界，并把 Block Update 广播给附近玩家；体素修改会随区块保存
+// （Flush/卸载）持久化。
 //
-// 当前为简化实现：挖掘没有时间（生存模式在客户端完成后提交
-// STOP_DESTROY_BLOCK，创意模式在按下瞬间生效），掉落物按简化掉落表生成
-// （无工具/精准采集/时运与概率掉落，见 block_drops.go），放置只支持
-// 不携带数据组件的方块物品；冒险与旁观模式不支持交互。
+// 破坏走完整的挖掘系统（硬度/工具速度/正确工具判定/进度动画，见 mining.go）；
+// 掉落物按简化掉落表生成（无精准采集/时运与概率掉落，见 block_drops.go），
+// 放置只支持不携带数据组件的方块物品；冒险与旁观模式不支持交互。
 
 const (
-	// survivalReach / creativeReach 是方块交互的最大距离（相对玩家眼睛）。
-	// 与原版相比略宽松，避免网络延迟造成的误判。
-	survivalReach = 5.0
-	creativeReach = 6.0
 	// playerEyeHeight 是玩家眼睛相对脚部的高度。
 	playerEyeHeight = 1.62
 )
-
-// interactReach 返回会话对应游戏模式的方块交互距离。
-func (s *session) interactReach() float64 {
-	if s.gameModeID() == uint8(config.GameModeCreative) {
-		return creativeReach
-	}
-	return survivalReach
-}
 
 // canInteractBlocks 报告玩家当前是否允许破坏/放置方块。
 func (s *session) canInteractBlocks() bool {
@@ -49,70 +37,73 @@ func (s *session) canInteractBlocks() bool {
 	return false
 }
 
-// withinBlockReach 报告方块中心是否落在玩家的交互距离内。
-func (s *session) withinBlockReach(x, y, z int) bool {
-	px, py, pz, _, _ := s.playerPosition()
-	dx := px - (float64(x) + 0.5)
-	dy := py + playerEyeHeight - (float64(y) + 0.5)
-	dz := pz - (float64(z) + 0.5)
-	return math.Sqrt(dx*dx+dy*dy+dz*dz) <= s.interactReach()
-}
-
-// handlePlayerAction 处理 Player Action（block_dig）包：破坏方块与丢弃物品。
+// handlePlayerAction 处理 Player Action（block_dig）包：破坏方块、丢弃物品、
+// 与副手交换与释放使用键。状态编号与原版一致（1.21.11 枚举序号，包按序号编解码）：
+// 0 START_DESTROY_BLOCK、1 ABORT_DESTROY_BLOCK、2 STOP_DESTROY_BLOCK、
+// 3 DROP_ALL_ITEMS、4 DROP_ITEM、5 RELEASE_USE_ITEM、6 SWAP_ITEM_WITH_OFFHAND。
 func (s *Server) handlePlayerAction(player *session, action protocol.PlayerAction) {
 	const (
-		statusStartDestroy = 0
-		statusStopDestroy  = 2
-		statusDropStack    = 3 // Ctrl+Q：丢弃整组。
-		statusDropItem     = 4 // Q：丢弃 1 个。
-		statusReleaseUse   = 5 // 释放使用键：取消进食等使用中的动作。
+		statusDropStack  = 3 // Ctrl+Q：丢弃整组（原版 DROP_ALL_ITEMS，1.21.11 枚举顺序）。
+		statusDropItem   = 4 // Q：丢弃 1 个（原版 DROP_ITEM）。
+		statusReleaseUse = 5 // 释放使用键：取消进食等使用中的动作。
 	)
-	if action.Status == statusReleaseUse {
-		player.cancelEating()
-		return
-	}
-	if action.Status == statusDropStack || action.Status == statusDropItem {
-		s.dropItemFromPlayer(player, action.Status == statusDropStack)
-		return
-	}
-	if !player.canInteractBlocks() || player.isDead() {
-		return
-	}
-	if player.gameModeID() == uint8(config.GameModeCreative) {
-		if action.Status != statusStartDestroy {
-			return // 创意模式：按下即时破坏
+	switch action.Status {
+	case statusStartDestroy, statusAbortDestroy, statusStopDestroy:
+		// 原版对三个破坏动作统一记录 ack（下一个服务器 Tick 发送）。
+		player.markBlockChangedAck(action.Sequence)
+		if player.isDead() {
+			return
 		}
-	} else if action.Status != statusStopDestroy {
-		return // 生存模式：客户端完成挖掘后提交
+		s.handleBlockBreakAction(player, action)
+	case statusDropStack:
+		s.dropItemFromPlayer(player, true)
+	case statusDropItem:
+		s.dropItemFromPlayer(player, false)
+	case statusReleaseUse:
+		player.cancelEating()
+	case statusSwapOffhand:
+		s.swapItemWithOffhand(player)
 	}
-	if !player.withinBlockReach(action.X, action.Y, action.Z) {
+}
+
+// statusSwapOffhand 是 Player Action 的“与副手交换”状态（原版 F 键）。
+const statusSwapOffhand = 6
+
+// swapItemWithOffhand 交换主手选中槽与副手槽的物品（原版
+// ServerGamePacketListenerImpl 的 SWAP_ITEM_WITH_OFFHAND 分支；旁观者不处理），
+// 交换后同步两个槽位。
+func (s *Server) swapItemWithOffhand(player *session) {
+	if player.gameModeID() == uint8(config.GameModeSpectator) || player.isDead() {
 		return
 	}
-	if _, ok := world.SectionIndex(action.Y); !ok {
-		return
-	}
-	dim := player.dimensionID()
-	w := s.worldFor(dim)
-	current := w.BlockAt(action.X, action.Y, action.Z)
-	if current == world.AirBlock || isWaterState(current) || isLavaState(current) || current == world.BedrockBlock {
-		return // 空气/流体/基岩不可破坏
-	}
+	main := player.inventory.Get(player.selectedSlot)
+	off := player.inventory.Get(item.SlotOffhand)
+	player.inventory.Set(player.selectedSlot, off)
+	player.inventory.Set(item.SlotOffhand, main)
+	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(player.selectedSlot), off.AppendSlot(nil)))
+	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(item.SlotOffhand), main.AppendSlot(nil)))
+}
+
+// playerBreakHooks 运行破坏前的会话级钩子（活塞联动、容器内容物掉落、
+// 破坏者打开的窗口关闭），返回 true 表示活塞联动已自行处理破坏。
+// 仅由读循环调用（延迟破坏经 applyDeferredMiningEffects 在读循环补发）。
+func (s *Server) playerBreakHooks(player *session, dim world.Dimension, w *world.World, x, y, z int, current uint16) bool {
 	// 活塞基座/活塞头联动：破坏基座时头部消失；破坏头部时基座被移除
 	// （原版 PistonHeadBlock 与 PistonBaseBlock 的行为）。
-	if s.handlePistonBreak(dim, player, w, action.X, action.Y, action.Z, current) {
-		return
+	if s.handlePistonBreak(dim, player, w, x, y, z, current) {
+		return true
 	}
 	// 破坏容器方块：先关闭观察窗口，再把内容物掉落到世界中（与原版一致）。
 	if def, _, ok := s.containerForState(current); ok {
 		switch {
 		case def.IsFurnace:
-			s.destroyFurnace(dim, player, action.X, action.Y, action.Z, def)
+			s.destroyFurnace(dim, player, x, y, z, def)
 		case def.IsHopper:
-			s.destroyHopper(dim, player, action.X, action.Y, action.Z, def)
+			s.destroyHopper(dim, player, x, y, z, def)
 		case def.IsBrewing:
-			s.destroyBrewing(dim, player, action.X, action.Y, action.Z, def)
+			s.destroyBrewing(dim, player, x, y, z, def)
 		default:
-			s.destroyContainer(dim, player, action.X, action.Y, action.Z, def)
+			s.destroyContainer(dim, player, x, y, z, def)
 		}
 	}
 	// 破坏铁砧：关闭破坏者正在使用的铁砧窗口（其他玩家的窗口在下次交互时
@@ -122,7 +113,7 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 			state.mu.Lock()
 			anvilDim, anvilPos := state.dim, state.pos
 			state.mu.Unlock()
-			if anvilDim == dim && anvilPos == [3]int{action.X, action.Y, action.Z} {
+			if anvilDim == dim && anvilPos == [3]int{x, y, z} {
 				s.closeAnvil(player, false)
 			}
 		}
@@ -133,7 +124,7 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 		state.mu.Lock()
 		grindstoneDim, grindstonePos := state.dim, state.pos
 		state.mu.Unlock()
-		if grindstoneDim == dim && grindstonePos == [3]int{action.X, action.Y, action.Z} {
+		if grindstoneDim == dim && grindstonePos == [3]int{x, y, z} {
 			s.closeGrindstone(player, false)
 		}
 	}
@@ -144,25 +135,12 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 			state.mu.Lock()
 			enchantingDim, enchantingPos := state.dim, state.pos
 			state.mu.Unlock()
-			if enchantingDim == dim && enchantingPos == [3]int{action.X, action.Y, action.Z} {
+			if enchantingDim == dim && enchantingPos == [3]int{x, y, z} {
 				s.closeEnchanting(player, false)
 			}
 		}
 	}
-	if !w.SetBlock(action.X, action.Y, action.Z, world.AirBlock) {
-		return
-	}
-	s.broadcastBlockUpdate(dim, action.X, action.Y, action.Z, int32(world.AirBlock))
-	s.updateRedstoneAround(dim, action.X, action.Y, action.Z)
-	s.updateFluidsAround(dim, action.X, action.Y, action.Z)
-	if current == world.ObsidianBlock {
-		// 破坏黑曜石框后与之相连的传送门熄灭（近似原版行为）。
-		s.clearPortalsNear(dim, action.X, action.Y, action.Z)
-	}
-	if player.gameModeID() != uint8(config.GameModeCreative) {
-		// 生存模式掉落（创意模式破坏不掉落物品，与原版一致）。
-		s.dropBlockItem(dim, current, action.X, action.Y, action.Z)
-	}
+	return false
 }
 
 // blockFaceOffsets 是 Use Item On 的六个朝向对应的放置偏移（-Y、+Y、-Z、+Z、-X、+X）。

@@ -316,6 +316,8 @@ func (s *Server) tick() {
 	s.tickHunger(players)
 	s.tickPlayerEnvironment(players)
 	s.tickPlayerEquipment(players)
+	// 挖掘进度推进与 Block Changed Ack（原版 ServerPlayerGameMode.tick）。
+	s.tickMining(players)
 	s.tickMobs(players)
 	s.tickArrows(players)
 	s.tickItems(players)
@@ -1306,6 +1308,8 @@ func (s *Server) respawnPlayer(player *session) {
 	if !player.markRespawned() {
 		return // 未死亡或已在重生中。
 	}
+	// 原版重生会重建玩家对象与挖掘状态：清除进行中的挖掘/延迟破坏。
+	player.resetMiningState()
 	dim := player.dimensionID()
 	gameMode := player.gameModeID()
 	spawn := s.spawnInfo(dim, gameMode)

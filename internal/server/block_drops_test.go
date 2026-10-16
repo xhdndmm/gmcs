@@ -91,6 +91,8 @@ func TestSurvivalBlockBreakDrops(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
+	// 空手挖石头不会掉落（原版要求正确工具）；带上木镐覆盖石头情形。
+	cfg.StartingItems = []string{"minecraft:wooden_pickaxe"}
 	instance, conn := joinServer(t, cfg, "Miner")
 
 	x, y, z := findDigTarget(t, instance)
@@ -111,8 +113,8 @@ func TestSurvivalBlockBreakDrops(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 生存模式：客户端完成挖掘后提交 STOP_DESTROY_BLOCK（状态 2）。
-	sendPlayerAction(t, conn, 2, x, y, z, 1)
+	// 生存模式：完整挖掘流程（START → 推进进度 → STOP 完成破坏）。
+	breakBlockSurvival(t, conn, instance, findSession(t, instance, "Miner"), x, y, z)
 	expectBlockUpdate(t, conn, x, y, z, int32(world.AirBlock))
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	metadata := expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
