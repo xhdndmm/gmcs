@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+#[https://github.com/xhdndmm/gmcs]
+#MIT License
+#Copyright (c) 2026 喜欢电脑的猫咪
+#
 # gmcs 维护脚本：从官方服务端 jar 的 Blocks 反汇编中机械提取方块硬度
 # （destroyTime）与 requiresCorrectToolForDrops，生成
 # internal/registry/block_hardness.go。
