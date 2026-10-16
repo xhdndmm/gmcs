@@ -413,6 +413,13 @@ func (s *Server) awardFurnaceXP(player *session, state *furnaceState) {
 	}
 }
 
+// 熔炉窗口槽位（与原版 AbstractFurnaceMenu 一致）：0 原料、1 燃料、2 产物。
+const (
+	furnaceInputSlot  = 0
+	furnaceFuelSlot   = 1
+	furnaceResultSlot = 2
+)
+
 // furnaceSlotBacking 是熔炉窗口的槽位访问层：
 // 0 原料、1 燃料、2 产物、3–29 主背包、30–38 快捷栏（共 39 槽）。
 type furnaceSlotBacking struct {
@@ -496,14 +503,12 @@ func (s *Server) furnaceResultClick(player *session, b furnaceSlotBacking, worki
 			return cursor
 		}
 	case protocol.ClickModeQuickMove:
-		for _, target := range [][2]int{{3, 30}, {30, 39}} {
-			if !fitsInArea(working, target[0], target[1], result) {
-				continue
-			}
-			mergeIntoArea(b, working, result, target[0], target[1])
+		// 原版：结果槽 → moveItemStackTo(3, 39, true)——反向填充（先快捷栏末尾）；
+		// 背包放不下时保持结果不动。
+		if fitsInArea(working, 3, 39, result) {
+			quickMoveArea(b, working, result, 3, 39, true)
 			working[2] = item.Empty()
 			s.awardFurnaceXP(player, b.state)
-			break
 		}
 	case protocol.ClickModeThrow:
 		working[2] = item.Empty()

@@ -735,8 +735,18 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 			cursor = s.craftResultClick(player, craft, working, cursor, click)
 			break
 		}
+		cursor = s.applyContainerClick(player, backing, working, cursor, click)
+	case click.Slot == furnaceResultSlot: // 2：熔炉/铁砧/砂轮的结果槽
 		if furnace, ok := backing.(furnaceSlotBacking); ok {
 			cursor = s.furnaceResultClick(player, furnace, working, cursor, click)
+			break
+		}
+		if anvil, ok := backing.(anvilSlotBacking); ok {
+			cursor = s.anvilResultClick(player, anvil, working, cursor, click)
+			break
+		}
+		if grindstone, ok := backing.(grindstoneSlotBacking); ok {
+			cursor = s.grindstoneResultClick(player, grindstone, working, cursor, click)
 			break
 		}
 		cursor = s.applyContainerClick(player, backing, working, cursor, click)
@@ -749,16 +759,6 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 	case click.Slot == smithingResultSlot:
 		if smithing, ok := backing.(smithingSlotBacking); ok {
 			cursor = s.smithingResultClick(player, smithing, working, cursor, click)
-			break
-		}
-		cursor = s.applyContainerClick(player, backing, working, cursor, click)
-	case click.Slot == anvilResultSlot:
-		if anvil, ok := backing.(anvilSlotBacking); ok {
-			cursor = s.anvilResultClick(player, anvil, working, cursor, click)
-			break
-		}
-		if grindstone, ok := backing.(grindstoneSlotBacking); ok {
-			cursor = s.grindstoneResultClick(player, grindstone, working, cursor, click)
 			break
 		}
 		cursor = s.applyContainerClick(player, backing, working, cursor, click)
@@ -872,7 +872,20 @@ func (s *Server) applyContainerClick(player *session, backing slotBacking, worki
 		}
 		return clickPickupRight(working, slot, cursor, limit, canPlace)
 	case protocol.ClickModeQuickMove:
-		quickMove(player, backing, working, slot)
+		// 原版 AbstractContainerMenu#clicked 的快速移动：反复调用 quickMoveStack，
+		// 直到槽位清空或本次调用没有推进（每次调用至少移动 1 个物品，
+		// 因此循环次数不超过原堆叠数量）。结果槽的“连续取走”语义也由此驱动。
+		for i := 0; i < 64; i++ {
+			before := working[slot]
+			if before.IsEmpty() {
+				break
+			}
+			quickMove(player, backing, working, slot)
+			after := working[slot]
+			if after.IsEmpty() || after.Count >= before.Count {
+				break
+			}
+		}
 		return cursor
 	case protocol.ClickModeSwapHotbar:
 		hotbar := int(click.MouseButton)
@@ -946,6 +959,10 @@ func swapHotbarIndex(backing slotBacking, hotbar int) int {
 		return 3 + 27 + hotbar
 	case grindstoneSlotBacking:
 		return 3 + 27 + hotbar
+	case hopperSlotBacking:
+		return hopperSlots + 27 + hotbar
+	case enchantingSlotBacking:
+		return 2 + 27 + hotbar
 	}
 	return -1
 }
@@ -1161,160 +1178,312 @@ func (s *Server) applyQuickCraft(player *session, backing slotBacking, working [
 	}
 }
 
-// quickMove 处理 Shift 点击（mode 1）：把整栈在容器与玩家背包之间移动。
-// 目标区间按原版的顺序尝试（如容器 → 主背包 → 快捷栏）。
+// quickMove 处理 Shift 点击（mode 1）：按原版 quickMoveStack 的分支顺序
+// 尝试移动整栈。每次尝试对应一次原版 AbstractContainerMenu#moveItemStackTo：
+// 只要该次尝试移动了物品，就不再尝试后续分支（原版 move 返回 true 时直接完成）。
+//
+// 方向语义（reverse）已对照 1.21.11 反编译与官方服务端实测确认：
+// reverse=true 时从区间末尾向前扫描，例如合成结果槽 move(9,45,true) 会把
+// 产物放进快捷栏末尾的空槽；reverse=false 时从区间起点向后扫描。
 func quickMove(player *session, backing slotBacking, working []item.Stack, slot int) {
 	stack := working[slot]
 	if stack.IsEmpty() {
 		return
 	}
-	for _, target := range quickMoveTargets(backing, slot) {
-		stack = mergeIntoArea(backing, working, stack, target[0], target[1])
-		if stack.IsEmpty() {
+	for _, step := range quickMoveSteps(backing, working, slot) {
+		if step.single {
+			if moveOneInto(backing, working, step.start, &stack) {
+				break
+			}
+			continue
+		}
+		remaining, moved := quickMoveArea(backing, working, stack, step.start, step.end, step.reverse)
+		stack = remaining
+		if moved {
 			break
 		}
 	}
 	working[slot] = stack
 }
 
-// quickMoveTargets 返回 Shift 点击的目标槽位区间（按尝试顺序）。
-func quickMoveTargets(backing slotBacking, slot int) [][2]int {
+// quickMoveStep 是原版 quickMoveStack 中的一次 moveItemStackTo 尝试：
+// 在 [start, end) 区间内按 reverse 方向移动；
+// single 表示只放入 1 个（原版附魔台输入槽的 split(1) 特例）。
+type quickMoveStep struct {
+	start, end int
+	reverse    bool
+	single     bool
+}
+
+// quickMoveSteps 返回 Shift 点击的尝试序列（对照各菜单的 quickMoveStack）：
+// 每次尝试移动了物品就结束，未移动则尝试下一步。
+func quickMoveSteps(backing slotBacking, working []item.Stack, slot int) []quickMoveStep {
+	stack := working[slot]
 	switch b := backing.(type) {
 	case containerSlotBacking:
-		containerSlots := len(b.container.slots)
-		if slot < containerSlots {
-			// 容器 → 主背包 → 快捷栏。
-			return [][2]int{
-				{containerSlots, containerSlots + 27},
-				{containerSlots + 27, containerSlots + 36},
-			}
+		// 原版 ChestMenu：容器 → 玩家（反向，先放快捷栏末尾）；玩家 → 容器（正向）。
+		n := len(b.container.slots)
+		if slot < n {
+			return []quickMoveStep{{n, n + 36, true, false}}
 		}
-		return [][2]int{{0, containerSlots}}
+		if slot < n+36 {
+			return []quickMoveStep{{0, n, false, false}}
+		}
+		return nil
 	case enderSlotBacking:
+		// 原版末影箱以 ChestMenu.threeRows 打开，语义与箱子一致。
 		if slot < enderChestSlots {
-			return [][2]int{{enderChestSlots, enderChestSlots + 27}, {enderChestSlots + 27, enderChestSlots + 36}}
+			return []quickMoveStep{{enderChestSlots, enderChestSlots + 36, true, false}}
 		}
-		switch {
-		case slot >= enderChestSlots && slot <= enderChestSlots+26:
-			return [][2]int{{enderChestSlots + 27, enderChestSlots + 36}}
-		case slot >= enderChestSlots+27:
-			return [][2]int{{enderChestSlots, enderChestSlots + 27}}
+		if slot < enderChestSlots+36 {
+			return []quickMoveStep{{0, enderChestSlots, false, false}}
+		}
+		return nil
+	case hopperSlotBacking:
+		// 原版 HopperMenu：容器 → 玩家（反向）；玩家 → 容器（正向）。
+		if slot < hopperSlots {
+			return []quickMoveStep{{hopperSlots, hopperSlots + 36, true, false}}
+		}
+		if slot < hopperSlots+36 {
+			return []quickMoveStep{{0, hopperSlots, false, false}}
 		}
 		return nil
 	case furnaceSlotBacking:
-		if slot < 3 {
-			if slot == 2 {
-				return nil // 产物槽由专用路径处理
-			}
-			return [][2]int{{3, 30}, {30, 39}} // 原料/燃料 → 背包
+		// 原版 AbstractFurnaceMenu：原料/燃料 → 玩家（正向）；结果槽由专用路径处理。
+		if slot == 0 || slot == 1 {
+			return []quickMoveStep{{3, 39, false, false}}
 		}
-		switch {
-		case slot >= 3 && slot <= 29: // 主背包 → 快捷栏
-			return [][2]int{{30, 39}}
-		case slot >= 30 && slot <= 38: // 快捷栏 → 主背包
-			return [][2]int{{3, 30}}
+		if slot >= 3 && slot <= 38 {
+			// 背包物品：烹饪原料 → 只试原料槽；否则是燃料 → 只试燃料槽；
+			// 都不匹配时主背包 ↔ 快捷栏（原版 b()/c() 判断，失败不回退）。
+			if _, ok := registry.CookingRecipeFor(b.state.kind, stack.ItemID); ok {
+				return []quickMoveStep{{0, 1, false, false}}
+			}
+			if registry.FuelBurnTicks(stack.ItemID) > 0 {
+				return []quickMoveStep{{1, 2, false, false}}
+			}
+			if slot <= 29 {
+				return []quickMoveStep{{30, 39, false, false}}
+			}
+			return []quickMoveStep{{3, 30, false, false}}
 		}
 		return nil
 	case brewingSlotBacking:
-		if slot < brewingSlots {
-			return [][2]int{{brewingSlots, brewingSlots + 27}, {brewingSlots + 27, brewingSlots + 36}} // 酿造槽 → 背包
+		// 原版 BrewingStandMenu：酿造槽 → 玩家（反向，先放快捷栏末尾）。
+		if slot >= 0 && slot < brewingSlots {
+			return []quickMoveStep{{brewingSlots, brewingSlots + 36, true, false}}
 		}
-		switch {
-		case slot >= brewingSlots && slot <= brewingSlots+26: // 主背包 → 快捷栏
-			return [][2]int{{brewingSlots + 27, brewingSlots + 36}}
-		case slot >= brewingSlots+27 && slot <= brewingSlots+35: // 快捷栏 → 主背包
-			return [][2]int{{brewingSlots, brewingSlots + 27}}
+		if slot >= brewingSlots && slot < brewingSlots+36 {
+			// 玩家物品：燃料（brewing_fuel 标签，默认烈焰粉）→ 燃料槽，
+			// 失败且材料槽可接受时再试材料槽；其次材料 → 材料槽；
+			// 再其次瓶子 → 瓶子槽；都不匹配时主背包 ↔ 快捷栏。
+			if stack.ItemID == blazePowderItemID {
+				steps := []quickMoveStep{{4, 5, false, false}}
+				if registry.BrewingIsIngredient(stack.ItemID) {
+					steps = append(steps, quickMoveStep{3, 4, false, false})
+				}
+				return steps
+			}
+			if registry.BrewingIsIngredient(stack.ItemID) {
+				return []quickMoveStep{{3, 4, false, false}}
+			}
+			if registry.BrewingIsContainerItem(stack.ItemID) || stack.ItemID == glassBottleItemID {
+				return []quickMoveStep{{0, 3, false, false}}
+			}
+			if slot <= brewingSlots+26 {
+				return []quickMoveStep{{brewingSlots + 27, brewingSlots + 36, false, false}}
+			}
+			return []quickMoveStep{{brewingSlots, brewingSlots + 27, false, false}}
 		}
 		return nil
 	case craftSlotBacking:
 		if slot == 0 {
 			return nil // 结果槽由合成路径处理
 		}
+		start, end := b.invRange()
 		if slot <= b.gridCount() {
-			return b.invRanges() // 合成格 → 背包
+			return []quickMoveStep{{start, end, false, false}} // 合成格 → 玩家（正向）
 		}
 		if b.windowZero {
 			switch {
+			case slot == 45: // 副手 → 玩家
+				return []quickMoveStep{{9, 45, false, false}}
+			case slot >= 5 && slot <= 8: // 盔甲 → 玩家
+				return []quickMoveStep{{9, 45, false, false}}
 			case slot >= 9 && slot <= 35: // 主背包 → 快捷栏
-				return [][2]int{{36, 45}}
+				return []quickMoveStep{{36, 45, false, false}}
 			case slot >= 36 && slot <= 44: // 快捷栏 → 主背包
-				return [][2]int{{9, 36}}
-			case slot >= 5 && slot <= 8: // 盔甲 → 主背包/快捷栏
-				return [][2]int{{9, 45}}
-			case slot == 45: // 副手 → 主背包
-				return [][2]int{{9, 36}}
+				return []quickMoveStep{{9, 36, false, false}}
 			}
 			return nil
 		}
-		switch {
-		case slot >= 10 && slot <= 36: // 主背包 → 快捷栏
-			return [][2]int{{37, 46}}
-		case slot >= 37 && slot <= 45: // 快捷栏 → 主背包
-			return [][2]int{{10, 37}}
+		// 工作台：玩家槽位先尝试合成格，失败再退回主背包 ↔ 快捷栏。
+		if slot <= 36 {
+			return []quickMoveStep{{1, 10, false, false}, {37, 46, false, false}}
 		}
+		return []quickMoveStep{{1, 10, false, false}, {10, 37, false, false}}
 	case stonecutterSlotBacking:
 		if slot == stonecutterResultSlot {
 			return nil // 结果槽由专用路径处理
 		}
 		if slot == stonecutterInputSlot {
-			return [][2]int{{2, 29}, {29, 38}} // 输入 → 背包
+			return []quickMoveStep{{2, 38, false, false}}
 		}
-		switch {
-		case slot >= 2 && slot <= 28: // 主背包 → 快捷栏
-			return [][2]int{{29, 38}}
-		case slot >= 29 && slot <= 37: // 快捷栏 → 主背包
-			return [][2]int{{2, 29}}
+		// 原版 StonecutterMenu：是切石配方原料 → 只试输入槽；否则主背包 ↔ 快捷栏。
+		if len(registry.StonecuttingRecipesFor(stack.ItemID)) > 0 {
+			return []quickMoveStep{{0, 1, false, false}}
 		}
+		if slot >= 2 && slot <= 28 {
+			return []quickMoveStep{{29, 38, false, false}}
+		}
+		if slot >= 29 && slot <= 37 {
+			return []quickMoveStep{{2, 29, false, false}}
+		}
+		return nil
 	case enchantingSlotBacking:
-		// 输入/青金石 → 背包（主背包 → 快捷栏）。
+		// 原版 EnchantmentMenu：输入/青金石 → 玩家（反向）。
 		if slot == enchantingInputSlot || slot == enchantingLapisSlot {
-			return [][2]int{{2, 29}, {29, 38}}
+			return []quickMoveStep{{2, 38, true, false}}
 		}
-		// 背包物品：青金石放入青金石槽；其余尝试输入槽。原版 quickMoveStack
-		// 在输入槽被占用时快速移动不生效，与目标区间失败后留在原槽的语义一致。
-		if stack := backing.Get(slot); stack.ItemID == enchantingLapisItemID() {
-			return [][2]int{{enchantingLapisSlot, enchantingLapisSlot + 1}}
+		if stack.ItemID == enchantingLapisItemID() {
+			return []quickMoveStep{{enchantingLapisSlot, enchantingLapisSlot + 1, true, false}}
 		}
-		return [][2]int{{enchantingInputSlot, enchantingInputSlot + 1}}
+		// 其余物品：输入槽为空且可接受时只放入 1 个（原版 split(1)），否则不动。
+		return []quickMoveStep{{enchantingInputSlot, enchantingInputSlot + 1, false, true}}
 	case smithingSlotBacking:
 		if slot == smithingResultSlot {
-			return nil
+			return nil // 结果槽由专用路径处理
 		}
-		if slot >= smithingTemplateSlot && slot <= smithingAdditionSlot {
-			return [][2]int{{4, 31}, {31, 40}}
+		if slot >= 0 && slot <= 2 {
+			return []quickMoveStep{{4, 40, false, false}}
 		}
-		switch {
-		case slot >= 4 && slot <= 30: // 主背包 → 快捷栏
-			return [][2]int{{31, 40}}
-		case slot >= 31 && slot <= 39: // 快捷栏 → 主背包
-			return [][2]int{{4, 31}}
+		if slot >= 4 && slot <= 39 {
+			// 原版 SmithingMenu：模板/基底/添加物任一对应槽为空且可接受时
+			// 只尝试输入区；否则主背包 ↔ 快捷栏。
+			if smithingInputAccepts(b, working, stack) {
+				return []quickMoveStep{{0, 3, false, false}}
+			}
+			if slot <= 30 {
+				return []quickMoveStep{{31, 40, false, false}}
+			}
+			return []quickMoveStep{{4, 31, false, false}}
 		}
+		return nil
 	case anvilSlotBacking:
 		if slot == anvilResultSlot {
 			return nil // 结果槽由专用路径处理
 		}
-		switch {
-		case slot == anvilInputSlot || slot == anvilAdditionSlot: // 输入 → 背包
-			return [][2]int{{3, 30}, {30, 39}}
-		case slot >= 3 && slot <= 29: // 主背包 → 输入槽，再 → 快捷栏
-			return [][2]int{{0, 2}, {30, 39}}
-		case slot >= 30 && slot <= 38: // 快捷栏 → 输入槽，再 → 主背包
-			return [][2]int{{0, 2}, {3, 30}}
+		if slot == anvilInputSlot || slot == anvilAdditionSlot {
+			return []quickMoveStep{{3, 39, false, false}}
 		}
+		// 原版 ItemCombinerMenu 的 b() 对铁砧恒真：玩家槽位只尝试输入槽，
+		// 失败即结束（不会退回主背包 ↔ 快捷栏）。
+		if slot >= 3 && slot <= 38 {
+			return []quickMoveStep{{0, 2, false, false}}
+		}
+		return nil
 	case grindstoneSlotBacking:
 		if slot == grindstoneResultSlot {
 			return nil // 结果槽由专用路径处理
 		}
-		switch {
-		case slot == grindstoneInputSlot || slot == grindstoneAdditionSlot: // 输入 → 背包
-			return [][2]int{{3, 30}, {30, 39}}
-		case slot >= 3 && slot <= 29: // 主背包 → 输入槽，再 → 快捷栏
-			return [][2]int{{0, 2}, {30, 39}}
-		case slot >= 30 && slot <= 38: // 快捷栏 → 输入槽，再 → 主背包
-			return [][2]int{{0, 2}, {3, 30}}
+		if slot == grindstoneInputSlot || slot == grindstoneAdditionSlot {
+			return []quickMoveStep{{3, 39, false, false}}
 		}
+		// 原版 GrindstoneMenu：两个输入槽都非空时主背包 ↔ 快捷栏；
+		// 否则只尝试输入槽（失败即结束）。
+		if working[grindstoneInputSlot].IsEmpty() || working[grindstoneAdditionSlot].IsEmpty() {
+			return []quickMoveStep{{0, 2, false, false}}
+		}
+		if slot >= 3 && slot <= 29 {
+			return []quickMoveStep{{30, 39, false, false}}
+		}
+		if slot >= 30 && slot <= 38 {
+			return []quickMoveStep{{3, 30, false, false}}
+		}
+		return nil
 	}
 	return nil
+}
+
+// smithingInputAccepts 报告锻造台输入区是否接受该物品：三个输入槽中任一
+// 为空且其物品集合接受（原版 SmithingMenu#quickMoveStack 的 b(stack)）。
+func smithingInputAccepts(b smithingSlotBacking, working []item.Stack, stack item.Stack) bool {
+	for slot := 0; slot <= 2; slot++ {
+		if !working[slot].IsEmpty() {
+			continue
+		}
+		if canPlaceInto(b, slot, stack) {
+			return true
+		}
+	}
+	return false
+}
+
+// quickMoveArea 执行一次原版 AbstractContainerMenu#moveItemStackTo：
+// 先在 [start, end) 内按方向并入同类未满堆叠，再把剩余放入该方向上第一个
+// 可接受的空槽（原版只放一个空槽后即返回）。返回剩余部分与是否移动了物品。
+func quickMoveArea(backing slotBacking, working []item.Stack, stack item.Stack, start, end int, reverse bool) (item.Stack, bool) {
+	if stack.IsEmpty() {
+		return stack, false
+	}
+	limit := stack.MaxStack()
+	first, last, step := start, end, 1
+	if reverse {
+		first, last, step = end-1, start-1, -1
+	}
+	moved := false
+	// 第一遍：并入同类未满堆叠（原版 isStackable 分支）。
+	if limit > 1 {
+		for i := first; i != last; i += step {
+			if stack.Count <= 0 {
+				break
+			}
+			current := working[i]
+			if current.IsEmpty() || !current.SameKind(stack) || !canPlaceInto(backing, i, stack) {
+				continue
+			}
+			slotLimit := slotLimitAt(backing, i, limit)
+			if current.Count >= slotLimit {
+				continue
+			}
+			amount := min(slotLimit-current.Count, stack.Count)
+			current.Count += amount
+			stack.Count -= amount
+			working[i] = current
+			moved = true
+		}
+	}
+	// 第二遍：放入第一个可接受的空槽（原版只放一个空槽，之后返回）。
+	if stack.Count > 0 {
+		for i := first; i != last; i += step {
+			if !working[i].IsEmpty() || !canPlaceInto(backing, i, stack) {
+				continue
+			}
+			placed := stack
+			placed.Count = min(slotLimitAt(backing, i, limit), stack.Count)
+			working[i] = placed
+			stack.Count -= placed.Count
+			moved = true
+			break
+		}
+	}
+	if stack.Count <= 0 {
+		return item.Empty(), moved
+	}
+	return stack, moved
+}
+
+// moveOneInto 把 stack 中的 1 个物品放入指定空槽（原版附魔台输入槽的
+// split(1)：槽位必须为空且接受该物品）。返回是否放入。
+func moveOneInto(backing slotBacking, working []item.Stack, slot int, stack *item.Stack) bool {
+	if stack.Count <= 0 || !working[slot].IsEmpty() || !canPlaceInto(backing, slot, *stack) {
+		return false
+	}
+	one := *stack
+	one.Count = 1
+	stack.Count--
+	working[slot] = one
+	return true
 }
 
 // mergeIntoArea 把 stack 合并/放入 [start, end) 区间，返回剩余部分。

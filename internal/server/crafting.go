@@ -170,6 +170,15 @@ func (b craftSlotBacking) consumeGrid(working []item.Stack) {
 	}
 }
 
+// invRange 返回玩家槽位区的起止（结果槽快速移动用；原版 move(9,45,true)
+// 等反向填充）。
+func (b craftSlotBacking) invRange() (int, int) {
+	if b.windowZero {
+		return 9, 45
+	}
+	return 10, 46
+}
+
 // invRanges 返回玩家槽位区的目标区间（Shift 移动用；按尝试顺序）。
 func (b craftSlotBacking) invRanges() [][2]int {
 	if b.windowZero {
@@ -212,25 +221,20 @@ func (s *Server) craftResultClick(player *session, b craftSlotBacking, working [
 		}
 		return cursor
 	case protocol.ClickModeQuickMove:
-		// Shift 取走：尽可能多次合成并放入背包。
+		// Shift 取走：尽可能多次合成并放入背包。原版：结果槽 →
+		// moveItemStackTo(9, 45, true)/(10, 46, true)——反向填充（先快捷栏末尾）；
+		// 放不下则停止。
+		start, end := b.invRange()
 		for i := 0; i < 64; i++ {
 			result := b.resultOf(working)
 			if result.IsEmpty() {
 				break
 			}
-			moved := false
-			for _, target := range b.invRanges() {
-				if !fitsInArea(working, target[0], target[1], result) {
-					continue
-				}
-				mergeIntoArea(b, working, result, target[0], target[1])
-				b.consumeGrid(working)
-				moved = true
+			if !fitsInArea(working, start, end, result) {
 				break
 			}
-			if !moved {
-				break
-			}
+			quickMoveArea(b, working, result, start, end, true)
+			b.consumeGrid(working)
 		}
 		return cursor
 	case protocol.ClickModeThrow:

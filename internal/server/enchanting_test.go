@@ -378,14 +378,18 @@ func TestEnchantingSlotBackingRules(t *testing.T) {
 		t.Fatalf("青金石槽堆叠上限 = %d, want 0（不限）", got)
 	}
 
-	// 输入槽物品 → 背包；青金石 → 青金石槽；其他物品 → 输入槽。
+	// 输入槽物品 → 背包（原版 move(2, 38, true)，反向）；青金石 → 青金石槽；
+	// 其他物品 → 仅向输入槽放 1 个（single）。
 	// 注意：quickMove 操作工作快照，写回由 handleContainerClick 统一完成。
-	if targets := quickMoveTargets(backing, enchantingInputSlot); len(targets) == 0 || targets[0] != [2]int{2, 29} {
-		t.Fatalf("输入槽 Shift 目标 = %v", targets)
+	empty := make([]item.Stack, backing.SlotCount())
+	if steps := quickMoveSteps(backing, empty, enchantingInputSlot); len(steps) == 0 || steps[0] != (quickMoveStep{2, 38, true, false}) {
+		t.Fatalf("输入槽 Shift 步骤 = %v", steps)
 	}
 	backing.state.inputs[0] = sword
-	if targets := quickMoveTargets(backing, 2); len(targets) != 1 || targets[0] != [2]int{enchantingInputSlot, enchantingInputSlot + 1} {
-		t.Fatalf("剑 Shift 目标 = %v", targets)
+	workingSword := make([]item.Stack, backing.SlotCount())
+	workingSword[2] = sword
+	if steps := quickMoveSteps(backing, workingSword, 2); len(steps) != 1 || steps[0] != (quickMoveStep{enchantingInputSlot, enchantingInputSlot + 1, false, true}) {
+		t.Fatalf("剑 Shift 步骤 = %v", steps)
 	}
 	backing.state.inputs[0] = item.Empty()
 	backing.state.inputs[1] = item.Empty()

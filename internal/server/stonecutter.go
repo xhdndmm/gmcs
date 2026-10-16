@@ -317,14 +317,10 @@ func (s *Server) stonecutterResultClick(player *session, b stonecutterSlotBackin
 		if result.IsEmpty() {
 			return false
 		}
-		stack := result
-		for _, target := range [][2]int{{2, 29}, {29, 38}} {
-			stack = mergeIntoArea(b, working, stack, target[0], target[1])
-			if stack.IsEmpty() {
-				break
-			}
-		}
-		if !stack.IsEmpty() {
+		// 原版：结果槽 → moveItemStackTo(2, 38, true)——反向填充（先快捷栏末尾）；
+		// 背包放不下则不动。
+		remaining, _ := quickMoveArea(b, working, result, 2, 38, true)
+		if !remaining.IsEmpty() {
 			return false // 背包放不下
 		}
 		b.state.consumeInput()

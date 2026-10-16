@@ -514,3 +514,12 @@ func (b brewingSlotBacking) CanPlace(slot int, stack item.Stack) bool {
 	}
 	return true
 }
+
+// SlotLimit 报告槽位的堆叠数量上限（原版 PotionSlot.getMaxStackSize = 1：
+// 每个瓶位只放 1 个；Shift 点击 16 个玻璃瓶时每次只进 1 个）。
+func (b brewingSlotBacking) SlotLimit(slot int) int32 {
+	if slot >= 0 && slot <= 2 {
+		return 1
+	}
+	return 0
+}

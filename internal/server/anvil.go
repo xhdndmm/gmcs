@@ -661,14 +661,10 @@ func (s *Server) anvilResultClick(player *session, b anvilSlotBacking, working [
 			if res.result.IsEmpty() || !anvilCanPickup(player, res.cost) {
 				break
 			}
-			stack := res.result
-			for _, target := range [][2]int{{3, 30}, {30, 39}} {
-				stack = mergeIntoArea(b, working, stack, target[0], target[1])
-				if stack.IsEmpty() {
-					break
-				}
-			}
-			if !stack.IsEmpty() {
+			// 结果移入背包（原版 move(3, 39, true)，反向）；放不下时整体失败
+			// （与切石机/砂轮一致）。
+			remaining, _ := quickMoveArea(b, working, res.result, 3, 39, true)
+			if !remaining.IsEmpty() {
 				break
 			}
 			takeOnce()

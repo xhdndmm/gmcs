@@ -472,20 +472,14 @@ func (s *Server) grindstoneResultClick(player *session, b grindstoneSlotBacking,
 		takeOnce()
 		return cursor
 	case protocol.ClickModeQuickMove:
-		// 结果移入背包；放不下时整体失败（与铁砧一致）。
+		// 结果移入背包（原版 move(3, 39, true)，反向）；放不下时整体失败。
 		for i := 0; i < 64; i++ {
 			result := state.currentResult()
 			if result.IsEmpty() {
 				break
 			}
-			stack := result
-			for _, target := range [][2]int{{3, 30}, {30, 39}} {
-				stack = mergeIntoArea(b, working, stack, target[0], target[1])
-				if stack.IsEmpty() {
-					break
-				}
-			}
-			if !stack.IsEmpty() {
+			remaining, _ := quickMoveArea(b, working, result, 3, 39, true)
+			if !remaining.IsEmpty() {
 				break
 			}
 			takeOnce()

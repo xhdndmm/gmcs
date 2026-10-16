@@ -73,6 +73,9 @@ func TestPlayerDropItem(t *testing.T) {
 	if count := slotCount(t, invPacket); count != 0 {
 		t.Fatalf("inventory after drop stack = %d, want empty", count)
 	}
+	// 第二个掉落物的生成广播证明实体已加入世界（否则可能只看到第一个就误判合并完成）。
+	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
 	// 合并为周期检查（原版：跨方块边界移动时每 2 tick、静止时每 40 tick）。
 	// 两个堆叠抛出后一起飞行/下落，合并帧很快到来；最多推进 39 tick，
 	// 避免拾取延迟（40）到期把物品捡回背包。
