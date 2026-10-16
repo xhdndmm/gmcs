@@ -42,9 +42,9 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkServerTick`（32 生物） | server | ≈17.2 µs/op | 52 B/op | 1 allocs/op |
 | `BenchmarkServerTickManyPlayers`（32 生物 + 100 玩家） | server | ≈325 µs/op | ≈3.6 KB/op | ≈23 allocs/op |
 | `BenchmarkItemTick`（128 掉落物） | server | ≈30.9 µs/op | 92 B/op | 2 allocs/op |
-| `BenchmarkItemMergeScan`（256 掉落物） | server | ≈87.5 µs/op | 13.7 KB/op | 214 allocs/op |
+| `BenchmarkItemMergeScan`（256 掉落物） | server | ≈208 µs/op | 14.7 KB/op | 229 allocs/op |
 | `BenchmarkEntityInsideBlocks`（32 包围盒） | server | ≈1.35 µs/op | 0 B/op | 0 allocs/op |
-| `BenchmarkHopperTick`（64 漏斗） | server | ≈18.8 µs/op | 557 B/op | 2 allocs/op |
+| `BenchmarkHopperTick`（64 漏斗，持续搬运） | server | ≈35.8 µs/op | ≈48.6 KB/op | 50 allocs/op |
 | `BenchmarkHopperChunkScan`（1 区块 16 漏斗） | server | ≈36.4 µs/op | 720 B/op | 4 allocs/op |
 | `BenchmarkHopperScan`（64 漏斗全量扫描） | server | ≈251 µs/op | 3.0 KB/op | 7 allocs/op |
 | `BenchmarkFindPath`（绕墙 ≈32 步） | world | ≈7.6 µs/op | 769 B/op | 1 allocs/op |
@@ -54,8 +54,11 @@ go test -run=^$ -bench=. -benchmem ./...
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
 增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
-实体包与压缩路径与上一批持平。server 包的三行（`ServerTick`/`ItemTick` 与
-新增的 `ServerTickManyPlayers`）为 2026-10-17 复测（见 3.25）。
+实体包与压缩路径与上一批持平。server 包多行为 2026-10-17 复测（见 3.25/3.26）：
+其中 `ItemMergeScan` 的扫描节奏在 3.24 随掉落物物理对齐调整（见 3.24 的
+≈224 µs 记录），`HopperTick` 为 64 漏斗持续搬运口径（≈0.56 µs/漏斗/tick，
+含每次搬运的槽位数组拷贝，与 3.16 正文的 36.0 µs/50 allocs 一致；旧行
+18.8 µs/557 B 为更早的空闲路径口径）。
 
 各基准覆盖的内容：
 
@@ -1031,6 +1034,8 @@ CPU 持平、内存小幅下降。两场景的收发包总量与流量基本一�
 - `go tool trace` 调度与阻塞分析
 - 区块保存/加载（区域文件读写）路径的 benchmark
 - 端到端连接压测（真实 socket + 加密 + 多包交织；当前仅覆盖编解码与压缩）
-- 内存随在线时长/跑图的持续观测（当前仅区块卸载演示与快照测量）
+- 内存随在线时长/跑图的持续观测（已有：区块卸载演示与快照测量、3.26 的
+  80 秒稳态 RSS/峰值观测、多玩家 loopback 压测的内存对比（3.7/3.13/3.18）；
+  数小时级长时间运行与真实网络下的内存行为仍待观测）
 - 掉落物高密度场景的物理与广播（合并扫描已有 `BenchmarkItemMergeScan` 覆盖，
   见 3.17；广播路径与长时间运行的内存增长仍待观测）
