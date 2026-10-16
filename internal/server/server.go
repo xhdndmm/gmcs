@@ -81,6 +81,16 @@ type Server struct {
 	// chunkUnloadInterval 是区块内存卸载扫描的周期；<= 0 时禁用后台周期卸载
 	// （测试通过显式调用 unloadFarChunks 驱动，保证断言不被周期卸载干扰）。
 	chunkUnloadInterval time.Duration
+	// chunkUnloadGrace 是区块卸载宽限期（见 unloadFarChunks）：区块连续
+	// 远离所有玩家超过该时长才真正卸载，避免玩家在卸载边界来回移动时
+	// 反复加载/卸载/写盘；<= 0 时立即卸载。
+	chunkUnloadGrace time.Duration
+	// dimensionIdleGrace 是“无已加入玩家的已打开维度”释放全部区块前的
+	// 空闲宽限（玩家切维度/传送后旧维度短期保留，快速切回无需重建）。
+	dimensionIdleGrace time.Duration
+	// dimIdleSince 记录各维度最近一次“无已加入玩家”的时刻（受 dimIdleMu 保护）。
+	dimIdleMu    sync.Mutex
+	dimIdleSince map[world.Dimension]time.Time
 
 	// unloadNow 由最后一名玩家退出时唤醒（容量 1、non-blocking），
 	// 使空闲服务器立即释放区块资源而不必等待下一个扫描周期。
@@ -431,6 +441,8 @@ func New(cfg config.Config) (*Server, error) {
 		hoppers:                make(map[containerKey]*hopperState),
 		tickInterval:           defaultTickInterval,
 		chunkUnloadInterval:    defaultChunkUnloadInterval,
+		chunkUnloadGrace:       defaultChunkUnloadGrace,
+		dimensionIdleGrace:     defaultDimensionIdleGrace,
 		unloadNow:              make(chan struct{}, 1),
 		playerAutosaveInterval: defaultPlayerAutosaveInterval,
 		borderHalfSize:         float64(cfg.WorldBorderSize) / 2,

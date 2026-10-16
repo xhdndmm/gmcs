@@ -41,7 +41,7 @@ func TestChunkMemoryDemo(t *testing.T) {
 	t.Logf("加载 1600 区块后：HeapAlloc=%.1f MiB（缓存区块=%d）", float64(loaded.HeapAlloc)/1024/1024, instance.ChunkCount())
 
 	// 玩家离开：只保留中心附近 11×11 区块。
-	unloaded, err := instance.UnloadFar([]ChunkPos{{X: 20, Z: 20}}, 5)
+	unloaded, err := instance.UnloadFar([]ChunkPos{{X: 20, Z: 20}}, 5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

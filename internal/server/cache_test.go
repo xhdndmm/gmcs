@@ -98,7 +98,7 @@ func TestChunkPacketCache(t *testing.T) {
 	if err := instance.testWorld().Flush(); err != nil {
 		t.Fatal(err)
 	}
-	instance.testWorld().UnloadFar([]world.ChunkPos{{X: 1000, Z: 1000}}, 0)
+	instance.testWorld().UnloadFar([]world.ChunkPos{{X: 1000, Z: 1000}}, 0, 0)
 	reloaded, err := instance.testWorld().Chunk(0, 0)
 	if err != nil {
 		t.Fatal(err)

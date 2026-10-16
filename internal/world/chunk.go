@@ -8,6 +8,7 @@ package world
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
@@ -139,6 +140,11 @@ type Chunk struct {
 	// revision 在每次内容修改（方块/群系）时递增；服务器用它失效共享的
 	// 区块数据包缓存（见 server.chunkPacket）。
 	revision uint64
+	// farSince 是该区块“连续远离所有玩家”的起始时刻（UnixNano；0 = 近或未知），
+	// 由卸载扫描（World.UnloadFar）维护：首次判远只记录时间，持续超出宽限
+	// 期后才真正卸载；重新变近时清零。避免玩家在卸载边界来回移动时
+	// 反复加载/卸载/写盘。
+	farSince atomic.Int64
 	sections [SectionCount]*section
 	// biomes 是 4×4 列分辨率的群系 ID 网格（索引见 biomeCellIndex；
 	// gmcs 的群系在垂直方向不变）。默认平原。

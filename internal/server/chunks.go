@@ -43,8 +43,14 @@ func (s *session) syncChunks(centerX, centerZ int) error {
 	// 先把视距内尚未发送的区块按由近到远提交给异步预生成 worker 池：
 	// 多个区块并行生成，随后逐环发送时依次等待各自结果（首个环通常
 	// 已经生成完毕，显著缩短进入世界的等待时间）。
-	prefetch := make([]world.ChunkPos, 0, (2*radius+1)*(2*radius+1))
-	for ring := 0; ring <= radius; ring++ {
+	//
+	// 预取范围比实际发送范围多一圈（视距+1）：玩家跨区块时，新环带的
+	// 区块（下一次发送的对象）已在后台加载/生成完毕，发送路径无需等待
+	// 磁盘/生成器（额外的一圈都仍在卸载半径（视距+4）内，不会被重复
+	// 卸载/加载）。
+	prefetchRadius := radius + 1
+	prefetch := make([]world.ChunkPos, 0, (2*prefetchRadius+1)*(2*prefetchRadius+1))
+	for ring := 0; ring <= prefetchRadius; ring++ {
 		for dx := -ring; dx <= ring; dx++ {
 			for dz := -ring; dz <= ring; dz++ {
 				if max(absInt(dx), absInt(dz)) != ring {
@@ -144,12 +150,17 @@ type chunkPacketKey struct {
 // 只编码一次，后续直接复用同一份只读字节（并发读安全）。按 LRU 有界；
 // 条目同时记录来源 *Chunk 与修改计数（revision），区块卸载重载或内容
 // 修改后自动失效。键包含维度（不同维度可能有相同区块坐标）。
+// 并发的同一区块未命中请求经 inflight 合并（singleflight）：同时进入
+// 世界的多名玩家不会对同一区块重复编码与压缩。
 type chunkPacketCache struct {
 	mu      sync.Mutex
 	entries map[chunkPacketKey]*list.Element
 	order   *list.List // 前端最新
-	hits    atomic.Uint64
-	misses  atomic.Uint64
+	// hits/misses 为观测计数：hits = 复用缓存次数，misses = 实际编码次数。
+	hits   atomic.Uint64
+	misses atomic.Uint64
+	// inflight 是进行中的编码（值为完成信号）；等待者醒来后重查缓存。
+	inflight map[chunkPacketKey]chan struct{}
 }
 
 // chunkEncodePool 复用区块编码缓冲（64 KiB/次），避免每次缓存未命中
@@ -169,54 +180,75 @@ type chunkPacketEntry struct {
 	frame []byte
 }
 
-// chunkPacketCacheMax 是缓存的区块包上限。压缩帧约 0.5–2 KiB/项，2048 项
-// 上限约 2–4 MiB，且能覆盖多名玩家的完整视距（加入风暴后近 100% 命中）；
+// chunkPacketCacheMax 是缓存的区块包上限。压缩帧约 0.5–2 KiB/项，4096 项
+// 上限约 4–8 MiB，且能覆盖多名玩家的完整视距（加入风暴后近 100% 命中）；
 // 小于单个玩家的区块数会随移动反复失效重编码（实测显著劣化）。
-const chunkPacketCacheMax = 2048
+const chunkPacketCacheMax = 4096
 
 // chunkPacket 返回区块数据包：命中缓存时复用同一份只读字节，
-// 否则编码一次并缓存。
+// 否则编码一次并缓存。同一区块的并发未命中经 singleflight 合并：
+// 等待者不重复编码，领取同一份共享帧。
 func (s *Server) chunkPacket(dim world.Dimension, pos world.ChunkPos, chunk *world.Chunk) []byte {
 	key := chunkPacketKey{dim: dim, pos: pos}
-	rev := chunk.Revision()
-	s.chunkPackets.mu.Lock()
-	if s.chunkPackets.order == nil {
-		s.chunkPackets.entries = make(map[chunkPacketKey]*list.Element)
-		s.chunkPackets.order = list.New()
-	}
-	if elem, ok := s.chunkPackets.entries[key]; ok {
-		entry := elem.Value.(*chunkPacketEntry)
-		if entry.chunk == chunk && entry.rev == rev {
-			s.chunkPackets.order.MoveToFront(elem)
-			s.chunkPackets.mu.Unlock()
-			s.chunkPackets.hits.Add(1)
-			return entry.frame
+	for {
+		rev := chunk.Revision()
+		s.chunkPackets.mu.Lock()
+		if s.chunkPackets.order == nil {
+			s.chunkPackets.entries = make(map[chunkPacketKey]*list.Element)
+			s.chunkPackets.order = list.New()
 		}
-		s.chunkPackets.order.Remove(elem)
-		delete(s.chunkPackets.entries, key)
-	}
-	s.chunkPackets.mu.Unlock()
-	s.chunkPackets.misses.Add(1)
+		if elem, ok := s.chunkPackets.entries[key]; ok {
+			entry := elem.Value.(*chunkPacketEntry)
+			if entry.chunk == chunk && entry.rev == rev {
+				s.chunkPackets.order.MoveToFront(elem)
+				s.chunkPackets.mu.Unlock()
+				s.chunkPackets.hits.Add(1)
+				return entry.frame
+			}
+			s.chunkPackets.order.Remove(elem)
+			delete(s.chunkPackets.entries, key)
+		}
+		// 同一区块的编码正在进行：等待结果后重查缓存。
+		if wait, inflight := s.chunkPackets.inflight[key]; inflight {
+			s.chunkPackets.mu.Unlock()
+			<-wait
+			continue
+		}
+		if s.chunkPackets.inflight == nil {
+			s.chunkPackets.inflight = make(map[chunkPacketKey]chan struct{})
+		}
+		done := make(chan struct{})
+		s.chunkPackets.inflight[key] = done
+		s.chunkPackets.mu.Unlock()
+		s.chunkPackets.misses.Add(1)
 
-	buffer := chunkEncodePool.Get().(*[]byte)
-	packet := world.AppendChunkDataPacket((*buffer)[:0], chunk)
-	frame, err := protocol.CompressPacketFrame(packet, compressionThreshold)
-	chunkEncodePool.Put(buffer)
-	if err != nil {
-		// 构造失败只影响该次发送（帧长度受限，实际不可能发生）。
-		slog.Error("构造区块帧失败", "error", err)
-		return nil
+		buffer := chunkEncodePool.Get().(*[]byte)
+		packet := world.AppendChunkDataPacket((*buffer)[:0], chunk)
+		frame, err := protocol.CompressPacketFrame(packet, compressionThreshold)
+		chunkEncodePool.Put(buffer)
+
+		s.chunkPackets.mu.Lock()
+		if err != nil {
+			delete(s.chunkPackets.inflight, key)
+			close(done)
+			s.chunkPackets.mu.Unlock()
+			// 构造失败只影响该次发送（帧长度受限，实际不可能发生）；
+			// 等待者会被唤醒并重试。
+			slog.Error("构造区块帧失败", "error", err)
+			return nil
+		}
+		entry := &chunkPacketEntry{key: key, chunk: chunk, rev: rev, frame: frame}
+		s.chunkPackets.entries[key] = s.chunkPackets.order.PushFront(entry)
+		if s.chunkPackets.order.Len() > chunkPacketCacheMax {
+			oldest := s.chunkPackets.order.Back()
+			s.chunkPackets.order.Remove(oldest)
+			delete(s.chunkPackets.entries, oldest.Value.(*chunkPacketEntry).key)
+		}
+		delete(s.chunkPackets.inflight, key)
+		close(done)
+		s.chunkPackets.mu.Unlock()
+		return frame
 	}
-	entry := &chunkPacketEntry{key: key, chunk: chunk, rev: rev, frame: frame}
-	s.chunkPackets.mu.Lock()
-	s.chunkPackets.entries[key] = s.chunkPackets.order.PushFront(entry)
-	if s.chunkPackets.order.Len() > chunkPacketCacheMax {
-		oldest := s.chunkPackets.order.Back()
-		s.chunkPackets.order.Remove(oldest)
-		delete(s.chunkPackets.entries, oldest.Value.(*chunkPacketEntry).key)
-	}
-	s.chunkPackets.mu.Unlock()
-	return frame
 }
 
 // 区块内存卸载：长时间跑图会让世界内存缓存不断增长，服务器周期性地把
@@ -229,6 +261,12 @@ const (
 	// chunkUnloadMargin 是卸载半径相对视距的余量（区块）。
 	// 大于会话侧的卸载余量（视距+2），避免刚发出的区块立刻被移出缓存。
 	chunkUnloadMargin = 4
+	// defaultChunkUnloadGrace 是区块卸载的默认宽限期：区块连续远离所有
+	// 玩家超过该时长才真正卸载。玩家在视距边缘来回移动（幅度小于阈值、
+	// 时间小于宽限）时不会触发反复的卸载→重加载→写盘。
+	defaultChunkUnloadGrace = 15 * time.Second
+	// defaultDimensionIdleGrace 是无玩家维度释放区块前的默认空闲宽限。
+	defaultDimensionIdleGrace = 30 * time.Second
 )
 
 // chunkUnloadLoop 周期性卸载远离玩家的区块，直到 ctx 取消。
@@ -258,8 +296,12 @@ func (s *Server) chunkUnloadLoop(ctx context.Context) {
 }
 
 // unloadFarChunks 卸载距所有已加入玩家都超出 视距+chunkUnloadMargin 的区块
-// （按维度分别计算中心点）。服务器没有任何已加入玩家时，卸载全部维度的全部
-// 区块并驱逐区块帧缓存（释放内存；下次进入时按需从磁盘加载或重新生成）。
+// （按维度分别计算中心点；连续超出 chunkUnloadGrace 宽限期才真正卸载，
+// 防止玩家在卸载边界来回移动时反复加载/卸载/写盘）。
+// 服务器没有任何已加入玩家时，卸载全部维度的全部区块并驱逐区块帧缓存
+// （释放内存；下次进入时按需从磁盘加载或重新生成）。
+// 已打开但当前无玩家的维度在空闲超过 dimensionIdleGrace 后同样释放全部
+// 区块（玩家切维度/传送后旧维度不会长期占用内存）。
 func (s *Server) unloadFarChunks() error {
 	players := s.playerSnapshot()
 	centers := make(map[world.Dimension][]world.ChunkPos)
@@ -282,25 +324,93 @@ func (s *Server) unloadFarChunks() error {
 	var firstErr error
 	for dim, dimCenters := range centers {
 		gameWorld := s.worldFor(dim)
-		unloaded, err := gameWorld.UnloadFar(dimCenters, s.config.ViewDistance+chunkUnloadMargin)
+		unloaded, err := gameWorld.UnloadFar(dimCenters, s.config.ViewDistance+chunkUnloadMargin, s.chunkUnloadGrace)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		// 区块帧缓存持有 *world.Chunk 指针；卸载后必须同步驱逐，
-		// 否则缓存会阻止已卸载区块被 GC（内存随探索持续增长）。
-		// 漏斗注册同理需要丢弃（内容已随卸载写盘，重新加载时重新读取）。
-		s.dropHoppersInChunks(dim, unloaded)
-		for _, pos := range unloaded {
-			s.evictChunkPacket(dim, pos)
-		}
+		s.releaseChunkCaches(dim, unloaded)
 		if len(unloaded) > 0 {
 			slog.Debug("chunks unloaded", "dimension", dim, "count", len(unloaded))
 		}
 	}
+	s.releaseIdleDimensions(centers)
 	return firstErr
+}
+
+// releaseChunkCaches 在区块卸载后丢弃相关运行时缓存：
+// 区块帧缓存持有 *world.Chunk 指针，不驱逐会阻止已卸载区块被 GC
+// （内存随探索持续增长）；漏斗注册同理需要丢弃（内容已随卸载写盘，
+// 重新加载时重新读取）。
+func (s *Server) releaseChunkCaches(dim world.Dimension, unloaded []world.ChunkPos) {
+	if len(unloaded) == 0 {
+		return
+	}
+	s.dropHoppersInChunks(dim, unloaded)
+	for _, pos := range unloaded {
+		s.evictChunkPacket(dim, pos)
+	}
+}
+
+// releaseIdleDimensions 释放"当前没有任何已加入玩家的已打开维度"的
+// 全部区块：维度首次变为空闲时只记录时间，空闲超过 dimensionIdleGrace
+// 后才真正释放（玩家快速切回维度时无需重建）；宽限 <= 0 时立即释放。
+// active 是有玩家维度的中心点集合。
+func (s *Server) releaseIdleDimensions(active map[world.Dimension][]world.ChunkPos) {
+	s.worldMu.RLock()
+	worlds := make(map[world.Dimension]*world.World, len(s.worlds))
+	for dim, gameWorld := range s.worlds {
+		worlds[dim] = gameWorld
+	}
+	s.worldMu.RUnlock()
+
+	now := time.Now()
+	type releaseTarget struct {
+		dim       world.Dimension
+		gameWorld *world.World
+	}
+	var releases []releaseTarget
+	s.dimIdleMu.Lock()
+	if s.dimIdleSince == nil {
+		s.dimIdleSince = make(map[world.Dimension]time.Time, len(worlds))
+	}
+	for dim, gameWorld := range worlds {
+		if _, inUse := active[dim]; inUse {
+			delete(s.dimIdleSince, dim)
+			continue
+		}
+		if s.dimensionIdleGrace <= 0 {
+			releases = append(releases, releaseTarget{dim: dim, gameWorld: gameWorld})
+			delete(s.dimIdleSince, dim)
+			continue
+		}
+		since, tracked := s.dimIdleSince[dim]
+		if !tracked {
+			// 首次观察到空闲：只记录时间，给玩家快速切回留出宽限。
+			s.dimIdleSince[dim] = now
+			continue
+		}
+		if now.Sub(since) < s.dimensionIdleGrace {
+			continue
+		}
+		releases = append(releases, releaseTarget{dim: dim, gameWorld: gameWorld})
+		delete(s.dimIdleSince, dim)
+	}
+	s.dimIdleMu.Unlock()
+
+	for _, target := range releases {
+		unloaded, err := target.gameWorld.UnloadAll()
+		if err != nil {
+			slog.Error("空闲维度区块释放失败", "dimension", target.dim, "error", err)
+			continue
+		}
+		s.releaseChunkCaches(target.dim, unloaded)
+		if len(unloaded) > 0 {
+			slog.Debug("空闲维度区块已释放", "dimension", target.dim, "count", len(unloaded))
+		}
+	}
 }
 
 // evictChunkPacket 从区块帧缓存移除指定位置（区块卸载时调用）。
@@ -333,10 +443,7 @@ func (s *Server) unloadAllChunks() error {
 			}
 			continue
 		}
-		s.dropHoppersInChunks(dim, unloaded)
-		for _, pos := range unloaded {
-			s.evictChunkPacket(dim, pos)
-		}
+		s.releaseChunkCaches(dim, unloaded)
 		if len(unloaded) > 0 {
 			slog.Info("空闲服务器释放区块", "dimension", dim, "count", len(unloaded))
 		}

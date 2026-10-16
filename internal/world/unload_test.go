@@ -4,7 +4,120 @@
 
 package world
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// TestUnloadFarGraceKeepsRecentlyFarChunks 验证卸载宽限期：区块首次被判定
+// 远离所有玩家后先保留（只记录计时起点），连续远离超过宽限后才真正卸载。
+func TestUnloadFarGraceKeepsRecentlyFarChunks(t *testing.T) {
+	instance, err := Open(t.TempDir(), SeededGenerator{Seed: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+
+	for x := 0; x < 4; x++ {
+		for z := 0; z < 4; z++ {
+			if _, err := instance.Chunk(x, z); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	centers := []ChunkPos{{X: 0, Z: 0}}
+	// 宽限取值远大于两次“立即扫描”之间的耗时（微秒级），避免慢机器上
+	// 调度延迟造成误判。
+	const grace = 500 * time.Millisecond
+
+	// 第一次扫描：远处区块首次判远，进入宽限期（保留）。
+	unloaded, err := instance.UnloadFar(centers, 0, grace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unloaded) != 0 {
+		t.Fatalf("宽限期内卸载了 %d 个区块，want 0", len(unloaded))
+	}
+	// 宽限期内再次扫描：仍保留。
+	unloaded, err = instance.UnloadFar(centers, 0, grace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unloaded) != 0 {
+		t.Fatalf("宽限期内第二次扫描卸载了 %d 个区块，want 0", len(unloaded))
+	}
+
+	// 再次扫描前让近处区块重新变近：宽限计时被清零（远处区块不受影响——
+	// 用 (0,0) 作中心连续扫描验证语义稳定）。
+	if _, err := instance.Chunk(0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// 等待超过宽限后再扫描：远处 15 个区块被卸载，(0,0) 保留。
+	time.Sleep(grace + 100*time.Millisecond)
+	unloaded, err = instance.UnloadFar(centers, 0, grace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 15; len(unloaded) != want {
+		t.Fatalf("超出宽限后卸载 %d 个区块，want %d", len(unloaded), want)
+	}
+	if got := instance.ChunkCount(); got != 1 {
+		t.Fatalf("卸载后 ChunkCount() = %d, want 1", got)
+	}
+}
+
+// TestUnloadFarGraceResetsWhenNear 验证区块重新变近后宽限计时清零：
+// 计时清零后再次远离需要重新计时，不会被旧计时立即卸载。
+// 时序设计不依赖“sleep 不能太久”：宽限内的清零与重新计时通过
+// “首次判远 → 变近 → 立即再判远”的顺序验证，中间的等待只用于超过宽限。
+func TestUnloadFarGraceResetsWhenNear(t *testing.T) {
+	instance, err := Open(t.TempDir(), SeededGenerator{Seed: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+
+	for x := 0; x < 2; x++ {
+		for z := 0; z < 2; z++ {
+			if _, err := instance.Chunk(x, z); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	const grace = 120 * time.Millisecond
+
+	// 步骤 A：中心 (0,0)。(1,1) 首次判远，开始计时 T_A。
+	if _, err := instance.UnloadFar([]ChunkPos{{X: 0, Z: 0}}, 0, grace); err != nil {
+		t.Fatal(err)
+	}
+	// 等待超过宽限：若计时未被清零，后续步骤中 (1,1) 会被判超时。
+	time.Sleep(grace + 30*time.Millisecond)
+
+	// 步骤 B：中心移到 (1,1)。它重新变近（计时清零）；持续远离的
+	// (0,1)/(1,0) 在本次扫描因旧计时超限被卸载。
+	if _, err := instance.UnloadFar([]ChunkPos{{X: 1, Z: 1}}, 0, grace); err != nil {
+		t.Fatal(err)
+	}
+
+	// 步骤 C：中心立刻回到 (0,0)。刚刚（步骤 B）变近的 (1,1) 计时已清零，
+	// 本次只是重新开始计时，必须保留——若仍沿用 T_A 旧计时，这里会被卸载。
+	unloaded, err := instance.UnloadFar([]ChunkPos{{X: 0, Z: 0}}, 0, grace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pos := range unloaded {
+		if pos == (ChunkPos{X: 1, Z: 1}) {
+			t.Fatal("重新变近的区块不应被旧计时卸载（宽限计时未清零）")
+		}
+	}
+	if _, ok := instance.chunks[ChunkPos{X: 1, Z: 1}]; !ok {
+		t.Fatal("(1,1) 应保留在内存中")
+	}
+	if _, ok := instance.chunks[ChunkPos{X: 0, Z: 0}]; !ok {
+		t.Fatal("(0,0) 应保留在内存中")
+	}
+}
 
 // TestUnloadFarUnloadsDistantChunks 验证远离中心点的区块被移出内存缓存，
 // 缓存数量保持有界，且被卸载的区块可从磁盘恢复出与生成器一致的内容。
@@ -28,7 +141,7 @@ func TestUnloadFarUnloadsDistantChunks(t *testing.T) {
 		t.Fatalf("ChunkCount() = %d, want %d", got, size*size)
 	}
 
-	unloaded, err := instance.UnloadFar([]ChunkPos{{X: 3, Z: 3}}, 1)
+	unloaded, err := instance.UnloadFar([]ChunkPos{{X: 3, Z: 3}}, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +186,7 @@ func TestUnloadFarSavesDirtyChunks(t *testing.T) {
 	chunk.SetBlockState(0, y, 0, WaterBlock)
 	instance.MarkDirty(chunk)
 
-	unloaded, err := instance.UnloadFar([]ChunkPos{{X: 50, Z: 50}}, 0)
+	unloaded, err := instance.UnloadFar([]ChunkPos{{X: 50, Z: 50}}, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +222,7 @@ func TestUnloadFarWithoutCentersIsNoop(t *testing.T) {
 	if _, err := instance.Chunk(0, 0); err != nil {
 		t.Fatal(err)
 	}
-	if unloaded, err := instance.UnloadFar(nil, 4); err != nil || len(unloaded) != 0 {
+	if unloaded, err := instance.UnloadFar(nil, 4, 0); err != nil || len(unloaded) != 0 {
 		t.Fatalf("UnloadFar(nil) = (%v, %v), want (nil, nil)", unloaded, err)
 	}
 	if got := instance.ChunkCount(); got != 1 {

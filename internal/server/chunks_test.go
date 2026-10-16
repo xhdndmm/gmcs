@@ -5,6 +5,8 @@
 package server
 
 import (
+	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -201,5 +203,178 @@ func TestIdleServerReleasesChunks(t *testing.T) {
 	}
 	if got := saved.GetBlockState(0, 64, 0); got != world.StoneBlock {
 		t.Fatalf("磁盘上的方块 = %d, want %d", got, world.StoneBlock)
+	}
+}
+
+// TestChunkUnloadGraceWindow 验证服务器卸载宽限：区块首次判远后宽限期内
+// 保留（不卸载），连续超出宽限后才真正释放——玩家在卸载边界来回移动时
+// 不会反复加载/卸载/写盘。
+func TestChunkUnloadGraceWindow(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "Graced")
+	// 宽限取值远大于两次扫描之间的间隔（100ms），慢机器（-race）下
+	// 调度延迟也不会造成“宽限内被误卸载”的误判。
+	instance.chunkUnloadGrace = 400 * time.Millisecond
+	gameWorld := instance.testWorld()
+	nearCount := gameWorld.ChunkCount()
+
+	// 加载一组远离玩家的区块（模拟跑图后离开了该区域）。
+	for i := 0; i < 40; i++ {
+		if _, err := gameWorld.Chunk(100+i, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 第一次扫描：区块首次判远，进入宽限期（保留）。
+	if err := instance.unloadFarChunks(); err != nil {
+		t.Fatal(err)
+	}
+	if got := gameWorld.ChunkCount(); got != nearCount+40 {
+		t.Fatalf("宽限期内 ChunkCount() = %d, want %d", got, nearCount+40)
+	}
+
+	// 宽限期内再次扫描：仍保留（计时未超）。
+	time.Sleep(100 * time.Millisecond)
+	if err := instance.unloadFarChunks(); err != nil {
+		t.Fatal(err)
+	}
+	if got := gameWorld.ChunkCount(); got != nearCount+40 {
+		t.Fatalf("宽限期内第二次扫描后 ChunkCount() = %d, want %d", got, nearCount+40)
+	}
+
+	// 超过宽限后：远处区块被释放，玩家附近区块保留。
+	time.Sleep(450 * time.Millisecond)
+	if err := instance.unloadFarChunks(); err != nil {
+		t.Fatal(err)
+	}
+	if got := gameWorld.ChunkCount(); got != nearCount {
+		t.Fatalf("超出宽限后 ChunkCount() = %d, want %d", got, nearCount)
+	}
+}
+
+// TestIdleDimensionReleasedAfterGrace 验证无玩家维度的延迟释放：玩家在
+// 其他维度时，空闲维度的全部区块（含脏区块写盘）在宽限到期后被释放，
+// 玩家所在维度的区块不受影响。
+func TestIdleDimensionReleasedAfterGrace(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "DimensionHopper")
+	// 宽限设为 0：单次扫描即视为“空闲超时”，行为等价且测试无需等待。
+	instance.dimensionIdleGrace = 0
+
+	nether := instance.worldFor(world.DimensionNether)
+	if nether == nil {
+		t.Fatal("下界世界不可用")
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := nether.Chunk(i, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := nether.ChunkCount(); got != 3 {
+		t.Fatalf("下界 ChunkCount() = %d, want 3", got)
+	}
+	overworldCount := instance.testWorld().ChunkCount()
+	if overworldCount == 0 {
+		t.Fatal("主世界应已加载玩家附近区块")
+	}
+
+	// 玩家仍在主世界：下界无玩家 → 空闲释放；主世界区块保留。
+	if err := instance.unloadFarChunks(); err != nil {
+		t.Fatal(err)
+	}
+	if got := nether.ChunkCount(); got != 0 {
+		t.Fatalf("空闲下界未释放区块：ChunkCount() = %d", got)
+	}
+	if got := instance.testWorld().ChunkCount(); got != overworldCount {
+		t.Fatalf("玩家所在维度区块不应被释放：%d → %d", overworldCount, got)
+	}
+
+	// 释放后的下界可重新加载（按需从磁盘恢复）。
+	reloaded, err := nether.Chunk(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded == nil {
+		t.Fatal("重新加载下界区块返回 nil")
+	}
+}
+
+// TestChunkPrefetchExtraRing 验证预取范围比发送范围多一圈：进入世界后
+// 视距+1 环带的区块已在后台加载（跨区块时发送路径无需等待磁盘/生成器）。
+func TestChunkPrefetchExtraRing(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "Prefetcher") // joinServer 内部把视距设为 2
+	player := findSession(t, instance, "Prefetcher")
+	gameWorld := instance.testWorld()
+
+	x, _, z, _, _ := player.playerPosition()
+	centerChunkX := int(math.Floor(x)) >> 4
+	centerChunkZ := int(math.Floor(z)) >> 4
+	// 视距 2，预取半径 3：检查半径 3 的环带区块（视距之外、预取之内）。
+	blockX := (centerChunkX + 3) * 16
+	blockZ := centerChunkZ * 16
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if gameWorld.ChunkLoaded(blockX, blockZ) {
+			return // 预取完成
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("视距+1 环带区块未被预取（跨区块时会发生同步等待）")
+}
+
+// TestChunkPacketSingleflight 验证同一区块的并发未命中请求只编码一次：
+// 全部调用者领取同一份共享帧（并发进入世界的玩家不会重复编码/压缩）。
+func TestChunkPacketSingleflight(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "Stormer")
+	gameWorld := instance.testWorld()
+
+	pos := world.ChunkPos{X: 120, Z: 120}
+	chunk, err := gameWorld.Chunk(pos.X, pos.Z)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dim := world.DimensionOverworld
+
+	const workers = 8
+	frames := make([][]byte, workers)
+	missesBefore := instance.chunkPackets.misses.Load()
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			frames[index] = instance.chunkPacket(dim, pos, chunk)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if got := instance.chunkPackets.misses.Load() - missesBefore; got != 1 {
+		t.Fatalf("并发请求编码了 %d 次，want 1（singleflight 未合并）", got)
+	}
+	base := frames[0]
+	if len(base) == 0 {
+		t.Fatal("chunkPacket 返回空帧")
+	}
+	for i, frame := range frames {
+		if len(frame) == 0 {
+			t.Fatalf("调用者 %d 收到空帧", i)
+		}
+		if &frame[0] != &base[0] {
+			t.Fatalf("调用者 %d 未领取共享帧（重复编码/分配）", i)
+		}
 	}
 }

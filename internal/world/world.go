@@ -660,16 +660,33 @@ func (w *World) Flush() error {
 // UnloadFar 把距所有中心点都超过 radius 的区块移出内存缓存
 // （切比雪夫距离，单位：区块），返回被卸载的区块位置。
 //
-// 待保存的区块会被先编码并在锁外写盘；保存失败时保留内存中的区块并重新
-// 标记为待保存（返回错误）。与 Chunk 并发调用是安全的：已由调用方持有的
-// *Chunk 指针仍然有效，后续访问同一位置会从磁盘或生成器重新加载。
-// 没有中心点时不做任何事（UnloadAll 用于释放全部区块）。
-func (w *World) UnloadFar(centers []ChunkPos, radius int) ([]ChunkPos, error) {
+// grace 是卸载宽限期：区块首次被判定为“远离所有玩家”后先保留 grace
+// 时长（期间玩家回头不会触发卸载→重加载的循环与重复写盘），持续超出后
+// 才真正卸载；宽限期内重新变近会清零计时；grace <= 0 时立即卸载。
+//
+// 待保存的区块会被先编码（锁外）并写盘；保存或编码失败时保留内存中的
+// 区块并重新标记为待保存（返回错误）。与 Chunk 并发调用是安全的：
+// 已由调用方持有的 *Chunk 指针仍然有效，后续访问同一位置会从磁盘或
+// 生成器重新加载。没有中心点时不做任何事（UnloadAll 用于释放全部区块）。
+func (w *World) UnloadFar(centers []ChunkPos, radius int, grace time.Duration) ([]ChunkPos, error) {
 	if len(centers) == 0 {
 		return nil, nil
 	}
-	return w.unloadChunks(func(pos ChunkPos) bool {
-		return withinAny(pos, centers, radius)
+	now := time.Now()
+	return w.unloadChunks(func(pos ChunkPos, chunk *Chunk) bool {
+		if withinAny(pos, centers, radius) {
+			chunk.farSince.Store(0)
+			return true
+		}
+		if grace <= 0 {
+			return false
+		}
+		since := chunk.farSince.Load()
+		if since == 0 {
+			chunk.farSince.Store(now.UnixNano())
+			return true
+		}
+		return now.Sub(time.Unix(0, since)) < grace
 	})
 }
 
@@ -681,46 +698,71 @@ func (w *World) UnloadAll() ([]ChunkPos, error) {
 }
 
 // unloadChunks 卸载 keep 返回 false 的全部区块；keep 为 nil 时卸载全部。
+// keep 在持有世界锁时按（位置, 区块）调用（供调用方维护区块上的卸载状态）。
+//
+// 脏区块的编码（zlib 压缩，单区块数百微秒）在世界锁外执行：先快照候选
+// 列表，锁外编码，重新取锁后复查脏标记与保存结果再删除——卸载不会长
+// 时间阻塞实体 Tick 与世界查询。
 // 与 Flush/Close 共用 unloadMu 保证不会在最终保存之后残留未保存数据。
-func (w *World) unloadChunks(keep func(ChunkPos) bool) ([]ChunkPos, error) {
+func (w *World) unloadChunks(keep func(pos ChunkPos, chunk *Chunk) bool) ([]ChunkPos, error) {
 	w.unloadMu.Lock()
 	defer w.unloadMu.Unlock()
 
+	type unloadItem struct {
+		pos   ChunkPos
+		chunk *Chunk
+		// dirty 是快照时的待保存标记；chunk 置 nil 表示编码失败（跳过卸载）。
+		dirty bool
+	}
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
 		return nil, fmt.Errorf("世界已关闭")
 	}
-	var (
-		candidates []ChunkPos
-		payloads   = make(map[ChunkPos][]byte)
-		encodeErr  error
-	)
+	candidates := make([]unloadItem, 0, len(w.chunks))
 	for pos, chunk := range w.chunks {
-		if keep != nil && keep(pos) {
+		if keep != nil && keep(pos, chunk) {
 			continue
 		}
-		candidates = append(candidates, pos)
-		if _, dirty := w.dirty[pos]; dirty {
-			compressed, err := encodeCompressedChunkPayload(chunk)
-			if err != nil {
-				// 保留在内存中并保持待保存，避免丢失修改。
-				if encodeErr == nil {
-					encodeErr = fmt.Errorf("区块 (%d,%d) 编码失败：%w", pos.X, pos.Z, err)
-				}
-				continue
-			}
-			payloads[pos] = compressed
-			delete(w.dirty, pos)
-		}
+		_, dirty := w.dirty[pos]
+		candidates = append(candidates, unloadItem{pos: pos, chunk: chunk, dirty: dirty})
 	}
 	w.mu.Unlock()
 
+	// 锁外编码待保存的区块（与 Flush 相同的模式）。
+	payloads := make(map[ChunkPos][]byte)
+	var encodeErr error
+	for i := range candidates {
+		item := &candidates[i]
+		if !item.dirty {
+			continue
+		}
+		compressed, err := encodeCompressedChunkPayload(item.chunk)
+		if err != nil {
+			// 保留在内存中并保持待保存，避免丢失修改。
+			if encodeErr == nil {
+				encodeErr = fmt.Errorf("区块 (%d,%d) 编码失败：%w", item.pos.X, item.pos.Z, err)
+			}
+			item.chunk = nil
+			continue
+		}
+		payloads[item.pos] = compressed
+	}
+
 	if len(payloads) > 0 {
+		// 编码成功即视为已保存版本：先清除待保存标记，之后若区块再被修改
+		// （MarkDirty 重新置位）会在最终复查中检测到并保留在内存中。
+		w.mu.Lock()
+		for pos := range payloads {
+			delete(w.dirty, pos)
+		}
+		w.mu.Unlock()
+
 		w.saveMu.Lock()
 		err := SavePayloads(w.dir, payloads)
 		w.saveMu.Unlock()
 		if err != nil {
+			// 保存失败：恢复待保存标记，区块保留在内存（不删除任何区块）。
 			w.mu.Lock()
 			for pos := range payloads {
 				w.dirty[pos] = struct{}{}
@@ -732,14 +774,18 @@ func (w *World) unloadChunks(keep func(ChunkPos) bool) ([]ChunkPos, error) {
 
 	w.mu.Lock()
 	unloaded := make([]ChunkPos, 0, len(candidates))
-	for _, pos := range candidates {
-		if _, dirty := w.dirty[pos]; dirty {
-			// 编码后又发生修改（或编码失败）：保留在内存中，等待下一次卸载/保存。
+	for _, item := range candidates {
+		if item.chunk == nil {
 			continue
 		}
-		if _, ok := w.chunks[pos]; ok {
-			delete(w.chunks, pos)
-			unloaded = append(unloaded, pos)
+		if _, dirty := w.dirty[item.pos]; dirty {
+			// 编码后又发生修改（或编码/保存失败）：保留在内存中，
+			// 等待下一次卸载/保存。
+			continue
+		}
+		if _, ok := w.chunks[item.pos]; ok {
+			delete(w.chunks, item.pos)
+			unloaded = append(unloaded, item.pos)
 		}
 	}
 	w.mu.Unlock()
