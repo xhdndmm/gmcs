@@ -37,29 +37,34 @@ const (
 	itemDespawnTicks = 6000
 	// itemGravityPerTick 是每 tick 的重力速度增量（方块/tick）。
 	itemGravityPerTick = 0.04
-	// itemAirDrag 是空中每 tick 的速度衰减。
+	// itemAirDrag 是空中每 tick 的水平速度衰减（原版 air friction 0.98）
+	// 与垂直速度衰减（原版每 tick y ×0.98）。
 	itemAirDrag = 0.98
-	// itemGroundFriction 是落地后水平速度的衰减。
+	// itemGroundFriction 是落地时脚下方块的默认摩擦系数
+	// （原版 slipperiness，普通方块 0.6）。
 	itemGroundFriction = 0.6
 	// itemMinVelocity 是水平速度归零阈值（方块/tick）。
 	itemMinVelocity = 0.001
-	// itemTerminalVelocity 是下落速度上限（方块/tick，近似）。
-	itemTerminalVelocity = -1.6
 	// itemPickupRange 是可拾取的水平距离（方块）。
 	itemPickupRange = 1.0
 	// itemPickupVerticalRange 是可拾取的垂直距离（方块）。
 	itemPickupVerticalRange = 1.5
 	// itemMergeRange 是周期合并的检查距离（方块）。
 	itemMergeRange = 0.5
-	// itemMergeIntervalTicks 是合并检查的间隔（与原版一致：每 4 tick）。
-	itemMergeIntervalTicks = 4
+	// itemMergeIntervalMoving 是跨方块边界移动时的合并检查间隔（原版 tickCount % 2）。
+	itemMergeIntervalMoving = 2
+	// itemMergeIntervalStationary 是静止时的合并检查间隔（原版 tickCount % 40）。
+	itemMergeIntervalStationary = 40
+	// itemWaterDrag 是水中每 tick 的水平速度衰减（原版 ItemEntity.u() ×0.99）。
+	itemWaterDrag = 0.99
+	// itemWaterBuoyancy 是水中每 tick 的向上速度增量（原版 5.0E-4，仅当垂直速度
+	// 低于 itemWaterBuoyancyThreshold 时累加）。
+	itemWaterBuoyancy = 5.0e-4
+	// itemWaterBuoyancyThreshold 是水中浮力提速的速度阈值（原版 0.06）。
+	itemWaterBuoyancyThreshold = 0.06
 	// 掉落物碰撞盒（与原版 ItemEntity 一致：0.25 见方）。
 	itemHalfWidth = 0.125
 	itemHeight    = 0.25
-	// itemWaterBuoyancy 是水中每 tick 的向上速度增量。
-	itemWaterBuoyancy = 0.02
-	// itemWaterDrag 是水中每 tick 的速度衰减。
-	itemWaterDrag = 0.8
 )
 
 // itemEntity 是一个掉落物。字段由 Server.entityMu 保护。
@@ -194,25 +199,24 @@ func itemBoxAt(x, y, z float64) world.Box {
 	}
 }
 
-// itemCollides 报告掉落物碰撞盒是否与方块碰撞形状相交（形状级 AABB，
-// 支持半砖/台阶/栅栏等非完整碰撞体）。
-func itemCollides(w *world.World, x, y, z float64) bool {
-	return w.Collides(itemBoxAt(x, y, z))
-}
-
-// moveItemAxis 沿单轴推进掉落物，被碰撞形状裁剪（扫描式逐轴碰撞，
-// 与原版 ItemEntity 一致）。返回是否发生碰撞。仅由 tickItems 调用。
-func moveItemAxis(w *world.World, e *itemEntity, axis int, delta float64) bool {
-	clipped := w.ClipMove(itemBoxAt(e.X, e.Y, e.Z), axis, delta)
-	switch axis {
-	case 0:
-		e.X += clipped
-	case 1:
-		e.Y += clipped
-	case 2:
-		e.Z += clipped
+// itemBlockFriction 返回掉落物脚下方块的摩擦系数（原版 BlockBehaviour 的
+// slipperiness：冰/浮冰/霜冰 0.98、蓝冰 0.989、粘液块 0.8，其余默认 0.6）。
+func itemBlockFriction(s *Server, w *world.World, e *itemEntity) float64 {
+	state := w.BlockAt(int(math.Floor(e.X)), int(math.Floor(e.Y))-1, int(math.Floor(e.Z)))
+	name, ok := s.blockNameOf(state)
+	if !ok {
+		return itemGroundFriction
 	}
-	return clipped != delta
+	switch name {
+	case "minecraft:ice", "minecraft:packed_ice", "minecraft:frosted_ice":
+		return 0.98
+	case "minecraft:blue_ice":
+		return 0.989
+	case "minecraft:slime_block":
+		return 0.8
+	default:
+		return itemGroundFriction
+	}
 }
 
 // itemHazardState 报告掉落物所在位置的方块状态是否为破坏性方块
@@ -376,63 +380,80 @@ func (s *Server) tickItems(players []*session) {
 			removals = append(removals, id)
 			continue
 		}
-		// 周期合并（每 4 tick，与原版一致）：本帧首次合并前惰性重建空间索引。
-		if e.AgeTicks%itemMergeIntervalTicks == 0 {
+		startX, startY, startZ := e.X, e.Y, e.Z
+		inWater := isWaterState(state)
+		if inWater {
+			// 水流推动（原版 Entity.updateFluidHeightAndDoFluidPushing + FlowingFluid.getFlow）。
+			flowX, flowY, flowZ := s.itemWaterFlowPush(w, itemBoxAt(e.X, e.Y, e.Z), e.VelX, e.VelZ)
+			e.VelX += flowX
+			e.VelY += flowY
+			e.VelZ += flowZ
+			// 原版 ItemEntity.u()：水平 ×0.99、垂直提速 5.0E-4（仅当垂直速度低于
+			// 0.06）；水中不减重力、不做垂直阻尼。
+			e.VelX *= itemWaterDrag
+			e.VelZ *= itemWaterDrag
+			if e.VelY < itemWaterBuoyancyThreshold {
+				e.VelY += itemWaterBuoyancy
+			}
+		} else {
+			e.VelY -= itemGravityPerTick
+		}
+		// 逐轴移动（Y → X → Z，与原版一致）：速度取碰撞裁剪后的实际位移
+		// （原版 Entity.move 之后 deltaMovement 即为裁剪结果）。
+		clippedY := w.ClipMove(itemBoxAt(e.X, e.Y, e.Z), 1, e.VelY)
+		e.Y += clippedY
+		landed := e.VelY < 0 && clippedY != e.VelY
+		e.VelY = clippedY
+		if math.Abs(e.VelX) > itemMinVelocity {
+			if s.insideBorder(e.X+e.VelX, e.Z) {
+				clipped := w.ClipMove(itemBoxAt(e.X, e.Y, e.Z), 0, e.VelX)
+				e.X += clipped
+				e.VelX = clipped
+			} else {
+				e.VelX = 0
+			}
+		}
+		if math.Abs(e.VelZ) > itemMinVelocity {
+			if s.insideBorder(e.X, e.Z+e.VelZ) {
+				clipped := w.ClipMove(itemBoxAt(e.X, e.Y, e.Z), 2, e.VelZ)
+				e.Z += clipped
+				e.VelZ = clipped
+			} else {
+				e.VelZ = 0
+			}
+		}
+		// 摩擦与反弹（原版 tick 尾部）：水平摩擦 = 落地时 脚下方块摩擦 ×0.98、
+		// 否则 0.98（冰面更滑）；垂直恒 ×0.98；落地且仍在下落时垂直速度 ×-0.5。
+		friction := itemAirDrag
+		if landed {
+			friction = itemBlockFriction(s, w, e) * itemAirDrag
+		}
+		e.VelX *= friction
+		e.VelZ *= friction
+		e.VelY *= itemAirDrag
+		if landed && e.VelY < 0 {
+			e.VelY *= -0.5
+		}
+		if math.Abs(e.VelX) <= itemMinVelocity {
+			e.VelX = 0
+		}
+		if math.Abs(e.VelZ) <= itemMinVelocity {
+			e.VelZ = 0
+		}
+		// 周期合并（原版：跨方块边界移动时每 2 tick 检查、静止时每 40 tick）：
+		// 本帧首次合并前惰性重建空间索引。
+		mergeInterval := itemMergeIntervalStationary
+		if int(math.Floor(startX)) != int(math.Floor(e.X)) ||
+			int(math.Floor(startY)) != int(math.Floor(e.Y)) ||
+			int(math.Floor(startZ)) != int(math.Floor(e.Z)) {
+			mergeInterval = itemMergeIntervalMoving
+		}
+		if e.AgeTicks%mergeInterval == 0 {
 			if !mergeIndexBuilt {
 				s.rebuildItemMergeIndex()
 				mergeIndexBuilt = true
 			}
 			updates, removals = s.mergeItems(e, updates, removals)
-		}
-
-		startX, startY, startZ := e.X, e.Y, e.Z
-		inWater := isWaterState(state)
-		if inWater {
-			// 水流推动（原版 Entity.updateFluidHeightAndDoFluidPushing + FlowingFluid.getFlow），
-			// 再叠加漂浮与强阻力。
-			flowX, flowY, flowZ := s.itemWaterFlowPush(w, itemBoxAt(e.X, e.Y, e.Z), e.VelX, e.VelZ)
-			e.VelX += flowX
-			e.VelY += flowY
-			e.VelZ += flowZ
-			e.VelY += itemWaterBuoyancy
-			if e.VelY > 0.1 {
-				e.VelY = 0.1
-			}
-			e.VelX *= itemWaterDrag
-			e.VelZ *= itemWaterDrag
-		} else {
-			e.VelY -= itemGravityPerTick
-			if e.VelY < itemTerminalVelocity {
-				e.VelY = itemTerminalVelocity
-			}
-		}
-		// 逐轴移动（Y → X → Z，与原版一致）：碰撞时沿该轴停下。
-		if moveItemAxis(w, e, 1, e.VelY) {
-			e.VelY = 0
-		}
-		if math.Abs(e.VelX) > itemMinVelocity {
-			if !s.insideBorder(e.X+e.VelX, e.Z) || moveItemAxis(w, e, 0, e.VelX) {
-				e.VelX = 0
-			}
-		}
-		if math.Abs(e.VelZ) > itemMinVelocity {
-			if !s.insideBorder(e.X, e.Z+e.VelZ) || moveItemAxis(w, e, 2, e.VelZ) {
-				e.VelZ = 0
-			}
-		}
-		// 速度衰减：空中弱阻尼，落地/水中强摩擦。
-		if !inWater && !itemCollides(w, e.X, e.Y-0.05, e.Z) {
-			e.VelX *= itemAirDrag
-			e.VelZ *= itemAirDrag
-		} else {
-			e.VelX *= itemGroundFriction
-			e.VelZ *= itemGroundFriction
-			if math.Abs(e.VelX) <= itemMinVelocity {
-				e.VelX = 0
-			}
-			if math.Abs(e.VelZ) <= itemMinVelocity {
-				e.VelZ = 0
-			}
 		}
 		if e.Y < float64(world.WorldMinY)-16 {
 			delete(s.items, id)

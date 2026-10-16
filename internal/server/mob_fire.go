@@ -5,8 +5,6 @@
 package server
 
 import (
-	"math"
-
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 	"gmcs/internal/world"
@@ -22,9 +20,10 @@ import (
 // 着火状态通过实体共享标志（Set Entity Data 索引 0 的 bit0）同步给附近玩家，
 // 变化时才发送；随 entities.json 持久化（原版实体存档的 Fire 字段）。
 //
-// 近似与限制：gmcs 没有实体碰撞盒相交判定，用“脚部方块或上方一格方块”是否为
-// 火/岩浆代替（与玩家环境效果同一约定）；没有天气（原版雨水会熄灭着火）；
-// gmcs 的生物种类均无火免（原版烈焰人等火免生物未实现）。
+// 判定范围：扫描生物碰撞盒覆盖的方块（收缩 1e-7，与原版
+// Entity.checkInsideBlocks 对 AABB 的处理一致），而不是只看脚部与上方一格。
+// 生物碰撞盒为统一的 0.6×1.95（僵尸尺寸，见 mobBox）；没有天气（原版雨水
+// 会熄灭着火）；gmcs 的生物种类均无火免（原版烈焰人等火免生物未实现）。
 const (
 	// mobFireBlockTicks 是站在火方块上点燃的时长（原版 igniteForSeconds(8)）。
 	mobFireBlockTicks = 8 * 20
@@ -52,21 +51,8 @@ func (s *Server) tickMobEnvironment(w *world.World, m *mob) (env mobEnvironment,
 	if w == nil || m.Dead {
 		return mobEnvironment{}, false
 	}
-	blockX, blockY, blockZ := int(math.Floor(m.X)), int(math.Floor(m.Y)), int(math.Floor(m.Z))
-	// 脚部与上方一格各读一次方块状态（一次加锁的按列读取，与玩家环境效果同一约定）。
-	var pair [2]uint16
-	read := w.LoadedColumn(blockX, blockY, blockY+1, blockZ, pair[:])
-	feet := uint16(world.AirBlock)
-	upper := uint16(world.AirBlock)
-	if read > 0 {
-		feet = pair[0]
-	}
-	if read > 1 {
-		upper = pair[1]
-	}
-	inLava := isLavaState(feet) || isLavaState(upper)
-	inWater := isWaterState(feet) || isWaterState(upper)
-	inFire := isFireBlockState(feet) || isFireBlockState(upper)
+	// 扫描碰撞盒覆盖的方块（按列批量读取；盒最多 2×2 列、每列 1–3 层）。
+	inFire, inWater, inLava := environmentInBox(w, mobBox(m.X, m.Y, m.Z))
 
 	env = mobEnvironment{dim: m.Dim, kind: m.Kind, x: m.X, z: m.Z}
 

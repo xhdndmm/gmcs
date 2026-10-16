@@ -841,6 +841,31 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 尚未验证：真实正版客户端的多人可见性肉眼验证与 100 玩家 loopback 压测的
 重跑（代码路径不涉及协议格式变化，协议内容与既有 Add/Remove 包一致）。
 
+### 3.24 掉落物物理对齐与环境判定改造的成本（本批，实测）
+
+掉落物运动改为逐轴 `ClipMove` 后直接取裁剪速度（原版 `Entity.move` 语义），
+不再需要“下一 tick 是否贴地”的额外 `Collides` 探测（原实现每 tick 多一次
+包围盒形状查询）；合并检查也从“固定每 4 tick”改为原版节奏（跨方块边界移动时
+每 2 tick、静止时每 40 tick），静止掉落物的合并扫描次数下降到原来的 1/10。
+
+| 基准 | 改造前（3.23 记录） | 现在 |
+| --- | --- | --- |
+| `BenchmarkItemTick`（128 掉落物、无玩家） | ≈40 µs/op | ≈31 µs/op（约 -22%） |
+| `BenchmarkItemWaterFlowPush`（水道推动） | ≈0.39 µs/op | ≈0.41 µs/op（噪声级） |
+| `BenchmarkItemMergeScan` | 未单列旧值 | ≈224 µs/op（扫描规模与场景相关） |
+
+环境判定（火/水/岩浆）从“单列两格 `BlockAt`”改为“碰撞盒覆盖方块按列批量读取”
+（玩家 1.8 高、0.6 宽：盒在位内时 1 列 2–3 层，贴在方块边缘时最多 2×2 列），
+常见情形读取量与原先相当，边缘情形少量增加（每实体每 tick 至多几次列读取）。
+
+正确性：`./scripts/test.sh`（含 `-race`）全绿；新增
+`TestItemWaterMotionVanilla`（水中水平 0.99×0.98、垂直 5.0E-4×0.98、超阈值
+不加浮力）、`TestItemBounceAndSettleVanilla`（落地反弹后静止于地面）、
+`TestItemFrictionOnIceVanilla`（冰面明显比石面滑）、
+`TestEnvironmentBoxOverlapIgnites`/`TestEnvironmentBoxDoesNotOverreach`
+（盒子边缘相交点燃、不重叠不点燃）。尚未验证：与原版服务端逐 tick 对比
+掉落物轨迹与合并时序未做。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

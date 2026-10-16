@@ -58,11 +58,10 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 		return
 	}
 	x, y, z, _, _ := s.playerPosition()
-	inLava := fluidKindAt(w, x, y, z) == lavaBlockName || fluidKindAt(w, x, y+1, z) == lavaBlockName
-	inWater := fluidKindAt(w, x, y, z) == waterBlockName || fluidKindAt(w, x, y+1, z) == waterBlockName
-	// 火/灵魂火方块（原版 BaseFireBlock 的方块内效果；用脚部与上方一格代替碰撞盒相交）。
-	inFire := isFireBlockState(w.BlockAt(int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z)))) ||
-		isFireBlockState(w.BlockAt(int(math.Floor(x)), int(math.Floor(y))+1, int(math.Floor(z))))
+	// 火/水/岩浆判定：扫描玩家碰撞盒覆盖的方块（收缩 1e-7，与原版
+	// Entity.checkInsideBlocks 的“与方块立方体严格重叠”一致），
+	// 而不是只看脚部与上方一格。
+	inFire, inWater, inLava := environmentInBox(w, playerBox(x, y, z))
 
 	// 岩浆：点燃 15 秒 + 结算岩浆伤害（无敌帧限制频率）。
 	if inLava {
@@ -150,6 +149,54 @@ func fluidKindAt(w *world.World, x, y, z float64) string {
 		return lavaBlockName
 	}
 	return ""
+}
+
+// entityBlockSpan 返回实体盒覆盖的方块坐标范围（盒内收 1e-7，与原版
+// Entity.checkInsideBlocks 对 AABB 的处理一致：与方块立方体严格重叠的
+// 方块才会触发方块内效果）。
+func entityBlockSpan(box world.Box) (x0, y0, z0, x1, y1, z1 int) {
+	const epsilon = 1e-7
+	x0 = int(math.Floor(box.MinX + epsilon))
+	y0 = int(math.Floor(box.MinY + epsilon))
+	z0 = int(math.Floor(box.MinZ + epsilon))
+	x1 = int(math.Floor(box.MaxX - epsilon))
+	y1 = int(math.Floor(box.MaxY - epsilon))
+	z1 = int(math.Floor(box.MaxZ - epsilon))
+	return x0, y0, z0, x1, y1, z1
+}
+
+// environmentInBox 扫描实体盒覆盖的方块，报告是否包含火/灵魂火、
+// 水或岩浆（任意等级）。每 (x,z) 列做一次按列批量读取
+// （玩家/生物盒最多覆盖 2×2 列、每列 1–3 层）。
+func environmentInBox(w *world.World, box world.Box) (inFire, inWater, inLava bool) {
+	if w == nil {
+		return false, false, false
+	}
+	x0, y0, z0, x1, y1, z1 := entityBlockSpan(box)
+	var buf [8]uint16
+	for x := x0; x <= x1; x++ {
+		for z := z0; z <= z1; z++ {
+			for y := y0; y <= y1; y += len(buf) {
+				to := y + len(buf) - 1
+				if to > y1 {
+					to = y1
+				}
+				n := w.LoadedColumn(x, y, to, z, buf[:to-y+1])
+				for i := 0; i < n; i++ {
+					state := buf[i]
+					switch {
+					case isFireBlockState(state):
+						inFire = true
+					case isWaterState(state):
+						inWater = true
+					case isLavaState(state):
+						inLava = true
+					}
+				}
+			}
+		}
+	}
+	return inFire, inWater, inLava
 }
 
 // headInWater 报告玩家眼睛位置浸水（原版溺水判定按眼睛；任意等级的水）。

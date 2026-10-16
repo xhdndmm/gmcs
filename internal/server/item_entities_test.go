@@ -73,8 +73,16 @@ func TestPlayerDropItem(t *testing.T) {
 	if count := slotCount(t, invPacket); count != 0 {
 		t.Fatalf("inventory after drop stack = %d, want empty", count)
 	}
-	// 合并为周期检查（每 4 tick）：推进到合并帧后应只剩一个实体。
-	for i := 0; i < itemMergeIntervalTicks; i++ {
+	// 合并为周期检查（原版：跨方块边界移动时每 2 tick、静止时每 40 tick）。
+	// 两个堆叠抛出后一起飞行/下落，合并帧很快到来；最多推进 39 tick，
+	// 避免拾取延迟（40）到期把物品捡回背包。
+	for i := 0; i < itemMergeIntervalStationary-1; i++ {
+		instance.entityMu.Lock()
+		merged := len(instance.items) == 1
+		instance.entityMu.Unlock()
+		if merged {
+			break
+		}
 		instance.tick()
 	}
 	if stack := player.inventory.Get(item.SlotHotbarStart); !stack.IsEmpty() {
@@ -159,8 +167,14 @@ func TestItemMergeOverflow(t *testing.T) {
 	expectPlayPacket(t, conn, protocol.PlayPacketIDAddEntity)
 	expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
 
-	// 周期合并（每 4 tick）：合并为 64 + 6。
-	for i := 0; i < itemMergeIntervalTicks; i++ {
+	// 周期合并：两个静止堆叠在 age % 40 == 0 的帧合并（原版静止间隔）。
+	// 把拾取延迟调高避免 40 tick 后拾取改变断言（合并本身不看拾取延迟）。
+	instance.entityMu.Lock()
+	for _, e := range instance.items {
+		e.PickupDelayTicks = 100 * itemPickupDelayPlayer
+	}
+	instance.entityMu.Unlock()
+	for i := 0; i < itemMergeIntervalStationary; i++ {
 		instance.tick()
 	}
 
@@ -268,8 +282,15 @@ func TestItemMergeAcrossBuckets(t *testing.T) {
 		t.Fatal("spawnItem returned nil")
 	}
 
-	// 周期合并（每 4 tick）。
-	for i := 0; i < itemMergeIntervalTicks; i++ {
+	// 合并为周期检查（原版：移动中每 2 tick、静止每 40 tick）：两个堆叠
+	// 下落时跨越方块边界，合并帧很快出现；上限一个静止周期。
+	for i := 0; i < itemMergeIntervalStationary; i++ {
+		instance.entityMu.Lock()
+		merged := len(instance.items) == 1
+		instance.entityMu.Unlock()
+		if merged {
+			break
+		}
 		instance.tick()
 	}
 
@@ -303,7 +324,13 @@ func TestItemMergeStableWithFullStack(t *testing.T) {
 		}
 	}
 
-	for i := 0; i < itemMergeIntervalTicks; i++ {
+	for i := 0; i < itemMergeIntervalStationary; i++ {
+		instance.entityMu.Lock()
+		settled := len(instance.items) == 2
+		instance.entityMu.Unlock()
+		if settled {
+			break
+		}
 		instance.tick()
 	}
 	assertItemTotals := func(round string) {
@@ -321,8 +348,9 @@ func TestItemMergeStableWithFullStack(t *testing.T) {
 	}
 	assertItemTotals("首轮合并后")
 
-	// 再推进一个合并周期：满堆叠不再吸收、残留堆叠无可合并对象，计数必须不变。
-	for i := 0; i < itemMergeIntervalTicks; i++ {
+	// 再推进一个完整静止周期（40 tick）：满堆叠不再吸收、残留堆叠无可合并对象，
+	// 计数必须不变。
+	for i := 0; i < itemMergeIntervalStationary; i++ {
 		instance.tick()
 	}
 	assertItemTotals("次轮合并后")
