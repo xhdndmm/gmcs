@@ -125,9 +125,12 @@ func (s *Server) spawnItem(dim world.Dimension, stack item.Stack, x, y, z, vx, v
 	meta := protocol.EncodeEntityMetadataItem(e.ID, stack.AppendSlot(nil))
 	s.entityMu.Lock()
 	s.items[e.ID] = e
+	targets := s.markTrackedNearbyLocked(dim, x, z, nil, e.ID)
 	s.entityMu.Unlock()
-	s.writeToNearbyPlayers(add, dim, x, z, nil)
-	s.writeToNearbyPlayers(meta, dim, x, z, nil)
+	for _, player := range targets {
+		player.tryWrite(add)
+		player.tryWrite(meta)
+	}
 	return e
 }
 

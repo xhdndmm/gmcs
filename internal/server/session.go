@@ -1179,8 +1179,13 @@ func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch fl
 	s.resetFallState()
 
 	if previous != dim {
-		// 旧维度的玩家实体隐藏。
+		// 世界重建窗口：客户端在收到 Respawn 后会清空实体列表，
+		// 期间暂停实体跟踪，完成全部重置包后 resume 并统一补发。
+		s.server.suspendEntityTracking(s)
+		// 旧维度的玩家实体隐藏，并从全部跟踪集中移除（与 Remove 广播
+		// 同语义：观察者如重新接近会得到全新的 Add Entity）。
 		s.server.broadcastPlayerRemoveFrom(s, previous)
+		s.server.untrackEntityEverywhere(s.entityID)
 		s.setDimension(dim)
 	}
 
@@ -1211,10 +1216,10 @@ func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch fl
 		if dim == world.DimensionOverworld {
 			s.tryWrite(protocol.EncodeUpdateTime(s.server.worldAge.Load(), s.server.worldAge.Load()%worldDayLength, true))
 		}
+		// 跟踪集切换到新维度并恢复；随后一帧统一补发范围内的实体。
+		s.server.resumeEntityTracking(s, dim)
 		// 新维度的玩家实体注册给附近玩家（含装备）。
-		s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), dim, x, z, s)
-		s.server.writeToNearbyPlayers(s.server.playerSkinPacket(s), dim, x, z, s)
-		s.server.writeToNearbyPlayers(s.server.playerEquipmentPacket(s), dim, x, z, s)
+		s.server.sendPlayerEntityAdd(s, dim, x, z)
 	}
 	s.server.broadcastPlayerMove(s)
 	health, food, saturation := s.healthStatus()
@@ -1295,12 +1300,11 @@ func (s *session) runPlay() {
 			packets = append(packets, protocol.EncodePlayerInfoChatSession(other.uuid, *session))
 		}
 	}
-	for _, other := range others {
+	visible := s.server.markVisiblePlayersForJoin(s, others, dim, x, z)
+	for _, other := range visible {
 		// 其他玩家已在世界中的实体（皮肤来自上面的玩家列表档案属性，
-		// 皮肤层显示掩码来自实体元数据）；只有同维度的玩家可见。
-		if other.dimensionID() != dim {
-			continue
-		}
+		// 皮肤层显示掩码来自实体元数据）；只有 64 格内同维度的玩家可见，
+		// 更远的玩家在靠近时由实体跟踪补发。
 		packets = append(packets, s.server.playerSpawnPacket(other))
 		packets = append(packets, s.server.playerSkinPacket(other))
 		packets = append(packets, s.server.playerEquipmentPacket(other))
@@ -1344,9 +1348,7 @@ func (s *session) runPlay() {
 	s.markJoined()
 	// 通知其他玩家：新玩家加入（档案属性 + 实体）。
 	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name, s.profileProperties), s)
-	s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), dim, x, z, s)
-	s.server.writeToNearbyPlayers(s.server.playerSkinPacket(s), dim, x, z, s)
-	s.server.writeToNearbyPlayers(s.server.playerEquipmentPacket(s), dim, x, z, s)
+	s.server.sendPlayerEntityAdd(s, dim, x, z)
 	s.server.broadcastPacketExcluding(protocol.EncodeSystemChat(s.name+" joined the game"), s)
 	s.server.auditLog("join", "player", s.name, "uuid", uuidString(s.uuid), "dimension", dim.Name())
 	slog.Info("player joined the world", "name", s.name, "entityId", s.entityID)

@@ -329,6 +329,8 @@ func (s *Server) tick() {
 	s.tickFluids()
 	s.tickTnts(players)
 	s.tickPortals(players)
+	// 实体跟踪：为靠近的玩家补发实体、移除离开范围的实体（见 entity_tracking.go）。
+	s.tickEntityTracking(players)
 	s.spawnTicks++
 	if s.spawnTicks >= spawnCheckInterval {
 		s.spawnTicks = 0
@@ -1007,6 +1009,7 @@ func (s *Server) addMob(dim world.Dimension, kind mobKind, x, y, z float64) *mob
 	}
 	s.entityMu.Lock()
 	s.mobs[m.ID] = m
+	targets := s.markTrackedNearbyLocked(dim, x, z, nil, m.ID)
 	s.entityMu.Unlock()
 	packets := [][]byte{protocol.EncodeAddEntity(m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch)}
 	// 生成的生物可能已着火（读档恢复）：把着火标志一并下发。
@@ -1014,22 +1017,34 @@ func (s *Server) addMob(dim world.Dimension, kind mobKind, x, y, z float64) *mob
 		m.FireSynced = true
 		packets = append(packets, protocol.EncodeEntityMetadataByte(m.ID, 0, 1))
 	}
-	for _, packet := range packets {
-		s.broadcastToNearby(dim, packet, m.X, m.Z, s.playerSnapshot())
+	for _, player := range targets {
+		for _, packet := range packets {
+			player.tryWrite(packet)
+		}
 	}
 	slog.Debug("mob spawned", "id", m.ID, "kind", stats.name, "x", m.X, "y", m.Y, "z", m.Z)
 	return m
 }
 
-// sendExistingEntities 把同维度中已有的生物与掉落物发送给新加入的玩家。
+// sendExistingEntities 把同维度中 64 格内已有的生物、掉落物、箭矢、TNT 与
+// 经验球发送给新加入的玩家，并把这些实体登记进该玩家的跟踪集
+// （范围外的实体在玩家靠近时由 tickEntityTracking 补发）。
 func (s *Server) sendExistingEntities(player *session) error {
 	dim := player.dimensionID()
+	px, _, pz, _, _ := player.playerPosition()
 	s.entityMu.Lock()
-	packets := make([][]byte, 0, len(s.mobs)+2*len(s.items))
+	tr := s.ensureTrackerLocked(player)
+	tr.suspended = false
+	tr.dim = dim
+	packets := make([][]byte, 0, 32)
+	inRange := func(x, z float64) bool {
+		return inTrackingRange(px, pz, x, z, entityTrackingRange)
+	}
 	for _, m := range s.mobs {
-		if m.Dead || m.Dim != dim {
+		if m.Dead || m.Dim != dim || !inRange(m.X, m.Z) {
 			continue
 		}
+		tr.ids[m.ID] = struct{}{}
 		packets = append(packets, protocol.EncodeAddEntity(
 			m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch))
 		if m.FireTicks > 0 {
@@ -1037,9 +1052,10 @@ func (s *Server) sendExistingEntities(player *session) error {
 		}
 	}
 	for _, e := range s.items {
-		if e.Dim != dim {
+		if e.Dim != dim || !inRange(e.X, e.Z) {
 			continue
 		}
+		tr.ids[e.ID] = struct{}{}
 		packets = append(packets,
 			protocol.EncodeAddEntity(e.ID, e.UUID, s.itemTypeID, e.X, e.Y, e.Z, e.VelX, e.VelY, e.VelZ, 0, 0),
 			protocol.EncodeEntityMetadataItem(e.ID, e.Stack.AppendSlot(nil)),
@@ -1047,22 +1063,36 @@ func (s *Server) sendExistingEntities(player *session) error {
 	}
 	if s.arrowsEnabled {
 		for _, a := range s.arrows {
-			if a.Dim != dim {
+			if a.Dim != dim || !inRange(a.X, a.Z) {
 				continue
 			}
+			tr.ids[a.ID] = struct{}{}
 			packets = append(packets, protocol.EncodeAddEntity(
 				a.ID, a.UUID, s.arrowTypeID, a.X, a.Y, a.Z, a.VelX, a.VelY, a.VelZ, 0, 0))
 		}
 	}
 	if s.tntsEnabled {
 		for _, t := range s.tnts {
-			if t.Dim != dim {
+			if t.Dim != dim || !inRange(t.X, t.Z) {
 				continue
 			}
+			tr.ids[t.ID] = struct{}{}
 			packets = append(packets,
 				protocol.EncodeAddEntity(t.ID, t.UUID, s.tntTypeID, t.X, t.Y, t.Z, t.VelX, t.VelY, t.VelZ, 0, 0),
 				protocol.EncodeEntityMetadataVarInt(t.ID, 8, int32(t.Fuse)),
 				protocol.EncodeEntityMetadataVarInt(t.ID, 9, int32(tntBlockState())),
+			)
+		}
+	}
+	if s.xpOrbsEnabled {
+		for _, o := range s.xpOrbs {
+			if o.Dim != dim || !inRange(o.X, o.Z) {
+				continue
+			}
+			tr.ids[o.ID] = struct{}{}
+			packets = append(packets,
+				protocol.EncodeAddEntity(o.ID, o.UUID, s.xpOrbTypeID, o.X, o.Y, o.Z, o.VelX, o.VelY, o.VelZ, 0, 0),
+				protocol.EncodeEntityMetadataVarInt(o.ID, protocol.EntityMetadataXPValueIndex, o.Value),
 			)
 		}
 	}
@@ -1280,6 +1310,9 @@ func (s *Server) respawnPlayer(player *session) {
 	gameMode := player.gameModeID()
 	spawn := s.spawnInfo(dim, gameMode)
 	spawnX, _, spawnZ := s.spawnPositionFor(dim)
+	// 世界重建窗口：客户端在收到 Respawn 后会清空实体列表，
+	// 期间暂停实体跟踪，重生完成后 resume 并由下一帧统一补发。
+	s.suspendEntityTracking(player)
 	if err := player.writePacket(protocol.EncodeRespawn(spawn, 0)); err != nil {
 		return
 	}
@@ -1301,6 +1334,7 @@ func (s *Server) respawnPlayer(player *session) {
 		return
 	}
 	player.teleportToSpawn()
+	s.resumeEntityTracking(player, dim)
 	s.broadcastPlayerMove(player)
 	health, food, saturation := player.healthStatus()
 	player.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))

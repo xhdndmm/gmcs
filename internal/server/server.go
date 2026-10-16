@@ -65,6 +65,9 @@ type Server struct {
 	items      map[int32]*itemEntity
 	spawnTicks int
 	randState  atomic.Uint64
+	// entityTrack 是各玩家已下发的实体集合（为靠近的玩家补发实体、
+	// 为离开范围的实体补发移除；见 entity_tracking.go），受 entityMu 保护。
+	entityTrack map[*session]*sessionTracker
 
 	// tickInterval 是实体 Tick 间隔；<= 0 时禁用后台 Tick（测试手动驱动）。
 	tickInterval time.Duration
@@ -400,6 +403,7 @@ func New(cfg config.Config) (*Server, error) {
 		mobs:                   make(map[int32]*mob),
 		items:                  make(map[int32]*itemEntity),
 		xpOrbs:                 make(map[int32]*xpOrb),
+		entityTrack:            make(map[*session]*sessionTracker),
 		hoppers:                make(map[containerKey]*hopperState),
 		tickInterval:           defaultTickInterval,
 		chunkUnloadInterval:    defaultChunkUnloadInterval,
@@ -624,6 +628,7 @@ func (s *Server) unregisterPlayer(player *session) {
 		s.wakeChunkUnload()
 	}
 
+	s.dropEntityTracking(player)
 	s.broadcastPlayerRemove(player)
 	s.broadcastPacketExcluding(protocol.EncodePlayerInfoRemove([][16]byte{player.uuid}), player)
 	s.broadcastPacketExcluding(protocol.EncodeSystemChat(player.name+" left the game"), player)

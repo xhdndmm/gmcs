@@ -42,6 +42,18 @@ type tickScratch struct {
 	orbGains    []xpGain
 	// orbBuckets 是经验球合并的空间索引（同 itemBuckets）。
 	orbBuckets map[uint64][]*xpOrb
+
+	// 实体跟踪 Tick（entity_tracking.go）。
+	trackAdds    []trackAddOp
+	trackRemoves []trackRemoveOp
+	trackPlayers []trackedPlayer
+	trackMobs    []*mob
+	trackItems   []*itemEntity
+	trackArrows  []*arrowEntity
+	trackTnts    []*primedTnt
+	trackOrbs    []*xpOrb
+	// trackAlive 是各维度的存活实体索引（id → 水平位置），跨帧复用。
+	trackAlive [3]map[int32]trackPos
 }
 
 // pendingMove 是一次实体位置/朝向同步（生物移动与头部转向）。

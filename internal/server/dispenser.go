@@ -438,9 +438,13 @@ func (s *Server) shootDispenserArrow(dim world.Dimension, pos [3]int, facing str
 	}
 	s.entityMu.Lock()
 	s.arrows[arrow.ID] = arrow
+	targets := s.markTrackedNearbyLocked(dim, x, z, nil, arrow.ID)
 	s.entityMu.Unlock()
-	s.writeToNearbyPlayers(protocol.EncodeAddEntity(arrow.ID, arrow.UUID, s.arrowTypeID,
-		arrow.X, arrow.Y, arrow.Z, arrow.VelX, arrow.VelY, arrow.VelZ, 0, 0), dim, x, z, nil)
+	add := protocol.EncodeAddEntity(arrow.ID, arrow.UUID, s.arrowTypeID,
+		arrow.X, arrow.Y, arrow.Z, arrow.VelX, arrow.VelY, arrow.VelZ, 0, 0)
+	for _, player := range targets {
+		player.tryWrite(add)
+	}
 	return true
 }
 

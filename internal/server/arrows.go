@@ -74,10 +74,14 @@ func (s *Server) fireArrow(p pendingArrow) {
 	}
 	s.entityMu.Lock()
 	s.arrows[arrow.ID] = arrow
+	targets := s.markTrackedNearbyLocked(p.dim, arrow.X, arrow.Z, nil, arrow.ID)
 	s.entityMu.Unlock()
 
-	s.writeToNearbyPlayers(protocol.EncodeAddEntity(arrow.ID, arrow.UUID, s.arrowTypeID,
-		arrow.X, arrow.Y, arrow.Z, arrow.VelX, arrow.VelY, arrow.VelZ, 0, 0), p.dim, arrow.X, arrow.Z, nil)
+	add := protocol.EncodeAddEntity(arrow.ID, arrow.UUID, s.arrowTypeID,
+		arrow.X, arrow.Y, arrow.Z, arrow.VelX, arrow.VelY, arrow.VelZ, 0, 0)
+	for _, player := range targets {
+		player.tryWrite(add)
+	}
 	s.broadcastToNearby(p.dim,
 		protocol.EncodeEntitySoundEffect(s.soundArrowShoot, protocol.SoundCategoryHostile, p.mobID, 1, 1.2, 0),
 		arrow.X, arrow.Z, s.playerSnapshot())

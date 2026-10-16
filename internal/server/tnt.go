@@ -115,10 +115,13 @@ func (s *Server) spawnPrimedTnt(dim world.Dimension, x, y, z float64, randomize 
 	metaBlock := protocol.EncodeEntityMetadataVarInt(t.ID, 9, int32(tntBlockState()))
 	s.entityMu.Lock()
 	s.tnts[t.ID] = t
+	targets := s.markTrackedNearbyLocked(dim, x, z, nil, t.ID)
 	s.entityMu.Unlock()
-	s.writeToNearbyPlayers(add, dim, x, z, nil)
-	s.writeToNearbyPlayers(metaFuse, dim, x, z, nil)
-	s.writeToNearbyPlayers(metaBlock, dim, x, z, nil)
+	for _, player := range targets {
+		player.tryWrite(add)
+		player.tryWrite(metaFuse)
+		player.tryWrite(metaBlock)
+	}
 	if s.soundTntPrime != 0 {
 		s.writeToNearbyPlayers(protocol.EncodeSoundEffect(s.soundTntPrime, protocol.SoundCategoryBlock, x, y, z, 1, 1, 0), dim, x, z, nil)
 	}
@@ -223,31 +226,5 @@ func (s *Server) tickTnts(players []*session) {
 	for _, blast := range blasts {
 		s.broadcastToNearby(blast.dim, protocol.EncodeEntityDestroy([]int32{blast.id}), blast.x, blast.z, players)
 		s.explode(blast.dim, blast.x, blast.y+0.06125, blast.z, tntExplosionRadius, tntExplosionPower, "TNT")
-	}
-}
-
-// sendExistingTnt 把同维度中已有的 TNT 实体发送给新加入的玩家。
-func (s *Server) sendExistingTnt(player *session) {
-	if !s.tntsEnabled {
-		return
-	}
-	dim := player.dimensionID()
-	s.entityMu.Lock()
-	packets := make([][]byte, 0, 3*len(s.tnts))
-	for _, t := range s.tnts {
-		if t.Dim != dim {
-			continue
-		}
-		packets = append(packets,
-			protocol.EncodeAddEntity(t.ID, t.UUID, s.tntTypeID, t.X, t.Y, t.Z, t.VelX, t.VelY, t.VelZ, 0, 0),
-			protocol.EncodeEntityMetadataVarInt(t.ID, 8, int32(t.Fuse)),
-			protocol.EncodeEntityMetadataVarInt(t.ID, 9, int32(tntBlockState())),
-		)
-	}
-	s.entityMu.Unlock()
-	for _, packet := range packets {
-		if err := player.writePacket(packet); err != nil {
-			return
-		}
 	}
 }

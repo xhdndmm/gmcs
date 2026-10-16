@@ -5,6 +5,7 @@
 package server
 
 import (
+	"io"
 	"math"
 	"testing"
 
@@ -117,6 +118,83 @@ func BenchmarkItemTick(b *testing.B) {
 	instance.entityMu.Unlock()
 	if remaining != 128 {
 		b.Fatalf("剩余掉落物 %d，期望 128（基准可能未在测量真实路径）", remaining)
+	}
+}
+
+// BenchmarkEntityTracking 衡量实体跟踪 Tick 的成本：1 名玩家 + 128 个掉落物
+// + 16 只生物，全部在 64 格内（稳态：除首帧下发外无新增/移除）。
+func BenchmarkEntityTracking(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	gameWorld := instance.worldFor(world.DimensionOverworld)
+	stack, err := item.FromName("minecraft:stone", 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < 128; i++ {
+		x := float64(int(math.Floor(spawnX))+i%8*2) + 0.5
+		z := float64(int(math.Floor(spawnZ))+i/8) + 0.5
+		groundY, ok := gameWorld.GroundY(int(x), int(z))
+		if !ok {
+			b.Fatal("no ground at spawn area")
+		}
+		e := instance.spawnItem(world.DimensionOverworld, stack, x, groundY+1, z, 0, 0, 0, itemPickupDelayMining)
+		if e == nil {
+			b.Fatal("spawnItem returned nil")
+		}
+		e.AgeTicks = -1 << 30
+	}
+	for i := 0; i < 16; i++ {
+		x := int(math.Floor(spawnX)) + i%4
+		z := int(math.Floor(spawnZ)) + i/4
+		groundY, ok := gameWorld.GroundY(x, z)
+		if !ok {
+			b.Fatal("no ground at spawn area")
+		}
+		instance.addMob(world.DimensionOverworld, mobZombie, float64(x)+0.5, groundY, float64(z)+0.5)
+	}
+	// 一名已加入的测试玩家（跟踪集的归属者）；写入丢弃（首帧登记会产生
+	// Add Entity 包，基准无需真实连接）。
+	sess := &session{
+		server:    instance,
+		entityID:  instance.entityIDs.Add(1),
+		dimension: world.DimensionOverworld,
+		health:    maxPlayerHealth,
+		food:      maxPlayerFood,
+		writer:    io.Discard,
+	}
+	sess.markJoined()
+	sess.setPlayerPosition(spawnX, spawnY, spawnZ, 0, 0)
+	players := []*session{sess}
+
+	instance.tickEntityTracking(players) // 首帧：把 64 格内的实体登记进跟踪集。
+	instance.entityMu.Lock()
+	initial := len(instance.entityTrack[sess].ids)
+	instance.entityMu.Unlock()
+	if initial == 0 {
+		b.Fatal("首帧未登记任何实体，基准未覆盖真实路径")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		instance.tickEntityTracking(players)
+	}
+	b.StopTimer()
+
+	instance.entityMu.Lock()
+	remaining := len(instance.entityTrack[sess].ids)
+	instance.entityMu.Unlock()
+	if remaining != initial {
+		b.Fatalf("跟踪集大小从 %d 变为 %d（不再处于稳态）", initial, remaining)
 	}
 }
 

@@ -76,8 +76,10 @@ const (
 
 // xpOrb 是一个经验球。字段由 Server.entityMu 保护。
 type xpOrb struct {
-	ID  int32
-	Dim world.Dimension
+	ID int32
+	// UUID 是实体 UUID（Add Entity 与实体跟踪补发共用）。
+	UUID [16]byte
+	Dim  world.Dimension
 	// Value 是经验球携带的基础经验值（合并时不变，同步给客户端）。
 	Value int32
 	// Count 是剩余可拾取次数（合并/生成并入时累加）。
@@ -181,6 +183,7 @@ func (s *Server) spawnXPOrb(dim world.Dimension, x, y, z float64, value int32) *
 	vz := (randUnit(s)*0.2 - 0.1) * 2
 	orb := &xpOrb{
 		ID:    s.entityIDs.Add(1),
+		UUID:  newEntityUUID(),
 		Dim:   dim,
 		Value: value,
 		Count: 1,
@@ -191,13 +194,16 @@ func (s *Server) spawnXPOrb(dim world.Dimension, x, y, z float64, value int32) *
 		VelY:  vy,
 		VelZ:  vz,
 	}
-	add := protocol.EncodeAddEntity(orb.ID, newEntityUUID(), s.xpOrbTypeID, x, y, z, vx, vy, vz, 0, 0)
+	add := protocol.EncodeAddEntity(orb.ID, orb.UUID, s.xpOrbTypeID, x, y, z, vx, vy, vz, 0, 0)
 	meta := protocol.EncodeEntityMetadataVarInt(orb.ID, protocol.EntityMetadataXPValueIndex, value)
 	s.entityMu.Lock()
 	s.xpOrbs[orb.ID] = orb
+	targets := s.markTrackedNearbyLocked(dim, x, z, nil, orb.ID)
 	s.entityMu.Unlock()
-	s.writeToNearbyPlayers(add, dim, x, z, nil)
-	s.writeToNearbyPlayers(meta, dim, x, z, nil)
+	for _, player := range targets {
+		player.tryWrite(add)
+		player.tryWrite(meta)
+	}
 	return orb
 }
 
