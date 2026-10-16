@@ -22,6 +22,7 @@ type tickScratch struct {
 	heads      []pendingMove
 	removals   []int32
 	insides    []insideCheck
+	envs       []mobEnvironment
 
 	// 掉落物 Tick。
 	itemMoves    []pendingPacket

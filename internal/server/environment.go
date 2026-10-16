@@ -60,6 +60,9 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 	x, y, z, _, _ := s.playerPosition()
 	inLava := fluidKindAt(w, x, y, z) == lavaBlockName || fluidKindAt(w, x, y+1, z) == lavaBlockName
 	inWater := fluidKindAt(w, x, y, z) == waterBlockName || fluidKindAt(w, x, y+1, z) == waterBlockName
+	// 火/灵魂火方块（原版 BaseFireBlock 的方块内效果；用脚部与上方一格代替碰撞盒相交）。
+	inFire := isFireBlockState(w.BlockAt(int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z)))) ||
+		isFireBlockState(w.BlockAt(int(math.Floor(x)), int(math.Floor(y))+1, int(math.Floor(z))))
 
 	// 岩浆：点燃 15 秒 + 结算岩浆伤害（无敌帧限制频率）。
 	if inLava {
@@ -80,6 +83,15 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 				"%s burned to death")
 		}
 		s.fireTicks--
+	}
+	// 火方块：点燃 8 秒；玩家在火中每 tick 额外 +rand(1..2)（原版 BaseFireBlock
+	// 的方块内效果：非火免实体先累加再取 igniteForSeconds(8) 下限；
+	// 方块内效果在 baseTick 之后应用，因此入火当帧结束时着火时长就是完整值）。
+	if inFire {
+		s.fireTicks += 1 + int(server.nextRandom()%2)
+		if s.fireTicks < mobFireBlockTicks {
+			s.fireTicks = mobFireBlockTicks
+		}
 	}
 	// 岩浆块：站在顶面时周期性伤害。
 	if supportedAt(w, x, y, z) && fluidAt(w, x, y-0.1, z, world.MagmaBlock) {

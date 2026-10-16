@@ -120,6 +120,9 @@ type mobRecord struct {
 	Yaw    float32 `json:"yaw"`
 	Pitch  float32 `json:"pitch"`
 	Health float32 `json:"health"`
+	// FireTicks 是剩余着火 tick（原版实体存档的 Fire 字段；0 时省略字段，
+	// 旧存档不含该字段时按 0 恢复）。
+	FireTicks int `json:"fire_ticks,omitempty"`
 }
 
 // saveEntities 把全部维度中的生物、掉落物与箭矢写入各自目录（原子写入）。
@@ -147,14 +150,15 @@ func (s *Server) saveEntities() error {
 		}
 		file := get(m.Dim)
 		file.mobs = append(file.mobs, mobRecord{
-			Type:   mobKinds[m.Kind].name,
-			UUID:   hex.EncodeToString(m.UUID[:]),
-			X:      m.X,
-			Y:      m.Y,
-			Z:      m.Z,
-			Yaw:    m.Yaw,
-			Pitch:  m.Pitch,
-			Health: m.Health,
+			Type:      mobKinds[m.Kind].name,
+			UUID:      hex.EncodeToString(m.UUID[:]),
+			X:         m.X,
+			Y:         m.Y,
+			Z:         m.Z,
+			Yaw:       m.Yaw,
+			Pitch:     m.Pitch,
+			Health:    m.Health,
+			FireTicks: m.FireTicks,
 		})
 	}
 	for _, e := range s.items {
@@ -282,6 +286,8 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 			Pitch:  record.Pitch,
 			Health: health,
 		}
+		// 着火时长限幅（异常存档不会让生物永久燃烧）。
+		m.FireTicks = clampStoredInt(record.FireTicks, 0, maxStoredFireTicks)
 		m.HeadYaw = m.Yaw
 		s.mobs[m.ID] = m
 		restored++

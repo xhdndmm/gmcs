@@ -250,6 +250,11 @@ type mob struct {
 	ShootCooldown int
 	// Angry 标记末影人是否已被激怒（被注视或受击后敌视玩家）。
 	Angry bool
+	// FireTicks 是剩余着火 tick（原版 Entity.remainingFireTicks）：> 0 时每秒
+	// 受 1 点火焰伤害、入水清零，并通过实体共享标志 bit0 同步给客户端。
+	FireTicks int
+	// FireSynced 是最近一次同步给客户端的着火标志（变化时才发包）。
+	FireSynced bool
 }
 
 // pendingAttack 是一次待结算的生物攻击（位置为判定时的快照）。
@@ -393,6 +398,7 @@ func (s *Server) tickMobs(players []*session) {
 	heads := scratch.heads[:0]
 	removals := scratch.removals[:0]
 	insides := scratch.insides[:0]
+	envs := scratch.envs[:0]
 	defer func() {
 		scratch.attacks = attacks
 		scratch.arrows = arrows
@@ -402,6 +408,7 @@ func (s *Server) tickMobs(players []*session) {
 		scratch.heads = heads
 		scratch.removals = removals
 		scratch.insides = insides
+		scratch.envs = envs
 	}()
 
 	s.entityMu.Lock()
@@ -447,6 +454,15 @@ func (s *Server) tickMobs(players []*session) {
 		}
 
 		stats := mobKinds[m.Kind]
+		mobWorld := s.worldFor(m.Dim)
+		// 环境燃烧：接触火/岩浆的点燃、着火伤害与入水熄灭（原版 Entity.baseTick
+		// 与 BaseFireBlock 的方块内效果）。
+		if env, ok := s.tickMobEnvironment(mobWorld, m); ok {
+			envs = append(envs, env)
+			if m.Dead {
+				continue
+			}
+		}
 		// 被动生物只游荡；末影人未被激怒（被注视/受击）时同样不索敌。
 		if stats.passive {
 			nearest = nil
@@ -460,7 +476,6 @@ func (s *Server) tickMobs(players []*session) {
 		}
 		attemptedMove := false
 		moved := false
-		mobWorld := s.worldFor(m.Dim)
 		if nearest != nil && nearestDistance <= stats.followRange {
 			px, py, pz, _, _ := nearest.playerPosition()
 			switch m.Kind {
@@ -602,6 +617,14 @@ func (s *Server) tickMobs(players []*session) {
 	}
 	for _, explosion := range explosions {
 		s.explode(explosion.dim, explosion.x, explosion.y, explosion.z, creeperExplosionRadius, creeperExplosionPower, "Creeper")
+	}
+	for _, env := range envs {
+		for _, packet := range env.packets {
+			s.broadcastToNearby(env.dim, packet, env.x, env.z, players)
+		}
+		if env.drop {
+			s.dropMobLoot(env.kind, env.dim, env.lootX, env.lootY, env.lootZ)
+		}
 	}
 }
 
@@ -968,7 +991,15 @@ func (s *Server) addMob(dim world.Dimension, kind mobKind, x, y, z float64) *mob
 	s.entityMu.Lock()
 	s.mobs[m.ID] = m
 	s.entityMu.Unlock()
-	s.broadcastToNearby(dim, protocol.EncodeAddEntity(m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch), m.X, m.Z, s.playerSnapshot())
+	packets := [][]byte{protocol.EncodeAddEntity(m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch)}
+	// 生成的生物可能已着火（读档恢复）：把着火标志一并下发。
+	if m.FireTicks > 0 {
+		m.FireSynced = true
+		packets = append(packets, protocol.EncodeEntityMetadataByte(m.ID, 0, 1))
+	}
+	for _, packet := range packets {
+		s.broadcastToNearby(dim, packet, m.X, m.Z, s.playerSnapshot())
+	}
 	slog.Debug("mob spawned", "id", m.ID, "kind", stats.name, "x", m.X, "y", m.Y, "z", m.Z)
 	return m
 }
@@ -984,6 +1015,9 @@ func (s *Server) sendExistingEntities(player *session) error {
 		}
 		packets = append(packets, protocol.EncodeAddEntity(
 			m.ID, m.UUID, m.TypeID, m.X, m.Y, m.Z, 0, 0, 0, m.Yaw, m.Pitch))
+		if m.FireTicks > 0 {
+			packets = append(packets, protocol.EncodeEntityMetadataByte(m.ID, 0, 1))
+		}
 	}
 	for _, e := range s.items {
 		if e.Dim != dim {
