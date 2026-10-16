@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,8 +26,9 @@ import (
 // 说明：gmcs 的区块存储是自定义格式（不含实体），因此实体单独保存在
 // 维度目录的 entities.json 中（主世界为世界目录，下界/末地为其子目录）；
 // 文件采用“临时文件 + 重命名”的原子写入。恢复时保留类型、位置、朝向、
-// 生命、物品堆叠与 UUID（实体 ID 重新分配）；掉落物的速度不保存，
-// 箭矢的速度与伤害保存。
+// 生命、物品堆叠与 UUID（实体 ID 重新分配）；掉落物的速度、存活时间与
+// 拾取延迟同样保存（原版 `ItemEntity` 保存 Age/PickupDelay，速度属于
+// 实体基础字段），箭矢的速度与伤害保存。
 
 // entityFileName 是世界目录中实体数据的文件名。
 const entityFileName = "entities.json"
@@ -59,8 +61,8 @@ type arrowRecord struct {
 	AgeTicks int     `json:"ageTicks"`
 }
 
-// itemRecord 是一条持久化的掉落物（速度不保存；组件覆盖与玩家物品栏的
-// playerItem 字段一致）。
+// itemRecord 是一条持久化的掉落物（含速度/存活时间/拾取延迟；组件覆盖
+// 与玩家物品栏的 playerItem 字段一致）。
 type itemRecord struct {
 	Item         string              `json:"item"`
 	Count        int32               `json:"count"`
@@ -68,6 +70,11 @@ type itemRecord struct {
 	X            float64             `json:"x"`
 	Y            float64             `json:"y"`
 	Z            float64             `json:"z"`
+	VelX         float64             `json:"velX,omitempty"`
+	VelY         float64             `json:"velY,omitempty"`
+	VelZ         float64             `json:"velZ,omitempty"`
+	AgeTicks     int                 `json:"ageTicks,omitempty"`
+	PickupDelay  int                 `json:"pickupDelay,omitempty"`
 	Potion       int32               `json:"potion,omitempty"`
 	Damage       int32               `json:"damage,omitempty"`
 	RepairCost   int32               `json:"repair_cost,omitempty"`
@@ -75,6 +82,33 @@ type itemRecord struct {
 	Enchantments []storedEnchantment `json:"enchantments,omitempty"`
 	TrimPattern  string              `json:"trim_pattern,omitempty"`
 	TrimMaterial string              `json:"trim_material,omitempty"`
+}
+
+// storedVelocity 过滤存档中的非有限速度（NaN/Inf 会让物理与协议编码异常），
+// 并对过大速度做限幅（正常玩法下远小于该值）。
+func storedVelocity(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	const limit = 100
+	if v > limit {
+		return limit
+	}
+	if v < -limit {
+		return -limit
+	}
+	return v
+}
+
+// clampStoredInt 把存档中的整数限制在 [min, max]。
+func clampStoredInt(v, minValue, maxValue int) int {
+	if v < minValue {
+		return minValue
+	}
+	if v > maxValue {
+		return maxValue
+	}
+	return v
 }
 
 type mobRecord struct {
@@ -130,13 +164,16 @@ func (s *Server) saveEntities() error {
 		}
 		file := get(e.Dim)
 		file.items = append(file.items, itemRecord{
-			Item:   name,
-			Count:  e.Stack.Count,
-			UUID:   hex.EncodeToString(e.UUID[:]),
-			X:      e.X,
-			Y:      e.Y,
-			Z:      e.Z,
-			Potion: e.Stack.PotionID, Damage: e.Stack.Damage,
+			Item:  name,
+			Count: e.Stack.Count,
+			UUID:  hex.EncodeToString(e.UUID[:]),
+			X:     e.X,
+			Y:     e.Y,
+			Z:     e.Z,
+			VelX:  e.VelX, VelY: e.VelY, VelZ: e.VelZ,
+			AgeTicks:    e.AgeTicks,
+			PickupDelay: e.PickupDelayTicks,
+			Potion:      e.Stack.PotionID, Damage: e.Stack.Damage,
 			RepairCost: e.Stack.RepairCost, CustomName: e.Stack.CustomName,
 			Enchantments: storedEnchantments(e.Stack.Enchantments),
 			TrimPattern:  e.Stack.TrimPattern, TrimMaterial: e.Stack.TrimMaterial,
@@ -278,7 +315,11 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 			X:                record.X,
 			Y:                record.Y,
 			Z:                record.Z,
-			PickupDelayTicks: itemPickupDelayMining,
+			VelX:             storedVelocity(record.VelX),
+			VelY:             storedVelocity(record.VelY),
+			VelZ:             storedVelocity(record.VelZ),
+			AgeTicks:         clampStoredInt(record.AgeTicks, 0, itemDespawnTicks),
+			PickupDelayTicks: clampStoredInt(record.PickupDelay, 0, itemPickupDelayPlayer),
 		}
 		s.items[e.ID] = e
 		restoredItems++

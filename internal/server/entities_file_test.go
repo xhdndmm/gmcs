@@ -107,9 +107,14 @@ func TestItemPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.spawnItem(world.DimensionOverworld, stack, spawnX+1, spawnY, spawnZ+1, 0.1, 0, 0, 0) == nil {
+	// 带速度与拾取延迟生成，验证它们一并持久化。
+	spawned := first.spawnItem(world.DimensionOverworld, stack, spawnX+1, spawnY, spawnZ+1, 0.25, -0.5, 0.125, 40)
+	if spawned == nil {
 		t.Fatal("spawnItem returned nil")
 	}
+	first.entityMu.Lock()
+	spawned.AgeTicks = 1234
+	first.entityMu.Unlock()
 	if err := first.saveEntities(); err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +143,52 @@ func TestItemPersistence(t *testing.T) {
 	}
 	if math.Abs(got.X-(spawnX+1)) > 1e-6 || math.Abs(got.Y-spawnY) > 1e-6 || math.Abs(got.Z-(spawnZ+1)) > 1e-6 {
 		t.Fatalf("restored position = (%v, %v, %v)", got.X, got.Y, got.Z)
+	}
+	// 速度/存活时间/拾取延迟同样恢复（对照原版 ItemEntity 保存的字段）。
+	if got.VelX != 0.25 || got.VelY != -0.5 || got.VelZ != 0.125 {
+		t.Fatalf("restored velocity = (%v, %v, %v), want (0.25, -0.5, 0.125)", got.VelX, got.VelY, got.VelZ)
+	}
+	if got.AgeTicks != 1234 {
+		t.Fatalf("restored age = %d, want 1234", got.AgeTicks)
+	}
+	if got.PickupDelayTicks != 40 {
+		t.Fatalf("restored pickup delay = %d, want 40", got.PickupDelayTicks)
+	}
+}
+
+// TestItemPersistenceSanitizesInvalidState 验证存档中的异常掉落物字段被限幅：
+// 过大速度、负年龄、越界拾取延迟都不会进入运行时状态。
+func TestItemPersistenceSanitizesInvalidState(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	payload := `{"items":[{"item":"minecraft:stone","count":1,"uuid":"00112233445566778899aabbccddeeff",` +
+		`"x":1,"y":64,"z":2,"velX":1e9,"velY":-1e9,"ageTicks":-5,"pickupDelay":999}]}`
+	if err := os.WriteFile(filepath.Join(cfg.WorldDir, entityFileName), []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+	instance.entityMu.Lock()
+	restored := make([]*itemEntity, 0, len(instance.items))
+	for _, e := range instance.items {
+		restored = append(restored, e)
+	}
+	instance.entityMu.Unlock()
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored item, got %d", len(restored))
+	}
+	got := restored[0]
+	if got.VelX != 100 || got.VelY != -100 {
+		t.Fatalf("速度应被限幅到 ±100，得到 (%v, %v)", got.VelX, got.VelY)
+	}
+	if got.AgeTicks != 0 {
+		t.Fatalf("负年龄应归零，得到 %d", got.AgeTicks)
+	}
+	if got.PickupDelayTicks != itemPickupDelayPlayer {
+		t.Fatalf("拾取延迟应限制在 %d，得到 %d", itemPickupDelayPlayer, got.PickupDelayTicks)
 	}
 }
 

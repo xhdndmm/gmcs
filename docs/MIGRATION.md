@@ -124,7 +124,8 @@ section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u1
 - 生物字段：`type`、`uuid`、`x`、`y`、`z`、`yaw`、`pitch`、`health`（维度由所在文件名体现；自定义格式，非原版实体 NBT）；
   支持 `minecraft:zombie`/`minecraft:skeleton`/`minecraft:creeper`/`minecraft:spider`
 - 掉落物字段（`items`）：`item`（命名空间 ID）、`count`、`uuid`、`x`、`y`、`z`；
-  恢复时数量截断到 64、拾取延迟重置，速度与存活时长不保存（重启后停在保存位置）
+  恢复时数量截断到 64，速度、存活时间与拾取延迟一并保存（原版 ItemEntity 保存
+  Age/PickupDelay）；存档中的异常速度/年龄/拾取延迟会被限幅
 - 恢复时：**实体 ID 重新分配，UUID 保留**（无效 UUID 会重新生成），
   位置/朝向/生命保留；生命值缺失或非法时按该种生物满生命处理
 - 该文件在生物系统或掉落物系统任一可用时读写（均为注册表数据完整性检查）。
