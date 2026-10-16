@@ -53,10 +53,6 @@ const (
 	anvilCostLimit = 40
 	// anvilCostRepairSacrifice 是同物品合并（牺牲）的等级成本。
 	anvilCostRepairSacrifice = 2
-	// anvilReach 是窗口有效距离：原版 ItemCombinerMenu.stillValid 用
-	// canInteractWithBlock(pos, 4.0)，即「方块交互距离属性（默认 4.5）+ 4.0」
-	// ≈ 8.5 格；与普通容器一致，按水平/垂直距离用 8.0 盒近似。
-	anvilReach = 8.0
 )
 
 // anvilState 是一个打开的铁砧窗口状态。
@@ -550,9 +546,7 @@ func (s *Server) anvilStillValid(player *session, state *anvilState) bool {
 	if !isAnvilState(s.worldFor(dim).BlockAt(pos[0], pos[1], pos[2])) {
 		return false
 	}
-	px, py, pz, _, _ := player.playerPosition()
-	return math.Hypot(px-(float64(pos[0])+0.5), pz-(float64(pos[2])+0.5)) <= anvilReach &&
-		math.Abs(py-(float64(pos[1])+0.5)) <= anvilReach
+	return player.withinContainerReach(pos[0], pos[1], pos[2])
 }
 
 // refreshAnvil 重算铁砧结果并同步成本属性（结果槽由调用方发送）。

@@ -698,10 +698,9 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 			s.closeContainer(player, true)
 			return
 		}
-		// 距离校验：离开容器过远时关闭窗口（与原版一致）。
-		px, py, pz, _, _ := player.playerPosition()
-		if math.Hypot(px-(float64(container.pos[0])+0.5), pz-(float64(container.pos[2])+0.5)) > containerReach ||
-			math.Abs(py-(float64(container.pos[1])+0.5)) > containerReach {
+		// 距离校验：离开容器过远时关闭窗口（原版 ChestMenu.stillValid →
+		// Container.stillValidBlockEntity → isWithinBlockInteractionRange(pos, 4.0)）。
+		if !player.withinContainerReach(container.pos[0], container.pos[1], container.pos[2]) {
 			s.closeContainer(player, true)
 			return
 		}
@@ -817,9 +816,6 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 		player.tryWrite(protocol.EncodeSetCursorItem(cursor.AppendSlot(nil)))
 	}
 }
-
-// containerReach 是打开容器后允许的最大距离（与原版 8 格一致的近似值）。
-const containerReach = 8.0
 
 // slotPlacer 是可选接口：窗口 backing 可限制可放入槽位的物品
 // （原版 Slot.mayPlace）。仅“放入/交换”路径调用；取出不受限。

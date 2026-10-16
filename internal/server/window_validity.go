@@ -5,8 +5,6 @@
 package server
 
 import (
-	"math"
-
 	"gmcs/internal/world"
 )
 
@@ -17,18 +15,8 @@ import (
 // 因此节奏接近逐 tick）：方块被破坏/替换、玩家离开交互距离时主动关闭窗口。
 // 玩家物品栏窗口（windowID=0）与末影箱（无位置约束）不校验。
 //
-// 距离沿用既有近似：水平与垂直距离都不超过 windowReach（原版均为
-// canInteractWithBlock(pos, 4.0) ≈ 8.5 格，这里按 8.0 盒近似，与普通容器一致）。
-
-// windowReach 是窗口方块的交互距离上限（与 containerReach/anvilReach 一致）。
-const windowReach = 8.0
-
-// withinWindowReach 报告玩家与方块中心的水平/垂直距离是否都在窗口距离内。
-func withinWindowReach(player *session, pos [3]int) bool {
-	px, py, pz, _, _ := player.playerPosition()
-	return math.Hypot(px-(float64(pos[0])+0.5), pz-(float64(pos[2])+0.5)) <= windowReach &&
-		math.Abs(py-(float64(pos[1])+0.5)) <= windowReach
-}
+// 距离与原版一致（Player.isWithinBlockInteractionRange(pos, 4.0)：眼睛位置到
+// 方块碰撞盒的距离 < 交互距离属性 4.5 + 4.0，见 withinContainerReach）。
 
 // blockStillIs 报告指定维度坐标处的方块状态是否满足谓词（世界不可用时为 false）。
 func (s *Server) blockStillIs(dim world.Dimension, pos [3]int, match func(state uint16) bool) bool {
@@ -55,7 +43,7 @@ func (s *Server) containerStillValid(player *session, container *containerState)
 	if !ok {
 		return false
 	}
-	return withinWindowReach(player, pos)
+	return player.withinContainerReach(pos[0], pos[1], pos[2])
 }
 
 // craftStillValid 报告工作台窗口是否仍有效（原版 CraftingMenu.stillValid）：
@@ -73,7 +61,7 @@ func (s *Server) craftStillValid(player *session, state *craftingState) bool {
 	}) {
 		return false
 	}
-	return withinWindowReach(player, pos)
+	return player.withinContainerReach(pos[0], pos[1], pos[2])
 }
 
 // stonecutterStillValid 报告切石机窗口是否仍有效（原版 StonecutterMenu.stillValid）。
@@ -87,7 +75,7 @@ func (s *Server) stonecutterStillValid(player *session, state *stonecutterState)
 	}) {
 		return false
 	}
-	return withinWindowReach(player, pos)
+	return player.withinContainerReach(pos[0], pos[1], pos[2])
 }
 
 // smithingStillValid 报告锻造台窗口是否仍有效（原版 SmithingMenu.stillValid）。
@@ -101,7 +89,7 @@ func (s *Server) smithingStillValid(player *session, state *smithingState) bool 
 	}) {
 		return false
 	}
-	return withinWindowReach(player, pos)
+	return player.withinContainerReach(pos[0], pos[1], pos[2])
 }
 
 // validateOpenWindow 校验玩家当前打开的窗口是否仍然有效，失效时主动关闭并

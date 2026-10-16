@@ -58,9 +58,10 @@ const (
 	blockInteractionRangeCreative = 5.0
 	// blockInteractionSlack 是原版 ServerPlayerGameMode 对距离判定的固定容差。
 	blockInteractionSlack = 1.0
-
-	// stopDestroyProgress 是 STOP 时直接完成破坏所需的最低累计进度（原版 0.7）。
-	stopDestroyProgress = 0.7
+	// containerInteractionSlack 是原版容器窗口的距离附加量
+	// （Container.stillValidBlockEntity 与 AbstractContainerMenu.stillValid 均传入 4.0F）。
+	containerInteractionSlack = 4.0
+	stopDestroyProgress       = 0.7
 	// instaMineProgress 是 START 时立即破坏所需的初始进度（原版 1.0）。
 	instaMineProgress = 1.0
 )
@@ -90,12 +91,25 @@ func (s *session) blockInteractionRange() float64 {
 // withinBlockReach 报告方块是否在交互距离内（原版 Player.canInteractWithBlock：
 // 眼睛位置到方块碰撞盒的距离 < 交互距离 + 1.0，按平方比较）。
 func (s *session) withinBlockReach(x, y, z int) bool {
+	return s.withinReach(x, y, z, blockInteractionSlack)
+}
+
+// withinContainerReach 报告方块是否在容器窗口交互距离内（原版
+// Player.isWithinBlockInteractionRange(pos, 4.0)：眼睛位置到方块碰撞盒的距离
+// < 方块交互距离 + 4.0，按平方比较）。
+func (s *session) withinContainerReach(x, y, z int) bool {
+	return s.withinReach(x, y, z, containerInteractionSlack)
+}
+
+// withinReach 报告眼睛位置到方块碰撞盒的距离是否小于交互距离加给定容差
+// （原版 Player.isWithinBlockInteractionRange 的 AABB 距离算法）。
+func (s *session) withinReach(x, y, z int, slack float64) bool {
 	px, py, pz, _, _ := s.playerPosition()
 	eyeY := py + playerEyeHeight
 	dx := math.Max(math.Max(float64(x)-px, px-(float64(x)+1)), 0)
 	dy := math.Max(math.Max(float64(y)-eyeY, eyeY-(float64(y)+1)), 0)
 	dz := math.Max(math.Max(float64(z)-pz, pz-(float64(z)+1)), 0)
-	limit := s.blockInteractionRange() + blockInteractionSlack
+	limit := s.blockInteractionRange() + slack
 	return dx*dx+dy*dy+dz*dz < limit*limit
 }
 

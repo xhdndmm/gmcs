@@ -476,7 +476,9 @@
   精准采集/时运/剪刀与概率掉落未实现（掉落为简化掉落表，砂砾固定掉砂砾、西瓜固定 5 片）；
   无出生点保护（mayInteract）与冒险模式 mayBuild；无装备损坏时的
   “耐久附魔/修复”等后续行为；放置仅支持普通方块物品（带数据组件的物品不支持）
-- 容器限制：窗口点击距离上限统一为 8 格近似（原版为交互距离属性 4.5 + 4.0）；
+- 容器限制：窗口距离已按原版实现（眼睛位置到方块碰撞盒 < 方块交互距离属性
+  4.5 + 4.0 = 8.5，即 `Container.stillValidBlockEntity` 与
+  `AbstractContainerMenu.stillValid` 的 `isWithinBlockInteractionRange(pos, 4.0)`）；
   装备槽已按 `minecraft:equippable` 组件校验（见上），但附魔“绑定诅咒”
   （原版 `ArmorSlot.mayPickup` 的 PREVENT_ARMOR_CHANGE：生存模式不可卸下）与
   生物专用槽（body/saddle：马铠/狼铠/挽具/鞍）未实现；自定义名称

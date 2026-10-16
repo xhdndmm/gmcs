@@ -252,3 +252,59 @@ func TestWindowStaysOpenWhenBlockIntact(t *testing.T) {
 	}
 	processBarrier(t, conn)
 }
+
+// TestWindowRangeMatchesVanillaBlockInteractionRange 验证容器窗口距离按原版
+// Player.isWithinBlockInteractionRange(pos, 4.0) 判定：眼睛到方块碰撞盒的
+// 距离 < 交互距离 4.5 + 4.0 = 8.5 才有效（旧实现为中心点的水平/垂直 8.0 盒，
+// 两者在高处与对角方向的判定不同）。
+func TestWindowRangeMatchesVanillaBlockInteractionRange(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "RangeCheck")
+	player := activeSession(t, instance, "RangeCheck")
+
+	cx, cy, cz := chestPositions(t, instance)
+	placeChest(t, instance, cx, cy, cz)
+	sendUseItemOn(t, conn, cx, cy, cz, 1)
+	windowID, _ := openScreen(t, conn)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDContainerSetContent)
+
+	// 水平 9.05 格（眼到碰撞盒约 8.07 < 8.5）：窗口应保持打开。
+	// （旧的 8.0 中心距离实现在这里会误关：中心距离 8.55 > 8。）
+	player.setPlayerPosition(float64(cx)+9.05, float64(cy), float64(cz)+0.5, 0, 0)
+	sendPlayerPosition(t, conn, float64(cx)+9.05, float64(cy), float64(cz)+0.5, true)
+	processBarrier(t, conn)
+	if player.connContainer() == nil {
+		t.Fatal("眼到碰撞盒 8.07 < 8.5 时窗口被误关闭")
+	}
+
+	// 水平 9.7 格（眼到碰撞盒约 8.72 ≥ 8.5）：窗口关闭。
+	player.setPlayerPosition(float64(cx)+9.7, float64(cy), float64(cz)+0.5, 0, 0)
+	sendPlayerPosition(t, conn, float64(cx)+9.7, float64(cy), float64(cz)+0.5, true)
+	payload := expectPlayPacket(t, conn, protocol.PlayPacketIDCloseContainer)
+	if got := closeContainerPacket(t, payload); got != windowID {
+		t.Fatalf("关闭窗口编号 = %d, want %d", got, windowID)
+	}
+	if state := player.connContainer(); state != nil {
+		t.Fatal("超距后会话仍持有窗口状态")
+	}
+
+	// 重新打开（回到箱边），再走到正上方 8.2 格（眼到碰撞盒 8.82 ≥ 8.5）：关闭。
+	// （旧实现（垂直 7.7 <= 8）会误判为有效。）
+	player.setPlayerPosition(float64(cx)+0.5, float64(cy), float64(cz)+0.5, 0, 0)
+	sendPlayerPosition(t, conn, float64(cx)+0.5, float64(cy), float64(cz)+0.5, true)
+	sendUseItemOn(t, conn, cx, cy, cz, 1)
+	windowID, _ = openScreen(t, conn)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDContainerSetContent)
+
+	player.setPlayerPosition(float64(cx)+0.5, float64(cy)+8.2, float64(cz)+0.5, 0, 0)
+	sendPlayerPosition(t, conn, float64(cx)+0.5, float64(cy)+8.2, float64(cz)+0.5, true)
+	payload = expectPlayPacket(t, conn, protocol.PlayPacketIDCloseContainer)
+	if got := closeContainerPacket(t, payload); got != windowID {
+		t.Fatalf("正上方关闭窗口编号 = %d, want %d", got, windowID)
+	}
+	if state := player.connContainer(); state != nil {
+		t.Fatal("正上方超距后会话仍持有窗口状态")
+	}
+}

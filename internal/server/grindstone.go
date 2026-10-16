@@ -5,7 +5,6 @@
 package server
 
 import (
-	"math"
 	"slices"
 	"sync"
 
@@ -41,8 +40,6 @@ const (
 
 	// grindstoneUseEvent 是取走结果时的世界事件（原版 LevelEvent.SOUND_GRINDSTONE_USED）。
 	grindstoneUseEvent = 1042
-	// grindstoneReach 是窗口有效距离（与铁砧/普通容器一致的 8.0 盒近似）。
-	grindstoneReach = 8.0
 	// grindstoneBlockName 是砂轮机方块名。
 	grindstoneBlockName = "minecraft:grindstone"
 	// grindstoneTitle 是窗口标题（en_us: container.grindstone_title）。
@@ -367,9 +364,7 @@ func (s *Server) grindstoneStillValid(player *session, state *grindstoneState) b
 	if name, ok := s.blockNameOf(current); !ok || name != grindstoneBlockName {
 		return false
 	}
-	px, py, pz, _, _ := player.playerPosition()
-	return math.Hypot(px-(float64(pos[0])+0.5), pz-(float64(pos[2])+0.5)) <= grindstoneReach &&
-		math.Abs(py-(float64(pos[1])+0.5)) <= grindstoneReach
+	return player.withinContainerReach(pos[0], pos[1], pos[2])
 }
 
 // grindstoneTake 执行取走结果的副作用（对照原版 ij$4.onTake）：

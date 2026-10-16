@@ -265,8 +265,8 @@ func (s *Server) closeEnchanting(player *session, sendClose bool) {
 }
 
 // enchantingStillValid 报告附魔台窗口是否仍有效（原版 EnchantmentMenu.stillValid
-// = ContainerLevelAccess 的有效距离检查）：方块仍是附魔台且在交互距离内。
-// 与原版一致使用容器距离（交互距离属性 4.5 + 4.0 = 8.5，这里用 8.0 盒近似）。
+// = ContainerLevelAccess 的有效距离检查）：方块仍是附魔台且在交互距离内
+// （交互距离属性 4.5 + 4.0 = 8.5，见 withinContainerReach）。
 func (s *Server) enchantingStillValid(player *session, state *enchantingState) bool {
 	state.mu.Lock()
 	dim, pos := state.dim, state.pos
@@ -274,9 +274,7 @@ func (s *Server) enchantingStillValid(player *session, state *enchantingState) b
 	if !isEnchantingTableState(s.worldFor(dim).BlockAt(pos[0], pos[1], pos[2])) {
 		return false
 	}
-	px, py, pz, _, _ := player.playerPosition()
-	return math.Hypot(px-(float64(pos[0])+0.5), pz-(float64(pos[2])+0.5)) <= containerReach &&
-		math.Abs(py-(float64(pos[1])+0.5)) <= containerReach
+	return player.withinContainerReach(pos[0], pos[1], pos[2])
 }
 
 // refreshEnchantingOptions 重算三个选项（原版 EnchantmentMenu#slotsChanged 的
