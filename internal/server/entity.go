@@ -255,6 +255,10 @@ type mob struct {
 	FireTicks int
 	// FireSynced 是最近一次同步给客户端的着火标志（变化时才发包）。
 	FireSynced bool
+	// LookTarget/LookTicks 是“看向玩家”的当前目标与剩余注视 tick
+	// （原版 LookAtPlayerGoal，不持久化）。
+	LookTarget *session
+	LookTicks  int
 }
 
 // pendingAttack 是一次待结算的生物攻击（位置为判定时的快照）。
@@ -574,9 +578,22 @@ func (s *Server) tickMobs(players []*session) {
 		if m.AttackCooldown > 0 {
 			m.AttackCooldown--
 		}
+		// 看向玩家（原版 Monster 的 LookAtPlayerGoal）：只在未移动时转动身体，
+		// 避免与行走朝向互相覆盖（原版由 LookControl 与 tickHeadTurn 细分，
+		// gmcs 用同一角度近似）。
+		rotated := false
+		if !moved {
+			rotated = s.tickMobLook(m, nearestPlayer, playerDistance)
+		}
 		if moved {
 			moves = append(moves, pendingMove{id: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
 			insides = append(insides, insideCheck{dim: m.Dim, box: mobBox(m.X, m.Y, m.Z), w: mobWorld})
+			if absAngleDelta(m.Yaw, m.HeadYaw) >= mobHeadYawThreshold {
+				m.HeadYaw = m.Yaw
+				heads = append(heads, pendingMove{id: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
+			}
+		} else if rotated {
+			moves = append(moves, pendingMove{id: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
 			if absAngleDelta(m.Yaw, m.HeadYaw) >= mobHeadYawThreshold {
 				m.HeadYaw = m.Yaw
 				heads = append(heads, pendingMove{id: m.ID, dim: m.Dim, x: m.X, y: m.Y, z: m.Z, yaw: m.Yaw, pitch: m.Pitch})
