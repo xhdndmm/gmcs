@@ -59,14 +59,22 @@ type arrowRecord struct {
 	AgeTicks int     `json:"ageTicks"`
 }
 
-// itemRecord 是一条持久化的掉落物（速度不保存）。
+// itemRecord 是一条持久化的掉落物（速度不保存；组件覆盖与玩家物品栏的
+// playerItem 字段一致）。
 type itemRecord struct {
-	Item  string  `json:"item"`
-	Count int32   `json:"count"`
-	UUID  string  `json:"uuid"`
-	X     float64 `json:"x"`
-	Y     float64 `json:"y"`
-	Z     float64 `json:"z"`
+	Item         string              `json:"item"`
+	Count        int32               `json:"count"`
+	UUID         string              `json:"uuid"`
+	X            float64             `json:"x"`
+	Y            float64             `json:"y"`
+	Z            float64             `json:"z"`
+	Potion       int32               `json:"potion,omitempty"`
+	Damage       int32               `json:"damage,omitempty"`
+	RepairCost   int32               `json:"repair_cost,omitempty"`
+	CustomName   string              `json:"custom_name,omitempty"`
+	Enchantments []storedEnchantment `json:"enchantments,omitempty"`
+	TrimPattern  string              `json:"trim_pattern,omitempty"`
+	TrimMaterial string              `json:"trim_material,omitempty"`
 }
 
 type mobRecord struct {
@@ -122,12 +130,16 @@ func (s *Server) saveEntities() error {
 		}
 		file := get(e.Dim)
 		file.items = append(file.items, itemRecord{
-			Item:  name,
-			Count: e.Stack.Count,
-			UUID:  hex.EncodeToString(e.UUID[:]),
-			X:     e.X,
-			Y:     e.Y,
-			Z:     e.Z,
+			Item:   name,
+			Count:  e.Stack.Count,
+			UUID:   hex.EncodeToString(e.UUID[:]),
+			X:      e.X,
+			Y:      e.Y,
+			Z:      e.Z,
+			Potion: e.Stack.PotionID, Damage: e.Stack.Damage,
+			RepairCost: e.Stack.RepairCost, CustomName: e.Stack.CustomName,
+			Enchantments: storedEnchantments(e.Stack.Enchantments),
+			TrimPattern:  e.Stack.TrimPattern, TrimMaterial: e.Stack.TrimMaterial,
 		})
 	}
 	for _, a := range s.arrows {
@@ -242,6 +254,15 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 		if itemErr != nil {
 			slog.Warn("跳过无效的掉落物记录", "item", record.Item, "error", itemErr)
 			continue
+		}
+		stack.PotionID = record.Potion
+		stack.Damage = record.Damage
+		stack.RepairCost = record.RepairCost
+		stack.CustomName = record.CustomName
+		stack.Enchantments = itemEnchantments(record.Enchantments)
+		if item.IsValidTrim(record.TrimPattern, record.TrimMaterial) {
+			stack.TrimPattern = record.TrimPattern
+			stack.TrimMaterial = record.TrimMaterial
 		}
 		stack.Count = min(stack.Count, stack.MaxStack())
 		uuid, uuidErr := parseMobUUID(record.UUID)

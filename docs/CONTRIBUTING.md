@@ -78,6 +78,7 @@ profile；`go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s
 | `internal/item` | 物品堆栈与玩家物品栏 | 与注册表物品 ID 表配合 |
 | `internal/server` | 会话生命周期、世界循环、实体/战斗、命令 | 并发与生命周期集中在这里 |
 | `tools/genregistries` | 数据生成器 | 调整数据管线时改它并重新生成 |
+| `tools/vandump` | 临时抓包客户端（连接官方服务器并转储 Play 阶段数据包） | 仅用于兼容性验证（对照官方服务端实测编码），不参与服务器运行 |
 | `scripts` | 构建与测试脚本 | 新增检查请同步 CI（`.github/workflows/ci.yml`） |
 | `docs` | 文档 | 更新场景见第 6 节 |
 

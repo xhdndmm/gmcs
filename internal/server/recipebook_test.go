@@ -154,3 +154,63 @@ func TestRecipeBookPlaceCraft(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateRecipesPropertySets 验证 Update Recipes 首段是与原版一致的
+// 7 个配方属性集（名称与集合规模对照官方 1.21.11 服务端实测抓包）。
+// 客户端的锻造台槽位 mayPlace 依赖 smithing_* 属性集，缺失会让槽位拒绝放入。
+func TestUpdateRecipesPropertySets(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "PropSets")
+	book := instance.recipeBook
+	if book == nil {
+		t.Fatal("配方书未构建")
+	}
+	packet := book.updateRecipes
+	offset := 0
+	readVar := func() int32 {
+		t.Helper()
+		value, size, err := protocol.DecodeVarInt(packet[offset:])
+		if err != nil {
+			t.Fatalf("VarInt 解码失败：%v", err)
+		}
+		offset += size
+		return value
+	}
+	if id := readVar(); id != protocol.PlayPacketIDUpdateRecipes {
+		t.Fatalf("包 ID = %#x, want %#x", id, protocol.PlayPacketIDUpdateRecipes)
+	}
+	setCount := readVar()
+	sets := make(map[string]int, setCount)
+	for i := int32(0); i < setCount; i++ {
+		length := readVar()
+		if len(packet)-offset < int(length) {
+			t.Fatal("属性集名称截断")
+		}
+		name := string(packet[offset : offset+int(length)])
+		offset += int(length)
+		itemCount := readVar()
+		for j := int32(0); j < itemCount; j++ {
+			readVar() // 物品 ID（集合内容由 registry 测试逐项校验）
+		}
+		sets[name] = int(itemCount)
+	}
+	want := map[string]int{
+		"minecraft:smithing_base":       37,
+		"minecraft:smithing_template":   19,
+		"minecraft:smithing_addition":   11,
+		"minecraft:furnace_input":       156,
+		"minecraft:blast_furnace_input": 62,
+		"minecraft:smoker_input":        9,
+		"minecraft:campfire_input":      9,
+	}
+	if len(sets) != len(want) {
+		t.Fatalf("属性集数量 = %d, want %d（%v）", len(sets), len(want), sets)
+	}
+	for name, count := range want {
+		if sets[name] != count {
+			t.Fatalf("属性集 %s 物品数 = %d, want %d", name, sets[name], count)
+		}
+	}
+}

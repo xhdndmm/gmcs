@@ -71,7 +71,8 @@ type playerRecord struct {
 // playerItem 是物品栏中的一个堆栈；Item 为命名空间 ID。
 // Potion 是药水内容（0 = 无；N > 0 表示药水注册表 ID N-1）；
 // Damage 是耐久损耗（0 = 无）；RepairCost 是铁砧累积惩罚（0 = 无）；
-// CustomName 是自定义名称（空 = 无）；Enchantments 是附魔列表（按附魔 ID 升序）。
+// CustomName 是自定义名称（空 = 无）；Enchantments 是附魔列表（按附魔 ID 升序）；
+// TrimPattern/TrimMaterial 是纹饰图案与材质名（空 = 无）。
 type playerItem struct {
 	Slot         int                 `json:"slot"`
 	Item         string              `json:"item"`
@@ -81,6 +82,8 @@ type playerItem struct {
 	RepairCost   int32               `json:"repair_cost,omitempty"`
 	CustomName   string              `json:"custom_name,omitempty"`
 	Enchantments []storedEnchantment `json:"enchantments,omitempty"`
+	TrimPattern  string              `json:"trim_pattern,omitempty"`
+	TrimMaterial string              `json:"trim_material,omitempty"`
 }
 
 // storedEnchantment 是持久化的一个附魔条目。
@@ -262,6 +265,7 @@ func playerRecordFromSession(player *session) playerRecord {
 			Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID,
 			Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
 			Enchantments: storedEnchantments(stack.Enchantments),
+			TrimPattern:  stack.TrimPattern, TrimMaterial: stack.TrimMaterial,
 		})
 	}
 	return playerRecord{
@@ -284,6 +288,14 @@ func playerRecordFromSession(player *session) playerRecord {
 	}
 }
 
+// applyStoredTrim 把持久化的纹饰字段应用到堆栈（非法组合直接丢弃）。
+func applyStoredTrim(stack *item.Stack, stored playerItem) {
+	if item.IsValidTrim(stored.TrimPattern, stored.TrimMaterial) {
+		stack.TrimPattern = stored.TrimPattern
+		stack.TrimMaterial = stored.TrimMaterial
+	}
+}
+
 // enderItemsOf 把会话的末影箱内容转为持久化记录格式。
 func enderItemsOf(player *session) []playerItem {
 	var items []playerItem
@@ -300,6 +312,7 @@ func enderItemsOf(player *session) []playerItem {
 			Slot: slot, Item: name, Count: stack.Count, Potion: stack.PotionID,
 			Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
 			Enchantments: storedEnchantments(stack.Enchantments),
+			TrimPattern:  stack.TrimPattern, TrimMaterial: stack.TrimMaterial,
 		})
 	}
 	return items
@@ -368,6 +381,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		stack.RepairCost = stored.RepairCost
 		stack.CustomName = stored.CustomName
 		stack.Enchantments = itemEnchantments(stored.Enchantments)
+		applyStoredTrim(&stack, stored)
 		s.enderChest.Set(stored.Slot, stack)
 	}
 	for _, stored := range record.Inventory {
@@ -384,6 +398,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		stack.RepairCost = stored.RepairCost
 		stack.CustomName = stored.CustomName
 		stack.Enchantments = itemEnchantments(stored.Enchantments)
+		applyStoredTrim(&stack, stored)
 		s.inventory.Set(stored.Slot, stack)
 	}
 }

@@ -14,8 +14,10 @@ import (
 
 // 配方书（1.21.2+ 配方系统）：
 //
-//   - 进入世界时发送 Update Recipes（0x83）：声明全部非切石机配方
-//     （名称 + 产物物品）与切石机配方列表（输入集合 + 结果显示）；
+//   - 进入世界时发送 Update Recipes（0x83）：下发原版配方属性集
+//     （smithing_base/template/addition 与四类 *_input 的物品集合）与切石机配方
+//     （输入集合 + 结果显示；客户端的锻造台槽位校验依赖属性集，
+//     缺失会让客户端拒绝把物品放入槽位）；
 //   - 随后发送 Recipe Book Add（0x48）：本实现视玩家已解锁全部配方，
 //     因此一次下发全部显示条目（displayId 为服务端构建表中该配方的下标）；
 //   - 处理客户端的 Place Recipe（0x26）：把配方的原料从背包放入当前打开
@@ -65,7 +67,6 @@ func (s *Server) buildRecipeBook() {
 	smithingTable := itemID("minecraft:smithing_table")
 
 	var (
-		list    []protocol.RecipeListEntry
 		addList []protocol.RecipeBookAddItem
 		entries []bookRecipe
 	)
@@ -99,7 +100,6 @@ func (s *Server) buildRecipeBook() {
 	}
 
 	for i, recipe := range registry.ShapedRecipes {
-		list = append(list, protocol.RecipeListEntry{Name: recipe.Name, Items: []int32{recipe.Result}})
 		appendAdd(protocol.RecipeDisplay{
 			Type:            protocol.RecipeDisplayCraftingShaped,
 			Width:           recipe.Width,
@@ -111,7 +111,6 @@ func (s *Server) buildRecipeBook() {
 		}, protocol.RecipeCategoryCraftingMisc, bookRecipe{kind: bookShaped, index: int32(i)})
 	}
 	for i, recipe := range registry.ShapelessRecipes {
-		list = append(list, protocol.RecipeListEntry{Name: recipe.Name, Items: []int32{recipe.Result}})
 		appendAdd(protocol.RecipeDisplay{
 			Type:            protocol.RecipeDisplayCraftingShapeless,
 			Ingredients:     copyIngredients(recipe.Ingredients),
@@ -135,7 +134,6 @@ func (s *Server) buildRecipeBook() {
 		if !ok {
 			continue
 		}
-		list = append(list, protocol.RecipeListEntry{Name: recipe.Name, Items: []int32{recipe.Result}})
 		appendAdd(protocol.RecipeDisplay{
 			Type:            protocol.RecipeDisplayFurnace,
 			Ingredients:     [][]int32{append([]int32(nil), recipe.Ingredient...)},
@@ -147,7 +145,6 @@ func (s *Server) buildRecipeBook() {
 		}, meta.category, bookRecipe{kind: meta.kind, index: int32(i)})
 	}
 	for i, recipe := range registry.SmithingTransformRecipes {
-		list = append(list, protocol.RecipeListEntry{Name: recipe.Name, Items: []int32{recipe.Result}})
 		appendAdd(protocol.RecipeDisplay{
 			Type:            protocol.RecipeDisplaySmithing,
 			Template:        append([]int32(nil), recipe.Template...),
@@ -168,13 +165,18 @@ func (s *Server) buildRecipeBook() {
 		})
 	}
 
+	propertySets := make([]protocol.PropertySetEntry, 0, 7)
+	for _, set := range registry.PropertySets() {
+		propertySets = append(propertySets, protocol.PropertySetEntry{Name: set.Name, Items: set.Items})
+	}
+
 	s.recipeBook = &recipeBook{
-		updateRecipes: protocol.EncodeUpdateRecipes(list, stonecutter),
+		updateRecipes: protocol.EncodeUpdateRecipes(propertySets, stonecutter),
 		addPacket:     protocol.EncodeRecipeBookAdd(addList, true),
 		entries:       entries,
 	}
 	slog.Info("配方书已构建",
-		"recipes", len(list), "stonecutter", len(stonecutter), "bookEntries", len(addList))
+		"propertySets", len(propertySets), "stonecutter", len(stonecutter), "bookEntries", len(addList))
 }
 
 // handlePlaceRecipe 处理 Place Recipe（配方书点击）：把原料放入当前合成格。

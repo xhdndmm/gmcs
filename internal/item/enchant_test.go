@@ -13,7 +13,9 @@ import (
 )
 
 // TestEnchantmentsComponentEncoding 逐字节验证 minecraft:enchantments 组件
-// （组件 ID 13）的编码：VarInt 数量 + 每项（Holder：VarInt(id+1)、VarInt(等级)）。
+// （组件 ID 13）的编码：VarInt 数量 + 每项（Holder：VarInt(注册表 ID)、VarInt(等级)）。
+// 期望字节与官方 1.21.11 服务端实测一致（/give mending 1 + sharpness 5 的钻石剑，
+// Set Container Slot 负载：01 a8 07 01 00 0d 02 17 01 21 05）。
 func TestEnchantmentsComponentEncoding(t *testing.T) {
 	stack := Stack{
 		ItemID: 913, Count: 1,
@@ -27,8 +29,8 @@ func TestEnchantmentsComponentEncoding(t *testing.T) {
 		0,     // 移除的组件数
 		13,    // 组件 ID：enchantments
 		2,     // 条目数
-		34, 1, // (附魔 33 的 Holder id+1, 等级 1)
-		41, 2, // (附魔 40 的 Holder id+1, 等级 2)
+		33, 1, // (附魔 33，等级 1)
+		40, 2, // (附魔 40，等级 2)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("AppendSlot = % x, want % x", got, want)
@@ -95,7 +97,7 @@ func TestStoredEnchantmentsComponentEncoding(t *testing.T) {
 	want = protocol.AppendVarInt(want, 5)
 	want = protocol.AppendVarInt(want, 41)
 	want = protocol.AppendVarInt(want, 1)
-	want = protocol.AppendVarInt(want, 34) // Holder：33 + 1
+	want = protocol.AppendVarInt(want, 33) // Holder：裸注册表 ID
 	want = protocol.AppendVarInt(want, 1)
 	if !bytes.Equal(got, want) {
 		t.Fatalf("AppendSlot = % x, want % x", got, want)

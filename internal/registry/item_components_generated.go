@@ -3336,3 +3336,20 @@ var ItemDisplayNames = map[string]string{
 var StoredEnchantmentItems = map[string]bool{
 	"minecraft:enchanted_book": true,
 }
+
+// TrimMaterialItems 保存携带 minecraft:provides_trim_material 组件的物品 →
+// 纹饰材质名（如 minecraft:gold_ingot → minecraft:gold）。
+// 锻造台纹饰配方用它把添加物解析为材质（原版 TrimMaterials.createFromIngredient）。
+var TrimMaterialItems = map[string]string{
+	"minecraft:amethyst_shard":  "minecraft:amethyst",
+	"minecraft:copper_ingot":    "minecraft:copper",
+	"minecraft:diamond":         "minecraft:diamond",
+	"minecraft:emerald":         "minecraft:emerald",
+	"minecraft:gold_ingot":      "minecraft:gold",
+	"minecraft:iron_ingot":      "minecraft:iron",
+	"minecraft:lapis_lazuli":    "minecraft:lapis",
+	"minecraft:netherite_ingot": "minecraft:netherite",
+	"minecraft:quartz":          "minecraft:quartz",
+	"minecraft:redstone":        "minecraft:redstone",
+	"minecraft:resin_brick":     "minecraft:resin",
+}

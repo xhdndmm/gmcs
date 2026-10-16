@@ -104,7 +104,8 @@ func ReleaseRegionHandles() {
 // version 1 的负载不含方块实体（读取时视为空），version 2 起追加；
 // version 5 起槽位携带药水 ID、方块实体携带酿造台进度；
 // version 6 起槽位携带耐久损耗、铁砧累积惩罚与自定义名称；
-// version 7 起槽位携带附魔列表。
+// version 7 起槽位携带附魔列表；
+// version 8 起槽位携带纹饰图案与材质名。
 // 所有多字节整数均为大端；负载使用 zlib 压缩（区域文件压缩类型 2）。
 const (
 	regionShift   = 5
@@ -114,8 +115,8 @@ const (
 	// chunkVersion 是当前存储负载版本：v2 追加方块实体，v3 追加熔炉进度，
 	// v4 追加 4×4 群系网格（section 内的 biome 字段仅作兼容保留），
 	// v5 追加槽位药水 ID 与酿造台进度，v6 追加槽位耐久/铁砧惩罚/自定义名称，
-	// v7 追加槽位附魔列表。
-	chunkVersion = 7
+	// v7 追加槽位附魔列表，v8 追加槽位纹饰图案/材质名。
+	chunkVersion = 8
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 	// maxStoredNameLength 是容器槽位自定义名称的存储长度上限（协议字符串上限）。
@@ -402,6 +403,7 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 		for _, slot := range entity.Items {
 			size += len(slot.CustomName) + 2
 			size += 2 + len(slot.Enchantments)*8
+			size += len(slot.TrimPattern) + len(slot.TrimMaterial) + 4
 		}
 	}
 	payload := make([]byte, size)
@@ -466,6 +468,11 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 				offset += binary.PutUvarint(dst[offset:], uint64(uint32(ench.ID)))
 				offset += binary.PutUvarint(dst[offset:], uint64(uint32(ench.Level)))
 			}
+			// 纹饰（v8）：图案与材质名（长度前缀变量）。
+			offset += binary.PutUvarint(dst[offset:], uint64(len(slot.TrimPattern)))
+			offset += copy(dst[offset:], slot.TrimPattern)
+			offset += binary.PutUvarint(dst[offset:], uint64(len(slot.TrimMaterial)))
+			offset += copy(dst[offset:], slot.TrimMaterial)
 		}
 		// 熔炉类进度（非熔炉为 0，仍写出以保证格式统一）。
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BurnRemaining)))
@@ -512,6 +519,20 @@ func writeSectionPayload(dst []byte, offset int, st *sectionStorage) int {
 		}
 	}
 	return offset
+}
+
+// readStoredName 读取一个长度前缀的存储字符串（uvarint 长度 + 字节），
+// 返回读到的字符串与新偏移；长度越界或截断时返回错误。
+func readStoredName(payload []byte, offset int, what string) (string, int, error) {
+	length, size := binary.Uvarint(payload[offset:])
+	if size <= 0 {
+		return "", 0, fmt.Errorf("%s 长度无效", what)
+	}
+	offset += size
+	if length > maxStoredNameLength || uint64(len(payload)-offset) < length {
+		return "", 0, fmt.Errorf("%s 越界", what)
+	}
+	return string(payload[offset : offset+int(length)]), offset + int(length), nil
 }
 
 // decodeChunkPayload 解析存储负载（版本 1 与 2）。
@@ -691,10 +712,21 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint1
 						enchantments = append(enchantments, EnchantedItem{ID: int32(enchID), Level: int32(enchLevel)})
 					}
 				}
+				trimPattern, trimMaterial := "", ""
+				if version >= 8 {
+					var err error
+					if trimPattern, offset, err = readStoredName(payload, offset, "容器槽位纹饰图案"); err != nil {
+						return 0, err
+					}
+					if trimMaterial, offset, err = readStoredName(payload, offset, "容器槽位纹饰材质"); err != nil {
+						return 0, err
+					}
+				}
 				entity.Items[slot] = ContainerItem{
 					ItemID: int32(itemID), Count: int32(itemCount), PotionID: int32(potionID),
 					Damage: int32(damage), RepairCost: int32(repairCost), CustomName: customName,
 					Enchantments: enchantments,
+					TrimPattern:  trimPattern, TrimMaterial: trimMaterial,
 				}
 			}
 		}

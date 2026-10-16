@@ -24,10 +24,12 @@ import (
 //   - crafting_shaped（有序合成，含镜像匹配所需的原始图案）
 //   - crafting_shapeless（无序合成）
 //   - smelting / blasting / smoking / campfire_cooking（烹饪类）
+//   - stonecutting（切石机）
+//   - smithing_transform（锻造升级：模板/基底/添加物 → 产物）
+//   - smithing_trim（锻造纹饰：模板/基底/添加物 + 纹饰名 → 基底副本 + trim 组件）
 //
 // 跳过的类型（结果带组件、特殊逻辑或需要额外注册表支持）：
 //   - crafting_transmute / crafting_decorated_pot / crafting_special_*
-//   - smithing_transform / smithing_trim / stonecutting
 //
 // 原料格式支持字符串（物品或 #标签）、对象（{"item":...} / {"tag":...}）
 // 与字符串数组（备选列表）三种形式。
@@ -66,9 +68,13 @@ type parsedRecipe struct {
 	// stonecutting 标记切石机配方；smithing 标记锻造升级配方（模板/基底/添加物）。
 	stonecutting bool
 	smithing     bool
-	template     recipeIngredientSpec
-	base         recipeIngredientSpec
-	addition     recipeIngredientSpec
+	// smithingTrim 标记锻造纹饰配方（无产物物品，结果为基底副本 + trim 组件）。
+	smithingTrim bool
+	// trimPattern 是纹饰配方的纹饰名（如 minecraft:bolt）。
+	trimPattern string
+	template    recipeIngredientSpec
+	base        recipeIngredientSpec
+	addition    recipeIngredientSpec
 }
 
 // collectRecipes 读取 jar 中 data/minecraft/recipe/*.json 并解析配方。
@@ -139,24 +145,37 @@ func parseRecipeFile(content []byte, baseName string) (parsedRecipe, bool, error
 		recipe.stonecutting = true
 	case "minecraft:smithing_transform":
 		recipe.smithing = true
+	case "minecraft:smithing_trim":
+		recipe.smithingTrim = true
 	default:
-		// 其余类型（transmute/smithing_trim/special 等）暂不支持。
+		// 其余类型（transmute/special 等）暂不支持。
 		return parsedRecipe{}, false, nil
 	}
-	if raw.Result == nil || raw.Result.ID == "" {
-		return parsedRecipe{}, false, nil
+	if recipe.smithingTrim {
+		// 纹饰配方没有 result 字段：产物是基底副本 + trim 组件。
+		if len(raw.Pattern) == 0 {
+			return parsedRecipe{}, false, fmt.Errorf("纹饰配方缺少 pattern")
+		}
+		if err := json.Unmarshal(raw.Pattern, &recipe.trimPattern); err != nil {
+			return parsedRecipe{}, false, fmt.Errorf("解析纹饰名：%w", err)
+		}
+		recipe.trimPattern = normalizeEntryName(recipe.trimPattern)
+	} else {
+		if raw.Result == nil || raw.Result.ID == "" {
+			return parsedRecipe{}, false, nil
+		}
+		// 结果带组件（如可疑的炖菜）需要物品组件支持，跳过。
+		if len(raw.Result.Components) > 0 && string(raw.Result.Components) != "{}" {
+			return parsedRecipe{}, false, nil
+		}
+		recipe.result = normalizeEntryName(raw.Result.ID)
+		recipe.resultCount = raw.Result.Count
+		if recipe.resultCount <= 0 {
+			recipe.resultCount = 1
+		}
+		recipe.experience = raw.Experience
+		recipe.cookTime = raw.CookingTime
 	}
-	// 结果带组件（如可疑的炖菜）需要物品组件支持，跳过。
-	if len(raw.Result.Components) > 0 && string(raw.Result.Components) != "{}" {
-		return parsedRecipe{}, false, nil
-	}
-	recipe.result = normalizeEntryName(raw.Result.ID)
-	recipe.resultCount = raw.Result.Count
-	if recipe.resultCount <= 0 {
-		recipe.resultCount = 1
-	}
-	recipe.experience = raw.Experience
-	recipe.cookTime = raw.CookingTime
 
 	switch {
 	case recipe.stonecutting:
@@ -168,7 +187,7 @@ func parseRecipeFile(content []byte, baseName string) (parsedRecipe, bool, error
 			return parsedRecipe{}, false, err
 		}
 		recipe.ingredients = []recipeIngredientSpec{spec}
-	case recipe.smithing:
+	case recipe.smithing, recipe.smithingTrim:
 		if len(raw.Template) == 0 || len(raw.Base) == 0 || len(raw.Addition) == 0 {
 			return parsedRecipe{}, false, fmt.Errorf("锻造配方缺少 template/base/addition")
 		}
@@ -287,6 +306,7 @@ type recipeTables struct {
 	cooking      []resolvedCookingRecipe
 	stonecutting []resolvedStonecuttingRecipe
 	smithing     []resolvedSmithingRecipe
+	smithingTrim []resolvedSmithingTrimRecipe
 }
 
 type resolvedIngredient []int32
@@ -339,6 +359,17 @@ type resolvedSmithingRecipe struct {
 	resultCount int32
 }
 
+// resolvedSmithingTrimRecipe 是锻造纹饰配方（模板 + 基底 + 添加物 →
+// 基底副本 + trim 组件）；产物由运行时根据添加物物品的
+// minecraft:provides_trim_material 组件计算（见 registry.TrimMaterialForItem）。
+type resolvedSmithingTrimRecipe struct {
+	name     string
+	pattern  string // 纹饰名（如 minecraft:bolt）
+	template resolvedIngredient
+	base     resolvedIngredient
+	addition resolvedIngredient
+}
+
 // resolveRecipes 把配方原料展开为物品 ID 集合。
 func resolveRecipes(recipes []parsedRecipe, itemIDs map[string]int32, itemTags map[string][]int32) (*recipeTables, error) {
 	tables := &recipeTables{}
@@ -374,6 +405,25 @@ func resolveRecipes(recipes []parsedRecipe, itemIDs map[string]int32, itemTags m
 		return ids, nil
 	}
 	for _, recipe := range recipes {
+		if recipe.smithingTrim {
+			template, err := resolve(recipe.template)
+			if err != nil {
+				return nil, fmt.Errorf("配方 %s template：%w", recipe.name, err)
+			}
+			base, err := resolve(recipe.base)
+			if err != nil {
+				return nil, fmt.Errorf("配方 %s base：%w", recipe.name, err)
+			}
+			addition, err := resolve(recipe.addition)
+			if err != nil {
+				return nil, fmt.Errorf("配方 %s addition：%w", recipe.name, err)
+			}
+			tables.smithingTrim = append(tables.smithingTrim, resolvedSmithingTrimRecipe{
+				name: recipe.name, pattern: recipe.trimPattern,
+				template: template, base: base, addition: addition,
+			})
+			continue
+		}
 		result, ok := itemIDs[recipe.result]
 		if !ok {
 			// 结果物品不在注册表中（版本差异），跳过而非报错。
@@ -477,8 +527,8 @@ func writeRecipes(outDir, version string, tables *recipeTables) error {
 	fmt.Fprintf(&out, "// Code generated by tools/genregistries from Minecraft %s data/minecraft/recipe; DO NOT EDIT.\n", version)
 	out.WriteString("//\n")
 	out.WriteString("// 数据来源：官方客户端/服务端 jar 内置数据包的配方文件；原料标签在生成期展开为物品 ID。\n")
-	out.WriteString("// 支持 crafting_shaped / crafting_shapeless / 四类烹饪 / stonecutting / smithing_transform；\n")
-	out.WriteString("// crafting_transmute / crafting_special_* / smithing_trim 等类型不生成\n")
+	out.WriteString("// 支持 crafting_shaped / crafting_shapeless / 四类烹饪 / stonecutting /\n")
+	out.WriteString("// smithing_transform / smithing_trim；crafting_transmute / crafting_special_* 不生成\n")
 	out.WriteString("// （它们需要额外的匹配逻辑或组件支持，见 docs/TODO.md）。\n\n")
 	out.WriteString("package registry\n\n")
 
@@ -586,6 +636,40 @@ func writeRecipes(outDir, version string, tables *recipeTables) error {
 	out.WriteString("var SmithingTransformRecipes = []SmithingTransformRecipe{\n")
 	for _, recipe := range tables.smithing {
 		fmt.Fprintf(&out, "\t{Name: %q, Result: %d, ResultCount: %d, Template: Ingredient{", recipe.name, recipe.result, recipe.resultCount)
+		for i, id := range recipe.template {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			fmt.Fprintf(&out, "%d", id)
+		}
+		out.WriteString("}, Base: Ingredient{")
+		for i, id := range recipe.base {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			fmt.Fprintf(&out, "%d", id)
+		}
+		out.WriteString("}, Addition: Ingredient{")
+		for i, id := range recipe.addition {
+			if i > 0 {
+				out.WriteString(", ")
+			}
+			fmt.Fprintf(&out, "%d", id)
+		}
+		out.WriteString("}},\n")
+	}
+	out.WriteString("}\n\n")
+
+	out.WriteString("// SmithingTrimRecipe 是锻造纹饰配方（模板 + 基底 + 添加物 → 基底副本 + trim 组件）。\n")
+	out.WriteString("// Pattern 是纹饰名（如 minecraft:bolt）；产物材质由添加物物品的\n")
+	out.WriteString("// minecraft:provides_trim_material 组件决定（见 TrimMaterialItems 与\n")
+	out.WriteString("// registry.TrimMaterialForItem）。\n")
+	out.WriteString("type SmithingTrimRecipe struct {\n")
+	out.WriteString("\tName     string\n\tPattern  string\n\tTemplate Ingredient\n\tBase     Ingredient\n\tAddition Ingredient\n}\n\n")
+	out.WriteString("// SmithingTrimRecipes 保存全部锻造纹饰配方（按配方名排序）。\n")
+	out.WriteString("var SmithingTrimRecipes = []SmithingTrimRecipe{\n")
+	for _, recipe := range tables.smithingTrim {
+		fmt.Fprintf(&out, "\t{Name: %q, Pattern: %q, Template: Ingredient{", recipe.name, recipe.pattern)
 		for i, id := range recipe.template {
 			if i > 0 {
 				out.WriteString(", ")

@@ -30,7 +30,7 @@ func TestStackAppendSlotWithComponents(t *testing.T) {
 	want = protocol.AppendVarInt(want, 3)
 	want = protocol.AppendVarInt(want, potionContentsComponentID)
 	want = append(want, 1)                // optional(potion) 存在
-	want = protocol.AppendVarInt(want, 5) // Holder：注册表 ID + 1
+	want = protocol.AppendVarInt(want, 4) // Holder：裸注册表 ID（PotionID-1）
 	want = append(want, 0)                // optional(customColor) 为空
 	want = protocol.AppendVarInt(want, 0) // customEffects 空列表
 	want = append(want, 0)                // optional(customName) 为空

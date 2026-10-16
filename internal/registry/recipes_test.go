@@ -182,3 +182,92 @@ func TestRecipeTablesSane(t *testing.T) {
 		}
 	}
 }
+
+// TestSmithingTrimMatching 验证纹饰配方的匹配与添加物 → 材质解析。
+func TestSmithingTrimMatching(t *testing.T) {
+	netheriteChest := itemID(t, "minecraft:netherite_chestplate")
+	boltTemplate := itemID(t, "minecraft:bolt_armor_trim_smithing_template")
+	goldIngot := itemID(t, "minecraft:gold_ingot")
+
+	recipe, ok := MatchSmithingTrim(boltTemplate, netheriteChest, goldIngot)
+	if !ok || recipe.Pattern != "minecraft:bolt" {
+		t.Fatalf("纹饰配方匹配失败：ok=%v pattern=%q", ok, recipe.Pattern)
+	}
+	if material, ok := TrimMaterialForItem(goldIngot); !ok || material != "minecraft:gold" {
+		t.Fatalf("金锭的纹饰材质 = %q ok=%v, want minecraft:gold", material, ok)
+	}
+	if _, ok := TrimMaterialForItem(netheriteChest); ok {
+		t.Fatal("下界合金胸甲不应提供纹饰材质")
+	}
+	// 添加物不在 trim_materials 标签内：不匹配。
+	if _, ok := MatchSmithingTrim(boltTemplate, netheriteChest, itemID(t, "minecraft:iron_ore")); ok {
+		t.Fatal("铁矿不应匹配纹饰配方添加物")
+	}
+	// 升级配方（下界合金升级）不应被当作纹饰配方。
+	if _, ok := MatchSmithingTrim(
+		itemID(t, "minecraft:netherite_upgrade_smithing_template"),
+		itemID(t, "minecraft:diamond_sword"),
+		itemID(t, "minecraft:netherite_ingot")); ok {
+		t.Fatal("下界合金升级组合不应匹配纹饰配方")
+	}
+	// 全部 18 条纹饰配方都有非空图案与原料。
+	if len(SmithingTrimRecipes) != 18 {
+		t.Fatalf("纹饰配方数 = %d, want 18", len(SmithingTrimRecipes))
+	}
+	for _, r := range SmithingTrimRecipes {
+		if r.Pattern == "" || len(r.Template) == 0 || len(r.Base) == 0 || len(r.Addition) == 0 {
+			t.Fatalf("纹饰配方 %s 字段不完整", r.Name)
+		}
+	}
+}
+
+// TestPropertySetsMatchVanilla 验证属性集与官方 1.21.11 服务端 Update Recipes
+// 实测一致（集合数量与规模逐一对齐）。
+func TestPropertySetsMatchVanilla(t *testing.T) {
+	sets := PropertySets()
+	want := []struct {
+		name  string
+		count int
+	}{
+		{"minecraft:smithing_base", 37},
+		{"minecraft:smithing_template", 19},
+		{"minecraft:smithing_addition", 11},
+		{"minecraft:furnace_input", 156},
+		{"minecraft:blast_furnace_input", 62},
+		{"minecraft:smoker_input", 9},
+		{"minecraft:campfire_input", 9},
+	}
+	if len(sets) != len(want) {
+		t.Fatalf("属性集数量 = %d, want %d", len(sets), len(want))
+	}
+	for i, w := range want {
+		set := sets[i]
+		if set.Name != w.name {
+			t.Fatalf("属性集[%d] = %s, want %s", i, set.Name, w.name)
+		}
+		if len(set.Items) != w.count {
+			t.Fatalf("属性集 %s 物品数 = %d, want %d（与原版抓包不一致）", set.Name, len(set.Items), w.count)
+		}
+		for j := 1; j < len(set.Items); j++ {
+			if set.Items[j-1] >= set.Items[j] {
+				t.Fatalf("属性集 %s 未严格升序去重：位置 %d", set.Name, j)
+			}
+		}
+	}
+	// 关键成员抽查。
+	templates := sets[1].Items
+	if !ContainsItem(templates, itemID(t, "minecraft:bolt_armor_trim_smithing_template")) ||
+		!ContainsItem(templates, itemID(t, "minecraft:netherite_upgrade_smithing_template")) {
+		t.Fatal("smithing_template 应包含纹饰模板与下界合金升级模板")
+	}
+	addition := sets[2].Items
+	if !ContainsItem(addition, itemID(t, "minecraft:gold_ingot")) ||
+		!ContainsItem(addition, itemID(t, "minecraft:netherite_ingot")) {
+		t.Fatal("smithing_addition 应包含金锭与下界合金锭")
+	}
+	base := sets[0].Items
+	if !ContainsItem(base, itemID(t, "minecraft:diamond_sword")) ||
+		!ContainsItem(base, itemID(t, "minecraft:netherite_chestplate")) {
+		t.Fatal("smithing_base 应包含钻石剑与下界合金胸甲")
+	}
+}

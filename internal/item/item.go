@@ -17,9 +17,10 @@ import (
 //
 // 携带的组件覆盖：耐久损耗（minecraft:damage）、自定义名称
 // （minecraft:custom_name）、附魔（minecraft:enchantments）、铁砧累积惩罚
-// （minecraft:repair_cost）与药水内容（minecraft:potion_contents）；其余组件
-// 由客户端使用物品默认组件（来自 Known Packs 的内置数据）；堆叠上限按官方
-// 物品数据（registry.MaxStackSize）处理，其余组件派生属性暂不校验。
+// （minecraft:repair_cost）、药水内容（minecraft:potion_contents）与纹饰
+// （minecraft:trim）；其余组件由客户端使用物品默认组件（来自 Known Packs
+// 的内置数据）；堆叠上限按官方物品数据（registry.MaxStackSize）处理，
+// 其余组件派生属性暂不校验。
 type Stack struct {
 	// ItemID 是物品的注册表 ID（客户端内置全局 ID）。
 	ItemID int32
@@ -38,6 +39,12 @@ type Stack struct {
 	// Enchantments 是附魔（minecraft:enchantments）：nil 或空表示无组件；
 	// 必须按附魔 ID 升序排列（SameKind 按顺序比较，各写入路径都保持有序）。
 	Enchantments []EnchantmentEntry
+	// TrimPattern 是纹饰图案（minecraft:trim 的 pattern，如 "minecraft:bolt"）：
+	// 空表示无纹饰组件。
+	TrimPattern string
+	// TrimMaterial 是纹饰材质（minecraft:trim 的 material，如 "minecraft:gold"）：
+	// 与 TrimPattern 同时非空才写出组件。
+	TrimMaterial string
 }
 
 // EnchantmentEntry 是一个附魔条目（附魔注册表 ID 与等级）。
@@ -75,12 +82,13 @@ func FromName(name string, count int32) (Stack, error) {
 
 // SameKind 报告两个堆栈是否同类（同物品且同组件覆盖）。
 // 物品合并、堆叠与拖拽收集必须用它而非仅比较 ItemID：
-// 不同药水的 potion 物品共享同一 ItemID，附魔/耐久/改名/铁砧惩罚不同的
+// 不同药水的 potion 物品共享同一 ItemID，附魔/耐久/改名/纹饰/铁砧惩罚不同的
 // 工具也不能堆叠。
 func (s Stack) SameKind(other Stack) bool {
 	return s.ItemID == other.ItemID && s.PotionID == other.PotionID &&
 		s.Damage == other.Damage && s.RepairCost == other.RepairCost &&
-		s.CustomName == other.CustomName && slices.Equal(s.Enchantments, other.Enchantments)
+		s.CustomName == other.CustomName && slices.Equal(s.Enchantments, other.Enchantments) &&
+		s.TrimPattern == other.TrimPattern && s.TrimMaterial == other.TrimMaterial
 }
 
 // Equal 报告两个堆栈是否完全相等（含全部组件与数量）。
@@ -89,7 +97,8 @@ func (s Stack) Equal(other Stack) bool {
 	return s.ItemID == other.ItemID && s.Count == other.Count &&
 		s.PotionID == other.PotionID && s.Damage == other.Damage &&
 		s.RepairCost == other.RepairCost && s.CustomName == other.CustomName &&
-		slices.Equal(s.Enchantments, other.Enchantments)
+		slices.Equal(s.Enchantments, other.Enchantments) &&
+		s.TrimPattern == other.TrimPattern && s.TrimMaterial == other.TrimMaterial
 }
 
 // EqualStacks 报告两个堆栈切片是否逐项相等（用于物品栏快照比较）。
@@ -163,6 +172,7 @@ const (
 	repairCostComponentID         = 19
 	storedEnchantmentsComponentID = 41
 	potionContentsComponentID     = 49
+	trimComponentID               = 54
 )
 
 // AppendSlot 按 1.21.11 的 Slot 结构把堆栈追加到 dst。
@@ -170,8 +180,9 @@ const (
 // Slot 结构：count（VarInt）；count != 0 时依次为 itemId（VarInt）、
 // 添加的组件数、移除的组件数、组件的补丁数据。组件按类型 ID 升序写出：
 // damage（VarInt）、custom_name（NBT 文本组件）、enchantments（自定义结构）、
-// repair_cost（VarInt）、stored_enchantments（附魔书）与 potion_contents
-// （自定义结构，见 appendPotionContents）。附魔组件与原版一致按物品选择：
+// repair_cost（VarInt）、stored_enchantments（附魔书）、potion_contents
+// （自定义结构，见 appendPotionContents）与 trim（见 appendTrim）。
+// 附魔组件与原版一致按物品选择：
 // 附魔书使用 stored_enchantments（41），其余物品使用 enchantments（13）。
 func (s Stack) AppendSlot(dst []byte) []byte {
 	if s.IsEmpty() {
@@ -179,7 +190,9 @@ func (s Stack) AppendSlot(dst []byte) []byte {
 	}
 	dst = protocol.AppendVarInt(dst, s.Count)
 	dst = protocol.AppendVarInt(dst, s.ItemID)
-	if s.Damage == 0 && s.CustomName == "" && s.RepairCost == 0 && s.PotionID == 0 && len(s.Enchantments) == 0 {
+	trimMaterialID, trimPatternID, hasTrim := s.trimHolders()
+	if s.Damage == 0 && s.CustomName == "" && s.RepairCost == 0 && s.PotionID == 0 &&
+		len(s.Enchantments) == 0 && !hasTrim {
 		dst = protocol.AppendVarInt(dst, 0)  // 添加的组件数
 		return protocol.AppendVarInt(dst, 0) // 移除的组件数
 	}
@@ -197,6 +210,9 @@ func (s Stack) AppendSlot(dst []byte) []byte {
 		components++
 	}
 	if s.PotionID > 0 {
+		components++
+	}
+	if hasTrim {
 		components++
 	}
 	dst = protocol.AppendVarInt(dst, components)
@@ -224,7 +240,39 @@ func (s Stack) AppendSlot(dst []byte) []byte {
 	if s.PotionID > 0 {
 		dst = appendPotionContents(dst, s.PotionID-1)
 	}
+	if hasTrim {
+		dst = protocol.AppendVarInt(dst, trimComponentID)
+		dst = protocol.AppendVarInt(dst, trimMaterialID+1) // Holder：注册表 ID + 1
+		dst = protocol.AppendVarInt(dst, trimPatternID+1)  // Holder：注册表 ID + 1
+	}
 	return dst
+}
+
+// trimHolders 解析纹饰组件的两个 Holder 注册表 ID（未加 1 的原始 ID）。
+// 图案或材质缺失/未知（不在同步注册表内）时 has 为 false，不写组件。
+func (s Stack) trimHolders() (materialID, patternID int32, has bool) {
+	if s.TrimPattern == "" || s.TrimMaterial == "" {
+		return 0, 0, false
+	}
+	materialID, okMaterial := registry.TrimMaterialID(s.TrimMaterial)
+	patternID, okPattern := registry.TrimPatternID(s.TrimPattern)
+	return materialID, patternID, okMaterial && okPattern
+}
+
+// IsValidTrim 报告纹饰图案/材质名是否合法：两者都为空（无纹饰）或都在
+// 同步注册表内。用于读取持久化数据时丢弃非法值。
+func IsValidTrim(pattern, material string) bool {
+	if pattern == "" && material == "" {
+		return true
+	}
+	if pattern == "" || material == "" {
+		return false
+	}
+	if _, ok := registry.TrimPatternID(pattern); !ok {
+		return false
+	}
+	_, ok := registry.TrimMaterialID(material)
+	return ok
 }
 
 // appendEnchantments 追加一个附魔组件（enchantments 13 或 stored_enchantments 41）：
@@ -232,13 +280,18 @@ func (s Stack) AppendSlot(dst []byte) []byte {
 //
 // 网络编码（对照 1.21.11 反编译的 ItemEnchantments.STREAM_CODEC =
 // ByteBufCodecs.map(sizeFunction, Enchantments.HOLDER_CODEC, VAR_INT)）：
-// VarInt 条目数 + 条目数 ×（Holder<Enchantment>：VarInt(注册表 ID + 1)；
-// 等级：VarInt）。Holder 编码与药水一致（0 保留给内联值）。
+// VarInt 条目数 + 条目数 ×（Holder<Enchantment>：VarInt(注册表 ID)；
+// 等级：VarInt）。Enchantment.HOLDER_CODEC 使用不带内联回退的 holderRegistry，
+// 即裸注册表 ID（无 +1）。
+//
+// 注：该格式已用官方 1.21.11 服务端实测对齐——/give 一把
+// mending 1 + sharpness 5 的钻石剑，Set Container Slot 中附魔组件负载为
+// 02 17 01 21 05（mending=23、sharpness=33，均为裸 ID）。
 func appendEnchantments(dst []byte, componentID int, entries []EnchantmentEntry) []byte {
 	dst = protocol.AppendVarInt(dst, int32(componentID))
 	dst = protocol.AppendVarInt(dst, int32(len(entries)))
 	for _, entry := range entries {
-		dst = protocol.AppendVarInt(dst, entry.ID+1) // Holder：注册表 ID + 1
+		dst = protocol.AppendVarInt(dst, entry.ID) // Holder：裸注册表 ID
 		dst = protocol.AppendVarInt(dst, entry.Level)
 	}
 	return dst
@@ -248,16 +301,20 @@ func appendEnchantments(dst []byte, componentID int, entries []EnchantmentEntry)
 // 组件 ID（VarInt）+ PotionContents.STREAM_CODEC 负载。
 //
 // 负载结构（对照 1.21.11 反编译的 PotionContents.STREAM_CODEC）：
-// optional(potion)：bool + VarInt(注册表 ID + 1)；
+// optional(potion)：bool + VarInt(注册表 ID)；
 // optional(customColor)：bool；
 // customEffects：VarInt 列表长度；
 // optional(customName)：bool。
 // 这里只携带药水种类，其余字段均为空。
+//
+// Potion.HOLDER_CODEC 为不带内联回退的 holderRegistry：
+// 写裸注册表 ID（无 +1）。该格式已用官方 1.21.11 服务端实测对齐——
+// /give 一瓶 swiftness 药水（注册表 ID 13），槽位负载为 01 0d 00 00 00。
 func appendPotionContents(dst []byte, potionID int32) []byte {
 	dst = protocol.AppendVarInt(dst, potionContentsComponentID)
-	dst = append(dst, 1)                         // optional(potion) 存在
-	dst = protocol.AppendVarInt(dst, potionID+1) // Holder：注册表 ID + 1
-	dst = append(dst, 0)                         // optional(customColor) 为空
-	dst = protocol.AppendVarInt(dst, 0)          // customEffects 空列表
-	return append(dst, 0)                        // optional(customName) 为空
+	dst = append(dst, 1)                       // optional(potion) 存在
+	dst = protocol.AppendVarInt(dst, potionID) // Holder：裸注册表 ID
+	dst = append(dst, 0)                       // optional(customColor) 为空
+	dst = protocol.AppendVarInt(dst, 0)        // customEffects 空列表
+	return append(dst, 0)                      // optional(customName) 为空
 }

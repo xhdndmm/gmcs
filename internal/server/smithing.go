@@ -38,14 +38,32 @@ func (st *smithingState) setInput(index int, stack item.Stack) {
 }
 
 // resultStack 返回当前输入对应的锻造产物（无匹配时为空）。
+// 先尝试升级配方（smithing_transform），再尝试纹饰配方（smithing_trim）。
 func (st *smithingState) resultStack() item.Stack {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	recipe, ok := registry.MatchSmithing(st.inputs[0].ItemID, st.inputs[1].ItemID, st.inputs[2].ItemID)
+	if recipe, ok := registry.MatchSmithing(st.inputs[0].ItemID, st.inputs[1].ItemID, st.inputs[2].ItemID); ok {
+		return item.Stack{ItemID: recipe.Result, Count: recipe.ResultCount}
+	}
+	// 纹饰：产物是基底副本（保留其他组件）+ trim 组件；与原版一致，
+	// 基底已带相同图案与材质时无产物（SmithingTrimRecipe.applyTrim 返回空）。
+	trim, ok := registry.MatchSmithingTrim(st.inputs[0].ItemID, st.inputs[1].ItemID, st.inputs[2].ItemID)
 	if !ok {
 		return item.Empty()
 	}
-	return item.Stack{ItemID: recipe.Result, Count: recipe.ResultCount}
+	material, ok := registry.TrimMaterialForItem(st.inputs[2].ItemID)
+	if !ok {
+		return item.Empty()
+	}
+	base := st.inputs[1]
+	if base.TrimPattern == trim.Pattern && base.TrimMaterial == material {
+		return item.Empty()
+	}
+	result := base
+	result.Count = 1
+	result.TrimPattern = trim.Pattern
+	result.TrimMaterial = material
+	return result
 }
 
 // consumeInputs 取走一次产物时消耗三个输入各 1 个。
@@ -107,6 +125,23 @@ func (b smithingSlotBacking) Set(index int, stack item.Stack) {
 // Supported 报告槽位是否可交互（结果槽只取不放）。
 func (b smithingSlotBacking) Supported(index int) bool {
 	return index != smithingResultSlot
+}
+
+// CanPlace 限制锻造台输入槽可放入的物品（原版 SmithingMenu 的槽位 mayPlace，
+// 由 smithing_template/base/addition 属性集驱动）：
+// 0 = 模板、1 = 基底、2 = 添加物。物品集合取自全部锻造配方的原料并集
+// （与 Update Recipes 发送给客户端的集合一致）。
+func (b smithingSlotBacking) CanPlace(index int, stack item.Stack) bool {
+	switch index {
+	case smithingTemplateSlot:
+		return registry.ContainsItem(registry.SmithingTemplateItems(), stack.ItemID)
+	case smithingBaseSlot:
+		return registry.ContainsItem(registry.SmithingBaseItems(), stack.ItemID)
+	case smithingAdditionSlot:
+		return registry.ContainsItem(registry.SmithingAdditionItems(), stack.ItemID)
+	default:
+		return true
+	}
 }
 
 // openSmithing 打开锻造台窗口（右键锻造台方块）。

@@ -10,12 +10,13 @@ import (
 
 // 1.21.11（协议 774）配方相关数据包。
 //
-// 1.21.2 起配方系统重做：服务端先通过 Update Recipes（0x83）声明全部配方
-// （名称 + 产物物品；切石机配方单独列出），再按玩家通过 Recipe Book Add
-// （0x48）下发已解锁的配方显示条目；客户端点击配方时发送 Place Recipe
-// （0x26）请求服务端把原料放入合成格（可选“尽可能多次合成”）。
+// 1.21.2 起配方系统重做：服务端先通过 Update Recipes（0x83）下发配方属性集
+// （RecipePropertySet：smithing_* 与 *_input 的物品集合；切石机配方单独列出），
+// 再按玩家通过 Recipe Book Add（0x48）下发已解锁的配方显示条目；
+// 客户端点击配方时发送 Place Recipe（0x26）请求服务端把原料放入合成格
+// （可选“尽可能多次合成”）。
 const (
-	// PlayPacketIDUpdateRecipes 是 Update Recipes（配方声明，0x83）。
+	// PlayPacketIDUpdateRecipes 是 Update Recipes（属性集 + 切石机配方，0x83）。
 	PlayPacketIDUpdateRecipes = 0x83
 	// PlayPacketIDRecipeBookAdd 是 Recipe Book Add（0x48）。
 	PlayPacketIDRecipeBookAdd = 0x48
@@ -108,8 +109,13 @@ func appendSlotDisplayIngredient(dst []byte, items []int32) []byte {
 	}
 }
 
-// RecipeListEntry 是 Update Recipes 中的一条配方（名称 + 产物物品列表）。
-type RecipeListEntry struct {
+// PropertySetEntry 是 Update Recipes 中的一条配方属性集
+// （原版 RecipePropertySet：注册键 + 物品集合）。
+//
+// 客户端用它构造锻造台槽位过滤（smithing_*）与配方书筛选（*_input）；
+// 物品为不带偏移的注册表 ID（原版 Item.HOLDER_CODEC 为无内联回退的
+// holderRegistry，已用官方 1.21.11 服务端 Update Recipes 数据包实测确认）。
+type PropertySetEntry struct {
 	Name  string
 	Items []int32
 }
@@ -124,16 +130,18 @@ type StonecutterRecipeEntry struct {
 
 // EncodeUpdateRecipes 编码 Update Recipes（0x83）。
 //
-// recipes 为全部非切石机配方（合成/烹饪/锻造），仅用于客户端配方索引；
+// propertySets 为配方属性集（原版服务器发送 7 条：smithing_base/template/addition、
+// furnace_input、blast_furnace_input、smoker_input、campfire_input；
+// 客户端锻造台槽位的 mayPlace 与配方书筛选依赖它们，缺失会让槽位拒绝放入）；
 // stonecutter 为切石机配方（输入集合 + 结果显示），客户端按输入物品过滤后
 // 的顺序与数组一致（Container Button Click 的按钮编号即过滤后下标）。
-func EncodeUpdateRecipes(recipes []RecipeListEntry, stonecutter []StonecutterRecipeEntry) []byte {
+func EncodeUpdateRecipes(propertySets []PropertySetEntry, stonecutter []StonecutterRecipeEntry) []byte {
 	packet := AppendVarInt(nil, int32(PlayPacketIDUpdateRecipes))
-	packet = AppendVarInt(packet, int32(len(recipes)))
-	for _, recipe := range recipes {
-		packet = appendString(packet, recipe.Name)
-		packet = AppendVarInt(packet, int32(len(recipe.Items)))
-		for _, item := range recipe.Items {
+	packet = AppendVarInt(packet, int32(len(propertySets)))
+	for _, set := range propertySets {
+		packet = appendString(packet, set.Name)
+		packet = AppendVarInt(packet, int32(len(set.Items)))
+		for _, item := range set.Items {
 			packet = AppendVarInt(packet, item)
 		}
 	}

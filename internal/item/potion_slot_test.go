@@ -42,14 +42,14 @@ func TestAppendSlotWithPotionContents(t *testing.T) {
 		t.Fatalf("component id = %d (err=%v), want %d", componentID, err, potionContentsComponentID)
 	}
 	offset += size
-	// optional(potion) 的 bool 标志 + Holder（注册表 ID + 1）。
+	// optional(potion) 的 bool 标志 + Holder（裸注册表 ID，无 +1）。
 	if data[offset] != 1 {
 		t.Fatalf("potion present flag = %d, want 1", data[offset])
 	}
 	offset++
 	potionID, size, err := protocol.DecodeVarInt(data[offset:])
-	if err != nil || potionID != 4 {
-		t.Fatalf("potion holder id = %d (err=%v), want 4", potionID, err)
+	if err != nil || potionID != 3 {
+		t.Fatalf("potion holder id = %d (err=%v), want 3", potionID, err)
 	}
 	offset += size
 	// optional(customColor)=false、customEffects 空列表、optional(customName)=false。

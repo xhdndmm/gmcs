@@ -27,6 +27,9 @@ type ContainerItem struct {
 	CustomName string
 	// Enchantments 是附魔（minecraft:enchantments）；按附魔 ID 升序。
 	Enchantments []EnchantedItem
+	// TrimPattern / TrimMaterial 是纹饰（minecraft:trim 的图案与材质名；空 = 无）。
+	TrimPattern  string
+	TrimMaterial string
 }
 
 // EnchantedItem 是一个附魔条目（附魔注册表 ID 与等级）。

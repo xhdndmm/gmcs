@@ -50,3 +50,38 @@ func TestBlockEntityEnchantmentsRoundTrip(t *testing.T) {
 		t.Fatalf("槽位 2 数量丢失：%+v", got.Items[2])
 	}
 }
+
+// TestBlockEntityTrimRoundTrip 验证槽位纹饰图案/材质随区块负载持久化
+// （存储格式 v8）。
+func TestBlockEntityTrimRoundTrip(t *testing.T) {
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
+	entity := BlockEntity{
+		TypeID: 1,
+		Items: []ContainerItem{
+			{
+				ItemID: 979, Count: 1,
+				TrimPattern: "minecraft:bolt", TrimMaterial: "minecraft:gold",
+			},
+			{ItemID: 913, Count: 1},
+		},
+	}
+	chunk.SetBlockEntity(3, FlatGroundLevel+1, 4, entity)
+
+	payload := encodeChunkPayload(chunk)
+	decoded, err := decodeChunkPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := decoded.BlockEntityAt(3, FlatGroundLevel+1, 4)
+	if !ok {
+		t.Fatal("方块实体丢失")
+	}
+	first := got.Items[0]
+	if first.TrimPattern != "minecraft:bolt" || first.TrimMaterial != "minecraft:gold" {
+		t.Fatalf("槽位 0 纹饰 = (%q, %q), want (minecraft:bolt, minecraft:gold)",
+			first.TrimPattern, first.TrimMaterial)
+	}
+	if got.Items[1].TrimPattern != "" || got.Items[1].TrimMaterial != "" {
+		t.Fatalf("槽位 1 不应有纹饰：%+v", got.Items[1])
+	}
+}

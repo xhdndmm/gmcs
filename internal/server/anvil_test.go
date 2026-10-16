@@ -433,7 +433,7 @@ func parseSlotWithComponents(t *testing.T, payload []byte, offset int) (item.Sta
 			stack.CustomName = string(payload[offset : offset+length])
 			offset += length
 		case 13, 41: // enchantments / stored_enchantments：编码相同
-			// VarInt 数量 + 每项 (VarInt(id+1), VarInt(level))
+			// VarInt 数量 + 每项 (VarInt(注册表 ID), VarInt(level))
 			count, size, err := protocol.DecodeVarInt(payload[offset:])
 			if err != nil {
 				t.Fatal(err)
@@ -451,7 +451,24 @@ func parseSlotWithComponents(t *testing.T, payload []byte, offset int) (item.Sta
 				}
 				offset += size
 				stack.Enchantments = append(stack.Enchantments,
-					item.EnchantmentEntry{ID: enchID - 1, Level: level})
+					item.EnchantmentEntry{ID: enchID, Level: level})
+			}
+		case 54: // trim：材质 Holder + 图案 Holder（均为注册表 ID + 1）
+			material, size, err := protocol.DecodeVarInt(payload[offset:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			offset += size
+			pattern, size, err := protocol.DecodeVarInt(payload[offset:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			offset += size
+			if name, ok := trimMaterialName(material - 1); ok {
+				stack.TrimMaterial = name
+			}
+			if name, ok := trimPatternName(pattern - 1); ok {
+				stack.TrimPattern = name
 			}
 		case 19: // repair_cost
 			value, size, err := protocol.DecodeVarInt(payload[offset:])
@@ -467,6 +484,36 @@ func parseSlotWithComponents(t *testing.T, payload []byte, offset int) (item.Sta
 		}
 	}
 	return stack, offset
+}
+
+// trimMaterialName 按纹饰材质同步注册表 ID 反查名称（测试用）。
+func trimMaterialName(id int32) (string, bool) {
+	for _, name := range []string{
+		"minecraft:amethyst", "minecraft:copper", "minecraft:diamond", "minecraft:emerald",
+		"minecraft:gold", "minecraft:iron", "minecraft:lapis", "minecraft:netherite",
+		"minecraft:quartz", "minecraft:redstone", "minecraft:resin",
+	} {
+		if got, ok := registry.TrimMaterialID(name); ok && got == id {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// trimPatternName 按纹饰图案同步注册表 ID 反查名称（测试用）。
+func trimPatternName(id int32) (string, bool) {
+	for _, name := range []string{
+		"minecraft:bolt", "minecraft:coast", "minecraft:dune", "minecraft:eye",
+		"minecraft:flow", "minecraft:host", "minecraft:raiser", "minecraft:rib",
+		"minecraft:sentry", "minecraft:shaper", "minecraft:silence", "minecraft:snout",
+		"minecraft:spire", "minecraft:tide", "minecraft:vex", "minecraft:ward",
+		"minecraft:wayfinder", "minecraft:wild",
+	} {
+		if got, ok := registry.TrimPatternID(name); ok && got == id {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // setContainerSlotStack 解析 Set Container Slot 包（含组件）。

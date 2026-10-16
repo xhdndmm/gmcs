@@ -484,6 +484,10 @@ func stackFromContainer(slot world.ContainerItem) item.Stack {
 			stack.Enchantments[i] = item.EnchantmentEntry{ID: ench.ID, Level: ench.Level}
 		}
 	}
+	if item.IsValidTrim(slot.TrimPattern, slot.TrimMaterial) {
+		stack.TrimPattern = slot.TrimPattern
+		stack.TrimMaterial = slot.TrimMaterial
+	}
 	return stack
 }
 
@@ -492,6 +496,7 @@ func containerItemFromStack(stack item.Stack) world.ContainerItem {
 	slot := world.ContainerItem{
 		ItemID: stack.ItemID, Count: stack.Count, PotionID: stack.PotionID,
 		Damage: stack.Damage, RepairCost: stack.RepairCost, CustomName: stack.CustomName,
+		TrimPattern: stack.TrimPattern, TrimMaterial: stack.TrimMaterial,
 	}
 	if len(stack.Enchantments) > 0 {
 		slot.Enchantments = make([]world.EnchantedItem, len(stack.Enchantments))
