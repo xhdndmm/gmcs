@@ -350,6 +350,29 @@ func (w *World) SetBlockEntity(x, y, z int, entity BlockEntity) error {
 	return nil
 }
 
+// SetTransferCooldown 就地更新世界坐标处方块实体的传送冷却字段并标记区块待保存
+// （漏斗每 tick 递减时调用：不重建槽位数组，也不产生闭包分配）。
+// 为降低高频调用的锁开销，这里只取一次世界锁完成“查区块 + 标脏”，
+// 且不触发区块加载（仅更新已在内存中的区块，与漏斗 Tick 的加载检查一致）；
+// 记录不存在或区块不在内存时返回 false。
+func (w *World) SetTransferCooldown(x, y, z int, cooldown int32) bool {
+	if _, ok := SectionIndex(y); !ok {
+		return false
+	}
+	pos := ChunkPos{X: floorDiv(x, SectionSize), Z: floorDiv(z, SectionSize)}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	chunk, ok := w.chunks[pos]
+	if !ok {
+		return false
+	}
+	if !chunk.SetTransferCooldown(floorMod(x, SectionSize), y, floorMod(z, SectionSize), cooldown) {
+		return false
+	}
+	w.dirty[pos] = struct{}{}
+	return true
+}
+
 // RemoveBlockEntity 清除世界坐标处的方块实体数据并标记区块待保存。
 func (w *World) RemoveBlockEntity(x, y, z int) error {
 	if _, ok := SectionIndex(y); !ok {

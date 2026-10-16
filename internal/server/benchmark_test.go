@@ -144,7 +144,11 @@ func BenchmarkEntityInsideBlocks(b *testing.B) {
 }
 
 // BenchmarkHopperTick 衡量漏斗 Tick 的成本：64 个漏斗（每个下方有箱子、
-// 内含 64 个物品）每 tick 推进一次，覆盖冷却递减、搬运与写回方块实体。
+// 内含 64 个物品）持续搬运，覆盖冷却递减、搬运与写回方块实体。
+//
+// 注意：漏斗搬运若干轮后会排空、箱满后停止搬运，若不在基准内补充物品，
+// 绝大多数迭代只会测到“空闲漏斗”路径；这里每 512 tick 重置一次物品与箱子，
+// 使冷却/搬运/写回路径在测量区间内保持活跃（重置开销按比例摊薄）。
 func BenchmarkHopperTick(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
@@ -162,6 +166,12 @@ func BenchmarkHopperTick(b *testing.B) {
 		b.Fatal(err)
 	}
 	gameWorld := instance.worldFor(world.DimensionOverworld)
+	hoppers := make([]*hopperState, 0, 64)
+	positions := make([][3]int, 0, 64)
+	chestTypeID, ok := registry.StaticEntryID("minecraft:block_entity_type", "minecraft:chest")
+	if !ok {
+		b.Fatal("缺少箱子方块实体类型")
+	}
 	for i := 0; i < 64; i++ {
 		x, z := baseX+i%8*2, baseZ+i/8*2
 		var groundY int
@@ -183,12 +193,29 @@ func BenchmarkHopperTick(b *testing.B) {
 			b.Fatal("registerHopper failed")
 		}
 		setHopperSlot(state, 0, stone)
+		hoppers = append(hoppers, state)
+		positions = append(positions, [3]int{x, groundY, z})
+	}
+
+	// resetItems 把每个漏斗重新装满，并清空下方箱子（避免箱满后停止搬运）。
+	resetItems := func() {
+		emptyItems := make([]world.ContainerItem, 27)
+		for i, state := range hoppers {
+			setHopperSlot(state, 0, stone)
+			if err := gameWorld.SetBlockEntity(positions[i][0], positions[i][1]-1, positions[i][2],
+				world.BlockEntity{TypeID: chestTypeID, Items: emptyItems}); err != nil {
+				b.Fatal(err)
+			}
+		}
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for b.Loop() {
+	for i := 0; b.Loop(); i++ {
 		instance.tickHoppers()
+		if i%512 == 511 {
+			resetItems()
+		}
 	}
 	b.StopTimer()
 

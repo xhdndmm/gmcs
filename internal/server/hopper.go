@@ -41,7 +41,7 @@ import (
 //     漏斗（含尚无方块实体记录的空漏斗），卸载时丢弃注册，另有低频全量扫描兜底。
 //
 // 已知限制（见 docs/TODO.md）：
-//   - 传送冷却不持久化（重载后按 0 计；仅影响节流时序，不会复制或丢失物品）；
+//   - 传送冷却随方块实体持久化（原版 TransferCooldown）；
 //   - 不实现实体容器（漏斗矿车/箱子矿车/箱子船）与未实现的处理型容器
 //     （酿造台/堆肥桶等）；
 //   - 漏斗被破坏时按容器处理（掉落内容），不实现“物品留在原地的特殊顺序”；
@@ -110,6 +110,8 @@ func (s *Server) registerHopper(dim world.Dimension, x, y, z int) *hopperState {
 		dim:    dim,
 		pos:    [3]int{x, y, z},
 		typeID: s.hopperTypeID,
+		// 传送冷却随方块实体持久化（原版 TransferCooldown）。
+		cooldown: int(entity.TransferCooldown),
 	}
 	for i := range state.slots {
 		if i < len(entity.Items) {
@@ -126,7 +128,7 @@ func (s *Server) registerHopper(dim world.Dimension, x, y, z int) *hopperState {
 	return state
 }
 
-// flushHopper 把漏斗槽位写回方块实体（冷却不持久化）。
+// flushHopper 把漏斗槽位与传送冷却写回方块实体。
 func (s *Server) flushHopper(state *hopperState) {
 	state.mu.Lock()
 	entity := s.hopperBlockEntityLocked(state)
@@ -138,11 +140,28 @@ func (s *Server) flushHopper(state *hopperState) {
 	}
 }
 
+// syncHopperCooldown 把当前传送冷却就地写回方块实体（不重建槽位数组，
+// 避免每 tick 的分配）；冷却归零且槽位已空时方块实体记录随之删除。
+func (s *Server) syncHopperCooldown(state *hopperState) {
+	state.mu.Lock()
+	cooldown := int32(state.cooldown)
+	dim, pos := state.dim, state.pos
+	state.mu.Unlock()
+	gameWorld := s.worldFor(dim)
+	if gameWorld == nil {
+		return
+	}
+	// 记录不存在时无需创建：冷却随上一次搬运写入的方块实体已经落盘，
+	// 冷却归零时由世界层删除已空的记录。
+	gameWorld.SetTransferCooldown(pos[0], pos[1], pos[2], cooldown)
+}
+
 // hopperBlockEntityLocked 构造漏斗的方块实体数据；调用方持有 state.mu。
 func (s *Server) hopperBlockEntityLocked(state *hopperState) world.BlockEntity {
 	entity := world.BlockEntity{
-		TypeID: state.typeID,
-		Items:  make([]world.ContainerItem, hopperSlots),
+		TypeID:           state.typeID,
+		Items:            make([]world.ContainerItem, hopperSlots),
+		TransferCooldown: int32(state.cooldown),
 	}
 	for i, stack := range state.slots {
 		entity.Items[i] = containerItemFromStack(stack)
@@ -198,11 +217,26 @@ func (s *Server) tickHoppers() {
 		slices.SortFunc(states, compareHopperState)
 	}
 	for _, state := range states {
-		if s.tickHopper(state) {
+		switch s.tickHopper(state) {
+		case hopperTickChanged:
 			s.flushHopper(state)
+		case hopperTickCooldown:
+			s.syncHopperCooldown(state)
 		}
 	}
 }
+
+// hopperTickResult 描述一次漏斗 Tick 造成的状态变更。
+type hopperTickResult uint8
+
+const (
+	// hopperTickIdle：没有状态变化。
+	hopperTickIdle hopperTickResult = iota
+	// hopperTickCooldown：仅传送冷却变化（就地同步，不重建槽位数组）。
+	hopperTickCooldown
+	// hopperTickChanged：槽位发生搬运，需要整体写回。
+	hopperTickChanged
+)
 
 // compareHopperState 给出漏斗推进的确定顺序（维度 → Y → X → Z）。
 // 维度与坐标在注册后不变，无需加锁。
@@ -286,33 +320,43 @@ func isHopperState(state uint16) bool {
 	return registry.IsPropertyBlockState(hopperBlockName, state)
 }
 
-// tickHopper 推进单个漏斗一 tick；返回是否有变更需要写回。
-func (s *Server) tickHopper(state *hopperState) bool {
+// tickHopper 推进单个漏斗一 tick；返回本次 tick 的状态变更类型。
+func (s *Server) tickHopper(state *hopperState) hopperTickResult {
 	w := s.worldFor(state.dim)
 	if w == nil {
-		return false
+		return hopperTickIdle
 	}
 	pos := state.pos
 	if !w.ChunkLoaded(pos[0], pos[2]) {
-		return false // 未加载区块中的漏斗冻结（方块的方块实体随区块一起休眠）
+		return hopperTickIdle // 未加载区块中的漏斗冻结（方块的方块实体随区块一起休眠）
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	// 原版 pushItemsTick：先递减冷却并记录游戏刻，再判断是否搬运。
+	previousCooldown := state.cooldown
 	state.cooldown--
 	state.lastTick = s.gameTicks.Load()
 	if state.cooldown > 0 {
-		return false
+		// 冷却值变化需要持久化（原版 TransferCooldown），这里只就地更新该字段。
+		return hopperTickCooldown
 	}
 	state.cooldown = 0
+	// 冷却归零后命中失败时仍需写回一次方块实体（值由正变零）。
+	cooldownExpired := previousCooldown > 0
 
 	blockState := w.BlockAt(pos[0], pos[1], pos[2])
 	name, props, ok := registry.StateProps(blockState)
 	if !ok || name != hopperBlockName {
-		return false // 方块已被替换（状态清理由破坏/扫描负责）
+		if cooldownExpired {
+			return hopperTickCooldown
+		}
+		return hopperTickIdle // 方块已被替换（状态清理由破坏/扫描负责）
 	}
 	if props["enabled"] != "true" {
-		return false // 被红石锁定：不推不吸
+		if cooldownExpired {
+			return hopperTickCooldown
+		}
+		return hopperTickIdle // 被红石锁定：不推不吸
 	}
 
 	moved := false
@@ -324,10 +368,13 @@ func (s *Server) tickHopper(state *hopperState) bool {
 		moved = s.hopperSuck(state, w) || moved
 	}
 	if !moved {
-		return false
+		if cooldownExpired {
+			return hopperTickCooldown
+		}
+		return hopperTickIdle
 	}
 	state.cooldown = hopperMoveItemSpeed
-	return true
+	return hopperTickChanged
 }
 
 // hopperEmpty 报告漏斗是否为空。

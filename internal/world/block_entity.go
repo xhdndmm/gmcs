@@ -59,11 +59,14 @@ type BlockEntity struct {
 	// 与剩余酿造次数（1 个烈焰粉 = 20 次）。
 	BrewTime int32
 	BrewFuel int32
+	// TransferCooldown 是漏斗的剩余传送冷却（tick；原版 TransferCooldown）。
+	// 非漏斗方块为 0。
+	TransferCooldown int32
 }
 
 // Empty 报告方块实体是否没有任何内容（槽位全空且无处理进度）。
 func (b BlockEntity) Empty() bool {
-	if b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 {
+	if b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 || b.TransferCooldown > 0 {
 		return false
 	}
 	for _, slot := range b.Items {
@@ -128,6 +131,35 @@ func (c *Chunk) RemoveBlockEntity(x, y, z int) {
 	if len(c.blockEntities) == 0 {
 		c.blockEntities = nil
 	}
+}
+
+// SetTransferCooldown 就地更新区块内坐标处方块实体的传送冷却字段
+// （漏斗每 tick 递减时调用：不重建槽位数组，也不产生闭包分配）；
+// 记录不存在时返回 false，更新后为空的记录会被删除。返回是否修改了记录。
+func (c *Chunk) SetTransferCooldown(x, y, z int, cooldown int32) bool {
+	if x < 0 || x >= SectionSize || z < 0 || z >= SectionSize {
+		return false
+	}
+	if _, ok := SectionIndex(y); !ok {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	index := blockEntityIndex(x, y, z)
+	entity, ok := c.blockEntities[index]
+	if !ok {
+		return false
+	}
+	entity.TransferCooldown = cooldown
+	if entity.Empty() {
+		delete(c.blockEntities, index)
+		if len(c.blockEntities) == 0 {
+			c.blockEntities = nil
+		}
+		return true
+	}
+	c.blockEntities[index] = entity
+	return true
 }
 
 // BlockEntityCount 返回区块中的方块实体数量。

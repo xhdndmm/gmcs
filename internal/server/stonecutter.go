@@ -19,8 +19,13 @@ import (
 // 与熔炉不同，输入槽是窗口临时状态（原版 StonecutterMenu 的输入容器不持久化），
 // 关闭窗口时归还玩家背包（放不下则掉落）。
 //
-// 简化：输入变化时自动选中第一个可用配方（原版需要客户端主动选择；
-// 客户端的配方列表同步后行为一致）。结果槽为实时计算，不参与普通取放。
+// 选择语义对照 1.21.11 反编译的 StonecutterMenu：输入物品类型变化（含变空）时
+// 清空选择与结果；客户端点击配方后才计算产物；取走产物消耗 1 个输入，输入仍有
+// 剩余时保留选择；选中下标通过 Set Container Property 0 号属性同步（原版 DataSlot）。
+
+// stonecutterSelectionProperty 是选中配方下标的窗口属性编号
+// （原版 StonecutterMenu 的 DataSlot 槽 0）。
+const stonecutterSelectionProperty = 0
 
 // stonecutterState 是一个打开的切石机窗口状态。selected 是选中的切石机
 // 配方全局下标（-1 = 未选中）。mu 保护字段（测试与其他 goroutine 经访问器读取）。
@@ -28,16 +33,22 @@ type stonecutterState struct {
 	mu       sync.Mutex
 	input    item.Stack
 	selected int32
+	// synced 是最近一次已同步给客户端的选中下标（原版 DataSlot 的 previous 值）。
+	// 初始 0 与原版服务端/客户端一致，因此只有真正变化时才发属性包。
+	synced int32
 }
 
-// setInput 更新输入槽（并校验选中配方是否仍适用）。
-func (st *stonecutterState) setInput(stack item.Stack) {
+// setInput 更新输入槽（原版 StonecutterMenu.slotsChanged：物品类型变化时才
+// 重建列表并清空选择）。返回选择是否被清空。
+func (st *stonecutterState) setInput(stack item.Stack) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	changed := st.input.ItemID != stack.ItemID
 	st.input = stack
-	if !st.selectedValidLocked() {
+	if changed {
 		st.selected = -1
 	}
+	return changed
 }
 
 // inputStack 返回输入槽内容。
@@ -54,64 +65,66 @@ func (st *stonecutterState) selectedIndex() int32 {
 	return st.selected
 }
 
-// selectRecipe 按“过滤后下标”选中配方；非法下标返回 false。
-func (st *stonecutterState) selectRecipe(filteredIndex int32) bool {
+// selectRecipe 按“过滤后下标”选中配方（原版 StonecutterMenu#clickMenuButton）。
+// 返回 (是否接受, 选择是否变化)：下标非法或与当前选择相同时不改变状态
+// （原版对相同下标返回 false 且不重算结果）。
+func (st *stonecutterState) selectRecipe(filteredIndex int32) (bool, bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	matches := registry.StonecuttingRecipesFor(st.input.ItemID)
 	if filteredIndex < 0 || int(filteredIndex) >= len(matches) {
-		return false
+		return false, false
+	}
+	if matches[filteredIndex] == st.selected {
+		return false, false
 	}
 	st.selected = matches[filteredIndex]
-	return true
+	return true, true
 }
 
-// selectedValidLocked 报告当前选中配方是否仍适用于输入（调用方需持有锁）。
-func (st *stonecutterState) selectedValidLocked() bool {
-	if st.selected < 0 {
-		return false
-	}
-	recipe, ok := registry.StonecuttingRecipeAt(st.selected)
-	if !ok {
-		return false
-	}
-	for _, id := range recipe.Ingredient {
-		if id == st.input.ItemID && !st.input.IsEmpty() {
-			return true
+// selectionSync 返回待同步给客户端的“过滤后下标”（原版 DataSlot 槽 0 存的是
+// 输入物品过滤列表中的位置）；与上次同步值相同时 ok=false。
+func (st *stonecutterState) selectionSync() (int32, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	index := int32(-1)
+	if st.selected >= 0 {
+		for i, id := range registry.StonecuttingRecipesFor(st.input.ItemID) {
+			if id == st.selected {
+				index = int32(i)
+				break
+			}
 		}
 	}
-	return false
+	if index == st.synced {
+		return 0, false
+	}
+	st.synced = index
+	return index, true
 }
 
-// autoSelectLocked 在没有有效选中时自动选中第一个可用配方
-// （调用方需持有锁）。
-func (st *stonecutterState) autoSelectLocked() {
-	if st.selectedValidLocked() {
-		return
-	}
-	st.selected = -1
-	matches := registry.StonecuttingRecipesFor(st.input.ItemID)
-	if len(matches) > 0 {
-		st.selected = matches[0]
-	}
-}
-
-// resultStack 返回当前选中配方对当前输入的产物（无有效选择时为空）。
+// resultStack 返回当前选中配方对当前输入的产物（未选中时为空）。
+// 原版只有客户端选择后才计算产物，因此这里不自动选中。
 func (st *stonecutterState) resultStack() item.Stack {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.autoSelectLocked()
-	if st.selected < 0 {
+	if st.selected < 0 || st.input.IsEmpty() {
 		return item.Empty()
 	}
 	recipe, ok := registry.StonecuttingRecipeAt(st.selected)
 	if !ok {
 		return item.Empty()
 	}
-	return item.Stack{ItemID: recipe.Result, Count: recipe.ResultCount}
+	for _, id := range recipe.Ingredient {
+		if id == st.input.ItemID {
+			return item.Stack{ItemID: recipe.Result, Count: recipe.ResultCount}
+		}
+	}
+	return item.Empty()
 }
 
-// consumeInput 消耗 1 个输入物品（产物被取走时调用）。
+// consumeInput 消耗 1 个输入物品（产物被取走时调用）。输入耗尽时清空选择
+// （原版 onTake：输入变空触发 slotsChanged → 重建列表并清空选择）。
 func (st *stonecutterState) consumeInput() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -121,8 +134,8 @@ func (st *stonecutterState) consumeInput() {
 	st.input.Count--
 	if st.input.Count <= 0 {
 		st.input = item.Empty()
+		st.selected = -1
 	}
-	st.autoSelectLocked()
 }
 
 // 切石机窗口的槽位布局。
@@ -256,10 +269,23 @@ func (s *Server) handleStonecutterButton(player *session, buttonID int32) {
 	if state == nil {
 		return
 	}
-	if !state.selectRecipe(buttonID) {
+	accepted, changed := state.selectRecipe(buttonID)
+	if !accepted || !changed {
 		return
 	}
+	s.syncStonecutterSelection(player, state)
 	s.broadcastStonecutterResult(player)
+}
+
+// syncStonecutterSelection 把选中下标同步给客户端（原版 DataSlot 槽 0，
+// 客户端据此高亮配方列表项）；未变化时不发包。
+func (s *Server) syncStonecutterSelection(player *session, state *stonecutterState) {
+	index, ok := state.selectionSync()
+	if !ok {
+		return
+	}
+	player.tryWrite(protocol.EncodeSetContainerProperty(
+		player.windowID, stonecutterSelectionProperty, int16(index)))
 }
 
 // broadcastStonecutterResult 把结果槽的当前内容发送给玩家（结果变化时调用）。

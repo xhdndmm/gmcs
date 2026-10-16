@@ -50,8 +50,28 @@ func placeMenuBlock(t *testing.T, instance *Server, blockName string) (int, int,
 	return x, y, z
 }
 
-// TestStonecutterCutsStone 验证切石机：放入石头自动选中第一个配方、
-// Container Button Click 切换配方、取走产物消耗输入。
+// stonecutterSelection 解析 Set Container Property 包并返回 (窗口, 属性编号, 值)。
+func stonecutterSelection(t *testing.T, payload []byte) (int32, int16, int16) {
+	t.Helper()
+	_, offset, err := protocol.DecodeVarInt(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowID, size, err := protocol.DecodeVarInt(payload[offset:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset += size
+	if offset+4 > len(payload) {
+		t.Fatalf("属性包长度 = %d, want >= %d", len(payload), offset+4)
+	}
+	property := int16(uint16(payload[offset])<<8 | uint16(payload[offset+1]))
+	value := int16(uint16(payload[offset+2])<<8 | uint16(payload[offset+3]))
+	return windowID, property, value
+}
+
+// TestStonecutterCutsStone 验证切石机：放入石头不自动选中（原版需客户端点击配方）、
+// Container Button Click 选择配方并同步选中下标、取走产物消耗输入并清空选择。
 func TestStonecutterCutsStone(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
@@ -84,6 +104,14 @@ func TestStonecutterCutsStone(t *testing.T) {
 	sendContainerClick(t, conn, windowID, 0, 29, 0, protocol.ClickModePickup)
 	sendContainerClick(t, conn, windowID, 0, stonecutterInputSlot, 0, protocol.ClickModePickup)
 
+	// 输入物品类型变化（空 → 石头）会同步选中下标 -1（原版 DataSlot 初始 0）。
+	property := expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerProperty)
+	if gotWindow, gotProperty, gotValue := stonecutterSelection(t, property); gotWindow != windowID ||
+		gotProperty != stonecutterSelectionProperty || gotValue != -1 {
+		t.Fatalf("属性包 = (%d,%d,%d), want (%d,%d,-1)", gotWindow, gotProperty, gotValue,
+			windowID, stonecutterSelectionProperty)
+	}
+
 	player := activeSession(t, instance, "Cutter")
 	processBarrier(t, conn)
 	state := player.getStonecutter()
@@ -97,13 +125,22 @@ func TestStonecutterCutsStone(t *testing.T) {
 	if len(matches) < 3 {
 		t.Fatalf("石头应有至少 3 个切石机配方，实际 %d", len(matches))
 	}
-	first, _ := registry.StonecuttingRecipeAt(matches[0])
-	if result := state.resultStack(); result.ItemID != first.Result || result.Count != first.ResultCount {
-		t.Fatalf("自动选中的结果 = %+v, want %+v", result, first)
+	// 原版不会自动选中配方：未点击前没有选择也没有产物。
+	if selected := state.selectedIndex(); selected != -1 {
+		t.Fatalf("未点击时选中下标 = %d, want -1", selected)
+	}
+	if result := state.resultStack(); !result.IsEmpty() {
+		t.Fatalf("未点击时结果 = %+v, want 空", result)
 	}
 
-	// 选择第 3 个配方。
+	// 选择第 3 个配方（过滤后下标 2）。
 	sendContainerButtonClick(t, conn, windowID, 2)
+	property = expectPlayPacket(t, conn, protocol.PlayPacketIDSetContainerProperty)
+	if gotWindow, gotProperty, gotValue := stonecutterSelection(t, property); gotWindow != windowID ||
+		gotProperty != stonecutterSelectionProperty || gotValue != 2 {
+		t.Fatalf("选择属性包 = (%d,%d,%d), want (%d,%d,2)", gotWindow, gotProperty, gotValue,
+			windowID, stonecutterSelectionProperty)
+	}
 	processBarrier(t, conn)
 	third, _ := registry.StonecuttingRecipeAt(matches[2])
 	if selected := state.selectedIndex(); selected != matches[2] {
@@ -113,7 +150,7 @@ func TestStonecutterCutsStone(t *testing.T) {
 		t.Fatalf("切换后的结果 = %+v, want %+v", result, third)
 	}
 
-	// 取走产物：光标获得产物，输入槽清空。
+	// 取走产物：光标获得产物，输入槽清空，选择随之清空。
 	sendContainerClick(t, conn, windowID, 0, stonecutterResultSlot, 0, protocol.ClickModePickup)
 	processBarrier(t, conn)
 	if cursor := player.getCursor(); cursor.ItemID != third.Result || cursor.Count != third.ResultCount {
@@ -121,6 +158,82 @@ func TestStonecutterCutsStone(t *testing.T) {
 	}
 	if input := state.inputStack(); !input.IsEmpty() {
 		t.Fatalf("取走产物后输入槽 = %+v, want 空", input)
+	}
+	if selected := state.selectedIndex(); selected != -1 {
+		t.Fatalf("输入耗尽后选中下标 = %d, want -1", selected)
+	}
+	if result := state.resultStack(); !result.IsEmpty() {
+		t.Fatalf("输入耗尽后结果 = %+v, want 空", result)
+	}
+}
+
+// TestStonecutterSelectionRetained 验证取走产物后输入仍有剩余时保留选择
+// （原版 StonecutterMenu 结果槽 onTake 重新应用当前下标），换输入物品则清空选择。
+func TestStonecutterSelectionRetained(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.GameMode = "creative"
+	instance, conn := joinServer(t, cfg, "Cutter2")
+
+	stoneID, err := registry.ItemID("minecraft:stone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirtID, err := registry.ItemID("minecraft:dirt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, y, z := placeMenuBlock(t, instance, "minecraft:stonecutter")
+	sendSetCreativeSlot(t, conn, 0, stoneID, 2)
+	sendSetCreativeSlot(t, conn, 1, dirtID, 1)
+
+	sendUseItemOn(t, conn, x, y, z, 1)
+	windowID, _ := openScreen(t, conn)
+	expectPlayPacket(t, conn, protocol.PlayPacketIDContainerSetContent)
+
+	// 放入 2 个石头并选中过滤后下标 1。
+	sendContainerClick(t, conn, windowID, 0, 29, 0, protocol.ClickModePickup)
+	sendContainerClick(t, conn, windowID, 0, stonecutterInputSlot, 0, protocol.ClickModePickup)
+	sendContainerButtonClick(t, conn, windowID, 1)
+	processBarrier(t, conn)
+
+	player := activeSession(t, instance, "Cutter2")
+	state := player.getStonecutter()
+	if state == nil {
+		t.Fatal("切石机窗口未打开")
+	}
+	matches := registry.StonecuttingRecipesFor(stoneID)
+	second, _ := registry.StonecuttingRecipeAt(matches[1])
+
+	// 取走产物：输入剩 1 个，选择保留，结果槽仍可继续取。
+	sendContainerClick(t, conn, windowID, 0, stonecutterResultSlot, 0, protocol.ClickModePickup)
+	processBarrier(t, conn)
+	if input := state.inputStack(); input.Count != 1 {
+		t.Fatalf("取走一次后输入 = %+v, want 石头 x1", input)
+	}
+	if selected := state.selectedIndex(); selected != matches[1] {
+		t.Fatalf("取走后选中下标 = %d, want %d", selected, matches[1])
+	}
+	if result := state.resultStack(); result.ItemID != second.Result || result.Count != second.ResultCount {
+		t.Fatalf("取走一次后结果 = %+v, want %+v", result, second)
+	}
+
+	// 换成泥土：输入物品类型变化 → 清空选择（原版 slotsChanged）。
+	cursor := player.getCursor()
+	if cursor.ItemID != second.Result {
+		t.Fatalf("光标 = %+v, want %+v", cursor, second)
+	}
+	// 光标里的产物先放回背包（快捷栏槽 0），再取泥土放入输入槽。
+	sendContainerClick(t, conn, windowID, 0, 29, 0, protocol.ClickModePickup)
+	sendContainerClick(t, conn, windowID, 0, 30, 0, protocol.ClickModePickup)
+	sendContainerClick(t, conn, windowID, 0, stonecutterInputSlot, 0, protocol.ClickModePickup)
+	processBarrier(t, conn)
+	if input := state.inputStack(); input.ItemID != dirtID {
+		t.Fatalf("换入泥土后输入 = %+v, want 泥土", input)
+	}
+	if selected := state.selectedIndex(); selected != -1 {
+		t.Fatalf("换输入物品后选中下标 = %d, want -1", selected)
 	}
 }
 

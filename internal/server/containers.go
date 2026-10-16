@@ -767,8 +767,9 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 		working[0] = craft.resultOf(working) // 结果槽随合成格刷新
 	}
 	if stonecutter, ok := backing.(stonecutterSlotBacking); ok {
-		// 输入变化后刷新选中配方与结果槽。
+		// 输入变化后同步选中下标（类型变化会清空选择）与结果槽。
 		stonecutter.state.setInput(working[stonecutterInputSlot])
+		s.syncStonecutterSelection(player, stonecutter.state)
 		working[stonecutterResultSlot] = stonecutter.state.resultStack()
 	}
 	if smithing, ok := backing.(smithingSlotBacking); ok {
