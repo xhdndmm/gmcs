@@ -98,9 +98,9 @@ func (s *Server) tickMobEnvironment(w *world.World, m *mob) (env mobEnvironment,
 }
 
 // isFireBlockState 报告状态是否为火/灵魂火方块
-// （原版方块的状态 ID 连续，用区间判定，避免每次二分查找方块名）。
+// （registry 按状态 ID 的 O(1) 位表查询，tick 热路径每格调用一次）。
 func isFireBlockState(state uint16) bool {
-	return registry.IsPropertyBlockState(fireBlockName, state) || registry.IsPropertyBlockState(soulFireBlockName, state)
+	return registry.IsFireState(state)
 }
 
 // damageMob 对生物结算一次环境伤害（无敌帧内忽略）：广播受击动画、伤害事件与

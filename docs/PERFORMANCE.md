@@ -39,8 +39,9 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈6.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈53.7 ns/op | 80 B/op | 1 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈70–75 µs/op | 17–250 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈11.6 µs/op | 44 B/op | 1 allocs/op |
-| `BenchmarkItemTick`（128 掉落物） | server | ≈34.1 µs/op | 90 B/op | 2 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈17.2 µs/op | 52 B/op | 1 allocs/op |
+| `BenchmarkServerTickManyPlayers`（32 生物 + 100 玩家） | server | ≈325 µs/op | ≈3.6 KB/op | ≈23 allocs/op |
+| `BenchmarkItemTick`（128 掉落物） | server | ≈30.9 µs/op | 92 B/op | 2 allocs/op |
 | `BenchmarkItemMergeScan`（256 掉落物） | server | ≈87.5 µs/op | 13.7 KB/op | 214 allocs/op |
 | `BenchmarkEntityInsideBlocks`（32 包围盒） | server | ≈1.35 µs/op | 0 B/op | 0 allocs/op |
 | `BenchmarkHopperTick`（64 漏斗） | server | ≈18.8 µs/op | 557 B/op | 2 allocs/op |
@@ -53,7 +54,8 @@ go test -run=^$ -bench=. -benchmem ./...
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
 增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
-实体包与压缩路径与上一批持平。
+实体包与压缩路径与上一批持平。server 包的三行（`ServerTick`/`ItemTick` 与
+新增的 `ServerTickManyPlayers`）为 2026-10-17 复测（见 3.25）。
 
 各基准覆盖的内容：
 
@@ -865,6 +867,90 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 `TestEnvironmentBoxOverlapIgnites`/`TestEnvironmentBoxDoesNotOverreach`
 （盒子边缘相交点燃、不重叠不点燃）。尚未验证：与原版服务端逐 tick 对比
 掉落物轨迹与合并时序未做。
+
+### 3.25 注册表热路径、玩家状态原子化与写批处理（本批，基准 + loopback 压测）
+
+本批以 `BenchmarkServerTick` 的 CPU profile（`environmentInBox` 占 33% cum、
+其中字符串 map 查找约 28%）与端到端压测定位，做了五组改动。
+
+**1. 方块状态类别位表（registry/states.go）**
+
+生物环境扫描对每个方块状态最多做 3 次“水/岩浆/火”字符串 map 查找
+（`IsPropertyBlockState`）。新增按状态 ID 索引的类别位表 `StateKindOf`
+（约 26 KiB，包初始化时构建），`isWaterState`/`isLavaState`/
+`isFireBlockState` 与 `environmentInBox` 的逐格判定退化为一次数组访问。
+
+**2. 玩家状态的原子快照（session/entity）**
+
+实体 Tick 按“每个 mob × 每个玩家”读取位置/维度/可攻击状态，原实现经
+`stateMu` 独占锁（100 玩家 + 32 生物时每次 tick 约 6400 次加解锁）。
+`playerPose`（位置/朝向/维度）改为不可变快照 + `atomic.Pointer` 发布
+（写者持 `stateMu` 读改写），`dead`/`gameMode` 原子存储，读路径无锁。
+同时 `mobKinds` 由 map 改为按枚举索引的数组，`worldFor` 增加无锁读快照
+（`Server.worldsCache`，创建维度时重建）。
+
+**3. 会话写批处理与共享广播帧（session/server/entity）**
+
+`session.writer` 包装 8 KiB `bufio` 写缓冲：`tryWrite`（广播）、
+`writeFrame`（区块/注册表）与 `writePackets`（成串发送）写入缓冲，
+由固定时机批量刷出——服务器 Tick 结尾（`drainPlayerWrites`，遍历在线玩家
+无锁快照，只对有写入的会话取锁）、读循环每个数据包处理完后、进入世界
+流程结束、`unregisterPlayer`、Keep Alive（即时）；交互响应 `writePacket`
+保持即时刷出。后台 Tick 被禁用时（测试）`Serve` 启动 5 ms 刷出循环。
+多目标广播（`broadcastToNearby`/`broadcastPacketExcluding`/
+`writeToNearbyPlayers`）改为**压缩帧惰性构造一次、范围内玩家共享**
+（与区块帧缓存同思路）；无目标时不产生压缩与分配。
+
+**4. 区块同步加载移出世界锁（world）**
+
+`World.Chunk` 的同步路径原先在 `w.mu` 写锁内读盘/生成地形，一次慢盘
+IO 会阻塞所有实体 Tick 与世界查询；缓存命中路径原先也取写锁。现在缓存
+命中只取读锁；缺失时注册请求（与 `Prefetch` 共用去重表）并在锁外完成
+`LoadChunk`/`GenerateChunk`，经 `publishChunkLoad` 统一发布（与预生成
+worker 共用），并发请求同一区块共享同一结果。行为保留：关闭时解决
+悬挂请求并返回错误（`TestPrefetchAfterClose`）。
+
+**5. 安全性**
+
+- 人数上限强制执行：超过 `max_players` 的新玩家收到
+  `multiplayer.disconnect.server_full`（同 UUID 重连仍允许替换加入）；
+- 容器点击 / 创造模式物品操作 / Tab 补全加入令牌桶限流（与移动/聊天
+  一致的策略），防止包洪泛放大（每次点击触发槽位校验与广播、每次补全
+  构造命令树响应）。
+
+**基准（同机 `-count=3` 中位数，`-benchtime=2s`，Go 1.27，i7-12700F；
+对比为同一工作区 HEAD 构建）**
+
+| Benchmark | 优化前（HEAD） | 优化后 | 变化 |
+| --- | --- | --- | --- |
+| `BenchmarkServerTick`（32 生物） | ≈23.7 µs/op | ≈17.2 µs/op | -27%（1 alloc/op 不变） |
+| `BenchmarkServerTickManyPlayers`（32 生物 + 100 玩家，本批新增） | ≈496 µs/op；≈53 KB/op；≈826 allocs/op | ≈325 µs/op；≈3.6 KB/op；≈23 allocs/op | -34%；分配字节 -93%、次数 -97% |
+| `BenchmarkItemTick`（128 掉落物） | ≈31.4 µs/op | ≈30.9 µs/op | 噪声范围 |
+
+**单机 loopback 压测（`cmd/gmcsload` + `/proc` 计数；新旧二进制同机构建）**
+
+| 场景 | 指标 | 旧 | 新 | 变化 |
+| --- | --- | --- | --- | --- |
+| A：100 玩家、视距 6、30 s 移动 | 服务器 CPU（utime+stime） | 4.33 s | 2.08 s | **-52%** |
+| A：同场景（反向顺序复测） | 服务器 CPU | 4.34 s | 2.07 s | -52%（复现） |
+| B：50 玩家、视距 10、30 s 移动 | 服务器 CPU | 5.80 s | 5.30 s | -8.6% |
+| A：进入世界耗时 / 流量 | gmcsload 统计 | 平均 1 ms / 1289.4 MiB | 平均 1 ms / 1289.3 MiB | 一致 |
+| A：内存（100 玩家 10 s 后静态 70 s 观测） | 稳态 RSS | 48.2 MB | 48.2 MB | 持平 |
+| A：同场景 | VmHWM | 65.9 MB | 63.9 MB | -3% |
+
+说明：场景 A 的收益主要来自写批处理与共享广播帧（实体同步包占收包数
+95%、每客户端约 439 KiB/s）；场景 B 中区块字节占 99.4%，区块编码/压缩
+成本不变，故收益较小。流量与进入世界耗时新旧一致，协议行为无变化。
+（压测结束后瞬间的 RSS 受 GC 时序影响会有约 ±10 MB 波动，稳态驻留与
+峰值以上表为准。）
+
+正确性验证：`go test ./...`、`go test -race ./...` 全绿；新增
+`TestChunkConcurrentSingleLoad`（32 goroutine 并发请求同一区块只生成
+一次、同一实例）、`TestChunkMixedPrefetchRace`（Prefetch 与同步请求
+并发去重）；本批后重新生成 `cmd/gmcs/default.pgo` 并复测基准。
+尚未验证：真实网络与真实客户端的多玩家负载（loopback 不覆盖网络栈
+差异）；`writeDrainLoop` 仅在测试模式（后台 Tick 禁用）运行，生产
+路径由 Tick 结尾刷出覆盖。
 
 ## 4. 尚未覆盖
 

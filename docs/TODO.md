@@ -429,6 +429,19 @@
   `environmentInBox`（按列批量读取，最多 2×2 列）；
   `TestEnvironmentBoxOverlapIgnites`（边缘生物/玩家被相邻火方块点燃）与
   `TestEnvironmentBoxDoesNotOverreach`（不重叠不点燃）
+- [x] 并发与热路径性能批次（见 docs/PERFORMANCE.md 3.25）：
+  方块状态类别位表（`StateKindOf`，替换 tick 热路径的字符串 map 查找）；
+  玩家位置/维度/死亡状态改为原子快照（`playerPose` + atomic，消除实体 Tick
+  每 mob × 每玩家的 `stateMu` 争用）；`mobKinds` 数组化、`worldFor` 无锁快照；
+  会话写批处理（8 KiB `bufio` + Tick 尾/读循环底/进出世界刷出时机，多目标
+  广播压缩帧惰性构造一次共享）；`World.Chunk` 缓存命中读锁、缺失时锁外
+  加载/生成（`publishChunkLoad` 与预生成去重共用）；
+  实测：`ServerTick` -27%、新增 `ServerTickManyPlayers`（32 生物 + 100 玩家）
+  -34%/分配 -97%、100 玩家 loopback 压测 CPU -52%（基准与压测细节见文档）
+- [x] 安全加固补充：`max_players` 人数上限强制执行
+  （`multiplayer.disconnect.server_full`，同 UUID 重连允许替换）；
+  容器点击 / 创造模式物品操作 / Tab 补全令牌桶限流（与移动/聊天一致的
+  防洪泛策略）
 
 ## 待完成
 

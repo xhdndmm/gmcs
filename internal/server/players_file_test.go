@@ -80,8 +80,8 @@ func TestPlayerDataSavedOnDisconnect(t *testing.T) {
 	sess.health = 13
 	sess.food = 7
 	sess.saturation = 2.5
-	sess.gameMode = uint8(config.GameModeCreative)
 	sess.stateMu.Unlock()
+	sess.gameMode.Store(uint32(config.GameModeCreative))
 
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
@@ -112,8 +112,9 @@ func TestPlayerDataSavedOnDisconnect(t *testing.T) {
 		t.Fatalf("位置未恢复：(%v,%v,%v) yaw=%v pitch=%v", x, y, z, yaw, pitch)
 	}
 	sess2.stateMu.Lock()
-	health, food, gameMode := sess2.health, sess2.food, sess2.gameMode
+	health, food := sess2.health, sess2.food
 	sess2.stateMu.Unlock()
+	gameMode := sess2.gameModeID()
 	if health != 13 || food != 7 || gameMode != uint8(config.GameModeCreative) {
 		t.Fatalf("状态未恢复：health=%v food=%v gameMode=%v", health, food, gameMode)
 	}

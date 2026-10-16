@@ -50,12 +50,12 @@ const (
 
 // isWaterState 报告状态是否为任意等级的水。
 func isWaterState(state uint16) bool {
-	return registry.IsPropertyBlockState(waterBlockName, state)
+	return registry.IsWaterState(state)
 }
 
 // isLavaState 报告状态是否为任意等级的岩浆。
 func isLavaState(state uint16) bool {
-	return registry.IsPropertyBlockState(lavaBlockName, state)
+	return registry.IsLavaState(state)
 }
 
 // fluidInfo 描述一个流体方块状态。

@@ -5,6 +5,7 @@
 package server
 
 import (
+	"encoding/binary"
 	"io"
 	"math"
 	"testing"
@@ -52,6 +53,64 @@ func BenchmarkServerTick(b *testing.B) {
 	if remaining != 32 {
 		b.Fatalf("剩余生物 %d，期望 32（基准可能未在测量真实路径）", remaining)
 	}
+}
+
+// BenchmarkServerTickManyPlayers 衡量 100 名玩家 + 32 只生物时的一次
+// Server.tick()：覆盖生物索敌/广播筛选（每 mob × 每玩家）与玩家环境扫描
+// 在并发玩家规模下的成本。轻量会话直接注入在线列表（writer 丢弃，
+// 不经过网络）；这个场景用于防止玩家状态读取路径退化为独占锁实现。
+func BenchmarkServerTickManyPlayers(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	gameWorld := instance.worldFor(world.DimensionOverworld)
+	for i := 0; i < 32; i++ {
+		x := int(math.Floor(spawnX)) + i%8
+		z := int(math.Floor(spawnZ)) + i/8
+		groundY, ok := gameWorld.GroundY(x, z)
+		if !ok {
+			b.Fatal("no ground at spawn area")
+		}
+		instance.addMob(world.DimensionOverworld, mobZombie, float64(x)+0.5, groundY, float64(z)+0.5)
+	}
+	// 100 名轻量玩家围绕出生点铺开（部分位于生物广播半径内）。
+	instance.mu.Lock()
+	for i := 0; i < 100; i++ {
+		sess := &session{
+			server:   instance,
+			entityID: instance.entityIDs.Add(1),
+			health:   maxPlayerHealth,
+			food:     maxPlayerFood,
+			writer:   io.Discard,
+		}
+		sess.pose.Store(&playerPose{
+			dim: world.DimensionOverworld,
+			x:   spawnX + float64(i%10),
+			y:   spawnY,
+			z:   spawnZ + float64(i/10),
+		})
+		sess.markJoined()
+		var id [16]byte
+		binary.LittleEndian.PutUint64(id[:8], uint64(i)+1)
+		binary.LittleEndian.PutUint64(id[8:], 0x4242424242424242)
+		instance.players[id] = sess
+	}
+	instance.publishPlayersSnapshotLocked()
+	instance.mu.Unlock()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		instance.tick()
+	}
+	b.StopTimer()
 }
 
 // BenchmarkPlayerEquipmentSnapshot 衡量装备快照刷新的成本（会话读循环每收到
@@ -164,13 +223,13 @@ func BenchmarkEntityTracking(b *testing.B) {
 	// 一名已加入的测试玩家（跟踪集的归属者）；写入丢弃（首帧登记会产生
 	// Add Entity 包，基准无需真实连接）。
 	sess := &session{
-		server:    instance,
-		entityID:  instance.entityIDs.Add(1),
-		dimension: world.DimensionOverworld,
-		health:    maxPlayerHealth,
-		food:      maxPlayerFood,
-		writer:    io.Discard,
+		server:   instance,
+		entityID: instance.entityIDs.Add(1),
+		health:   maxPlayerHealth,
+		food:     maxPlayerFood,
+		writer:   io.Discard,
 	}
+	sess.pose.Store(&playerPose{dim: world.DimensionOverworld})
 	sess.markJoined()
 	sess.setPlayerPosition(spawnX, spawnY, spawnZ, 0, 0)
 	players := []*session{sess}

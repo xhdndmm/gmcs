@@ -241,12 +241,12 @@ func playerRecordFromSession(player *session) playerRecord {
 	x, y, z, yaw, pitch := player.playerPosition()
 	player.stateMu.Lock()
 	health := player.health
-	dead := player.dead
 	food := player.food
 	saturation := player.saturation
 	experience := player.experience
-	gameMode := player.gameMode
 	player.stateMu.Unlock()
+	dead := player.dead.Load()
+	gameMode := player.gameModeID()
 	modeName, ok := config.GameModeName(config.GameMode(gameMode))
 	if !ok {
 		modeName = "survival"
@@ -339,7 +339,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 	case record.Dead:
 		// 上次退出时处于死亡状态：保持死亡（发送重生请求后才会复活）。
 		s.health = 0
-		s.dead = true
+		s.dead.Store(true)
 	case record.Health > 0 && record.Health <= maxPlayerHealth:
 		s.health = record.Health
 	default:
@@ -363,7 +363,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		s.experience = record.Experience
 	}
 	if mode, ok := config.GameModeID(record.GameMode); ok {
-		s.gameMode = uint8(mode)
+		s.gameMode.Store(uint32(mode))
 	}
 	s.stateMu.Unlock()
 

@@ -188,7 +188,7 @@ func TestMobSpawnKindWeights(t *testing.T) {
 		if !ok {
 			t.Fatalf("pickSpawnKind(true) returned false (registry data missing)")
 		}
-		if _, exists := mobKinds[kind]; !exists {
+		if kind >= mobKindCount {
 			t.Fatalf("pickSpawnKind returned unknown kind %d", kind)
 		}
 		if mobKinds[kind].passive {
@@ -221,7 +221,8 @@ func TestMobSpawnKindWeights(t *testing.T) {
 
 // TestMobKindsTableValid 验证全部生物种类的基础数值配置完整。
 func TestMobKindsTableValid(t *testing.T) {
-	for kind, stats := range mobKinds {
+	for kind := mobKind(0); kind < mobKindCount; kind++ {
+		stats := mobKinds[kind]
 		if stats.name == "" || stats.health <= 0 || stats.walkSpeed <= 0 ||
 			stats.spawnWeight <= 0 ||
 			stats.hurtSound == "" || stats.deathSound == "" {
@@ -238,8 +239,8 @@ func TestMobKindsTableValid(t *testing.T) {
 			t.Errorf("hostile mob %v needs a follow range", stats.name)
 		}
 	}
-	if len(mobKinds) != 8 {
-		t.Fatalf("expected 8 mob kinds, got %d", len(mobKinds))
+	if mobKindCount != 8 {
+		t.Fatalf("expected 8 mob kinds, got %d", mobKindCount)
 	}
 }
 

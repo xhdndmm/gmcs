@@ -50,14 +50,26 @@ func (s *Server) playerSkinPacket(player *session) []byte {
 
 // writeToNearbyPlayers 把数据包写给指定维度内附近（水平距离 ≤
 // playerMoveBroadcastRange）且已完成进入世界的玩家。
+// 压缩帧惰性构造：附近有多名玩家时才编码一次并共享同一份只读字节。
 func (s *Server) writeToNearbyPlayers(packet []byte, dim world.Dimension, x, z float64, except *session) {
+	var frame []byte
 	for _, player := range s.playerSnapshot() {
 		if player == except || !player.isJoined() || player.dimensionID() != dim {
 			continue
 		}
 		px, _, pz, _, _ := player.playerPosition()
-		if math.Hypot(px-x, pz-z) <= playerMoveBroadcastRange {
-			player.tryWrite(packet)
+		if math.Hypot(px-x, pz-z) > playerMoveBroadcastRange {
+			continue
+		}
+		if frame == nil {
+			var err error
+			frame, err = protocol.CompressPacketFrame(packet, compressionThreshold)
+			if err != nil {
+				return
+			}
+		}
+		if err := player.writeFrame(frame); err != nil {
+			_ = player.conn.Close()
 		}
 	}
 }

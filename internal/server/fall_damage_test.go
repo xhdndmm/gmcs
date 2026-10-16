@@ -98,7 +98,7 @@ func TestFallDamageProtection(t *testing.T) {
 	setHealth := func(value float32) {
 		player.stateMu.Lock()
 		player.health = value
-		player.dead = false
+		player.dead.Store(false)
 		player.lastHurt = time.Time{} // 清除受伤冷却（避免连续测试互相抑制）
 		player.stateMu.Unlock()
 	}

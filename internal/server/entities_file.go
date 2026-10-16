@@ -243,9 +243,9 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 		return fmt.Errorf("解析 %s：%w", path, err)
 	}
 
-	kindByName := make(map[string]mobKind, len(mobKinds))
-	for kind, stats := range mobKinds {
-		kindByName[stats.name] = kind
+	kindByName := make(map[string]mobKind, mobKindCount)
+	for kind := mobKind(0); kind < mobKindCount; kind++ {
+		kindByName[mobKinds[kind].name] = kind
 	}
 
 	restored := 0

@@ -5,8 +5,105 @@
 package world
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 )
+
+// countingGenerator 包装一个生成器并统计 GenerateChunk 调用次数。
+type countingGenerator struct {
+	inner Generator
+	calls atomic.Int32
+}
+
+func (g *countingGenerator) GenerateChunk(x, z int) *Chunk {
+	g.calls.Add(1)
+	return g.inner.GenerateChunk(x, z)
+}
+
+func (g *countingGenerator) SurfaceY(x, z int) int { return g.inner.SurfaceY(x, z) }
+
+func (g *countingGenerator) Dimension() Dimension { return g.inner.Dimension() }
+
+// TestChunkConcurrentSingleLoad 验证多个 goroutine 并发请求同一区块时
+// 只加载/生成一次（请求去重），且全部调用者拿到同一实例。
+func TestChunkConcurrentSingleLoad(t *testing.T) {
+	generator := &countingGenerator{inner: SeededGenerator{Seed: 7}}
+	instance, err := Open(t.TempDir(), generator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+
+	const workers = 32
+	results := make([]*Chunk, workers)
+	errs := make([]error, workers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			results[index], errs[index] = instance.Chunk(5, -7)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d: %v", i, err)
+		}
+	}
+	for i := 1; i < workers; i++ {
+		if results[i] != results[0] {
+			t.Fatalf("worker %d got a different chunk instance", i)
+		}
+	}
+	if got := generator.calls.Load(); got != 1 {
+		t.Fatalf("generator called %d times, want 1", got)
+	}
+}
+
+// TestChunkMixedPrefetchRace 验证 Prefetch 与同步 Chunk 并发请求同一批
+// 区块时无重复生成、无死锁：每个区块恰好生成一次且可从缓存读取。
+func TestChunkMixedPrefetchRace(t *testing.T) {
+	generator := &countingGenerator{inner: SeededGenerator{Seed: 11}}
+	instance, err := Open(t.TempDir(), generator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+
+	const count = 24
+	positions := make([]ChunkPos, 0, count)
+	for i := 0; i < count; i++ {
+		positions = append(positions, ChunkPos{X: i, Z: 1})
+	}
+	// 一半区块走后台 Prefetch，随后全部区块立即由多 goroutine 同步请求：
+	// 同步路径必须与进行中的请求去重（等待同一结果）而不是重复生成。
+	instance.Prefetch(positions[:count/2])
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			if _, err := instance.Chunk(positions[index].X, positions[index].Z); err != nil {
+				t.Errorf("Chunk(%d,%d): %v", positions[index].X, positions[index].Z, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if t.Failed() {
+		t.FailNow()
+	}
+	if got := generator.calls.Load(); got != count {
+		t.Fatalf("generator called %d times, want %d", got, count)
+	}
+	if got := instance.ChunkCount(); got != count {
+		t.Fatalf("cached %d chunks, want %d", got, count)
+	}
+}
 
 // TestSeededGeneratorCaves 验证陆地列存在洞穴，且洞穴不破坏地表密封与基岩层。
 // 注意种子 7 的原点附近全是海洋，因此先在更大范围内寻找陆地区块。

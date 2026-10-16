@@ -181,7 +181,7 @@ func (w *World) prefetchWorker() {
 		}
 
 		w.mu.Lock()
-		future, stillPending := w.pending[pos]
+		_, stillPending := w.pending[pos]
 		closed := w.closed
 		w.mu.Unlock()
 		if !stillPending || closed {
@@ -196,26 +196,38 @@ func (w *World) prefetchWorker() {
 		}
 
 		w.mu.Lock()
-		// 发布前重新检查：Close 可能已解决并删除该请求。
-		if future, stillPending = w.pending[pos]; stillPending && !w.closed && err == nil {
-			if chunk.Dimension() != w.dimension {
-				chunk.SetDimension(w.dimension)
-			}
-			w.chunks[pos] = chunk
-			w.trackChunkLoaded(pos)
-			if generated {
-				w.dirty[pos] = struct{}{}
-			}
-			delete(w.pending, pos)
-			future.err = nil
-			close(future.done)
-		} else if stillPending {
-			delete(w.pending, pos)
-			future.err = err
-			close(future.done)
-		}
+		w.publishChunkLoad(pos, chunk, generated, err)
 		w.mu.Unlock()
 	}
+}
+
+// publishChunkLoad 发布一次区块加载/生成的结果（调用方持有 w.mu 写锁）。
+// Close 可能已提前解决并删除请求：此时丢弃结果并返回 false。
+// 同步路径（Chunk）与异步预生成（prefetchWorker）共用，
+// 保证两条路径的发布语义完全一致。
+func (w *World) publishChunkLoad(pos ChunkPos, chunk *Chunk, generated bool, err error) bool {
+	future, inFlight := w.pending[pos]
+	if !inFlight {
+		return false
+	}
+	if err != nil || w.closed {
+		delete(w.pending, pos)
+		future.err = err
+		close(future.done)
+		return false
+	}
+	if chunk.Dimension() != w.dimension {
+		chunk.SetDimension(w.dimension)
+	}
+	w.chunks[pos] = chunk
+	w.trackChunkLoaded(pos)
+	if generated {
+		w.dirty[pos] = struct{}{}
+	}
+	delete(w.pending, pos)
+	future.err = nil
+	close(future.done)
+	return true
 }
 
 // Dimension 返回世界所属维度。
@@ -403,11 +415,23 @@ func floorMod(a, b int) int {
 	return m
 }
 
-// Chunk 返回区块：依次尝试内存缓存、进行中的异步请求、磁盘文件，
-// 最后调用生成器生成。新生成的区块会被标记为需要保存。
+// Chunk 返回区块：依次尝试内存缓存、进行中的请求、磁盘文件，最后调用
+// 生成器生成。新生成的区块会被标记为需要保存。
+//
+// 缓存命中（绝大多数调用：列/高度/方块查询经此入口）只取读锁，
+// 并发查询互不阻塞；磁盘读取与地形生成都在 w.mu 之外执行：没有进行中
+// 的请求时，本调用注册一个请求（与 Prefetch 共用去重表），在锁外完成
+// IO/生成后发布；期间其他 goroutine 对同一区块的请求等待同一结果。
 func (w *World) Chunk(x, z int) (*Chunk, error) {
 	pos := ChunkPos{X: x, Z: z}
 	for {
+		// 快路径：缓存命中（读锁）。
+		w.mu.RLock()
+		chunk, ok := w.chunks[pos]
+		w.mu.RUnlock()
+		if ok {
+			return chunk, nil
+		}
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()
@@ -417,34 +441,38 @@ func (w *World) Chunk(x, z int) (*Chunk, error) {
 			w.mu.Unlock()
 			return chunk, nil
 		}
-		future, pending := w.pending[pos]
-		if !pending {
-			// 同步加载/生成：磁盘 IO 在锁内执行（调用频率低时以简单正确
-			// 为先；大视距批量加载走 Prefetch 的异步路径）。
-			chunk, err := LoadChunk(w.dir, x, z)
-			if err != nil {
-				w.mu.Unlock()
-				return nil, err
-			}
-			if chunk == nil {
-				chunk = w.generator.GenerateChunk(x, z)
-				w.dirty[pos] = struct{}{}
-			}
-			// 统一维度标记：从磁盘恢复的区块与生成器输出的区块都按本世界维度编码。
-			if chunk.Dimension() != w.dimension {
-				chunk.SetDimension(w.dimension)
-			}
-			w.chunks[pos] = chunk
-			w.trackChunkLoaded(pos)
+		if future, inFlight := w.pending[pos]; inFlight {
 			w.mu.Unlock()
-			return chunk, nil
+			// 等待进行中的异步加载/生成，然后重新读取结果。
+			<-future.done
+			if future.err != nil {
+				return nil, future.err
+			}
+			continue
 		}
+		// 没有进行中的请求：注册本 goroutine 的请求并在锁外完成
+		// 磁盘读取/地形生成（与其他 goroutine 的同一请求去重）。
+		w.pending[pos] = &chunkFuture{done: make(chan struct{})}
 		w.mu.Unlock()
-		// 等待进行中的异步加载/生成，然后重新读取结果。
-		<-future.done
-		if future.err != nil {
-			return nil, future.err
+
+		chunk, err := LoadChunk(w.dir, x, z)
+		generated := false
+		if err == nil && chunk == nil {
+			chunk = w.generator.GenerateChunk(x, z)
+			generated = true
 		}
+
+		w.mu.Lock()
+		published := w.publishChunkLoad(pos, chunk, generated, err)
+		w.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if !published {
+			// 请求被 Close 取消（世界已关闭）。
+			return nil, fmt.Errorf("世界已关闭")
+		}
+		return chunk, nil
 	}
 }
 

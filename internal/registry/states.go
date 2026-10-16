@@ -37,6 +37,9 @@ var blockStateRanges = sync.OnceValue(func() map[string][2]uint16 {
 
 // IsPropertyBlockState 报告状态 ID 是否属于指定的属性方块
 // （如 "minecraft:lever"）。利用状态 ID 连续的性质做区间判断。
+//
+// 注意：若调用方处于每 tick 每方块高频路径（如实体环境扫描），
+// 优先使用 StateKindOf 的 O(1) 位表查询，避免字符串 map 查找。
 func IsPropertyBlockState(name string, id uint16) bool {
 	ranges, ok := blockStateRanges()[name]
 	if !ok {
@@ -44,6 +47,63 @@ func IsPropertyBlockState(name string, id uint16) bool {
 	}
 	return id >= ranges[0] && id <= ranges[1]
 }
+
+// StateKind 是方块状态类别位（可组合），用于水/岩浆/火的高频判定。
+type StateKind uint8
+
+// 状态类别位。
+const (
+	StateKindWater StateKind = 1 << iota
+	StateKindLava
+	// StateKindFire 表示火或灵魂火。
+	StateKindFire
+)
+
+// stateKindFlags 是按方块状态 ID 索引的类别位表。实体环境判定与流体逻辑
+// 在 tick 热路径对每个方块状态查询多次，字符串 map 查找（IsPropertyBlockState）
+// 会成为 profile 热点（tick 中 environmentInBox 每格最多 3 次查找）；
+// 这里在包初始化时把水/岩浆/火/灵魂火方块的全部状态 ID 打进位表，
+// 查询退化为一次数组访问（表长约 26 KiB，一次性分配）。
+var stateKindFlags = buildStateKindFlags()
+
+func buildStateKindFlags() []uint8 {
+	maxID := 0
+	for _, states := range BlockPropertyStates {
+		for _, state := range states {
+			if int(state.ID) > maxID {
+				maxID = int(state.ID)
+			}
+		}
+	}
+	table := make([]uint8, maxID+1)
+	mark := func(blockName string, flag StateKind) {
+		for _, state := range BlockPropertyStates[blockName] {
+			table[state.ID] |= uint8(flag)
+		}
+	}
+	mark("minecraft:water", StateKindWater)
+	mark("minecraft:lava", StateKindLava)
+	mark("minecraft:fire", StateKindFire)
+	mark("minecraft:soul_fire", StateKindFire)
+	return table
+}
+
+// StateKindOf 返回方块状态的类别位；表范围外（不可能是合法状态）返回 0。
+func StateKindOf(id uint16) StateKind {
+	if int(id) < len(stateKindFlags) {
+		return StateKind(stateKindFlags[id])
+	}
+	return 0
+}
+
+// IsWaterState 报告方块状态是否为任意等级的水（源与流动）。
+func IsWaterState(id uint16) bool { return StateKindOf(id)&StateKindWater != 0 }
+
+// IsLavaState 报告方块状态是否为任意等级的岩浆。
+func IsLavaState(id uint16) bool { return StateKindOf(id)&StateKindLava != 0 }
+
+// IsFireState 报告方块状态是否为火或灵魂火。
+func IsFireState(id uint16) bool { return StateKindOf(id)&StateKindFire != 0 }
 
 // statePropertyIndex 是状态 ID → 方块名与属性集合的反查表。
 var statePropertyIndex = sync.OnceValue(func() map[uint16]PropertyStateRef {

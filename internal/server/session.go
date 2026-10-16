@@ -5,6 +5,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/aes"
 	"crypto/rand"
@@ -54,8 +55,18 @@ type session struct {
 	protocolVersion int32
 
 	// reader/writer 是会话的读写通道；正版登录后包装为 AES/CFB8 加密流。
+	// writer 指向 buffered（或加密流包装的 buffered）：所有写入先进入
+	// 会话写缓冲，由固定的 flush 时机（服务器 Tick 结尾、读循环每个包
+	// 处理完后、进入世界流程结束）聚合成更少的系统调用（高并发下广播
+	// 小包的合并效果显著）。
 	reader io.Reader
 	writer io.Writer
+	// buffered 是网络写缓冲；测试中的轻量会话（writer 直接指向内存
+	// 缓冲）保持 nil，flush 自动退化。
+	buffered *bufio.Writer
+	// writePending 标记缓冲中是否有未 flush 的数据（无锁检查，避免
+	// Tick 结尾对每个会话反复取锁）。
+	writePending atomic.Bool
 
 	writeMu sync.Mutex
 
@@ -145,11 +156,17 @@ type session struct {
 
 	keepAliveMu      sync.Mutex
 	pendingKeepAlive int64
-	// 玩家战斗与位置状态：由读循环与实体 Tick 共同访问，受 stateMu 保护。
+	// 玩家战斗与位置状态：由读循环与实体 Tick 共同访问。位置/朝向/维度
+	// 与死亡/游戏模式是高频只读字段（实体 Tick 每 mob × 每玩家都要读）：
+	// pose 以不可变快照 + 原子指针发布、dead/gameMode 原子存储，热路径
+	// 无锁读取；其余字段（生命/饥饿/经验/无敌帧）仍受 stateMu 保护。
+	//
+	// pose 的更新一律在 stateMu 内做读-改-写（写者少，避免相互覆盖），
+	// 读者无需加锁即可取得同一时刻的一致位置快照。
 	stateMu    sync.Mutex
-	posX, posY float64
-	posZ       float64
-	yaw, pitch float32
+	pose       atomic.Pointer[playerPose]
+	dead       atomic.Bool
+	gameMode   atomic.Uint32
 	health     float32
 	food       int32
 	saturation float32
@@ -162,12 +179,7 @@ type session struct {
 	// experience 是经验值（总量与等级）。
 	experience    int32
 	experienceBar float32
-	dead          bool
-	gameMode      uint8
-	// dimension 是玩家当前所在维度（维度切换时在读循环内更新；
-	// 其他 goroutine 经 accessor 读取）。
-	dimension world.Dimension
-	lastHurt  time.Time
+	lastHurt      time.Time
 
 	// 下落跟踪（摔落伤害）：以服务器端地面检测驱动，仅由会话读循环访问。
 	fallStartY float64
@@ -216,6 +228,7 @@ type session struct {
 	chatBudget   packetBudget
 	moveBudget   packetBudget
 	actionBudget packetBudget
+	tabBudget    packetBudget
 
 	// lastMoveTime 是上一个被接受的移动包时间（逐 tick 速度上限用）。
 	lastMoveTime time.Time
@@ -251,17 +264,14 @@ func (s *session) isJoined() bool {
 }
 
 func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
-	return &session{
+	sess := &session{
 		server:          server,
 		conn:            conn,
 		protocolVersion: protocolVersion,
 		reader:          conn,
-		writer:          conn,
 		health:          maxPlayerHealth,
 		food:            maxPlayerFood,
 		saturation:      playerSaturation,
-		gameMode:        server.defaultGameMode,
-		dimension:       world.DimensionOverworld,
 		air:             maxPlayerAir,
 		envAirSynced:    maxPlayerAir,
 		sentChunks:      make(map[world.ChunkPos]struct{}),
@@ -271,19 +281,45 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		miningLastProgress: -1,
 		miningAckSequence:  -1,
 	}
+	sess.buffered = bufio.NewWriterSize(conn, sessionWriteBufferSize)
+	sess.writer = sess.buffered
+	sess.gameMode.Store(uint32(server.defaultGameMode))
+	sess.pose.Store(&playerPose{dim: world.DimensionOverworld})
+	return sess
 }
+
+// playerPose 是玩家位置/朝向/所在维度的不可变快照，经 atomic.Pointer
+// 原子发布：tick 热路径（生物索敌、广播半径、掉落物拾取）每帧按
+// “实体数 × 玩家数”读取玩家位置，独占锁会随并发玩家数放大成本；
+// 读者一次加载即可取得一致快照。更新一律在 stateMu 内做读-改-写。
+type playerPose struct {
+	x, y, z    float64
+	yaw, pitch float32
+	dim        world.Dimension
+}
+
+// loadPose 返回当前姿态快照；未经 newSession 构造的会话（零值测试字面量）
+// 返回零值姿态（维度零值即主世界，与旧字段零值行为一致）。
+func (s *session) loadPose() *playerPose {
+	if pose := s.pose.Load(); pose != nil {
+		return pose
+	}
+	return &zeroPlayerPose
+}
+
+var zeroPlayerPose playerPose
 
 // dimensionID 返回玩家所在维度。
 func (s *session) dimensionID() world.Dimension {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	return s.dimension
+	return s.loadPose().dim
 }
 
 // setDimension 设置玩家所在维度。
 func (s *session) setDimension(dimension world.Dimension) {
 	s.stateMu.Lock()
-	s.dimension = dimension
+	pose := *s.loadPose()
+	pose.dim = dimension
+	s.pose.Store(&pose)
 	s.stateMu.Unlock()
 }
 
@@ -294,15 +330,16 @@ func (s *session) playerWorld() *world.World {
 
 // playerPosition 返回玩家的最新位置与朝向。
 func (s *session) playerPosition() (x, y, z float64, yaw, pitch float32) {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	return s.posX, s.posY, s.posZ, s.yaw, s.pitch
+	pose := s.loadPose()
+	return pose.x, pose.y, pose.z, pose.yaw, pose.pitch
 }
 
 // setPlayerPosition 更新位置与朝向（由移动数据包与传送路径调用）。
 func (s *session) setPlayerPosition(x, y, z float64, yaw, pitch float32) {
 	s.stateMu.Lock()
-	s.posX, s.posY, s.posZ, s.yaw, s.pitch = x, y, z, yaw, pitch
+	pose := *s.loadPose()
+	pose.x, pose.y, pose.z, pose.yaw, pose.pitch = x, y, z, yaw, pitch
+	s.pose.Store(&pose)
 	s.stateMu.Unlock()
 	// 玩家进入方块（压力板）：与原版实体移动后调用 checkInsideBlocks 一致。
 	if s.server != nil {
@@ -313,15 +350,15 @@ func (s *session) setPlayerPosition(x, y, z float64, yaw, pitch float32) {
 // setPlayerRotation 更新朝向。
 func (s *session) setPlayerRotation(yaw, pitch float32) {
 	s.stateMu.Lock()
-	s.yaw, s.pitch = yaw, pitch
+	pose := *s.loadPose()
+	pose.yaw, pose.pitch = yaw, pitch
+	s.pose.Store(&pose)
 	s.stateMu.Unlock()
 }
 
 // isDead 报告玩家是否处于死亡状态。
 func (s *session) isDead() bool {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	return s.dead
+	return s.dead.Load()
 }
 
 // canBeAttacked 报告玩家能否成为生物的攻击目标：已完成进入世界的初始化、
@@ -330,9 +367,8 @@ func (s *session) canBeAttacked() bool {
 	if !s.isJoined() {
 		return false
 	}
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	return !s.dead && s.gameMode != uint8(config.GameModeCreative) && s.gameMode != uint8(config.GameModeSpectator)
+	mode := uint8(s.gameMode.Load())
+	return !s.dead.Load() && mode != uint8(config.GameModeCreative) && mode != uint8(config.GameModeSpectator)
 }
 
 // maxMoveDistance 是单个移动数据包允许的最大位移（方块）。
@@ -415,6 +451,8 @@ func (b *packetBudget) allow(now time.Time, rate, burst float64) bool {
 
 // 高频包限流参数：正常客户端约 20–30 移动包/秒、聊天远低于 2 条/秒；
 // 额度给突发（滞后追赶/粘贴）留出余量，超限静默丢弃。
+// 容器点击/创造柜操作与 Tab 补全同样限流：防止包洪泛放大
+// （每次点击触发槽位校验与广播，每次补全会构造命令树响应）。
 const (
 	chatRate    = 2.0
 	chatBurst   = 10.0
@@ -422,6 +460,8 @@ const (
 	moveBurst   = 80.0
 	actionRate  = 50.0
 	actionBurst = 100.0
+	tabRate     = 20.0
+	tabBurst    = 40.0
 )
 
 // acceptRise 校验悬空状态下的上升（简易飞行检测）：一次腾空累计上升
@@ -631,16 +671,12 @@ func (s *Server) resolveFallDamageBlocks() {
 
 // gameModeID 返回当前游戏模式。
 func (s *session) gameModeID() uint8 {
-	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
-	return s.gameMode
+	return uint8(s.gameMode.Load())
 }
 
 // setGameMode 设置游戏模式。
 func (s *session) setGameMode(mode uint8) {
-	s.stateMu.Lock()
-	s.gameMode = mode
-	s.stateMu.Unlock()
+	s.gameMode.Store(uint32(mode))
 }
 
 // healthStatus 返回当前生命、饥饿度与饱食度。
@@ -655,7 +691,7 @@ func (s *session) healthStatus() (health float32, food int32, saturation float32
 func (s *session) applyDamage(amount float32, now time.Time) (health float32, food int32, saturation float32, applied, died bool) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if s.dead || s.gameMode == uint8(config.GameModeCreative) || s.gameMode == uint8(config.GameModeSpectator) {
+	if s.dead.Load() || s.gameMode.Load() == uint32(config.GameModeCreative) || s.gameMode.Load() == uint32(config.GameModeSpectator) {
 		return s.health, s.food, s.saturation, false, false
 	}
 	if !s.lastHurt.IsZero() && now.Sub(s.lastHurt) < playerHurtCooldown {
@@ -667,7 +703,7 @@ func (s *session) applyDamage(amount float32, now time.Time) (health float32, fo
 	s.health -= amount
 	if s.health <= 0 {
 		s.health = 0
-		s.dead = true
+		s.dead.Store(true)
 		return s.health, s.food, s.saturation, true, true
 	}
 	return s.health, s.food, s.saturation, true, false
@@ -712,7 +748,7 @@ func (s *session) applyHungerTick() playerHungerStatus {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	status := playerHungerStatus{health: s.health, food: s.food, saturation: s.saturation}
-	if s.dead || s.gameMode == uint8(config.GameModeCreative) || s.gameMode == uint8(config.GameModeSpectator) {
+	if s.dead.Load() || s.gameMode.Load() == uint32(config.GameModeCreative) || s.gameMode.Load() == uint32(config.GameModeSpectator) {
 		return status
 	}
 	s.foodTimer++
@@ -751,7 +787,7 @@ func (s *session) eatFood(itemID int32) bool {
 	}
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if s.dead || s.food >= maxPlayerFood {
+	if s.dead.Load() || s.food >= maxPlayerFood {
 		return false
 	}
 	s.food = min(maxPlayerFood, s.food+food.Nutrition)
@@ -867,10 +903,10 @@ func experienceForLevel(level int32) int32 {
 func (s *session) markRespawned() bool {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if !s.dead {
+	if !s.dead.Load() {
 		return false
 	}
-	s.dead = false
+	s.dead.Store(false)
 	s.health = maxPlayerHealth
 	s.food = maxPlayerFood
 	s.saturation = playerSaturation
@@ -893,40 +929,92 @@ func (s *session) run() {
 	s.runPlay()
 }
 
+// sessionWriteBufferSize 是会话写缓冲大小：区块帧（压缩后约 0.5–2 KiB）
+// 与实体广播小包共用同一缓冲，8 KiB 能把一次 Tick 的广播与批量区块
+// 聚合成少量系统调用。
+const sessionWriteBufferSize = 8 * 1024
+
 // writeRawPacket 发送未压缩数据包，仅用于 Set Compression 之前的阶段。
 func (s *session) writeRawPacket(packet []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return protocol.WritePacket(s.writer, packet)
+	if err := protocol.WritePacket(s.writer, packet); err != nil {
+		return err
+	}
+	return s.flushLocked()
 }
 
 // writeFrame 写出已构造好的完整帧字节（CompressPacketFrame 的结果）；
 // 共享的广播包（区块数据/注册表）用它免去逐连接压缩。
+// 写入不立即 Flush：由 flushWrites 的统一时机批量写出。
 func (s *session) writeFrame(frame []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	return protocol.WriteFrameBytes(s.writer, frame)
-}
-
-// writePacket 以启用的压缩发送单个数据包；可被多个 goroutine 并发调用。
-func (s *session) writePacket(packet []byte) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return protocol.WritePacketWithCompression(s.writer, packet, compressionThreshold)
-}
-
-func (s *session) writePackets(packets ...[]byte) error {
-	for _, packet := range packets {
-		if err := s.writePacket(packet); err != nil {
-			return err
-		}
+	if err := protocol.WriteFrameBytes(s.writer, frame); err != nil {
+		return err
 	}
+	s.writePending.Store(true)
 	return nil
 }
 
-// tryWrite 尽力发送一个数据包；失败时关闭连接（读循环会随之退出）。
+// writePacket 以启用的压缩发送单个数据包并立即 Flush（响应式写，
+// 与旧行为一致）；可被多个 goroutine 并发调用。
+func (s *session) writePacket(packet []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := protocol.WritePacketWithCompression(s.writer, packet, compressionThreshold); err != nil {
+		return err
+	}
+	return s.flushLocked()
+}
+
+// writePackets 批量发送多个数据包：一次取锁、一次 Flush
+// （进入世界/重生等成串发送场景，减少系统调用与锁操作）。
+func (s *session) writePackets(packets ...[]byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	for _, packet := range packets {
+		if err := protocol.WritePacketWithCompression(s.writer, packet, compressionThreshold); err != nil {
+			return err
+		}
+	}
+	return s.flushLocked()
+}
+
+// flushLocked 立即把写缓冲刷到底层连接；调用方必须持有 writeMu。
+func (s *session) flushLocked() error {
+	s.writePending.Store(false)
+	if s.buffered == nil {
+		return nil
+	}
+	return s.buffered.Flush()
+}
+
+// flushWrites 在缓冲有待写数据时刷出（无锁检查 + 有数据才取锁）。
+// 调用点：服务器 Tick 结尾、会话读循环每个包处理完后、进入世界流程结束。
+func (s *session) flushWrites() {
+	if !s.writePending.Load() {
+		return
+	}
+	s.writeMu.Lock()
+	err := s.flushLocked()
+	s.writeMu.Unlock()
+	if err != nil {
+		// 写失败与 tryWrite 一致：关闭连接让读循环退出。
+		_ = s.conn.Close()
+	}
+}
+
+// tryWrite 尽力发送一个数据包（进入写缓冲，由 Tick/读循环的 flush 时机
+// 批量写出）；失败时关闭连接（读循环会随之退出）。
 func (s *session) tryWrite(packet []byte) {
-	if err := s.writePacket(packet); err != nil {
+	s.writeMu.Lock()
+	err := protocol.WritePacketWithCompression(s.writer, packet, compressionThreshold)
+	if err == nil {
+		s.writePending.Store(true)
+	}
+	s.writeMu.Unlock()
+	if err != nil {
 		_ = s.conn.Close()
 	}
 }
@@ -1041,7 +1129,7 @@ func (s *session) runOnlineAuthentication() bool {
 	}
 	// 加密从此生效：后续读写都经 AES/CFB8（IV 即共享密钥）。
 	s.reader = protocol.NewStreamReader(s.conn, protocol.NewCFB8Decrypter(block, sharedSecret))
-	s.writer = protocol.NewStreamWriter(s.conn, protocol.NewCFB8Encrypter(block, sharedSecret))
+	s.writer = protocol.NewStreamWriter(s.buffered, protocol.NewCFB8Encrypter(block, sharedSecret))
 
 	profile, err := s.server.verifySession(s.name, protocol.ServerHash("", sharedSecret, publicKey))
 	if err != nil {
@@ -1260,6 +1348,12 @@ func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch fl
 // runPlay 发送进入世界所需的初始数据包，注册到玩家列表，并进入游戏主循环。
 func (s *session) runPlay() {
 	s.teleportID = 1
+	// 人数上限（原版 multiplayer.disconnect.server_full）：已满时拒绝新玩家，
+	// 同 UUID 的重连（旧会话仍在列表）允许替换加入。
+	if s.server.isFullFor(s) {
+		s.kickWithComponent("multiplayer.disconnect.server_full")
+		return
+	}
 	// 恢复上次退出时的玩家数据（位置/生命/饥饿/游戏模式/物品栏）；
 	// 没有记录时按新玩家处理（出生点 + 初始物品）。
 	restored := false
@@ -1282,7 +1376,7 @@ func (s *session) runPlay() {
 		SimulationDistance:  int32(s.server.config.ViewDistance),
 		EnableRespawnScreen: true,
 		EnforcesSecureChat:  s.server.config.OnlineMode,
-		Spawn:               s.server.spawnInfo(dim, s.gameMode),
+		Spawn:               s.server.spawnInfo(dim, s.gameModeID()),
 	}
 
 	// 注册到玩家列表；离开时（任何返回路径）保存玩家数据并注销。
@@ -1389,6 +1483,10 @@ func (s *session) runPlay() {
 		defer keepAliveWG.Done()
 		s.keepAliveLoop(stop)
 	}()
+	// 进入读循环前把进入世界的全部待写数据刷出（广播路径写入的包
+	// 依赖 Tick/读循环的 flush 时机，这里保证客户端立即开始加载）。
+	s.flushWrites()
+	s.server.drainPlayerWrites()
 	s.playReadLoop()
 	close(stop)
 	keepAliveWG.Wait()
@@ -1549,6 +1647,9 @@ func (s *session) playReadLoop() {
 			}
 			s.server.handleCommand(s, command)
 		case protocol.PlayServerboundPacketIDTabComplete:
+			if !s.tabBudget.allow(time.Now(), tabRate, tabBurst) {
+				continue // 补全洪泛（每次请求都会构造并发送命令树响应）
+			}
 			transactionID, text, err := protocol.ParseTabCompleteRequest(packet)
 			if err != nil {
 				continue
@@ -1625,6 +1726,9 @@ func (s *session) playReadLoop() {
 				s.server.handleSetCarriedItem(s, slot)
 			}
 		case protocol.PlayServerboundPacketIDSetCreativeSlot:
+			if !s.actionBudget.allow(time.Now(), actionRate, actionBurst) {
+				continue // 交互洪泛（创造模式物品操作）
+			}
 			slot, itemID, count, err := protocol.ParseSetCreativeSlot(packet)
 			if err != nil {
 				continue
@@ -1635,6 +1739,9 @@ func (s *session) playReadLoop() {
 				s.server.broadcastSwing(s)
 			}
 		case protocol.PlayServerboundPacketIDContainerClick:
+			if !s.actionBudget.allow(time.Now(), actionRate, actionBurst) {
+				continue // 交互洪泛（窗口点击）
+			}
 			click, err := protocol.ParseContainerClick(packet)
 			if err != nil {
 				slog.Debug("malformed container click", "name", s.name, "error", err)
@@ -1729,6 +1836,10 @@ func (s *session) playReadLoop() {
 		s.validateOpenWindow()
 		// 装备快照（活动栏/盔甲变化随 Set Equipment 广播给其他玩家）。
 		s.refreshEquipmentSnapshot()
+		// 本包产生的响应写入（tryWrite 等）合并在循环底一次性写出；
+		// 跨会话广播（加入/离开、拾取、窗口同步等）也在这里统一收尾。
+		s.flushWrites()
+		s.server.drainPlayerWrites()
 	}
 }
 

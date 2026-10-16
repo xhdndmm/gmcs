@@ -8,6 +8,7 @@ import (
 	"math"
 
 	"gmcs/internal/protocol"
+	"gmcs/internal/registry"
 	"gmcs/internal/world"
 )
 
@@ -183,13 +184,14 @@ func environmentInBox(w *world.World, box world.Box) (inFire, inWater, inLava bo
 				}
 				n := w.LoadedColumn(x, y, to, z, buf[:to-y+1])
 				for i := 0; i < n; i++ {
-					state := buf[i]
+					// 一次位表查询判定火/水/岩浆三类（消息热路径每格一次）。
+					kind := registry.StateKindOf(buf[i])
 					switch {
-					case isFireBlockState(state):
+					case kind&registry.StateKindFire != 0:
 						inFire = true
-					case isWaterState(state):
+					case kind&registry.StateKindWater != 0:
 						inWater = true
-					case isLavaState(state):
+					case kind&registry.StateKindLava != 0:
 						inLava = true
 					}
 				}

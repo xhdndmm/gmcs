@@ -40,19 +40,25 @@ type Server struct {
 
 	// worlds 是各维度的世界（惰性创建）；worldMu 保护 worlds 与 spawns。
 	// 读多写少（tick 热路径按实体取世界），使用读写锁。
-	worldMu sync.RWMutex
-	worlds  map[world.Dimension]*world.World
-	spawns  map[world.Dimension]spawnPoint
+	// worldsCache 是 worlds 的无锁读快照（见 publishWorldsCacheLocked）。
+	worldMu     sync.RWMutex
+	worlds      map[world.Dimension]*world.World
+	worldsCache atomic.Pointer[[3]*world.World]
+	spawns      map[world.Dimension]spawnPoint
 
 	// 实体数据按维度惰性加载（维度世界首次创建时加载该维度的 entities.json）。
 	entityLoadMu   sync.Mutex
 	entitiesLoaded map[world.Dimension]bool
 
+	// keepAliveInterval 等测试钩子之外的最小构造同样可用。
 	mu      sync.Mutex
 	conns   map[net.Conn]struct{}
 	players map[[16]byte]*session
-	wg      sync.WaitGroup
-	closing bool
+	// playersSnap 是在线玩家列表的无锁快照（每次进出时重建）：
+	// 写缓冲 drain 在读循环每个包后遍历它（零分配零锁）。
+	playersSnap atomic.Pointer[[]*session]
+	wg          sync.WaitGroup
+	closing     bool
 
 	entityIDs         atomic.Int32
 	keepAliveInterval time.Duration
@@ -241,8 +247,13 @@ type spawnPoint struct {
 // 避免不进入这些维度的服务器/测试承担启动成本）。无法创建时回退主世界。
 // 首次创建维度时加载该维度的实体数据。
 func (s *Server) worldFor(dim world.Dimension) *world.World {
-	// 快路径：已创建的维度直接返回（tick 热路径每个实体每帧调用一次，
-	// 避免逐次取得排他锁与重复的惰性创建检查）。
+	// 快路径：已创建的维度直接返回（tick 热路径每个实体每帧调用一次）。
+	// 走无锁快照，避免每实体一次 RWMutex；快照在创建/替换维度时重建。
+	if cache := s.worldsCache.Load(); cache != nil && int(dim) < len(cache) {
+		if existing := cache[dim]; existing != nil {
+			return existing
+		}
+	}
 	s.worldMu.RLock()
 	if existing, ok := s.worlds[dim]; ok {
 		s.worldMu.RUnlock()
@@ -257,6 +268,18 @@ func (s *Server) worldFor(dim world.Dimension) *world.World {
 		s.ensureEntitiesLoaded(dim)
 	}
 	return gameWorld
+}
+
+// publishWorldsCacheLocked 在持有 worldMu 时重建 worldFor 的无锁读快照。
+// 快照只包含已创建的维度（nil 槽走慢路径，语义不变）。
+func (s *Server) publishWorldsCacheLocked() {
+	var cache [3]*world.World
+	for dim, gameWorld := range s.worlds {
+		if int(dim) < len(cache) {
+			cache[dim] = gameWorld
+		}
+	}
+	s.worldsCache.Store(&cache)
 }
 
 // ensureEntitiesLoaded 首次访问维度时加载该维度的持久化实体（幂等）。
@@ -302,6 +325,7 @@ func (s *Server) worldForLocked(dim world.Dimension) *world.World {
 	// 区块加载跟踪：新加载的区块里可能有漏斗，需要在加载后立即注册。
 	gameWorld.EnableChunkLoadTracking()
 	s.worlds[dim] = gameWorld
+	s.publishWorldsCacheLocked()
 	slog.Info("dimension loaded", "dimension", dim, "dir", dir)
 	return gameWorld
 }
@@ -530,6 +554,12 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	// 实体 Tick 循环：推进生物 AI 并提供确定性测试入口（tickInterval <= 0 时禁用）。
 	go s.tickLoop(ctx)
 
+	// 后台 Tick 被禁用时（测试手动驱动 tick），启动低频写缓冲刷写循环：
+	// 直接调用内部 API 产生的广播（不经读循环）也能在有限时间内到达
+	// 客户端，不依赖调用方恰好触发其它 flush 时机。生产模式（tick > 0）
+	// 由 Tick 结尾的 drain 覆盖，无需该循环。
+	go s.writeDrainLoop(ctx)
+
 	// 实体数据周期保存：ctx 取消（服务器关闭）时退出。
 	if s.mobsEnabled || s.itemsEnabled {
 		go s.entityAutosaveLoop(ctx)
@@ -609,7 +639,53 @@ func (s *Server) registerPlayer(player *session) []*session {
 		others = append(others, other)
 	}
 	s.players[player.uuid] = player
+	s.publishPlayersSnapshotLocked()
 	return others
+}
+
+// publishPlayersSnapshotLocked 重建在线玩家无锁快照（调用方持有 s.mu）。
+// 快照供写缓冲 drain 使用（读循环每包一次遍历事务会话，必须零分配零锁）。
+func (s *Server) publishPlayersSnapshotLocked() {
+	snapshot := make([]*session, 0, len(s.players))
+	for _, player := range s.players {
+		snapshot = append(snapshot, player)
+	}
+	s.playersSnap.Store(&snapshot)
+}
+
+// drainPlayerWrites 把全部在线会话写缓冲中待发的数据刷出。
+// 调用点：读循环每个包处理完后（跨会话广播 tryWrite 的目标会话由这里
+// 收尾，不依赖目标会话自己的读循环或 Tick）、Tick 结尾、玩家进出收尾。
+// 只对 writePending 的会话取锁（无写时不触碰锁）。
+func (s *Server) drainPlayerWrites() {
+	snapshot := s.playersSnap.Load()
+	if snapshot == nil {
+		return
+	}
+	for _, player := range *snapshot {
+		player.flushWrites()
+	}
+}
+
+// testWriteDrainInterval 是后台 Tick 禁用时写缓冲的刷写周期
+// （生产模式由 Tick 尾 drain 覆盖，该循环不运行）。
+const testWriteDrainInterval = 5 * time.Millisecond
+
+// writeDrainLoop 在后台 Tick 禁用（tickInterval <= 0）时周期刷写会话写缓冲。
+func (s *Server) writeDrainLoop(ctx context.Context) {
+	if s.tickInterval > 0 {
+		return
+	}
+	ticker := time.NewTicker(testWriteDrainInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.drainPlayerWrites()
+		}
+	}
 }
 
 // unregisterPlayer 从在线列表移除玩家，并通知其他玩家。
@@ -623,6 +699,9 @@ func (s *Server) unregisterPlayer(player *session) {
 		removed = true
 	}
 	empty := removed && len(s.players) == 0
+	if removed {
+		s.publishPlayersSnapshotLocked()
+	}
 	s.mu.Unlock()
 	if empty {
 		s.wakeChunkUnload()
@@ -632,6 +711,25 @@ func (s *Server) unregisterPlayer(player *session) {
 	s.broadcastPlayerRemove(player)
 	s.broadcastPacketExcluding(protocol.EncodePlayerInfoRemove([][16]byte{player.uuid}), player)
 	s.broadcastPacketExcluding(protocol.EncodeSystemChat(player.name+" left the game"), player)
+	// 离开广播写给其他会话（tryWrite 进写缓冲）：立即刷出，
+	// 否则要等下一个 Tick 或接收方的下一个包才会到达。
+	s.drainPlayerWrites()
+}
+
+// isFullFor 报告服务器对给定会话是否已达人数上限。
+// 同 UUID 的既有会话视为重连替换（registerPlayer 会覆盖并踢掉旧会话），
+// 不占用新名额；MaxPlayers <= 0 视为不限制。
+func (s *Server) isFullFor(player *session) bool {
+	if s.config.MaxPlayers <= 0 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.players) < s.config.MaxPlayers {
+		return false
+	}
+	_, replacing := s.players[player.uuid]
+	return !replacing
 }
 
 // wakeChunkUnload 非阻塞地唤醒区块卸载循环（容量 1，重复信号会被合并）。
@@ -652,6 +750,8 @@ func (s *Server) broadcastPacket(packet []byte) {
 }
 
 // broadcastPacketExcluding 向除 except 外的在线玩家发送数据包。
+// 压缩帧只构造一次（内容与接收者无关），多玩家共享同一份只读字节：
+// 广播规模（玩家数）不再重复压缩与分配；无接收者时不构造。
 func (s *Server) broadcastPacketExcluding(packet []byte, except *session) {
 	s.mu.Lock()
 	targets := make([]*session, 0, len(s.players))
@@ -661,8 +761,18 @@ func (s *Server) broadcastPacketExcluding(packet []byte, except *session) {
 		}
 	}
 	s.mu.Unlock()
+	if len(targets) == 0 {
+		return
+	}
+	frame, err := protocol.CompressPacketFrame(packet, compressionThreshold)
+	if err != nil {
+		slog.Error("构造广播帧失败", "error", err)
+		return
+	}
 	for _, player := range targets {
-		player.tryWrite(packet)
+		if err := player.writeFrame(frame); err != nil {
+			_ = player.conn.Close()
+		}
 	}
 }
 

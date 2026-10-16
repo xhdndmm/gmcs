@@ -162,8 +162,12 @@ type mobStats struct {
 	passive bool
 }
 
+// mobKindCount 是支持的生物种类数量。
+const mobKindCount mobKind = mobSheep + 1
+
 // mobKinds 是全部生物的基础数值（生命 20、伤害 2–3，与原版普通难度接近）。
-var mobKinds = map[mobKind]mobStats{
+// 用数组按 mobKind 直接索引：tick 热路径每生物每帧多次访问，避免 map 哈希。
+var mobKinds = [mobKindCount]mobStats{
 	mobZombie: {
 		name: "minecraft:zombie", health: 20, walkSpeed: 0.055, followRange: 32, damage: 2,
 		experience: 5, hurtSound: "minecraft:entity.zombie.hurt", deathSound: "minecraft:entity.zombie.death",
@@ -338,6 +342,9 @@ func (s *Server) tick() {
 		s.spawnTicks = 0
 		s.trySpawnMob(players)
 	}
+	// 把本帧全部广播写入会话写缓冲的数据刷出：动画/伤害/移动等广播
+	// （tryWrite）聚合成更少的系统调用；没有写入的会话无锁直接跳过。
+	s.drainPlayerWrites()
 }
 
 // tickPortals 递减玩家的传送门冷却（传送后 300 tick 内不响应传送门方块）。
@@ -650,15 +657,31 @@ func (s *Server) tickMobs(players []*session) {
 }
 
 // broadcastToNearby 把数据包发送给指定维度内 (x, z) 半径
-// mobMoveBroadcastRange 内的玩家。
+// mobMoveBroadcastRange 内的玩家（平方距离比较，省去开方）。
+// 压缩帧惰性构造：范围内有多名玩家时才编码一次并共享同一份只读字节；
+// 无目标时不产生任何压缩与分配（无玩家场景的 tick 常见路径）。
 func (s *Server) broadcastToNearby(dim world.Dimension, packet []byte, x, z float64, players []*session) {
+	const limitSquared = mobMoveBroadcastRange * mobMoveBroadcastRange
+	var frame []byte
 	for _, player := range players {
 		if player.dimensionID() != dim {
 			continue
 		}
 		px, _, pz, _, _ := player.playerPosition()
-		if math.Hypot(px-x, pz-z) <= mobMoveBroadcastRange {
-			player.tryWrite(packet)
+		dx, dz := px-x, pz-z
+		if dx*dx+dz*dz > limitSquared {
+			continue
+		}
+		if frame == nil {
+			var err error
+			frame, err = protocol.CompressPacketFrame(packet, compressionThreshold)
+			if err != nil {
+				slog.Error("构造广播帧失败", "error", err)
+				return
+			}
+		}
+		if err := player.writeFrame(frame); err != nil {
+			_ = player.conn.Close()
 		}
 	}
 }
@@ -993,9 +1016,12 @@ func (s *Server) pickSpawnKind(hostile bool) (mobKind, bool) {
 
 // addMob 生成一只指定种类的生物并把 Add Entity 广播给同维度的附近玩家。
 func (s *Server) addMob(dim world.Dimension, kind mobKind, x, y, z float64) *mob {
-	stats, ok := mobKinds[kind]
+	if kind >= mobKindCount {
+		return nil
+	}
+	stats := mobKinds[kind]
 	typeID, typeOK := s.mobTypeIDs[kind]
-	if !ok || !typeOK {
+	if !typeOK {
 		return nil
 	}
 	m := &mob{
@@ -1422,13 +1448,14 @@ func (s *Server) resolveMobRegistryIDs() {
 	staticLookup := func(registryName, entry string) (int32, bool) {
 		return registry.StaticEntryID(registryName, entry)
 	}
-	s.mobTypeIDs = make(map[mobKind]int32, len(mobKinds))
-	s.mobHurtSounds = make(map[mobKind]int32, len(mobKinds))
-	s.mobDeathSounds = make(map[mobKind]int32, len(mobKinds))
+	s.mobTypeIDs = make(map[mobKind]int32, mobKindCount)
+	s.mobHurtSounds = make(map[mobKind]int32, mobKindCount)
+	s.mobDeathSounds = make(map[mobKind]int32, mobKindCount)
 	s.arrows = make(map[int32]*arrowEntity)
 
 	s.mobsEnabled = true
-	for kind, stats := range mobKinds {
+	for kind := mobKind(0); kind < mobKindCount; kind++ {
+		stats := mobKinds[kind]
 		typeID, ok := staticLookup("minecraft:entity_type", stats.name)
 		if !ok {
 			slog.Error("缺少实体类型注册表条目，生物系统将被禁用", "entry", stats.name)
