@@ -1273,6 +1273,15 @@ func (s *Server) nextRandom() uint64 {
 	}
 }
 
+// nextInt 返回 [0, n) 内的确定性伪随机数（原版 RandomSource.nextInt(n)）；
+// n <= 0 时返回 0。
+func (s *Server) nextInt(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return int(s.nextRandom() % uint64(n))
+}
+
 // newEntityUUID 生成一个随机（v4）实体 UUID。
 func newEntityUUID() [16]byte {
 	var uuid [16]byte

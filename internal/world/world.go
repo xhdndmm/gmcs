@@ -560,6 +560,18 @@ func (w *World) ChunkLoaded(x, z int) bool {
 	return ok
 }
 
+// BiomeAt 返回方块列 (x, z) 的群系 ID；区块不在内存缓存时返回 false
+// （不触发加载或生成，供火焰等低频逻辑查询群系相关行为）。
+func (w *World) BiomeAt(x, z int) (uint16, bool) {
+	w.mu.RLock()
+	chunk, ok := w.chunks[ChunkPos{X: floorDiv(x, SectionSize), Z: floorDiv(z, SectionSize)}]
+	w.mu.RUnlock()
+	if !ok {
+		return 0, false
+	}
+	return chunk.ColumnBiome(x&(SectionSize-1), z&(SectionSize-1)), true
+}
+
 // Flush 把所有待保存的区块写入磁盘。
 // 编码 + 压缩在锁内完成（区块数据在锁内保持一致性）；磁盘 IO 在锁外执行。
 // 保存失败的区块会被重新标记为待保存以便重试。可被多个 goroutine 并发调用。

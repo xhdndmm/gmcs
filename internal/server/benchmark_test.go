@@ -403,3 +403,51 @@ func BenchmarkItemMergeScan(b *testing.B) {
 		b.Fatalf("剩余掉落物 %d，期望 256（基准可能未在测量真实路径）", remaining)
 	}
 }
+
+// BenchmarkFireTick 衡量一次火焰推进（fireTickBody）的成本：燃烧判定 6 次
+// （每次一次方块状态读取 + 随机数）与 3×3×6 蔓延候选（每次最多 6 次邻域读取）。
+// 布局为石质地面上的火 + 一块相邻橡木木板（保证火焰不自行熄灭且蔓延循环
+// 可以命中目标）；每次迭代前重置火焰与木板以保持被测量的工作量稳定。
+// 注意：基准直接调用 fireTickBody，跳过 tickFire 的区块加载与玩家半径门控
+// （无玩家时门控会直接返回，测不到推进成本）。
+func BenchmarkFireTick(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	spawnX, _, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	baseX, baseZ := int(math.Floor(spawnX))+16, int(math.Floor(spawnZ))+16
+	gameWorld := instance.worldFor(world.DimensionOverworld)
+	groundY, ok := gameWorld.GroundY(baseX, baseZ)
+	if !ok {
+		b.Fatal("出生点附近没有地面")
+	}
+	planks, err := registry.BlockStateID("minecraft:oak_planks")
+	if err != nil {
+		b.Fatal(err)
+	}
+	fire, ok := fireStateForAge(fireBlockName, 7)
+	if !ok {
+		b.Fatal("缺少火焰状态")
+	}
+	pos := [3]int{baseX, int(groundY), baseZ}
+	planksPos := [3]int{baseX + 1, int(groundY), baseZ}
+	props := map[string]string{"age": "7"}
+	gameWorld.SetBlock(planksPos[0], planksPos[1], planksPos[2], planks)
+	if !instance.fireCanSurvive(gameWorld, fireBlockName, pos) || !instance.fireNearFuel(gameWorld, pos) {
+		b.Fatal("基准布局未让火焰处于“有燃料”状态，无法测到完整推进路径")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		gameWorld.SetBlock(pos[0], pos[1], pos[2], fire)
+		gameWorld.SetBlock(planksPos[0], planksPos[1], planksPos[2], planks)
+		instance.fireTickBody(gameWorld, world.DimensionOverworld, pos, props)
+	}
+}
