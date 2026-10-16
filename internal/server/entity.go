@@ -306,6 +306,7 @@ func (s *Server) tick() {
 	players := s.playerSnapshot()
 	s.tickHunger(players)
 	s.tickPlayerEnvironment(players)
+	s.tickPlayerEquipment(players)
 	s.tickMobs(players)
 	s.tickArrows(players)
 	s.tickItems(players)

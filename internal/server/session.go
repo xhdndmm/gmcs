@@ -127,6 +127,11 @@ type session struct {
 	recipeBookFiltering [4]bool
 	// enderChest 是玩家的末影箱内容（按玩家独立存储，随玩家数据持久化）。
 	enderChest enderChestStorage
+	// equipSnapshot 是最近一次观察到的 6 个装备槽（主手/副手/盔甲，随实体元数据
+	// 广播给其他玩家）；equipPending 表示自上次广播以来有变化。
+	// 快照由会话读循环刷新（物品栏由会话串行访问），Tick 线程只读取。
+	equipSnapshot [protocol.EquipmentSlotCount]item.Stack
+	equipPending  bool
 	// openEnder 标记末影箱窗口是否打开。
 	openEnder   bool
 	windowID    int32
@@ -1206,9 +1211,10 @@ func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch fl
 		if dim == world.DimensionOverworld {
 			s.tryWrite(protocol.EncodeUpdateTime(s.server.worldAge.Load(), s.server.worldAge.Load()%worldDayLength, true))
 		}
-		// 新维度的玩家实体注册给附近玩家。
+		// 新维度的玩家实体注册给附近玩家（含装备）。
 		s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), dim, x, z, s)
 		s.server.writeToNearbyPlayers(s.server.playerSkinPacket(s), dim, x, z, s)
+		s.server.writeToNearbyPlayers(s.server.playerEquipmentPacket(s), dim, x, z, s)
 	}
 	s.server.broadcastPlayerMove(s)
 	health, food, saturation := s.healthStatus()
@@ -1297,6 +1303,7 @@ func (s *session) runPlay() {
 		}
 		packets = append(packets, s.server.playerSpawnPacket(other))
 		packets = append(packets, s.server.playerSkinPacket(other))
+		packets = append(packets, s.server.playerEquipmentPacket(other))
 	}
 	packets = append(packets, protocol.EncodeSystemChat("Welcome to "+s.server.config.VersionName+"!"))
 	// 向客户端声明命令树，使聊天栏支持 /help、/list、/say、/spawn、/gamemode。
@@ -1339,6 +1346,7 @@ func (s *session) runPlay() {
 	s.server.broadcastPacketExcluding(protocol.EncodePlayerInfoAddPlayer(s.uuid, s.name, s.profileProperties), s)
 	s.server.writeToNearbyPlayers(s.server.playerSpawnPacket(s), dim, x, z, s)
 	s.server.writeToNearbyPlayers(s.server.playerSkinPacket(s), dim, x, z, s)
+	s.server.writeToNearbyPlayers(s.server.playerEquipmentPacket(s), dim, x, z, s)
 	s.server.broadcastPacketExcluding(protocol.EncodeSystemChat(s.name+" joined the game"), s)
 	s.server.auditLog("join", "player", s.name, "uuid", uuidString(s.uuid), "dimension", dim.Name())
 	slog.Info("player joined the world", "name", s.name, "entityId", s.entityID)
@@ -1684,6 +1692,8 @@ func (s *session) playReadLoop() {
 		s.updateEating()
 		// 打开的窗口是否仍然有效（原版 stillValid 每 tick 检查）。
 		s.validateOpenWindow()
+		// 装备快照（活动栏/盔甲变化随 Set Equipment 广播给其他玩家）。
+		s.refreshEquipmentSnapshot()
 	}
 }
 

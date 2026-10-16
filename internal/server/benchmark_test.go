@@ -53,6 +53,18 @@ func BenchmarkServerTick(b *testing.B) {
 	}
 }
 
+// BenchmarkPlayerEquipmentSnapshot 衡量装备快照刷新的成本（会话读循环每收到
+// 一个数据包刷新一次，用于 Set Equipment 变更检测）。
+func BenchmarkPlayerEquipmentSnapshot(b *testing.B) {
+	sess := &session{}
+	sess.inventory.Set(item.SlotHotbarStart, item.Stack{ItemID: 936, Count: 1})
+	sess.inventory.Set(item.SlotHead, item.Stack{ItemID: 970, Count: 1})
+	b.ReportAllocs()
+	for b.Loop() {
+		sess.refreshEquipmentSnapshot()
+	}
+}
+
 // BenchmarkItemTick 衡量掉落物 Tick 的成本（128 个掉落物的物理、合并
 // 扫描与拾取判定；场景中无玩家，走不拾取分支）。
 func BenchmarkItemTick(b *testing.B) {

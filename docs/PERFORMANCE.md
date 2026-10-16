@@ -94,6 +94,9 @@ go test -run=^$ -bench=. -benchmem ./...
   合并扫描（空间索引重建 + 逐物品邻桶扫描），见 3.17。
 - `BenchmarkFindPath` / `BenchmarkFindPathUnreachable`：A* 寻路的单次成本
   （绕墙 ≈32 步；目标不可达时 512 节点耗尽的最坏情形），见 3.17。
+- `BenchmarkPlayerEquipmentSnapshot`：装备快照刷新（会话读循环每收到一个数据包
+  刷新一次，用于 Set Equipment 变更检测）≈126 ns/op、零分配；按每玩家 ~40 包/s
+  与 100 玩家折算约 0.5 ms/s（见 3.19）。
 - `BenchmarkCollides` / `BenchmarkClipMove`：单个实体碰撞盒的相交检测与
   单轴扫掠裁剪（普通地表），见 3.17。
 
@@ -706,6 +709,24 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
   玩家全部退出后区块随空闲释放回落（VmRSS 60.9 MB，含 Go 运行时不归还的堆）。
 - 仍为单机 loopback（客户端与服务端共享 CPU），不代表真实网络环境；
   真实客户端渲染仍未验证（见第 4 节）。
+
+### 3.19 玩家装备同步的成本（本批，实测）
+
+本批新增玩家装备同步（Set Equipment 0x64：主手/副手/盔甲，变更时广播给
+64 格内玩家）。成本分两部分：
+
+- **变更检测**：物品栏由会话串行访问，因此快照在会话读循环里刷新（每收到一个
+  数据包刷新一次 6 个槽位并与上次快照比较）。`BenchmarkPlayerEquipmentSnapshot`
+  实测 **≈126 ns/op、0 allocs/op**；按每玩家 ~40 包/s、100 玩家折算约
+  0.5 ms/s（可忽略）。
+- **广播**：仅在快照变化时发包（一次发全 6 个槽位，含 count=0 的空槽，约
+  50 字节/次），并复用既有的 64 格附近广播路径；未变化时 `tick` 不做任何发送
+  （有测试断言不产生待广播标记）。
+
+正确性：`./scripts/test.sh`（gofmt/build/vet/test/race）全绿；
+`TestSetEquipmentEncodingMatchesVanilla` 逐字节对照官方服务端抓包
+（`64 56 80 01 a8 07 00 00 05 01 ca 07 00 00`），另有双向可见性
+（加入时下发/切快捷栏/穿盔甲/空槽清空）的端到端测试。
 
 ## 4. 尚未覆盖
 
