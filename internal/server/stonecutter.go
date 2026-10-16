@@ -10,6 +10,7 @@ import (
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
+	"gmcs/internal/world"
 )
 
 // 切石机：输入槽（0）+ 结果槽（1）+ 玩家物品栏（2–37）。
@@ -36,6 +37,9 @@ type stonecutterState struct {
 	// synced 是最近一次已同步给客户端的选中下标（原版 DataSlot 的 previous 值）。
 	// 初始 0 与原版服务端/客户端一致，因此只有真正变化时才发属性包。
 	synced int32
+	// dim/pos 是切石机方块的位置（窗口有效性校验）。
+	dim world.Dimension
+	pos [3]int
 }
 
 // setInput 更新输入槽（原版 StonecutterMenu.slotsChanged：物品类型变化时才
@@ -184,7 +188,7 @@ func (b stonecutterSlotBacking) Supported(index int) bool {
 
 // openStonecutter 打开切石机窗口（右键切石机方块）。
 // 由会话 goroutine 调用。
-func (s *Server) openStonecutter(player *session) {
+func (s *Server) openStonecutter(player *session, x, y, z int) {
 	if player.openContainer != nil {
 		s.closeContainer(player, false)
 	}
@@ -210,7 +214,11 @@ func (s *Server) openStonecutter(player *session) {
 	if !ok {
 		return
 	}
-	player.setStonecutter(&stonecutterState{selected: -1})
+	player.setStonecutter(&stonecutterState{
+		selected: -1,
+		dim:      player.dimensionID(),
+		pos:      [3]int{x, y, z},
+	})
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
 	if err := player.writePacket(protocol.EncodeOpenScreen(player.windowID, menuType, "Stonecutter")); err != nil {

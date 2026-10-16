@@ -225,16 +225,16 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		// 右键工作台：打开 3×3 合成窗口。
 		name, hasName := s.blockNameOf(current)
 		if hasName && name == "minecraft:crafting_table" {
-			s.openCraftingTable(player)
+			s.openCraftingTable(player, use.X, use.Y, use.Z)
 			return
 		}
 		// 右键切石机/锻造台：打开对应窗口。
 		if hasName && name == "minecraft:stonecutter" {
-			s.openStonecutter(player)
+			s.openStonecutter(player, use.X, use.Y, use.Z)
 			return
 		}
 		if hasName && name == "minecraft:smithing_table" {
-			s.openSmithing(player)
+			s.openSmithing(player, use.X, use.Y, use.Z)
 			return
 		}
 		// 右键铁砧：打开修复/重命名窗口。

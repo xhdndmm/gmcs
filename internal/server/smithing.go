@@ -10,6 +10,7 @@ import (
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
+	"gmcs/internal/world"
 )
 
 // 锻造台：模板（0）+ 基底（1）+ 添加物（2）+ 结果（3）+ 玩家物品栏（4–39）。
@@ -21,6 +22,9 @@ import (
 type smithingState struct {
 	mu     sync.Mutex
 	inputs [3]item.Stack // 模板、基底、添加物
+	// dim/pos 是锻造台方块的位置（窗口有效性校验）。
+	dim world.Dimension
+	pos [3]int
 }
 
 // inputStack 返回指定输入槽内容（0–2）。
@@ -146,7 +150,7 @@ func (b smithingSlotBacking) CanPlace(index int, stack item.Stack) bool {
 
 // openSmithing 打开锻造台窗口（右键锻造台方块）。
 // 由会话 goroutine 调用。
-func (s *Server) openSmithing(player *session) {
+func (s *Server) openSmithing(player *session, x, y, z int) {
 	if player.openContainer != nil {
 		s.closeContainer(player, false)
 	}
@@ -172,7 +176,7 @@ func (s *Server) openSmithing(player *session) {
 	if !ok {
 		return
 	}
-	player.setSmithing(&smithingState{})
+	player.setSmithing(&smithingState{dim: player.dimensionID(), pos: [3]int{x, y, z}})
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
 	if err := player.writePacket(protocol.EncodeOpenScreen(player.windowID, menuType, "Smithing")); err != nil {

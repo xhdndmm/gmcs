@@ -1682,6 +1682,8 @@ func (s *session) playReadLoop() {
 		// 进食进度按时间推进（每个数据包到达时检查；客户端每 tick 发送
 		// Client Tick End，因此实际接近逐 tick 检查）。
 		s.updateEating()
+		// 打开的窗口是否仍然有效（原版 stillValid 每 tick 检查）。
+		s.validateOpenWindow()
 	}
 }
 

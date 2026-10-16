@@ -657,11 +657,61 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 回归测试（`TestItemMergeAcrossBuckets`、`TestItemMergeStableWithFullStack`、
 `TestXPOrbMergeAcrossBuckets`）与两组寻路基准；协议输出与游戏行为不变。
 
+### 3.18 复测：100 玩家 loopback 负载与稳定性（本批，实测）
+
+本批改动（切石机选择语义、漏斗冷却持久化、区块负载 v9）后用 `cmd/gmcsload`
+复测单机 loopback 负载。环境与前文一致（i7-12700F / 20 线程、Linux、本机 loopback，
+客户端与服务端共享 CPU）；服务器为默认配置（视距 10、生成敌对生物、离线模式），
+全新世界（首次运行随机种子），二进制为 PGO 构建。
+
+**A. 100 玩家 × 3 分钟（稳定性）**
+
+```bash
+./gmcsload -addr 127.0.0.1:25599 -players 100 -duration 3m -ramp 20ms
+```
+
+| 指标 | 实测值 |
+| --- | --- |
+| 进入世界 | 100/100，失败 0；最短 1 ms、平均 1 ms、p95 2 ms、最长 3 ms |
+| 运行 | 3m0.001s，全部客户端正常结束（无错误断开） |
+| 收包 | 61,700,428 个；流量 4949.4 MiB（均值约 27.5 MiB/s） |
+| 包类型（数量） | EntityPositionSync 51.3%、EntityHeadRotation 48.1%、SyncPlayerPos 0.5%、ChunkData 0.1%、Update Time 0.03% |
+| 包类型（字节） | ChunkData 61.8%、EntityPositionSync 36.0%、EntityHeadRotation 1.7% |
+| 服务器日志 | 全程 0 条 ERROR/WARN；玩家退出后空闲区块释放（441 + 5 + 7 区块）正常触发 |
+
+**B. 100 玩家 × 60 秒（服务器资源采样）**
+
+```bash
+# 采样 /proc/<server-pid>/stat 的 utime+stime 差值
+./gmcsload -addr 127.0.0.1:25599 -players 100 -duration 60s -ramp 20ms
+```
+
+| 指标 | 实测值 |
+| --- | --- |
+| 进入世界 | 100/100，失败 0；平均 2 ms、p95 3 ms、最长 4 ms |
+| 收包 | 22,889,663 个；流量 3784.7 MiB（≈63 MiB/s） |
+| 包类型（字节） | ChunkData 80.9%、EntityPositionSync 17.8% |
+| 服务器 CPU | 60 s 内 67.4 s ≈ **1.12 核**（20 线程机器的 5.6%） |
+| 服务器内存 | VmHWM（峰值）76.6 MB、结束后 VmRSS 60.9 MB、线程 33 |
+
+结论与局限：
+
+- 双次运行均无异常、无断开、无 ERROR/WARN；100 玩家同时进入世界的区块流式发送
+  仍由同步批量完成（ChunkData 占字节的 62–81%），是 CPU 的主要去向。
+- 60 秒窗口实际测的是“开局峰值阶段”（100 名玩家各自流式接收 441 个区块，
+  与 3 分钟运行的前一分钟同量级：22.9M vs 61.7M 包），**不代表稳态**；
+  3 分钟运行的后段 ChunkData 字节占比明显下降，与前文 3.13“100 玩家 5 分钟
+  平均 0.30 核”并不矛盾（统计窗口与阶段不同，如需稳态数据应延长采样窗口）。
+- 内存峰值 76.6 MB（3 分钟运行含 100 名玩家实体同步与 441 区块驻留），
+  玩家全部退出后区块随空闲释放回落（VmRSS 60.9 MB，含 Go 运行时不归还的堆）。
+- 仍为单机 loopback（客户端与服务端共享 CPU），不代表真实网络环境；
+  真实客户端渲染仍未验证（见第 4 节）。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
-  ——已用 `cmd/gmcsload` 做单机 50 玩家与 100 玩家 × 5 分钟 loopback 压测
-  （见 3.7、3.13），真实网络 / 真实客户端渲染仍待验证
+  ——已用 `cmd/gmcsload` 做单机 50 玩家、100 玩家 × 5 分钟与 100 玩家 × 3 分钟
+  loopback 压测（见 3.7、3.13、3.18），真实网络 / 真实客户端渲染仍待验证
 - `go tool trace` 调度与阻塞分析
 - 区块保存/加载（区域文件读写）路径的 benchmark
 - 端到端连接压测（真实 socket + 加密 + 多包交织；当前仅覆盖编解码与压缩）

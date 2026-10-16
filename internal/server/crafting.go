@@ -10,6 +10,7 @@ import (
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
+	"gmcs/internal/world"
 )
 
 // 合成系统：玩家物品栏 2×2 合成格与工作台 3×3 合成格。
@@ -29,6 +30,10 @@ type craftingState struct {
 	mu    sync.Mutex
 	grid  []item.Stack
 	width int
+	// dim/pos 是工作台方块的位置（窗口 0 的 2×2 合成格没有方块，hasPos=false）。
+	dim    world.Dimension
+	pos    [3]int
+	hasPos bool
 }
 
 // gridSnapshot 返回合成格内容的副本（线程安全）。
@@ -241,7 +246,7 @@ func (s *Server) craftResultClick(player *session, b craftSlotBacking, working [
 
 // openCraftingTable 打开工作台 3×3 合成窗口（右键工作台方块）。
 // 由会话 goroutine 调用。
-func (s *Server) openCraftingTable(player *session) {
+func (s *Server) openCraftingTable(player *session, x, y, z int) {
 	// 关闭上一个窗口（原版同一时间只允许一个活动窗口）。
 	if player.openContainer != nil {
 		s.closeContainer(player, false)
@@ -268,7 +273,11 @@ func (s *Server) openCraftingTable(player *session) {
 	if !ok {
 		return
 	}
-	player.setOpenCraft(newCraftingState(3))
+	craft := newCraftingState(3)
+	// 记录工作台位置：窗口有效性需要校验“仍是工作台且在交互距离内”
+	// （原版 CraftingMenu.stillValid）。
+	craft.dim, craft.pos, craft.hasPos = player.dimensionID(), [3]int{x, y, z}, true
+	player.setOpenCraft(craft)
 	player.windowID = player.nextWindowID()
 	player.windowState = 0
 

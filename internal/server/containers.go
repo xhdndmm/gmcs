@@ -336,8 +336,10 @@ func (s *Server) closeContainer(player *session, sendClose bool) {
 }
 
 // destroyContainer 处理容器方块被破坏：关闭所有观察窗口并把内容掉落到世界。
-// breaker 是破坏方块的会话（它的窗口在同一 goroutine 内同步关闭）。
-// 其他会话的窗口通过关闭包通知，其会话读循环会在下一次点击时清理状态。
+// breaker 是破坏方块的会话（为 nil 表示非玩家来源，如爆炸）。
+//
+// 其他会话的窗口只发送关闭包（不直接改它们的会话状态：窗口字段由各会话
+// 串行访问）；它们的读循环会在下一个数据包时经 stillValid 校验清理状态。
 func (s *Server) destroyContainer(dim world.Dimension, breaker *session, x, y, z int, def *containerDef) {
 	key := containerKey{dim: dim, x: x, y: y, z: z}
 	s.containerMu.Lock()
@@ -391,7 +393,7 @@ func (s *Server) destroyContainer(dim world.Dimension, breaker *session, x, y, z
 			}
 			viewer.tryWrite(protocol.EncodeContainerClose(viewer.windowID))
 		}
-		if breaker.openContainer == container {
+		if breaker != nil && breaker.openContainer == container {
 			s.closeContainer(breaker, true)
 		}
 		s.broadcastContainerAction(container, false, nil)
