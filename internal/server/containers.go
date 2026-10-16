@@ -975,6 +975,8 @@ func swapHotbarIndex(backing slotBacking, hotbar int) int {
 
 // clickPickupLeft 处理左键取放（mode 0、button 0）。
 // canPlace 在“放入/交换”时校验目标槽位是否接受该物品（原版 Slot.mayPlace）。
+// limit 为目标槽位对该物品的堆叠上限（原版 Slot.getMaxStackSize；受限槽位如
+// 盔甲槽/药水槽为 1），空槽放入量与同类合并量都受其限制。
 func clickPickupLeft(working []item.Stack, slot int, cursor item.Stack, limit int32, canPlace func(item.Stack) bool) item.Stack {
 	current := working[slot]
 	switch {
@@ -985,8 +987,20 @@ func clickPickupLeft(working []item.Stack, slot int, cursor item.Stack, limit in
 		if !canPlace(cursor) {
 			return cursor
 		}
-		working[slot] = cursor
-		return item.Empty()
+		// 原版 Slot.safeInsert：放入量受槽位上限限制，整栈点到受限槽位
+		// （如 64 个头颅放到盔甲槽）时只放入上限数量，其余留在光标。
+		inserted := min(cursor.Count, limit)
+		if inserted <= 0 {
+			return cursor
+		}
+		placed := cursor
+		placed.Count = inserted
+		working[slot] = placed
+		cursor.Count -= inserted
+		if cursor.Count <= 0 {
+			return item.Empty()
+		}
+		return cursor
 	case current.SameKind(cursor):
 		space := limit - current.Count
 		moved := min(space, cursor.Count)
@@ -1001,12 +1015,18 @@ func clickPickupLeft(working []item.Stack, slot int, cursor item.Stack, limit in
 		if !canPlace(cursor) {
 			return cursor
 		}
+		// 原版：槽位已有不同物品时必须整栈不超过槽位上限才允许交换。
+		if cursor.Count > limit {
+			return cursor
+		}
 		working[slot] = cursor
 		return current
 	}
 }
 
-// clickPickupRight 处理右键取放（mode 0、button 1）：取一半 / 放一个。
+// clickPickupRight 处理右键取放（mode 0、button 1）：取一半 / 放一个 / 交换。
+// 与原版 doClick 一致：不同物品时右键也会整栈交换（要求数量不超过槽位上限；
+// 官方服务端实测：1 个金锭右键点击泥土槽会与之交换）。
 func clickPickupRight(working []item.Stack, slot int, cursor item.Stack, limit int32, canPlace func(item.Stack) bool) item.Stack {
 	current := working[slot]
 	switch {
@@ -1035,7 +1055,10 @@ func clickPickupRight(working []item.Stack, slot int, cursor item.Stack, limit i
 			return item.Empty()
 		}
 		return cursor
-	case current.SameKind(cursor) && current.Count < limit:
+	case current.SameKind(cursor):
+		if current.Count >= limit {
+			return cursor // 槽位已满（如盔甲槽 1 个）：无操作
+		}
 		current.Count++
 		cursor.Count--
 		working[slot] = current
@@ -1043,8 +1066,13 @@ func clickPickupRight(working []item.Stack, slot int, cursor item.Stack, limit i
 			return item.Empty()
 		}
 		return cursor
+	default:
+		if !canPlace(cursor) || cursor.Count > limit {
+			return cursor
+		}
+		working[slot] = cursor
+		return current
 	}
-	return cursor
 }
 
 // clickPickupAll 处理双击收集（mode 6）：把容器中同类物品收集到光标。
@@ -1362,10 +1390,17 @@ func quickMoveSteps(backing slotBacking, working []item.Stack, slot int) []quick
 			return []quickMoveStep{{start, end, false, false}} // 合成格 → 玩家（正向）
 		}
 		if b.windowZero {
+			if slot >= 5 && slot <= 8 { // 盔甲 → 玩家
+				return []quickMoveStep{{9, 45, false, false}}
+			}
+			// 原版 InventoryMenu 的装备分支（下标 9..45 均适用）：物品可由玩家装备到
+			// 对应空装备槽（盔甲/副手）时只尝试那一个槽位；失败即结束，
+			// 不回退到主背包 ↔ 快捷栏（目标容量为 1，实际不会失败）。
+			if target := equipQuickMoveTarget(working, stack); target != 0 {
+				return []quickMoveStep{{target, target + 1, false, false}}
+			}
 			switch {
 			case slot == 45: // 副手 → 玩家
-				return []quickMoveStep{{9, 45, false, false}}
-			case slot >= 5 && slot <= 8: // 盔甲 → 玩家
 				return []quickMoveStep{{9, 45, false, false}}
 			case slot >= 9 && slot <= 35: // 主背包 → 快捷栏
 				return []quickMoveStep{{36, 45, false, false}}

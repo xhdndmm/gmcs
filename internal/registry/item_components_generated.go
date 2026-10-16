@@ -3337,6 +3337,51 @@ var StoredEnchantmentItems = map[string]bool{
 	"minecraft:enchanted_book": true,
 }
 
+// PlayerEquippableSlots 保存可由玩家装备的物品 → 装备槽名
+// （head/chest/legs/feet/offhand，来自 minecraft:equippable 组件的 slot）。
+// allowed_entities 不含玩家的物品被排除（马铠/狼铠/挽具为 body、鞍为 saddle）。
+var PlayerEquippableSlots = map[string]string{
+	"minecraft:carved_pumpkin":        "head",
+	"minecraft:chainmail_boots":       "feet",
+	"minecraft:chainmail_chestplate":  "chest",
+	"minecraft:chainmail_helmet":      "head",
+	"minecraft:chainmail_leggings":    "legs",
+	"minecraft:copper_boots":          "feet",
+	"minecraft:copper_chestplate":     "chest",
+	"minecraft:copper_helmet":         "head",
+	"minecraft:copper_leggings":       "legs",
+	"minecraft:creeper_head":          "head",
+	"minecraft:diamond_boots":         "feet",
+	"minecraft:diamond_chestplate":    "chest",
+	"minecraft:diamond_helmet":        "head",
+	"minecraft:diamond_leggings":      "legs",
+	"minecraft:dragon_head":           "head",
+	"minecraft:elytra":                "chest",
+	"minecraft:golden_boots":          "feet",
+	"minecraft:golden_chestplate":     "chest",
+	"minecraft:golden_helmet":         "head",
+	"minecraft:golden_leggings":       "legs",
+	"minecraft:iron_boots":            "feet",
+	"minecraft:iron_chestplate":       "chest",
+	"minecraft:iron_helmet":           "head",
+	"minecraft:iron_leggings":         "legs",
+	"minecraft:leather_boots":         "feet",
+	"minecraft:leather_chestplate":    "chest",
+	"minecraft:leather_helmet":        "head",
+	"minecraft:leather_leggings":      "legs",
+	"minecraft:netherite_boots":       "feet",
+	"minecraft:netherite_chestplate":  "chest",
+	"minecraft:netherite_helmet":      "head",
+	"minecraft:netherite_leggings":    "legs",
+	"minecraft:piglin_head":           "head",
+	"minecraft:player_head":           "head",
+	"minecraft:shield":                "offhand",
+	"minecraft:skeleton_skull":        "head",
+	"minecraft:turtle_helmet":         "head",
+	"minecraft:wither_skeleton_skull": "head",
+	"minecraft:zombie_head":           "head",
+}
+
 // TrimMaterialItems 保存携带 minecraft:provides_trim_material 组件的物品 →
 // 纹饰材质名（如 minecraft:gold_ingot → minecraft:gold）。
 // 锻造台纹饰配方用它把添加物解析为材质（原版 TrimMaterials.createFromIngredient）。

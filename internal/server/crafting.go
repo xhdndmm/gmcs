@@ -131,6 +131,58 @@ func (b craftSlotBacking) Supported(index int) bool {
 	return index != 0
 }
 
+// windowZeroEquipSlots 是玩家物品栏窗口（window 0）的盔甲槽：菜单槽位 → 装备槽名
+// （原版 InventoryMenu：5..8 头/胸/腿/脚；45 副手）。
+var windowZeroEquipSlots = map[int]string{5: "head", 6: "chest", 7: "legs", 8: "feet"}
+
+// equipSlotMenuSlot 是装备槽名 → 玩家物品栏窗口中的盔甲槽位
+// （原版 InventoryMenu 的 8 - EquipmentSlot.getIndex()）。
+var equipSlotMenuSlot = map[string]int{"head": 5, "chest": 6, "legs": 7, "feet": 8}
+
+// CanPlace 实现原版各槽位的 Slot.mayPlace：玩家物品栏窗口的盔甲槽只接受
+// 对应部位的装备（原版 ArmorSlot：物品 mincraft:equippable 组件的 slot 必须匹配），
+// 结果槽不可放入；副手与合成格不限（原版为普通 Slot）。
+func (b craftSlotBacking) CanPlace(slot int, stack item.Stack) bool {
+	if slot == 0 {
+		return false // 原版 ResultSlot.mayPlace 恒为 false
+	}
+	if !b.windowZero {
+		return true
+	}
+	if equip, ok := windowZeroEquipSlots[slot]; ok {
+		return registry.PlayerEquippableSlot(stack.ItemID) == equip
+	}
+	return true
+}
+
+// SlotLimit 实现原版 Slot.getMaxStackSize：玩家物品栏窗口的盔甲槽为 1
+// （原版 ArmorSlot.getMaxStackSize 恒为 1；头颅/南瓜等可堆叠装备因此只能放 1 个）。
+func (b craftSlotBacking) SlotLimit(slot int) int32 {
+	if b.windowZero {
+		if _, ok := windowZeroEquipSlots[slot]; ok {
+			return 1
+		}
+	}
+	return 0
+}
+
+// equipQuickMoveTarget 返回 Shift 点击的“自动装备”目标槽位（原版 InventoryMenu
+// quickMoveStack 的装备分支）：物品可由玩家装备到某个空装备槽时返回该槽位；
+// 返回 0 表示没有可用目标。副手槽（45）需要单独判断空位。
+func equipQuickMoveTarget(working []item.Stack, stack item.Stack) int {
+	equip := registry.PlayerEquippableSlot(stack.ItemID)
+	if equip == "" {
+		return 0
+	}
+	if target, ok := equipSlotMenuSlot[equip]; ok && working[target].IsEmpty() {
+		return target
+	}
+	if equip == "offhand" && working[45].IsEmpty() {
+		return 45
+	}
+	return 0
+}
+
 // resultOf 计算当前合成结果；working 非空时按 working 副本计算。
 func (b craftSlotBacking) resultOf(working []item.Stack) item.Stack {
 	ids := make([]int32, b.gridCount())

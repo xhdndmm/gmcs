@@ -78,6 +78,18 @@ func Food(itemID int32) (FoodValue, bool) {
 	return value, ok
 }
 
+// PlayerEquippableSlot 返回物品在玩家装备槽中的部位名（head/chest/legs/feet/offhand）；
+// 物品不可由玩家装备时返回 ""。对应原版 LivingEntity.getEquipmentSlotForItem
+// （minecraft:equippable 组件的 slot，且玩家 canUseSlot 支持该槽位）。
+// 用于玩家物品栏窗口的盔甲槽 Slot.mayPlace、Shift 点击自动装备与副手槽判定。
+func PlayerEquippableSlot(itemID int32) string {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return ""
+	}
+	return PlayerEquippableSlots[name]
+}
+
 // MaxStackSize 返回物品的堆叠上限（未收录的物品按 64 处理）。
 func MaxStackSize(itemID int32) int32 {
 	name, ok := ItemName(itemID)
