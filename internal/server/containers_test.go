@@ -519,6 +519,219 @@ func TestQuickCraftRightDragPlacesOne(t *testing.T) {
 	}
 }
 
+// TestQuickCraftSkipsRejectedSlots 验证“经过”阶段逐槽校验：槽位已有不同物品时
+// 该槽不入集合（且不重置整次拖拽），结束阶段按剩余槽位数均分。
+// 对照官方服务端实测：携带 64 个物品拖过 [异类槽, 空槽, 空槽] → 两个空槽各 32。
+func TestQuickCraftSkipsRejectedSlots(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:dirt*32", "minecraft:stone*64"}
+	instance, conn := joinServer(t, cfg, "DragSkip")
+
+	// 把泥土从快捷栏 0（菜单槽位 36）放进主背包槽位 9，再拿起石头。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 0, protocol.ClickModePickup)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 37, 0, protocol.ClickModePickup)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	// 左键拖过槽位 9（泥土，应跳过）、10、11。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 0, protocol.ClickModeQuickCraft)
+	for _, slot := range []int16{9, 10, 11} {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, slot, 1, protocol.ClickModeQuickCraft)
+	}
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 2, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragSkip")
+	if stack := player.inventory.Get(9); stack.Count != 32 || stack.ItemID != stackID(t, "minecraft:dirt") {
+		t.Fatalf("槽位 9 应保持 32 泥土不变，得到 %+v", stack)
+	}
+	for _, slot := range []int{10, 11} {
+		if stack := player.inventory.Get(slot); stack.Count != 32 {
+			t.Fatalf("槽位 %d = %+v, want 32 石头", slot, stack)
+		}
+	}
+	if cursor := player.getCursor(); !cursor.IsEmpty() {
+		t.Fatalf("64 个全部放下后光标应为空，得到 %+v", cursor)
+	}
+}
+
+// TestQuickCraftRespectsCarriedCount 验证“经过”阶段的数量门控：非创造拖拽要求
+// 携带数量严格大于已收集槽位数，否则该槽不加入集合。
+// 对照官方服务端实测：携带 4 个物品拖过 5 个空槽 → 只有 4 个槽各放 1 个。
+func TestQuickCraftRespectsCarriedCount(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:apple*4"}
+	instance, conn := joinServer(t, cfg, "DragCount")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 0, protocol.ClickModeQuickCraft)
+	for _, slot := range []int16{9, 10, 11, 12, 13} {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, slot, 1, protocol.ClickModeQuickCraft)
+	}
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 2, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragCount")
+	for _, slot := range []int{9, 10, 11, 12} {
+		if stack := player.inventory.Get(slot); stack.Count != 1 {
+			t.Fatalf("槽位 %d = %+v, want 1 苹果（4 个物品摊到 4 个槽）", slot, stack)
+		}
+	}
+	if stack := player.inventory.Get(13); !stack.IsEmpty() {
+		t.Fatalf("槽位 13 不应被加入集合（数量 4 不大于 4），得到 %+v", stack)
+	}
+	if cursor := player.getCursor(); !cursor.IsEmpty() {
+		t.Fatalf("拖拽后光标应为空，得到 %+v", cursor)
+	}
+}
+
+// TestQuickCraftDeduplicatesSlots 验证“经过”阶段的槽位去重（原版 quickCraftSlots
+// 为 Set）：同一槽位重复划过多次只算一个槽。
+// 对照官方服务端实测：携带 8 个物品重复划过同一空槽 → 该槽 8 个全部放下。
+func TestQuickCraftDeduplicatesSlots(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:apple*8"}
+	instance, conn := joinServer(t, cfg, "DragDup")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 0, protocol.ClickModeQuickCraft)
+	for i := 0; i < 3; i++ {
+		sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 1, protocol.ClickModeQuickCraft)
+	}
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 2, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragDup")
+	if stack := player.inventory.Get(9); stack.Count != 8 {
+		t.Fatalf("槽位 9 = %+v, want 8 苹果（去重后按单槽处理）", stack)
+	}
+	if cursor := player.getCursor(); !cursor.IsEmpty() {
+		t.Fatalf("拖拽后光标应为空，得到 %+v", cursor)
+	}
+}
+
+// TestQuickCraftNormalClickCancelsDrag 验证拖拽进行中收到其他模式的点击时，
+// 原版只取消拖拽并丢弃该次点击（不执行点击本身）；随后的点击恢复正常。
+func TestQuickCraftNormalClickCancelsDrag(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "DragCancel")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+
+	// 开始拖拽并划过一个空槽，然后插入一次普通左键点击。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 0, protocol.ClickModeQuickCraft)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 1, protocol.ClickModeQuickCraft)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 0, protocol.ClickModePickup)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragCancel")
+	if stack := player.inventory.Get(9); !stack.IsEmpty() {
+		t.Fatalf("拖拽中的普通点击应被丢弃（槽位 9 应保持空），得到 %+v", stack)
+	}
+	if cursor := player.getCursor(); cursor.Count != 32 {
+		t.Fatalf("拖拽中的普通点击不应改动光标，得到 %+v", cursor)
+	}
+
+	// 再点一次：此时应正常工作（拿起 → 放入）。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 0, protocol.ClickModePickup)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	player = activeSession(t, instance, "DragCancel")
+	if stack := player.inventory.Get(9); stack.Count != 32 {
+		t.Fatalf("取消拖拽后的普通点击应正常放入，槽位 9 = %+v", stack)
+	}
+	if cursor := player.getCursor(); !cursor.IsEmpty() {
+		t.Fatalf("放入后光标应为空，得到 %+v", cursor)
+	}
+}
+
+// TestQuickCraftEndWithoutStartIsIgnored 验证未开始就收到“结束”包时只重置状态：
+// 不做事，且不影响后续点击（原版状态迁移校验）。
+func TestQuickCraftEndWithoutStartIsIgnored(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "DragEndOnly")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+
+	// 只发“结束”（button 2），未发“开始”。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 2, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragEndOnly")
+	if stack := player.inventory.Get(9); !stack.IsEmpty() {
+		t.Fatalf("只发结束包不应改动任何槽位，槽位 9 = %+v", stack)
+	}
+	if cursor := player.getCursor(); cursor.Count != 32 {
+		t.Fatalf("只发结束包不应改动光标，得到 %+v", cursor)
+	}
+
+	// 后续点击仍正常工作。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 0, protocol.ClickModePickup)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	player = activeSession(t, instance, "DragEndOnly")
+	if stack := player.inventory.Get(9); stack.Count != 32 {
+		t.Fatalf("后续普通点击应正常工作，槽位 9 = %+v", stack)
+	}
+}
+
+// TestQuickCraftMiddleDragInSurvivalIsIgnored 验证中键拖拽（类型 2）在非创造
+// 模式下完全不生效（原版 canQuickCraftStart 要求 hasInfiniteMaterials）。
+func TestQuickCraftMiddleDragInSurvivalIsIgnored(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.StartingItems = []string{"minecraft:stone*32"}
+	instance, conn := joinServer(t, cfg, "DragMiddle")
+
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 36, 0, protocol.ClickModePickup)
+
+	// 中键拖拽：开始 8、经过 9、结束 10。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 8, protocol.ClickModeQuickCraft)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 9, 9, protocol.ClickModeQuickCraft)
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, -999, 10, protocol.ClickModeQuickCraft)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+
+	player := activeSession(t, instance, "DragMiddle")
+	if stack := player.inventory.Get(9); !stack.IsEmpty() {
+		t.Fatalf("生存模式的中键拖拽不应改动槽位，槽位 9 = %+v", stack)
+	}
+	if cursor := player.getCursor(); cursor.Count != 32 {
+		t.Fatalf("生存模式的中键拖拽不应改动光标，得到 %+v", cursor)
+	}
+}
+
+// stackID 返回物品名字对应的注册表 ID（测试辅助）。
+func stackID(t *testing.T, name string) int32 {
+	t.Helper()
+	id, err := registry.ItemID(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 // TestContainerQuickMove 验证 Shift 点击（快速移动）把整栈移入容器。
 func TestContainerQuickMove(t *testing.T) {
 	cfg := config.Default()

@@ -729,6 +729,12 @@ func (s *Server) handleContainerClick(player *session, click protocol.ContainerC
 	copy(working, before)
 	cursor := player.getCursor()
 
+	// 原版 doClick：拖拽进行中收到其他模式的点击时，只重置拖拽状态并丢弃该次点击。
+	if click.Mode != protocol.ClickModeQuickCraft && player.drag != nil {
+		player.drag = nil
+		return
+	}
+
 	switch {
 	case click.Slot == 0:
 		if craft, ok := backing.(craftSlotBacking); ok {
@@ -1065,10 +1071,11 @@ func clickPickupAll(working []item.Stack, cursor item.Stack, limit int32) item.S
 	return cursor
 }
 
-// dragState 记录一次拖拽分发（mode 5）的中间状态。
+// dragState 记录一次拖拽分发（mode 5）的中间状态，对应原版
+// AbstractContainerMenu 的 quickCrafting / quickCraftingButton / quickCraftSlots。
 type dragState struct {
-	button int8
-	slots  []int
+	kind  int   // 原版 quickCraftingButton：0 左键、1 右键、2 中键（仅创造模式）
+	slots []int // 原版 quickCraftSlots（Set → 去重）
 }
 
 // quickCraftKind / quickCraftStage 解码拖拽包的 button（与原版
@@ -1077,17 +1084,51 @@ type dragState struct {
 func quickCraftKind(button int8) int  { return (int(button) >> 2) & 3 }
 func quickCraftStage(button int8) int { return int(button) & 3 }
 
-// applyQuickCraft 处理拖拽分发（mode 5），对齐原版 AbstractContainerMenu#doClick
-// 的 QUICK_CRAFT 分支：阶段序列非法或光标为空时放弃这次拖拽（客户端在窗口外
-// 按住鼠标拖动会发 slot=-999 的开始包，此时光标通常为空）；只有“经过”阶段才
-// 解析槽位（结束阶段的 slot=-999 表示鼠标在窗口外释放）。
+// dragContains 判断拖拽集合中是否已包含该槽位（原版 quickCraftSlots 为 Set）。
+func dragContains(slots []int, slot int) bool {
+	for _, s := range slots {
+		if s == slot {
+			return true
+		}
+	}
+	return false
+}
+
+// canItemQuickReplace 对应原版 AbstractContainerMenu#canItemQuickReplace：
+// 槽位为空即可替换；否则要求与携带物同类（同物品且同组件），且现有数量加上
+// （ignoreCount 为 false 时）携带数量不超过物品自身的堆叠上限。
+func canItemQuickReplace(target item.Stack, carried item.Stack, ignoreCount bool) bool {
+	if target.IsEmpty() {
+		return true
+	}
+	if !target.SameKind(carried) {
+		return false
+	}
+	extra := int32(0)
+	if !ignoreCount {
+		extra = carried.Count
+	}
+	return target.Count+extra <= carried.MaxStack()
+}
+
+// applyQuickCraft 处理拖拽分发（mode 5），逐行对齐原版 AbstractContainerMenu#doClick
+// 的 QUICK_CRAFT 分支（1.21.11 字节码 + 官方服务端实测）：
+//
+//   - 状态迁移只允许“同阶段重复”或“进行中 → 结束”，其余组合重置状态并丢弃该包；
+//   - 光标为空时重置（客户端在窗口外拖动会带 slot=-999，此时光标通常为空）；
+//   - 开始：记录按键类型，中键（创造）之外的类型要求创造模式；
+//   - 经过：逐槽校验（可替换、槽位接受、非创造时携带数量严格大于已收集槽位数），
+//     通过才加入集合；不通过只是跳过该槽，不会重置整次拖拽；
+//   - 结束：只经过一个槽位时等价于对该槽位的一次普通点击（原版回退到 PICKUP）；
+//     否则按原版 getQuickCraftPlaceCount 分摊（左键 floor(数量/槽位数)、右键 1、
+//     中键整栈），每个槽位再按 min(物品上限, 槽位上限) 截断。
 func (s *Server) applyQuickCraft(player *session, backing slotBacking, working []item.Stack, cursor item.Stack, click protocol.ContainerClick) item.Stack {
 	stage := quickCraftStage(click.MouseButton)
+	kind := quickCraftKind(click.MouseButton)
 	previous := 0
 	if player.drag != nil {
 		previous = 1
 	}
-	// 合法序列：空闲 → 开始 → 经过… → 结束；其余组合（含首包不是“开始”）重置。
 	if (previous != 1 || stage != 2) && previous != stage {
 		player.drag = nil
 		return cursor
@@ -1098,84 +1139,100 @@ func (s *Server) applyQuickCraft(player *session, backing slotBacking, working [
 	}
 	switch stage {
 	case 0: // 开始
-		kind := quickCraftKind(click.MouseButton)
 		if kind == 2 && player.gameModeID() != uint8(config.GameModeCreative) {
+			// 原版 canQuickCraftStart：中键拖拽要求 hasInfiniteMaterials。
 			player.drag = nil
 			return cursor
 		}
-		player.drag = &dragState{button: click.MouseButton}
+		player.drag = &dragState{kind: kind}
 		return cursor
 	case 1: // 经过
-		if player.drag == nil {
-			return cursor
-		}
-		slot := int(click.Slot)
-		if slot < 0 || slot >= len(working) {
-			return cursor
-		}
-		player.drag.slots = append(player.drag.slots, slot)
-		return cursor
-	default: // 结束（slot = -999）
 		drag := player.drag
-		player.drag = nil
 		if drag == nil {
 			return cursor
 		}
-		kind := quickCraftKind(drag.button)
-		count := cursor.Count
-		// 原版只把物品放进能接受的槽位，且非创造拖拽要求数量不少于经过的槽位数。
-		if kind != 2 && count < int32(len(drag.slots)) {
+		slot := int(click.Slot)
+		if slot < 0 || slot >= len(working) || !backing.Supported(slot) {
 			return cursor
 		}
-		// 每个经过槽位放多少（原版 AbstractContainerMenu#getQuickCraftPlaceCount）：
-		// 左键拖拽把整栈平均分摊（数量/槽位数），右键拖拽每个槽位 1 个，
-		// 中键（创造）每个槽位放整栈。
-		perSlot := int32(1)
-		switch kind {
-		case 0:
-			perSlot = count / int32(len(drag.slots))
-		case 2:
-			perSlot = cursor.MaxStack()
+		if drag.kind != 2 && cursor.Count <= int32(len(drag.slots)) {
+			return cursor
 		}
-		remaining := count
-		for _, index := range drag.slots {
-			if remaining <= 0 {
-				break
-			}
-			if index < 0 || index >= len(working) {
-				continue
-			}
-			stack := working[index]
-			current := int32(0)
-			if !stack.IsEmpty() {
-				if !stack.SameKind(cursor) {
-					continue
-				}
-				current = stack.Count
-			} else if !canPlaceInto(backing, index, cursor) {
-				continue // 目标槽不接受该物品（原版 Slot.mayPlace）
-			}
-			target := perSlot + current
-			if limit := cursor.MaxStack(); target > limit {
-				target = limit
-			}
-			moved := min(remaining, target-current)
-			if moved <= 0 {
-				continue
-			}
-			if stack.IsEmpty() {
-				stack = cursor
-			}
-			stack.Count = target
-			working[index] = stack
-			remaining -= moved
+		if dragContains(drag.slots, slot) {
+			return cursor
 		}
-		cursor.Count = remaining
-		if cursor.Count <= 0 {
-			return item.Empty()
+		if !canItemQuickReplace(working[slot], cursor, true) {
+			return cursor
 		}
+		if !canPlaceInto(backing, slot, cursor) {
+			return cursor
+		}
+		drag.slots = append(drag.slots, slot)
 		return cursor
+	default: // 结束
+		drag := player.drag
+		player.drag = nil
+		if drag == nil || len(drag.slots) == 0 {
+			return cursor
+		}
+		if len(drag.slots) == 1 {
+			// 原版：只划过一格时重置拖拽状态后按普通点击（PICKUP）重新分派；
+			// 中键按钮 2 在 PICKUP 分支没有对应处理，原版同样是无操作。
+			if drag.kind == 2 {
+				return cursor
+			}
+			sub := click
+			sub.Mode = protocol.ClickModePickup
+			sub.MouseButton = int8(drag.kind)
+			sub.Slot = int16(drag.slots[0])
+			return s.applyContainerClick(player, backing, working, cursor, sub)
+		}
+		return quickCraftDistribute(backing, working, cursor, drag)
 	}
+}
+
+// quickCraftDistribute 执行拖拽结束阶段的分发（原版 doClick 结束分支的循环）：
+// 每个槽位放入 min(每槽数量 + 现有数量, min(物品上限, 槽位上限))，
+// 光标数量减去实际放入量（含与现有同物品堆的合并量）。
+func quickCraftDistribute(backing slotBacking, working []item.Stack, cursor item.Stack, drag *dragState) item.Stack {
+	count := cursor.Count
+	size := int32(len(drag.slots))
+	// 原版 getQuickCraftPlaceCount：左键向下取整均分、右键每槽 1 个、中键（创造）整栈。
+	perSlot := int32(1)
+	switch drag.kind {
+	case 0:
+		perSlot = count / size
+	case 2:
+		perSlot = cursor.MaxStack()
+	}
+	remaining := count
+	for _, slot := range drag.slots {
+		if slot < 0 || slot >= len(working) {
+			continue
+		}
+		if drag.kind != 2 && count < size {
+			continue
+		}
+		stack := working[slot]
+		if !canItemQuickReplace(stack, cursor, true) || !canPlaceInto(backing, slot, cursor) {
+			continue
+		}
+		existing := int32(0)
+		if !stack.IsEmpty() {
+			existing = stack.Count
+		}
+		limit := min(cursor.MaxStack(), slotLimitAt(backing, slot, cursor.MaxStack()))
+		target := min(perSlot+existing, limit)
+		remaining -= target - existing
+		placed := cursor
+		placed.Count = target
+		working[slot] = placed
+	}
+	cursor.Count = remaining
+	if cursor.Count <= 0 {
+		return item.Empty()
+	}
+	return cursor
 }
 
 // quickMove 处理 Shift 点击（mode 1）：按原版 quickMoveStack 的分支顺序
