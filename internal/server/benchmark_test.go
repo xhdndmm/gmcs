@@ -451,3 +451,56 @@ func BenchmarkFireTick(b *testing.B) {
 		instance.fireTickBody(gameWorld, world.DimensionOverworld, pos, props)
 	}
 }
+
+// BenchmarkItemWaterFlowPush 衡量掉落物水流推动的计算成本
+// （原版 Entity.updateFluidHeightAndDoFluidPushing 的水分支：遍历碰撞盒
+// 覆盖方块的 FluidState 与 FlowingFluid.getFlow）。布局为一条 2×2 宽的上坡
+// 水道（源 → 流动水），覆盖“多方块求平均”的常见情况。
+func BenchmarkItemWaterFlowPush(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	spawnX, _, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	baseX, baseZ := int(math.Floor(spawnX))+16, int(math.Floor(spawnZ))+16
+	gameWorld := instance.worldFor(world.DimensionOverworld)
+	groundY, ok := gameWorld.GroundY(baseX, baseZ)
+	if !ok {
+		b.Fatal("出生点附近没有地面")
+	}
+	channelY := int(groundY) - 1
+	source, ok := fluidSourceState(waterBlockName)
+	if !ok {
+		b.Fatal("缺少水源状态")
+	}
+	// 源在 -x 端，-x 侧为高水位，向 +x 逐格降低（形成持续坡度）。
+	gameWorld.SetBlock(baseX, channelY, baseZ, source)
+	for dx := 1; dx <= 8; dx++ {
+		amount := 8 - dx
+		if amount < 1 {
+			amount = 1
+		}
+		state, ok := fluidFlowingState(waterBlockName, amount)
+		if !ok {
+			b.Fatal("缺少流动水状态")
+		}
+		gameWorld.SetBlock(baseX+dx, channelY, baseZ, state)
+		gameWorld.SetBlock(baseX+dx, channelY, baseZ+1, state)
+	}
+	box := itemBoxAt(float64(baseX+3)+0.5, float64(channelY)+0.1, float64(baseZ)+0.5)
+	vx, vy, vz := instance.itemWaterFlowPush(gameWorld, box, 0, 0)
+	if vx == 0 && vy == 0 && vz == 0 {
+		b.Fatal("基准布局未产生水流推动（测不到真实路径）")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		instance.itemWaterFlowPush(gameWorld, box, 0.01, 0.01)
+	}
+}

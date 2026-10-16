@@ -385,7 +385,12 @@ func (s *Server) tickItems(players []*session) {
 		startX, startY, startZ := e.X, e.Y, e.Z
 		inWater := isWaterState(state)
 		if inWater {
-			// 漂浮：缓慢上浮 + 强阻力。
+			// 水流推动（原版 Entity.updateFluidHeightAndDoFluidPushing + FlowingFluid.getFlow），
+			// 再叠加漂浮与强阻力。
+			flowX, flowY, flowZ := s.itemWaterFlowPush(w, itemBoxAt(e.X, e.Y, e.Z), e.VelX, e.VelZ)
+			e.VelX += flowX
+			e.VelY += flowY
+			e.VelZ += flowZ
 			e.VelY += itemWaterBuoyancy
 			if e.VelY > 0.1 {
 				e.VelY = 0.1
