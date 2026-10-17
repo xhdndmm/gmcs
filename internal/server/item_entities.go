@@ -145,6 +145,7 @@ func (s *Server) dropItemFromPlayer(player *session, dropStack bool) {
 	if player.isDead() {
 		return
 	}
+	player.cancelUseItem()
 	if player.gameModeID() != uint8(config.GameModeSurvival) && player.gameModeID() != uint8(config.GameModeCreative) {
 		return
 	}

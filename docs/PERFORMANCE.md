@@ -1055,6 +1055,19 @@ CPU 持平、内存小幅下降。两场景的收发包总量与流量基本一�
 经验修补、绑定/消失诅咒、精准采集/时运/剪刀掉落。尚未验证：与原版服务端的
 逐伤害数值对照（公式来自官方数据与字节码，但未做端到端对拍）。
 
+### 3.28 玩家弓与盾牌（本批，实测）
+
+远程武器/盾牌逻辑只在 Use Item、释放使用键与受伤时运行，不在实体 Tick 热路径；
+`tickArrows` 新增生物命中扫描，但仅在存在飞行箭矢时执行，现有基准场景不含箭矢。
+复测（`-count=3` 中位数）：`BenchmarkServerTick` 16.8 µs/1 alloc、
+`BenchmarkServerTickManyPlayers` 321 µs/32 allocs、`BenchmarkEntityTracking`
+5.1 µs/0 alloc，与 3.27 及此前记录持平（差值在噪声范围）。
+
+正确性验证：`go test ./...` 全绿；新增 `TestParseUseItem`、`TestBowFiresArrow`、
+`TestBowRequiresArrow`、`TestBowInfinityKeepsArrow`、`TestShieldBlocksFrontDamage`、
+`TestShieldDoesNotBlockBypassingDamage`；`go test -race` 覆盖弓/盾牌/进食/骷髅箭矢路径。
+尚未验证：真实客户端拉弓动画/格挡动画与逐 tick 伤害数值对拍；弩/三叉戟未实现。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

@@ -110,6 +110,18 @@ type session struct {
 	eatingItemID int32
 	eatDeadline  time.Time
 
+	// 弓蓄力状态（仅由读循环访问）：bowCharging 为 true 时记录槽位/物品/
+	// 开始时刻；释放使用键时按蓄力时长发射。
+	bowCharging bool
+	bowSlot     int
+	bowItemID   int32
+	bowStart    time.Time
+
+	// 盾牌格挡状态：伤害结算在 Tick 线程读取，因此用原子字段发布。
+	blocking    atomic.Bool
+	blockSlot   atomic.Int32
+	blockItemID atomic.Int32
+
 	// portalCooldown 是传送门冷却剩余 tick（传送后 300 tick）：
 	// 读循环在传送后设置，服务器 Tick 线程递减。
 	portalCooldown atomic.Int32 // inventory 是玩家物品栏，由会话串行访问。
@@ -1824,8 +1836,12 @@ func (s *session) playReadLoop() {
 				s.setSprinting(flags&protocol.PlayerInputSprint != 0)
 			}
 		case protocol.PlayServerboundPacketIDUseItem:
-			// 使用物品（进食等）：手持食物且未满饥饿时开始 1.6 秒的进食过程。
-			s.server.handleUseItem(s)
+			// 使用物品（进食/弓/盾牌）：按 hand 选择主手或副手槽位。
+			use, err := protocol.ParseUseItem(packet)
+			if err != nil {
+				continue
+			}
+			s.server.handleUseItem(s, use.Hand)
 		case protocol.PlayServerboundPacketIDClientInformation:
 			if info, err := protocol.ParseClientInformation(packet); err == nil {
 				oldInfo := s.setClientInfo(info)

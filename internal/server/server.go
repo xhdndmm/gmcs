@@ -128,6 +128,7 @@ type Server struct {
 	soundMobHurt         int32
 	soundMobDeath        int32
 	soundPlayerHurt      int32
+	soundShieldBlock     int32
 
 	// 箭矢系统（骷髅的远程攻击；与生物系统一同启用/禁用）。
 	arrowTypeID        int32

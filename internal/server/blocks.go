@@ -60,7 +60,7 @@ func (s *Server) handlePlayerAction(player *session, action protocol.PlayerActio
 	case statusDropItem:
 		s.dropItemFromPlayer(player, false)
 	case statusReleaseUse:
-		player.cancelEating()
+		s.releaseUseItem(player)
 	case statusSwapOffhand:
 		s.swapItemWithOffhand(player)
 	}
@@ -76,6 +76,7 @@ func (s *Server) swapItemWithOffhand(player *session) {
 	if player.gameModeID() == uint8(config.GameModeSpectator) || player.isDead() {
 		return
 	}
+	player.cancelUseItem()
 	main := player.inventory.Get(player.selectedSlot)
 	off := player.inventory.Get(item.SlotOffhand)
 	player.inventory.Set(player.selectedSlot, off)
@@ -396,6 +397,8 @@ func mobBox(x, y, z float64) world.Box {
 
 // handleSetCarriedItem 记录玩家切换的快捷栏槽位（放置时使用）。
 func (s *Server) handleSetCarriedItem(player *session, slot int32) {
+	// 切换快捷栏物品会取消进食/弓蓄力/盾牌格挡（与原版切换物品一致）。
+	player.cancelUseItem()
 	player.selectedSlot = int(slot)
 }
 

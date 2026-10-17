@@ -22,7 +22,8 @@ func sendUseItem(t *testing.T, conn net.Conn) {
 	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDUseItem)
 	packet = protocol.AppendVarInt(packet, 0) // hand
 	packet = protocol.AppendVarInt(packet, 0) // sequence
-	packet = append(packet, 0x00)             // rotation（无）
+	packet = append(packet, 0, 0, 0, 0)       // yaw float32（0）
+	packet = append(packet, 0, 0, 0, 0)       // pitch float32（0）
 	if err := protocol.WritePacketWithCompression(conn, packet, compressionThreshold); err != nil {
 		t.Fatal(err)
 	}

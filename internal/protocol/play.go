@@ -586,6 +586,41 @@ func ParseUseItemOn(packet []byte) (UseItemOn, error) {
 	return use, nil
 }
 
+// UseItem 是 Use Item（使用物品，如进食/弓/盾牌）包的解析结果。
+// Hand 为 0（主手）或 1（副手）。
+type UseItem struct {
+	Hand     int32
+	Sequence int32
+	Yaw      float32
+	Pitch    float32
+}
+
+// ParseUseItem 解析 Use Item（serverbound 0x40）包：
+// hand（VarInt）、sequence（VarInt）、rotation（两个 float32）。
+func ParseUseItem(packet []byte) (UseItem, error) {
+	var use UseItem
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayServerboundPacketIDUseItem {
+		return use, fmt.Errorf("invalid use item packet")
+	}
+	if use.Hand, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return use, err
+	}
+	if use.Hand != 0 && use.Hand != 1 {
+		return use, fmt.Errorf("invalid hand %d", use.Hand)
+	}
+	if use.Sequence, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return use, err
+	}
+	if use.Yaw, offset, err = DecodeFloat32(packet, offset); err != nil {
+		return use, err
+	}
+	if use.Pitch, _, err = DecodeFloat32(packet, offset); err != nil {
+		return use, err
+	}
+	return use, nil
+}
+
 // ParseSetCarriedItem 解析 Set Carried Item（切换快捷栏槽位）包。
 // 槽位越界时返回错误。
 func ParseSetCarriedItem(packet []byte) (int32, error) {

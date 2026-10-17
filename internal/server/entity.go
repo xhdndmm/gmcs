@@ -1320,6 +1320,10 @@ func (s *Server) damagePlayer(player *session, amount float32, sourceName string
 // 默认死亡消息（“<玩家> was slain by <来源>”）。deathTemplate 使用 fmt 的
 // 单个 %s 占位玩家名，如 "%s tried to swim in lava"。
 func (s *Server) damagePlayerWithMessage(player *session, amount float32, sourceName string, sourceMobID, damageTypeID int32, sourcePosition *[3]float64, deathTemplate string) bool {
+	// 盾牌格挡：正面且不穿透盾牌的伤害完全由盾牌承受（不受护甲减伤影响）。
+	if player.tryBlockDamage(s, amount, damageTypeID, sourcePosition) {
+		return true
+	}
 	health, food, saturation, applied, died := player.applyDamage(s, amount, damageTypeID, time.Now())
 	if !applied {
 		return false
@@ -1358,8 +1362,9 @@ func (s *Server) respawnPlayer(player *session) {
 	if !player.markRespawned() {
 		return // 未死亡或已在重生中。
 	}
-	// 原版重生会重建玩家对象与挖掘状态：清除进行中的挖掘/延迟破坏。
+	// 原版重生会重建玩家对象与挖掘状态：清除进行中的挖掘/延迟破坏/使用状态。
 	player.resetMiningState()
+	player.cancelUseItem()
 	dim := player.dimensionID()
 	gameMode := player.gameModeID()
 	spawn := s.spawnInfo(dim, gameMode)
@@ -1568,5 +1573,9 @@ func (s *Server) resolveMobRegistryIDs() {
 	// 末影人传送音效：可选（缺失时仅不播放音效）。
 	if teleport, ok := staticLookup("minecraft:sound_event", "minecraft:entity.enderman.teleport"); ok {
 		s.soundEndermanTeleport = teleport
+	}
+	// 盾牌格挡音效：可选。
+	if shieldBlock, ok := staticLookup("minecraft:sound_event", "minecraft:item.shield.block"); ok {
+		s.soundShieldBlock = shieldBlock
 	}
 }

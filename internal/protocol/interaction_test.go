@@ -124,6 +124,30 @@ func TestParseUseItemOn(t *testing.T) {
 	}
 }
 
+// TestParseUseItem 验证 Use Item 包解析（hand/sequence/rotation）。
+func TestParseUseItem(t *testing.T) {
+	packet := AppendVarInt(nil, PlayServerboundPacketIDUseItem)
+	packet = AppendVarInt(packet, 1) // hand = offhand
+	packet = AppendVarInt(packet, 7) // sequence
+	packet = AppendFloat32(packet, -90)
+	packet = AppendFloat32(packet, 30)
+
+	use, err := ParseUseItem(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if use.Hand != 1 || use.Sequence != 7 || use.Yaw != -90 || use.Pitch != 30 {
+		t.Fatalf("解析结果不符：%+v", use)
+	}
+	bad := AppendVarInt(nil, PlayServerboundPacketIDUseItem)
+	bad = AppendVarInt(bad, 2) // 非法 hand
+	bad = AppendVarInt(bad, 0)
+	bad = append(bad, make([]byte, 8)...)
+	if _, err := ParseUseItem(bad); err == nil {
+		t.Fatal("非法 hand 应返回错误")
+	}
+}
+
 // TestParseSetCarriedItem 验证快捷栏切换解析与越界拒绝。
 func TestParseSetCarriedItem(t *testing.T) {
 	packet := AppendVarInt(nil, PlayServerboundPacketIDSetCarriedItem)

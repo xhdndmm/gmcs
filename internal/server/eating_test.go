@@ -31,10 +31,7 @@ func TestEatingTakesTime(t *testing.T) {
 	player.saturation = 0
 	player.stateMu.Unlock()
 
-	useItemPacket := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDUseItem)
-	if err := protocol.WritePacketWithCompression(conn, useItemPacket, compressionThreshold); err != nil {
-		t.Fatal(err)
-	}
+	sendUseItem(t, conn)
 	// 立即检查：物品未消耗（1.6 秒过程未结束）。
 	time.Sleep(100 * time.Millisecond)
 	if stack := player.inventory.Get(0); stack.Count != 3 {
@@ -43,9 +40,7 @@ func TestEatingTakesTime(t *testing.T) {
 
 	// 等待过程结束，再发一个数据包驱动进度检查。
 	time.Sleep(1600 * time.Millisecond)
-	if err := protocol.WritePacketWithCompression(conn, useItemPacket, compressionThreshold); err != nil {
-		t.Fatal(err)
-	}
+	sendUseItem(t, conn)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if stack := player.inventory.Get(0); stack.Count == 2 {
@@ -74,10 +69,7 @@ func TestEatingInterruptedByRelease(t *testing.T) {
 	if !instance.damagePlayer(player, 4, "Zombie", -1, instance.mobAttackDamageTypeID, nil) {
 		t.Fatal("damage should apply")
 	}
-	useItemPacket := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDUseItem)
-	if err := protocol.WritePacketWithCompression(conn, useItemPacket, compressionThreshold); err != nil {
-		t.Fatal(err)
-	}
+	sendUseItem(t, conn)
 	// 过程进行中释放使用键（Player Action status=5）。
 	release := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDPlayerAction)
 	release = protocol.AppendVarInt(release, 5) // release_use_item
@@ -89,9 +81,7 @@ func TestEatingInterruptedByRelease(t *testing.T) {
 	}
 	// 等待超过进食时长后再驱动一次检查：物品应保持不变。
 	time.Sleep(1700 * time.Millisecond)
-	if err := protocol.WritePacketWithCompression(conn, useItemPacket, compressionThreshold); err != nil {
-		t.Fatal(err)
-	}
+	sendUseItem(t, conn)
 	time.Sleep(200 * time.Millisecond)
 	if stack := player.inventory.Get(0); stack.Count != 3 {
 		t.Fatalf("interrupted eating still consumed bread: count=%d", stack.Count)

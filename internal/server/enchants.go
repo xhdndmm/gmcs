@@ -54,6 +54,10 @@ type enchantIDs struct {
 	fortune              int32
 	silkTouch            int32
 	mending              int32
+	power                int32
+	punch                int32
+	flame                int32
+	infinity             int32
 	protection           int32
 	fireProtection       int32
 	blastProtection      int32
@@ -86,6 +90,10 @@ var enchants = sync.OnceValue(func() enchantIDs {
 		fortune:              lookup("minecraft:fortune"),
 		silkTouch:            lookup("minecraft:silk_touch"),
 		mending:              lookup("minecraft:mending"),
+		power:                lookup("minecraft:power"),
+		punch:                lookup("minecraft:punch"),
+		flame:                lookup("minecraft:flame"),
+		infinity:             lookup("minecraft:infinity"),
 		protection:           lookup("minecraft:protection"),
 		fireProtection:       lookup("minecraft:fire_protection"),
 		blastProtection:      lookup("minecraft:blast_protection"),

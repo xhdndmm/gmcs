@@ -31,6 +31,13 @@ type arrowEntity struct {
 	VelX, VelY, VelZ float64
 	Damage           float32
 	AgeTicks         int
+	// OwnerID 是射出该箭的玩家实体 ID（0 = 生物/环境箭矢）。
+	// 用于避免自伤、决定击杀经验归属。
+	OwnerID int32
+	// Knockback 是冲击附魔等级（命中生物时额外击退）。
+	Knockback int32
+	// Flame 表示火焰附魔（命中时点燃目标 5 秒）。
+	Flame bool
 }
 
 // explosionResistantBlocks 是爆炸不会摧毁的方块（与原版高爆炸抗性方块一致）。
@@ -49,32 +56,31 @@ var explosionResistantBlocks = map[string]bool{
 	"minecraft:reinforced_deepslate": true,
 }
 
-// fireArrow 生成一支由骷髅射出的箭，并广播生成包与射击音效。
-func (s *Server) fireArrow(p pendingArrow) {
+// spawnArrow 创建一个飞行中的箭并广播 Add Entity。
+// ownerID 为 0 表示生物/环境箭矢。
+func (s *Server) spawnArrow(dim world.Dimension, x, y, z, vx, vy, vz float64,
+	damage float32, ownerID int32, knockback int32, flame bool) *arrowEntity {
 	if !s.arrowsEnabled {
-		return
+		return nil
 	}
-	dx, dy, dz := p.targetX-p.x, p.targetY-p.y, p.targetZ-p.z
-	distance := math.Sqrt(dx*dx + dy*dy + dz*dz)
-	if distance < 1e-3 {
-		distance = 1e-3
-	}
-	speed := skeletonArrowSpeed
 	arrow := &arrowEntity{
-		ID:     s.entityIDs.Add(1),
-		UUID:   newEntityUUID(),
-		Dim:    p.dim,
-		X:      p.x,
-		Y:      p.y,
-		Z:      p.z,
-		VelX:   dx / distance * speed,
-		VelY:   dy/distance*speed + 0.08,
-		VelZ:   dz / distance * speed,
-		Damage: p.damage,
+		ID:        s.entityIDs.Add(1),
+		UUID:      newEntityUUID(),
+		Dim:       dim,
+		X:         x,
+		Y:         y,
+		Z:         z,
+		VelX:      vx,
+		VelY:      vy,
+		VelZ:      vz,
+		Damage:    damage,
+		OwnerID:   ownerID,
+		Knockback: knockback,
+		Flame:     flame,
 	}
 	s.entityMu.Lock()
 	s.arrows[arrow.ID] = arrow
-	targets := s.markTrackedNearbyLocked(p.dim, arrow.X, arrow.Z, nil, arrow.ID)
+	targets := s.markTrackedNearbyLocked(dim, arrow.X, arrow.Z, nil, arrow.ID)
 	s.entityMu.Unlock()
 
 	add := protocol.EncodeAddEntity(arrow.ID, arrow.UUID, s.arrowTypeID,
@@ -82,16 +88,40 @@ func (s *Server) fireArrow(p pendingArrow) {
 	for _, player := range targets {
 		player.tryWrite(add)
 	}
+	return arrow
+}
+
+// fireArrow 生成一支由骷髅射出的箭，并广播生成包与射击音效。
+func (s *Server) fireArrow(p pendingArrow) {
+	dx, dy, dz := p.targetX-p.x, p.targetY-p.y, p.targetZ-p.z
+	distance := math.Sqrt(dx*dx + dy*dy + dz*dz)
+	if distance < 1e-3 {
+		distance = 1e-3
+	}
+	speed := skeletonArrowSpeed
+	arrow := s.spawnArrow(p.dim, p.x, p.y, p.z,
+		dx/distance*speed, dy/distance*speed+0.08, dz/distance*speed, p.damage, 0, 0, false)
+	if arrow == nil {
+		return
+	}
 	s.broadcastToNearby(p.dim,
 		protocol.EncodeEntitySoundEffect(s.soundArrowShoot, protocol.SoundCategoryHostile, p.mobID, 1, 1.2, 0),
 		arrow.X, arrow.Z, s.playerSnapshot())
 }
 
-// arrowHit 是一次待结算的箭矢命中（位置为命中瞬间的快照）。
+// arrowHit 是一次待结算的箭矢玩家命中（位置为命中瞬间的快照）。
 type arrowHit struct {
-	player  *session
-	damage  float32
-	x, y, z float64
+	player           *session
+	damage           float32
+	x, y, z          float64
+	srcX, srcY, srcZ float64
+	flame            bool
+}
+
+// arrowMobHit 是一次待结算的箭矢生物命中（env 持锁时收集，解锁后广播/掉落）。
+type arrowMobHit struct {
+	env         mobEnvironment
+	ownerPlayer bool
 }
 
 // arrowRemoval 是一支待移除的箭（原因用于选择音效）。
@@ -117,6 +147,7 @@ func (s *Server) tickArrows(players []*session) {
 		moves    []arrowMove
 		removals []arrowRemoval
 		hits     []arrowHit
+		mobHits  []arrowMobHit
 	)
 
 	s.entityMu.Lock()
@@ -167,27 +198,64 @@ func (s *Server) tickArrows(players []*session) {
 			a.Z += a.VelZ
 		}
 
-		// 玩家命中（同维度，扩张碰撞盒包含箭尖）。
-		hitPlayer := false
-		for _, player := range players {
-			if player.dimensionID() != a.Dim || !player.canBeAttacked() {
+		// 生物命中（在玩家之前检查；跳过死亡生物）。
+		hitMob := false
+		for _, m := range s.mobs {
+			if m.Dim != a.Dim || m.Dead {
 				continue
 			}
-			px, py, pz, _, _ := player.playerPosition()
-			box := playerBox(px, py, pz)
+			box := mobBox(m.X, m.Y, m.Z)
 			if a.X < box.MinX-arrowHitRadius || a.X > box.MaxX+arrowHitRadius ||
 				a.Y < box.MinY-arrowHitRadius || a.Y > box.MaxY+arrowHitRadius ||
 				a.Z < box.MinZ-arrowHitRadius || a.Z > box.MaxZ+arrowHitRadius {
 				continue
 			}
-			hits = append(hits, arrowHit{player: player, damage: a.Damage, x: a.X, y: a.Y, z: a.Z})
-			hitPlayer = true
+			env := mobEnvironment{dim: a.Dim, kind: m.Kind, x: m.X, z: m.Z}
+			if s.damageMob(m, a.Damage, s.arrowDamageTypeID, &env) {
+				if a.Flame && !m.Dead {
+					if m.FireTicks < arrowFlameTicks {
+						m.FireTicks = arrowFlameTicks
+					}
+				}
+				if a.Knockback > 0 && !m.Dead {
+					if packet := s.knockbackMob(m, m.X-a.VelX, m.Z-a.VelZ,
+						mobKnockback+0.5*float64(a.Knockback)); packet != nil {
+						env.packets = append(env.packets, packet)
+					}
+				}
+				mobHits = append(mobHits, arrowMobHit{env: env, ownerPlayer: a.OwnerID != 0})
+			}
+			hitMob = true
 			break
 		}
 
-		if hitPlayer || hitBlock || a.Y < float64(world.WorldMinY)-16 {
+		// 玩家命中（同维度，扩张碰撞盒包含箭尖；跳过射手本人）。
+		hitPlayer := false
+		if !hitMob {
+			for _, player := range players {
+				if player.dimensionID() != a.Dim || !player.canBeAttacked() || player.entityID == a.OwnerID {
+					continue
+				}
+				px, py, pz, _, _ := player.playerPosition()
+				box := playerBox(px, py, pz)
+				if a.X < box.MinX-arrowHitRadius || a.X > box.MaxX+arrowHitRadius ||
+					a.Y < box.MinY-arrowHitRadius || a.Y > box.MaxY+arrowHitRadius ||
+					a.Z < box.MinZ-arrowHitRadius || a.Z > box.MaxZ+arrowHitRadius {
+					continue
+				}
+				hits = append(hits, arrowHit{
+					player: player, damage: a.Damage, x: a.X, y: a.Y, z: a.Z,
+					srcX: a.X - a.VelX, srcY: a.Y - a.VelY, srcZ: a.Z - a.VelZ,
+					flame: a.Flame,
+				})
+				hitPlayer = true
+				break
+			}
+		}
+
+		if hitMob || hitPlayer || hitBlock || a.Y < float64(world.WorldMinY)-16 {
 			delete(s.arrows, id)
-			removals = append(removals, arrowRemoval{id: id, dim: a.Dim, x: a.X, y: a.Y, z: a.Z, block: hitBlock && !hitPlayer})
+			removals = append(removals, arrowRemoval{id: id, dim: a.Dim, x: a.X, y: a.Y, z: a.Z, block: hitBlock && !hitMob && !hitPlayer})
 			continue
 		}
 		if a.X != startX || a.Y != startY || a.Z != startZ {
@@ -215,8 +283,24 @@ func (s *Server) tickArrows(players []*session) {
 			removal.x, removal.z, players)
 	}
 	for _, hit := range hits {
-		position := [3]float64{hit.x, hit.y, hit.z}
-		s.damagePlayer(hit.player, hit.damage, "an arrow", 0, s.arrowDamageTypeID, &position)
+		position := [3]float64{hit.srcX, hit.srcY, hit.srcZ}
+		if s.damagePlayer(hit.player, hit.damage, "an arrow", 0, s.arrowDamageTypeID, &position) && hit.flame {
+			if hit.player.fireTicks < arrowFlameTicks {
+				hit.player.fireTicks = arrowFlameTicks
+			}
+		}
+	}
+	for _, hit := range mobHits {
+		for _, packet := range hit.env.packets {
+			s.broadcastToNearby(hit.env.dim, packet, hit.env.x, hit.env.z, players)
+		}
+		if hit.env.drop {
+			s.dropMobLoot(hit.env.kind, hit.env.dim, hit.env.lootX, hit.env.lootY, hit.env.lootZ, 0)
+			if hit.ownerPlayer {
+				s.spawnXPOrbs(hit.env.dim, hit.env.lootX, hit.env.lootY+0.5, hit.env.lootZ,
+					mobKinds[hit.env.kind].experience)
+			}
+		}
 	}
 }
 
