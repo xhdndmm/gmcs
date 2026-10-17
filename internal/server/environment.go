@@ -99,6 +99,9 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 			"%s discovered the floor was lava")
 	}
 	// 溺水：仅当眼睛（头部）浸水时氧气下降。
+	// 呼吸附魔按原版 oxygen_bonus 属性把上限提高到 300 + 等级×20
+	// （LivingEntity.getMaxAirSupply）；上限缓存在 airCapacity。
+	maxAir := s.airCapacityValue()
 	if headInWater(w, x, y, z) {
 		if s.air > -20 {
 			s.air--
@@ -108,8 +111,8 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 			server.damagePlayerWithMessage(s, envDrownDamage, "drowning", 0, server.drownDamageTypeID, nil,
 				"%s drowned")
 		}
-	} else if s.air < maxPlayerAir {
-		s.air = maxPlayerAir
+	} else if s.air < maxAir {
+		s.air = maxAir
 	}
 	s.syncEnvironmentMetadata(server, players, x, z)
 }
@@ -127,8 +130,9 @@ func (s *session) syncEnvironmentMetadata(server *Server, players []*session, x,
 		server.broadcastToNearby(s.dimensionID(), packet, x, z, players)
 	}
 	// 氧气：跨过 20 的整数倍、重置或耗尽时同步（降低包量；客户端气泡
-	// 按步长刷新，视觉可接受）。
-	if s.air != s.envAirSynced && (s.air == maxPlayerAir || s.air <= 0 || s.air%20 == 0) {
+	// 按步长刷新，视觉可接受）。呼吸附魔会提高上限，重置值也随之变化。
+	maxAir := s.airCapacityValue()
+	if s.air != s.envAirSynced && (s.air == maxAir || s.air <= 0 || s.air%20 == 0) {
 		s.envAirSynced = s.air
 		packet := protocol.EncodeEntityMetadataVarInt(s.entityID, 1, int32(s.air))
 		server.broadcastToNearby(s.dimensionID(), packet, x, z, players)

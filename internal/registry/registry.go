@@ -165,6 +165,17 @@ func MaxDamage(itemID int32) (int32, bool) {
 	return value, ok
 }
 
+// ArmorStats 返回物品提供的护甲值与韧性（官方 attribute_modifiers 的
+// minecraft:armor / minecraft:armor_toughness）；不提供护甲值时 ok 为 false。
+func ArmorStats(itemID int32) (ArmorStat, bool) {
+	name, ok := ItemName(itemID)
+	if !ok {
+		return ArmorStat{}, false
+	}
+	value, ok := ArmorStatsByItem[name]
+	return value, ok
+}
+
 // IsRepairMaterial 报告 material 是否为 item 在铁砧中接受的修复材料
 // （minecraft:repairable 组件；其中的标签引用已在生成时展开）。
 func IsRepairMaterial(itemID, materialID int32) bool {

@@ -6,6 +6,7 @@ package server
 
 import (
 	"gmcs/internal/config"
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 	"gmcs/internal/world"
@@ -571,7 +572,7 @@ func (s *Server) pistonMoveBlocks(w *world.World, dim world.Dimension, pos [3]in
 		cell := resolver.toDestroy[i]
 		state := s.blockIfLoaded(w, cell)
 		if !s.isAirState(state) {
-			s.dropBlockItem(dim, state, cell[0], cell[1], cell[2])
+			s.dropBlockItem(dim, state, cell[0], cell[1], cell[2], item.Empty())
 		}
 		_ = w.RemoveBlockEntity(cell[0], cell[1], cell[2])
 		if w.SetBlock(cell[0], cell[1], cell[2], world.AirBlock) {
@@ -752,7 +753,7 @@ func (s *Server) handlePistonBreak(dim world.Dimension, player *session, w *worl
 		}
 		s.pistonFinish(dim, changed)
 		if survival {
-			s.dropBlockItem(dim, state, x, y, z)
+			s.dropBlockItem(dim, state, x, y, z, item.Empty())
 		}
 		return true
 	case name == pistonHeadName:
@@ -767,7 +768,7 @@ func (s *Server) handlePistonBreak(dim world.Dimension, player *session, w *worl
 				changed = append(changed, basePos)
 			}
 			if survival {
-				s.dropBlockItem(dim, baseState, basePos[0], basePos[1], basePos[2])
+				s.dropBlockItem(dim, baseState, basePos[0], basePos[1], basePos[2], item.Empty())
 			}
 		}
 		if w.SetBlock(x, y, z, world.AirBlock) {

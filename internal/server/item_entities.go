@@ -175,6 +175,7 @@ func (s *Server) dropItemFromPlayer(player *session, dropStack bool) {
 
 // dropPlayerInventory 在玩家死亡时把整个物品栏（含护甲与副手）掉落为掉落物，
 // 并同步清空后的槽位（与原版一致：死亡会失去物品）。
+// 带消失诅咒的物品直接销毁（原版 EnchantmentEffectComponents.PREVENT_EQUIPMENT_DROP）。
 func (s *Server) dropPlayerInventory(player *session) {
 	px, py, pz, _, _ := player.playerPosition()
 	for slot := 0; slot < item.InventorySlots; slot++ {
@@ -184,6 +185,9 @@ func (s *Server) dropPlayerInventory(player *session) {
 		}
 		player.inventory.Set(slot, item.Empty())
 		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), item.Empty().AppendSlot(nil)))
+		if hasVanishingCurse(stack) {
+			continue
+		}
 		// 小幅随机速度让掉落物散开。
 		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
 		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2

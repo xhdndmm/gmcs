@@ -7,6 +7,7 @@ package server
 import (
 	"sync"
 
+	"gmcs/internal/config"
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
@@ -153,6 +154,18 @@ func (b craftSlotBacking) CanPlace(slot int, stack item.Stack) bool {
 		return registry.PlayerEquippableSlot(stack.ItemID) == equip
 	}
 	return true
+}
+
+// CanPickup 实现原版 ArmorSlot.mayPickup：生存/冒险模式下带绑定诅咒的盔甲
+// 不能从装备槽取出（创造模式可以）。
+func (b craftSlotBacking) CanPickup(slot int, player *session) bool {
+	if !b.windowZero || player.gameModeID() == uint8(config.GameModeCreative) {
+		return true
+	}
+	if _, ok := windowZeroEquipSlots[slot]; !ok {
+		return true
+	}
+	return !hasBindingCurse(b.Get(slot))
 }
 
 // SlotLimit 实现原版 Slot.getMaxStackSize：玩家物品栏窗口的盔甲槽为 1

@@ -475,7 +475,7 @@ func (s *Server) damageMobsInExplosion(dim world.Dimension, x, y, z float64, dam
 			s.broadcastToNearby(entry.dim, packet, x, z, s.playerSnapshot())
 		}
 		if entry.drop {
-			s.dropMobLoot(entry.kind, entry.dim, entry.lootX, entry.lootY, entry.lootZ)
+			s.dropMobLoot(entry.kind, entry.dim, entry.lootX, entry.lootY, entry.lootZ, 0)
 		}
 	}
 }

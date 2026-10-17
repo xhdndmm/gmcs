@@ -60,6 +60,12 @@ func (s *session) refreshEquipmentSnapshot() {
 		s.equipSnapshot = current
 		s.equipPending = true
 	}
+	// 呼吸附魔影响氧气上限：与装备快照一起更新（Tick 线程只读）。
+	if level := enchantLevel(current[protocol.EquipmentHead], enchants().respiration); level > 0 {
+		s.airCapacity.Store(int32(maxPlayerAir + int(level)*20))
+	} else {
+		s.airCapacity.Store(maxPlayerAir)
+	}
 	s.stateMu.Unlock()
 }
 

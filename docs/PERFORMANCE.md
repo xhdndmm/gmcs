@@ -1026,6 +1026,35 @@ CPU 持平、内存小幅下降。两场景的收发包总量与流量基本一�
 运行前后 `/proc/<pid>/stat` 的 utime+stime 差值、内存取
 `/proc/<pid>/status` 的 VmHWM/VmRSS。
 
+### 3.27 护甲/附魔数值效果与掉落表（本批，实测）
+
+本批新增的护甲减伤与附魔数值计算不在 Tick 热路径（只在受伤/挖掘/破坏方块时
+发生），但仍补充了基准以防后续把它们移入热路径或退化为重量级实现。
+环境：Linux amd64，Go 1.26，`-count=3` 取中位数。
+
+| 基准 | 结果 | 说明 |
+| --- | --- | --- |
+| `BenchmarkPlayerDamageMitigation` | 336 ns/op，0 B/op，0 allocs/op | 4 件附魔钻石护甲 + 保护 IV 的护甲/EPF 计算（含 4 次物品栏读取） |
+| `BenchmarkBlockDropsFortune` | 60.5 ns/op，24 B/op，1 allocs/op | 时运 III 煤矿石掉落（返回单元素切片） |
+| `BenchmarkServerTick` | 17.3–17.5 µs/op，1 allocs/op | 与 3.25 的 17.2 µs 持平 |
+| `BenchmarkServerTickManyPlayers` | 327 µs/op，32 allocs/op | 与 3.25 的 325 µs 持平（差值在噪声范围；分配数受生物行为路径影响） |
+
+实现要点与避免回退的措施：
+
+- 附魔 ID 通过 `sync.OnceValue` 解析一次，运行时只做堆栈内附魔切片的线性查找
+  （通常 0–5 项）；
+- 伤害类型/实体类型标签在首次使用时构建 `map[int32]struct{}` 索引，
+  受伤路径只做 O(1) 查询；
+- 呼吸附魔的氧气上限缓存在会话的 `atomic.Int32`（读循环在装备快照刷新时更新），
+  避免 Tick 环境结算每玩家每帧读取物品栏（本项目此前在 `BenchmarkServerTickManyPlayers`
+  上测到过每玩家每帧加锁的可见成本）；
+- 精准采集/时运的掉落返回小切片；普通单物品掉落仍可走原有路径。
+
+验证：`go test ./...`、`go test -race ./internal/server ./internal/world ./internal/protocol`
+全绿；新增测试覆盖护甲公式、EPF、护甲耐久、不灭概率、效率、近战附魔、
+经验修补、绑定/消失诅咒、精准采集/时运/剪刀掉落。尚未验证：与原版服务端的
+逐伤害数值对照（公式来自官方数据与字节码，但未做端到端对拍）。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

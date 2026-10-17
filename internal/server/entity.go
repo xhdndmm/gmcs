@@ -117,8 +117,6 @@ const (
 
 	// mobDropPickupDelay 是生物掉落物的拾取延迟（与原版挖掘掉落一致）。
 	mobDropPickupDelay = 10
-	// mobRareDropChance 是稀有掉落（铁锭/胡萝卜/土豆）的概率（1/40，近似原版）。
-	mobRareDropChance = 40
 
 	// mobAutosaveInterval 是生物数据的自动保存间隔。
 	mobAutosaveInterval = 30 * time.Second
@@ -651,7 +649,7 @@ func (s *Server) tickMobs(players []*session) {
 			s.broadcastToNearby(env.dim, packet, env.x, env.z, players)
 		}
 		if env.drop {
-			s.dropMobLoot(env.kind, env.dim, env.lootX, env.lootY, env.lootZ)
+			s.dropMobLoot(env.kind, env.dim, env.lootX, env.lootY, env.lootZ, 0)
 		}
 	}
 }
@@ -849,16 +847,17 @@ func attackPathClear(w *world.World, fromX, fromY, fromZ, toX, toY, toZ float64)
 	return true
 }
 
-// knockbackMob 把生物沿远离攻击者的方向推开一小段距离（简单击退）。
-// 调用方必须持有 entityMu；返回位置同步包（无法移动时为 nil）。
-func (s *Server) knockbackMob(m *mob, fromX, fromZ float64) []byte {
+// knockbackMob 把生物沿远离攻击者的方向推开指定距离（基础 0.4 格，
+// 击退附魔每级 +0.5 格）。调用方必须持有 entityMu；
+// 返回位置同步包（无法移动时为 nil）。
+func (s *Server) knockbackMob(m *mob, fromX, fromZ, distance float64) []byte {
 	dx, dz := m.X-fromX, m.Z-fromZ
-	distance := math.Hypot(dx, dz)
-	if distance < 1e-6 {
+	length := math.Hypot(dx, dz)
+	if length < 1e-6 {
 		return nil
 	}
-	newX := m.X + dx/distance*mobKnockback
-	newZ := m.Z + dz/distance*mobKnockback
+	newX := m.X + dx/length*distance
+	newZ := m.Z + dz/length*distance
 	if !s.insideBorder(newX, newZ) {
 		return nil
 	}
@@ -1168,11 +1167,14 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 		return // 受击无敌帧内：忽略。
 	}
 	m.HurtCooldown = mobHurtCooldownTicks
+	held := player.inventory.Get(player.selectedSlot)
 	damage := float32(playerAttackDamage)
 	// 跳跃暴击：下落中攻击造成 1.5 倍伤害（与原版一致）。
 	if player.isFalling() {
 		damage *= playerCritMultiplier
 	}
+	// 锋利/亡灵杀手/节肢杀手（数值展开自 1.21.11 附魔数据）。
+	damage += s.meleeEnchantDamage(held, m)
 	m.Health -= damage
 	kind := m.Kind
 	m.Yaw = float32(math.Atan2(-(px-m.X), pz-m.Z) * 180 / math.Pi)
@@ -1202,9 +1204,19 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 			protocol.EncodeEntityEvent(m.ID, protocol.EntityEventDeath),
 			protocol.EncodeEntitySoundEffect(s.mobDeathSound(kind), protocol.SoundCategoryHostile, m.ID, 1, 1, 0),
 		)
-	} else if packet := s.knockbackMob(m, px, pz); packet != nil {
-		// 未死亡：沿攻击者反方向击退一小段。
-		packets = append(packets, packet)
+	} else {
+		// 火焰附加：点燃 4 秒×等级（原版 post_attack ignite 效果）。
+		if level := enchantLevel(held, enchants().fireAspect); level > 0 {
+			if ticks := int(level) * 4 * 20; m.FireTicks < ticks {
+				m.FireTicks = ticks
+			}
+		}
+		// 击退：基础 0.4 格，每级 +0.5 格。
+		knockback := mobKnockback + 0.5*float64(enchantLevel(held, enchants().knockback))
+		if packet := s.knockbackMob(m, px, pz, knockback); packet != nil {
+			// 未死亡：沿攻击者反方向击退一小段。
+			packets = append(packets, packet)
+		}
 	}
 	x, y, z := m.X, m.Y, m.Z
 	dim := m.Dim
@@ -1217,7 +1229,7 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 	player.addExhaustion(playerExhaustionAttack)
 	if died {
 		slog.Info("mob killed", "id", m.ID, "player", player.name)
-		s.dropMobLoot(kind, dim, x, y, z)
+		s.dropMobLoot(kind, dim, x, y, z, lootingLevel(held))
 		// 与原版一致：击杀经验以经验球形式掉落（玩家靠近后拾取）。
 		s.spawnXPOrbs(dim, x, y+0.5, z, mobKinds[kind].experience)
 	}
@@ -1238,9 +1250,20 @@ func (s *Server) mobDeathSound(kind mobKind) int32 {
 	return s.soundMobDeath
 }
 
+// lootingExtra 返回抢夺附魔的额外掉落数量（原版
+// enchanted_count_increase 的 uniform 0..等级）。
+func (s *Server) lootingExtra(level int32) int32 {
+	if level <= 0 {
+		return 0
+	}
+	return int32(s.nextRandom() % uint64(level+1))
+}
+
 // dropMobLoot 生成生物的掉落物（与原版大致一致：0–2 个常规掉落；
-// 僵尸的稀有掉落铁锭/胡萝卜/土豆概率 1/40；蜘蛛 1/3 掉落蜘蛛眼）。
-func (s *Server) dropMobLoot(kind mobKind, dim world.Dimension, x, y, z float64) {
+// 僵尸的稀有掉落铁锭/胡萝卜/土豆概率 2.5% + 1%×抢夺等级；
+// 蜘蛛 1/3 掉落蜘蛛眼）。抢夺等级附加在原版掉落表上：
+// 常规掉落 + uniform(0..等级)，蜘蛛眼同样附加。
+func (s *Server) dropMobLoot(kind mobKind, dim world.Dimension, x, y, z float64, looting int32) {
 	spawn := func(name string, count int32) {
 		if count <= 0 {
 			return
@@ -1255,33 +1278,34 @@ func (s *Server) dropMobLoot(kind mobKind, dim world.Dimension, x, y, z float64)
 	}
 	switch kind {
 	case mobZombie:
-		spawn("minecraft:rotten_flesh", int32(s.nextRandom()%3))
-		if s.nextRandom()%mobRareDropChance == 0 {
+		spawn("minecraft:rotten_flesh", int32(s.nextRandom()%3)+s.lootingExtra(looting))
+		// 原版 random_chance_with_enchanted_bonus：0.025 + 0.01×等级。
+		if s.nextRandom()%1000 < uint64(25+10*looting) {
 			rare := []string{"minecraft:iron_ingot", "minecraft:carrot", "minecraft:potato"}
 			spawn(rare[s.nextRandom()%uint64(len(rare))], 1)
 		}
 	case mobSkeleton:
-		spawn("minecraft:bone", int32(s.nextRandom()%3))
-		spawn("minecraft:arrow", int32(s.nextRandom()%3))
+		spawn("minecraft:bone", int32(s.nextRandom()%3)+s.lootingExtra(looting))
+		spawn("minecraft:arrow", int32(s.nextRandom()%3)+s.lootingExtra(looting))
 	case mobCreeper:
-		spawn("minecraft:gunpowder", int32(s.nextRandom()%3))
+		spawn("minecraft:gunpowder", int32(s.nextRandom()%3)+s.lootingExtra(looting))
 	case mobSpider:
-		spawn("minecraft:string", int32(s.nextRandom()%3))
+		spawn("minecraft:string", int32(s.nextRandom()%3)+s.lootingExtra(looting))
 		if s.nextRandom()%3 == 0 {
-			spawn("minecraft:spider_eye", 1)
+			spawn("minecraft:spider_eye", 1+s.lootingExtra(looting))
 		}
 	case mobEnderman:
 		if s.nextRandom()%2 == 0 {
 			spawn("minecraft:ender_pearl", 1)
 		}
 	case mobCow:
-		spawn("minecraft:leather", int32(s.nextRandom()%3))
-		spawn("minecraft:beef", 1+int32(s.nextRandom()%3))
+		spawn("minecraft:leather", int32(s.nextRandom()%3)+s.lootingExtra(looting))
+		spawn("minecraft:beef", 1+int32(s.nextRandom()%3)+s.lootingExtra(looting))
 	case mobPig:
-		spawn("minecraft:porkchop", 1+int32(s.nextRandom()%3))
+		spawn("minecraft:porkchop", 1+int32(s.nextRandom()%3)+s.lootingExtra(looting))
 	case mobSheep:
 		spawn("minecraft:white_wool", 1)
-		spawn("minecraft:mutton", 1+int32(s.nextRandom()%2))
+		spawn("minecraft:mutton", 1+int32(s.nextRandom()%2)+s.lootingExtra(looting))
 	}
 }
 
@@ -1296,7 +1320,7 @@ func (s *Server) damagePlayer(player *session, amount float32, sourceName string
 // 默认死亡消息（“<玩家> was slain by <来源>”）。deathTemplate 使用 fmt 的
 // 单个 %s 占位玩家名，如 "%s tried to swim in lava"。
 func (s *Server) damagePlayerWithMessage(player *session, amount float32, sourceName string, sourceMobID, damageTypeID int32, sourcePosition *[3]float64, deathTemplate string) bool {
-	health, food, saturation, applied, died := player.applyDamage(amount, time.Now())
+	health, food, saturation, applied, died := player.applyDamage(s, amount, damageTypeID, time.Now())
 	if !applied {
 		return false
 	}

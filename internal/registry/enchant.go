@@ -35,6 +35,21 @@ func EnchantmentName(id int32) (string, bool) {
 	return EnchantmentNames[id], true
 }
 
+// enchantmentIndex 是附魔名 → 附魔 ID 的反向索引。
+var enchantmentIndex = sync.OnceValue(func() map[string]int32 {
+	index := make(map[string]int32, len(EnchantmentNames))
+	for id, name := range EnchantmentNames {
+		index[name] = int32(id)
+	}
+	return index
+})
+
+// EnchantmentID 返回附魔注册名对应的 ID。
+func EnchantmentID(name string) (int32, bool) {
+	id, ok := enchantmentIndex()[name]
+	return id, ok
+}
+
 // EnchantmentSupported 报告附魔是否可作用于物品（supported_items 已展开为物品 ID）。
 func EnchantmentSupported(enchantID, itemID int32) bool {
 	if enchantID < 0 || int(enchantID) >= len(EnchantmentSupportedItems) {

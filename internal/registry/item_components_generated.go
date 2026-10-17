@@ -1821,6 +1821,59 @@ var EnchantableValues = map[string]int32{
 	"minecraft:wooden_sword":         15,
 }
 
+// ArmorStatsByItem 保存可装备物品的护甲值与韧性
+// （minecraft:attribute_modifiers 的 minecraft:armor / armor_toughness，
+// 仅 add_value 操作；未列出的物品不提供护甲值）。
+var ArmorStatsByItem = map[string]ArmorStat{
+	"minecraft:chainmail_boots":          {Armor: 1, Toughness: 0},
+	"minecraft:chainmail_chestplate":     {Armor: 5, Toughness: 0},
+	"minecraft:chainmail_helmet":         {Armor: 2, Toughness: 0},
+	"minecraft:chainmail_leggings":       {Armor: 4, Toughness: 0},
+	"minecraft:copper_boots":             {Armor: 1, Toughness: 0},
+	"minecraft:copper_chestplate":        {Armor: 4, Toughness: 0},
+	"minecraft:copper_helmet":            {Armor: 2, Toughness: 0},
+	"minecraft:copper_horse_armor":       {Armor: 4, Toughness: 0},
+	"minecraft:copper_leggings":          {Armor: 3, Toughness: 0},
+	"minecraft:copper_nautilus_armor":    {Armor: 4, Toughness: 0},
+	"minecraft:diamond_boots":            {Armor: 3, Toughness: 2},
+	"minecraft:diamond_chestplate":       {Armor: 8, Toughness: 2},
+	"minecraft:diamond_helmet":           {Armor: 3, Toughness: 2},
+	"minecraft:diamond_horse_armor":      {Armor: 11, Toughness: 2},
+	"minecraft:diamond_leggings":         {Armor: 6, Toughness: 2},
+	"minecraft:diamond_nautilus_armor":   {Armor: 11, Toughness: 2},
+	"minecraft:golden_boots":             {Armor: 1, Toughness: 0},
+	"minecraft:golden_chestplate":        {Armor: 5, Toughness: 0},
+	"minecraft:golden_helmet":            {Armor: 2, Toughness: 0},
+	"minecraft:golden_horse_armor":       {Armor: 7, Toughness: 0},
+	"minecraft:golden_leggings":          {Armor: 3, Toughness: 0},
+	"minecraft:golden_nautilus_armor":    {Armor: 7, Toughness: 0},
+	"minecraft:iron_boots":               {Armor: 2, Toughness: 0},
+	"minecraft:iron_chestplate":          {Armor: 6, Toughness: 0},
+	"minecraft:iron_helmet":              {Armor: 2, Toughness: 0},
+	"minecraft:iron_horse_armor":         {Armor: 5, Toughness: 0},
+	"minecraft:iron_leggings":            {Armor: 5, Toughness: 0},
+	"minecraft:iron_nautilus_armor":      {Armor: 5, Toughness: 0},
+	"minecraft:leather_boots":            {Armor: 1, Toughness: 0},
+	"minecraft:leather_chestplate":       {Armor: 3, Toughness: 0},
+	"minecraft:leather_helmet":           {Armor: 1, Toughness: 0},
+	"minecraft:leather_horse_armor":      {Armor: 3, Toughness: 0},
+	"minecraft:leather_leggings":         {Armor: 2, Toughness: 0},
+	"minecraft:netherite_boots":          {Armor: 3, Toughness: 3},
+	"minecraft:netherite_chestplate":     {Armor: 8, Toughness: 3},
+	"minecraft:netherite_helmet":         {Armor: 3, Toughness: 3},
+	"minecraft:netherite_horse_armor":    {Armor: 19, Toughness: 3},
+	"minecraft:netherite_leggings":       {Armor: 6, Toughness: 3},
+	"minecraft:netherite_nautilus_armor": {Armor: 19, Toughness: 3},
+	"minecraft:turtle_helmet":            {Armor: 2, Toughness: 0},
+	"minecraft:wolf_armor":               {Armor: 11, Toughness: 0},
+}
+
+// ArmorStat 是物品提供的护甲值与韧性。
+type ArmorStat struct {
+	Armor     float32
+	Toughness float32
+}
+
 // ItemDisplayNames 保存物品在服务端 en_us 语言文件中的悬停名
 // （原版 ItemStack.getHoverName().getString() 的结果）。
 var ItemDisplayNames = map[string]string{

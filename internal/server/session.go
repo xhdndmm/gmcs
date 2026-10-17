@@ -99,6 +99,10 @@ type session struct {
 	// 每 tick 区块数（仅记录，当前不做节流）。
 	desiredChunksPerTick float32
 
+	// airCapacity 是氧气上限（原版 300 + 呼吸附魔等级×20）；由读循环在
+	// 装备快照刷新时更新，Tick 线程只读，避免每 tick 读取物品栏。
+	airCapacity atomic.Int32
+
 	// 进食状态（1.6 秒过程，仅由读循环访问）：eating 为进行中标志，
 	// eatDeadline 是完成时刻，eatingSlot/eatingItemID 用于校验物品未变。
 	eating       bool
@@ -281,6 +285,7 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		miningLastProgress: -1,
 		miningAckSequence:  -1,
 	}
+	sess.airCapacity.Store(maxPlayerAir)
 	sess.buffered = bufio.NewWriterSize(conn, sessionWriteBufferSize)
 	sess.writer = sess.buffered
 	sess.gameMode.Store(uint32(server.defaultGameMode))
@@ -680,26 +685,35 @@ func (s *session) healthStatus() (health float32, food int32, saturation float32
 }
 
 // applyDamage 扣减生命。处于死亡、无敌帧或创造/旁观模式时不生效。
+// 护甲减伤、保护附魔与护甲耐久在无敌帧判定之后结算（与原版
+// LivingEntity.hurtServer 的顺序一致）。
 // 返回扣减后的状态与是否生效、是否因此死亡。
-func (s *session) applyDamage(amount float32, now time.Time) (health float32, food int32, saturation float32, applied, died bool) {
+func (s *session) applyDamage(server *Server, amount float32, damageTypeID int32, now time.Time) (health float32, food int32, saturation float32, applied, died bool) {
 	s.stateMu.Lock()
-	defer s.stateMu.Unlock()
 	if s.dead.Load() || s.gameMode.Load() == uint32(config.GameModeCreative) || s.gameMode.Load() == uint32(config.GameModeSpectator) {
+		s.stateMu.Unlock()
 		return s.health, s.food, s.saturation, false, false
 	}
 	if !s.lastHurt.IsZero() && now.Sub(s.lastHurt) < playerHurtCooldown {
+		s.stateMu.Unlock()
 		return s.health, s.food, s.saturation, false, false
 	}
 	s.lastHurt = now
+	final, armorDamage := server.computePlayerDamage(s, amount, damageTypeID)
 	// 受伤会积累疲劳度（与原版一致：0.1）。
 	s.exhaustion += playerExhaustionDamage
-	s.health -= amount
-	if s.health <= 0 {
+	s.health -= final
+	dead := s.health <= 0
+	if dead {
 		s.health = 0
 		s.dead.Store(true)
-		return s.health, s.food, s.saturation, true, true
 	}
-	return s.health, s.food, s.saturation, true, false
+	health, food, saturation = s.health, s.food, s.saturation
+	s.stateMu.Unlock()
+	if armorDamage > 0 {
+		server.damagePlayerArmor(s, armorDamage)
+	}
+	return health, food, saturation, true, dead
 }
 
 // addExhaustion 累加疲劳度并按原版规则消耗饥饿值。

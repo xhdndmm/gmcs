@@ -35,9 +35,10 @@ import (
 //     拾取音效与动画）；
 //   - 生命周期：6000 tick 后消失；掉入虚空（远低于世界底部）直接移除。
 //
-// 已知限制（见 docs/TODO.md）：
-//   - 经验球不随区块保存/加载（重启后未拾取的经验球消失）；
-//   - 不实现修复（经验修补）附魔：拾取的经验直接计入玩家经验条。
+// 经验修补（mending）：拾取的经验先用于修复带该附魔的物品
+// （每点经验 2 点耐久，见 repairWithExperience），剩余经验才计入经验条。
+//
+// 已知限制（见 docs/TODO.md）：经验球不随区块保存/加载（重启后未拾取的经验球消失）。
 
 // 经验球常量（与原版一致）。
 const (
@@ -426,7 +427,13 @@ func (s *Server) tickXPOrbs(players []*session) {
 		}
 	}
 	for _, gain := range gains {
-		bar, level, total := gain.player.addExperience(gain.amount)
+		// 经验修补：先消耗经验修复带 mending 的物品（每点经验 2 点耐久），
+		// 剩余经验才计入经验条（原版 repair_with_xp 的 multiply 因子 2）。
+		amount := gain.amount - gain.player.repairWithExperience(gain.amount)
+		if amount <= 0 {
+			continue
+		}
+		bar, level, total := gain.player.addExperience(amount)
 		gain.player.tryWrite(protocol.EncodeSetExperience(bar, level, total))
 	}
 	scratch.orbGains = gains

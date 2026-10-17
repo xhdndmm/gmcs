@@ -15,13 +15,18 @@ import (
 
 // 方块破坏掉落表。
 //
-// 规则（简化，见 docs/TODO.md 已知限制）：
+// 掉落语义对照 1.21.11 服务端的方块战利品表（data/minecraft/loot_table/blocks）：
 //   - 默认掉落与方块同名的物品（若物品注册表中存在）；
+//   - 精准采集：玻璃/冰/树叶/草方块/石头/矿石/西瓜/黏土/雪块等掉落方块本身；
+//     刷怪笼/试炼刷怪笼/宝库/霜冰/紫水晶母岩/强化深板岩无论附魔如何都不掉落；
+//   - 时运：矿石按 ore_drops（随机倍数）、红石/西瓜按 uniform_bonus_count、
+//     砂砾的燧石概率按 table_bonus、树叶的树苗/木棍概率按 table_bonus；
+//   - 剪刀采集树叶掉落树叶本身；
 //   - 少数与原版一致的“不同名”特例见 blockDropOverrides；
-//   - 少数无掉落方块（玻璃、树叶、冰、水/岩浆/基岩等）见 blockDropsNothing；
-//   - 不实现工具要求、精准采集、时运、剪刀与概率掉落（砂砾的燧石、
-//     树叶的树苗/木棍等），挖掘也没有时间：生存模式仍以客户端提交的
-//     STOP_DESTROY_BLOCK 为准。
+//   - 无工具要求：挖掘系统已按“正确工具”门控掉落（miningHasCorrectToolForDrops）。
+//
+// 尚未覆盖（docs/TODO.md）：作物/甘蔗/藤蔓等依赖方块状态与工具的特殊表、
+// 爆炸破坏（gmcs 的爆炸不产生掉落）、生物头颅等极少见掉落。
 
 // blockDropSpec 是一条掉落规则（Item 为空表示无掉落）。
 type blockDropSpec struct {
@@ -36,7 +41,6 @@ var blockDropOverrides = map[string]blockDropSpec{
 	"minecraft:dirt_path":          {Item: "minecraft:dirt", Count: 1},
 	"minecraft:farmland":           {Item: "minecraft:dirt", Count: 1},
 	"minecraft:clay":               {Item: "minecraft:clay_ball", Count: 4},
-	"minecraft:gravel":             {Item: "minecraft:gravel", Count: 1}, // 原版 10% 燧石，此处固定为砂砾
 	"minecraft:coal_ore":           {Item: "minecraft:coal", Count: 1},
 	"minecraft:deepslate_coal_ore": {Item: "minecraft:coal", Count: 1},
 	"minecraft:iron_ore":           {Item: "minecraft:raw_iron", Count: 1},
@@ -63,23 +67,35 @@ var blockDropOverrides = map[string]blockDropSpec{
 		Count: 1,
 	},
 	"minecraft:nether_quartz_ore": {Item: "minecraft:quartz", Count: 1},
-	// 原版魟鱼块掉落 3–7 片（随机），此处固定为中值 5。
-	"minecraft:melon":      {Item: "minecraft:melon_slice", Count: 5},
-	"minecraft:snow_block": {Item: "minecraft:snowball", Count: 4},
 }
 
-// blockDropsNothing 报告方块破坏后（无精准采集）是否不掉落任何物品。
-func blockDropsNothing(name string) bool {
+// oreDrops 是使用 ore_drops 公式（随机 1..等级+1 倍）的原版掉落。
+var oreDrops = map[string]string{
+	"minecraft:coal_ore":              "minecraft:coal",
+	"minecraft:deepslate_coal_ore":    "minecraft:coal",
+	"minecraft:iron_ore":              "minecraft:raw_iron",
+	"minecraft:deepslate_iron_ore":    "minecraft:raw_iron",
+	"minecraft:copper_ore":            "minecraft:raw_copper",
+	"minecraft:deepslate_copper_ore":  "minecraft:raw_copper",
+	"minecraft:gold_ore":              "minecraft:raw_gold",
+	"minecraft:deepslate_gold_ore":    "minecraft:raw_gold",
+	"minecraft:diamond_ore":           "minecraft:diamond",
+	"minecraft:deepslate_diamond_ore": "minecraft:diamond",
+	"minecraft:emerald_ore":           "minecraft:emerald",
+	"minecraft:deepslate_emerald_ore": "minecraft:emerald",
+	"minecraft:nether_quartz_ore":     "minecraft:quartz",
+}
+
+// blocksNeverDropping 是无论是否精准采集都不掉落的方块。
+func blocksNeverDropping(name string) bool {
 	switch name {
 	case "minecraft:water", "minecraft:lava", "minecraft:bedrock",
-		"minecraft:ice", "minecraft:packed_ice", "minecraft:blue_ice",
-		"minecraft:frosted_ice", "minecraft:spawner":
+		"minecraft:spawner", "minecraft:trial_spawner", "minecraft:vault",
+		"minecraft:frosted_ice", "minecraft:budding_amethyst",
+		"minecraft:reinforced_deepslate":
 		return true
 	}
-	// 玻璃与玻璃板、以及所有树叶需要精准采集才会掉落方块本身。
-	return strings.HasSuffix(name, "_glass") || name == "minecraft:glass" ||
-		strings.HasSuffix(name, "_glass_pane") || name == "minecraft:glass_pane" ||
-		strings.HasSuffix(name, "_leaves")
+	return false
 }
 
 // blockNameOf 返回方块状态所属方块的命名空间名（全部状态，不只默认状态）。
@@ -87,41 +103,287 @@ func (s *Server) blockNameOf(state uint16) (string, bool) {
 	return registry.BlockNameByState(state)
 }
 
-// blockDrop 返回破坏方块后的掉落物（命名空间 ID 与数量）；
-// 无掉落时返回空字符串与 0。
-func (s *Server) blockDrop(state uint16) (string, int32) {
+// isShearsItem 报告物品是否为剪刀。
+func isShearsItem(itemID int32) bool {
+	name, ok := registry.ItemName(itemID)
+	return ok && name == "minecraft:shears"
+}
+
+// randIntBetween 返回 [min, max] 的均匀随机整数（调用方保证 max >= min）。
+func (s *Server) randIntBetween(minValue, maxValue int32) int32 {
+	if maxValue <= minValue {
+		return minValue
+	}
+	return minValue + int32(s.nextRandom()%uint64(maxValue-minValue+1))
+}
+
+// oreDropsMultiplier 复刻原版 OreDrops：nextInt(等级+2)-1 后取 max(0)，再 +1。
+func (s *Server) oreDropsMultiplier(fortune int32) int32 {
+	value := int32(s.nextRandom()%uint64(fortune+2)) - 1
+	if value < 0 {
+		value = 0
+	}
+	return value + 1
+}
+
+// uniformBonus 复刻原版 UniformBonusCount：额外 0..等级 个。
+func (s *Server) uniformBonus(fortune int32) int32 {
+	return s.uniformBonusMultiplier(fortune, 1)
+}
+
+// uniformBonusMultiplier 复刻原版 UniformBonusCount 的 bonusMultiplier 参数。
+func (s *Server) uniformBonusMultiplier(fortune, multiplier int32) int32 {
+	if fortune <= 0 {
+		return 0
+	}
+	return int32(s.nextRandom()%uint64(fortune+1)) * multiplier
+}
+
+// wallVariantItem 返回墙式方块对应的物品名（原版战利品表的自映射）。
+func wallVariantItem(name string) string {
+	switch {
+	case strings.HasSuffix(name, "_wall_hanging_sign"):
+		return strings.TrimSuffix(name, "_wall_hanging_sign") + "_hanging_sign"
+	case strings.HasSuffix(name, "_wall_sign"):
+		return strings.TrimSuffix(name, "_wall_sign") + "_sign"
+	case strings.HasSuffix(name, "_wall_banner"):
+		return strings.TrimSuffix(name, "_wall_banner") + "_banner"
+	case name == "minecraft:wall_torch":
+		return "minecraft:torch"
+	case name == "minecraft:soul_wall_torch":
+		return "minecraft:soul_torch"
+	case name == "minecraft:redstone_wall_torch":
+		return "minecraft:redstone_torch"
+	}
+	return ""
+}
+
+// tableBonus 复刻原版 TableBonus：按附魔等级在 chance 表中取值后掷骰
+// （chance 单位为万分之一）。
+func (s *Server) tableBonus(fortune int32, chances []uint32) bool {
+	if len(chances) == 0 {
+		return false
+	}
+	index := fortune
+	if index < 0 {
+		index = 0
+	}
+	if int(index) >= len(chances) {
+		index = int32(len(chances) - 1)
+	}
+	return s.nextRandom()%10000 < uint64(chances[index])
+}
+
+// leavesSapling 返回树叶对应的树苗（无法映射时返回空）。
+func leavesSapling(name string) string {
+	switch name {
+	case "minecraft:azalea_leaves", "minecraft:flowering_azalea_leaves":
+		return "minecraft:azalea"
+	case "minecraft:mangrove_leaves":
+		return "minecraft:mangrove_propagule"
+	}
+	base, ok := strings.CutSuffix(name, "_leaves")
+	if !ok {
+		return ""
+	}
+	return base + "_sapling"
+}
+
+// doublePlants 是掉落只由下半格结算的双格植物。
+var doublePlants = map[string]bool{
+	"minecraft:tall_grass":    true,
+	"minecraft:large_fern":    true,
+	"minecraft:tall_seagrass": true,
+	"minecraft:sunflower":     true,
+	"minecraft:lilac":         true,
+	"minecraft:rose_bush":     true,
+	"minecraft:peony":         true,
+	"minecraft:pitcher_plant": true,
+}
+
+// blockDrops 返回破坏方块后的全部掉落物。held 用于精准采集/时运/剪刀判定。
+func (s *Server) blockDrops(state uint16, held item.Stack) []blockDropSpec {
 	name, ok := s.blockNameOf(state)
 	if !ok {
-		return "", 0
+		return nil
 	}
-	if spec, ok := blockDropOverrides[name]; ok {
-		if spec.Item == "" || spec.Count <= 0 {
-			return "", 0
+	// 原版双格植物只有下半格参与战利品表（upper half 不掉落）。
+	if doublePlants[name] {
+		if _, props, ok := registry.StateProps(state); ok && props["half"] == "upper" {
+			return nil
 		}
-		return spec.Item, spec.Count
 	}
-	if blockDropsNothing(name) {
+	if blocksNeverDropping(name) {
+		return nil
+	}
+	silk := hasSilkTouch(held) > 0
+	fortune := fortuneLevel(held)
+	shears := isShearsItem(held.ItemID)
+
+	// 树叶：剪刀或精准采集掉树叶本身；否则按原版概率表掉树苗/木棍/苹果。
+	if strings.HasSuffix(name, "_leaves") {
+		if silk || shears {
+			return []blockDropSpec{{Item: name, Count: 1}}
+		}
+		var drops []blockDropSpec
+		if sapling := leavesSapling(name); sapling != "" {
+			// 原版 table_bonus：[0.05, 0.0625, 1/12, 0.1]
+			if s.tableBonus(fortune, []uint32{500, 625, 833, 1000}) {
+				drops = append(drops, blockDropSpec{Item: sapling, Count: 1})
+			}
+		}
+		// 木棍：[0.02, 0.0222, 0.025, 0.0333, 0.1]
+		if s.tableBonus(fortune, []uint32{200, 222, 250, 333, 1000}) {
+			drops = append(drops, blockDropSpec{Item: "minecraft:stick", Count: s.randIntBetween(1, 2)})
+		}
+		// 苹果：仅橡木/深色橡木，固定 0.5%。
+		if name == "minecraft:oak_leaves" || name == "minecraft:dark_oak_leaves" {
+			if s.nextRandom()%1000 < 5 {
+				drops = append(drops, blockDropSpec{Item: "minecraft:apple", Count: 1})
+			}
+		}
+		return drops
+	}
+
+	// 草/蕨类/藤蔓等：只有剪刀能采集（精准采集对这些方块无效）；
+	// 否则按原版概率表掉落种子/木棍。
+	switch name {
+	case "minecraft:short_grass", "minecraft:fern":
+		if shears {
+			return []blockDropSpec{{Item: name, Count: 1}}
+		}
+		if s.nextRandom()%1000 < 125 {
+			return []blockDropSpec{{Item: "minecraft:wheat_seeds", Count: 1 + s.uniformBonusMultiplier(fortune, 2)}}
+		}
+		return nil
+	case "minecraft:tall_grass", "minecraft:large_fern":
+		if shears {
+			return []blockDropSpec{{Item: "minecraft:short_grass", Count: 2}}
+		}
+		if s.nextRandom()%1000 < 125 {
+			return []blockDropSpec{{Item: "minecraft:wheat_seeds", Count: 1 + s.uniformBonusMultiplier(fortune, 2)}}
+		}
+		return nil
+	case "minecraft:dead_bush":
+		if shears {
+			return []blockDropSpec{{Item: name, Count: 1}}
+		}
+		if count := s.randIntBetween(0, 2); count > 0 {
+			return []blockDropSpec{{Item: "minecraft:stick", Count: count}}
+		}
+		return nil
+	case "minecraft:vine", "minecraft:glow_lichen", "minecraft:hanging_roots",
+		"minecraft:seagrass", "minecraft:tall_seagrass":
+		if shears {
+			return []blockDropSpec{{Item: name, Count: 1}}
+		}
+		return nil
+	}
+
+	if silk {
+		// 原版可被精准采集保留的方块：掉落方块本身（存在对应物品时）。
+		itemName := name
+		if wallItem := wallVariantItem(name); wallItem != "" {
+			itemName = wallItem
+		}
+		if _, err := registry.ItemID(itemName); err == nil {
+			return []blockDropSpec{{Item: itemName, Count: 1}}
+		}
+		return nil
+	}
+
+	// 玻璃/冰类：只有精准采集才掉落。
+	if name == "minecraft:glass" || strings.HasSuffix(name, "_glass") ||
+		name == "minecraft:glass_pane" || strings.HasSuffix(name, "_glass_pane") ||
+		name == "minecraft:ice" || name == "minecraft:packed_ice" || name == "minecraft:blue_ice" {
+		return nil
+	}
+
+	// 砂砾：原版 10% 燧石，时运概率 [0.1, 0.1429, 0.25, 1.0]。
+	if name == "minecraft:gravel" {
+		if s.tableBonus(fortune, []uint32{1000, 1429, 2500, 10000}) {
+			return []blockDropSpec{{Item: "minecraft:flint", Count: 1}}
+		}
+		return []blockDropSpec{{Item: "minecraft:gravel", Count: 1}}
+	}
+
+	// 红石：4–5 + uniform(0..等级)。
+	if name == "minecraft:redstone_ore" || name == "minecraft:deepslate_redstone_ore" {
+		return []blockDropSpec{{Item: "minecraft:redstone", Count: s.randIntBetween(4, 5) + s.uniformBonus(fortune)}}
+	}
+
+	// 铜矿：2–5 个粗铜，再乘 ore_drops 倍数。
+	if name == "minecraft:copper_ore" || name == "minecraft:deepslate_copper_ore" {
+		count := s.randIntBetween(2, 5) * s.oreDropsMultiplier(fortune)
+		return []blockDropSpec{{Item: "minecraft:raw_copper", Count: count}}
+	}
+
+	// 下界金矿：2–6 个金粒，再乘 ore_drops 倍数。
+	if name == "minecraft:nether_gold_ore" {
+		count := s.randIntBetween(2, 6) * s.oreDropsMultiplier(fortune)
+		return []blockDropSpec{{Item: "minecraft:gold_nugget", Count: count}}
+	}
+
+	// 青金石：4–8 个，再乘 ore_drops 倍数。
+	if name == "minecraft:lapis_ore" || name == "minecraft:deepslate_lapis_ore" {
+		count := s.randIntBetween(4, 8) * s.oreDropsMultiplier(fortune)
+		return []blockDropSpec{{Item: "minecraft:lapis_lazuli", Count: count}}
+	}
+
+	// 西瓜：3–7 + uniform(0..等级)，上限 9。
+	if name == "minecraft:melon" {
+		count := s.randIntBetween(3, 7) + s.uniformBonus(fortune)
+		return []blockDropSpec{{Item: "minecraft:melon_slice", Count: min(count, 9)}}
+	}
+
+	// 雪块：4 个雪球（时运不影响）。
+	if name == "minecraft:snow_block" {
+		return []blockDropSpec{{Item: "minecraft:snowball", Count: 4}}
+	}
+
+	// 矿石：ore_drops（base 1）。
+	if drop, ok := oreDrops[name]; ok {
+		return []blockDropSpec{{Item: drop, Count: s.oreDropsMultiplier(fortune)}}
+	}
+
+	// 黏土/雪块：固定数量。
+	if spec, ok := blockDropOverrides[name]; ok {
+		return []blockDropSpec{spec}
+	}
+	// 墙式告示牌/旗帜/火把掉落对应的站立变体。
+	itemName := name
+	if wallItem := wallVariantItem(name); wallItem != "" {
+		itemName = wallItem
+	}
+	if _, err := registry.ItemID(itemName); err != nil {
+		return nil // 没有对应物品的方块（如墙上的告示牌）不掉落
+	}
+	return []blockDropSpec{{Item: itemName, Count: 1}}
+}
+
+// blockDrop 返回主掉落（兼容旧测试与调用方）：无掉落时返回空字符串与 0。
+func (s *Server) blockDrop(state uint16) (string, int32) {
+	drops := s.blockDrops(state, item.Empty())
+	if len(drops) == 0 {
 		return "", 0
 	}
-	if _, err := registry.ItemID(name); err != nil {
-		return "", 0 // 没有对应物品的方块（如墙上的告示牌）不掉落
-	}
-	return name, 1
+	return drops[0].Item, drops[0].Count
 }
 
 // dropBlockItem 在方块中心生成挖掘掉落物（仅生存模式调用）。
 // 掉落物带原版风格的小幅随机水平速度与 0.2 的向上速度。
-func (s *Server) dropBlockItem(dim world.Dimension, state uint16, x, y, z int) {
-	name, count := s.blockDrop(state)
-	if count <= 0 {
-		return
+func (s *Server) dropBlockItem(dim world.Dimension, state uint16, x, y, z int, held item.Stack) {
+	for _, spec := range s.blockDrops(state, held) {
+		if spec.Item == "" || spec.Count <= 0 {
+			continue
+		}
+		stack, err := item.FromName(spec.Item, spec.Count)
+		if err != nil {
+			slog.Warn("无法生成方块掉落物", "item", spec.Item, "error", err)
+			continue
+		}
+		vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
+		vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
+		s.spawnItem(dim, stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayMining)
 	}
-	stack, err := item.FromName(name, count)
-	if err != nil {
-		slog.Warn("无法生成方块掉落物", "item", name, "error", err)
-		return
-	}
-	vx := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-	vz := (float64(s.nextRandom()%1000)/1000 - 0.5) * 0.2
-	s.spawnItem(dim, stack, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, vx, 0.2, vz, itemPickupDelayMining)
 }

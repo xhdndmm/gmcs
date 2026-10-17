@@ -231,7 +231,7 @@ func main() {
 		len(recipeTables.shaped), len(recipeTables.shapeless), len(recipeTables.cooking),
 		len(recipeTables.stonecutting), len(recipeTables.smithing), len(recipeTables.smithingTrim))
 	if *itemsPath != "" {
-		foods, stackSizes, maxDamages, repairItems, enchantable, err := loadItemComponents(*itemsPath)
+		foods, stackSizes, maxDamages, repairItems, enchantable, armorValues, err := loadItemComponents(*itemsPath)
 		if err != nil {
 			fatal("读取物品组件：%v", err)
 		}
@@ -255,11 +255,11 @@ func main() {
 		if err != nil {
 			fatal("读取工具组件：%v", err)
 		}
-		if err := writeItemComponents(filepath.Dir(*outPath), *version, foods, stackSizes, maxDamages, repairItems, enchantable, displayNames, storedEnch, trimMaterials, equippable, tools, itemIDs, itemTags); err != nil {
+		if err := writeItemComponents(filepath.Dir(*outPath), *version, foods, stackSizes, maxDamages, repairItems, enchantable, armorValues, displayNames, storedEnch, trimMaterials, equippable, tools, itemIDs, itemTags); err != nil {
 			fatal("写入物品组件表：%v", err)
 		}
-		fmt.Printf("已生成物品组件表（%d 种食物、%d 项堆叠上限、%d 项耐久上限、%d 项修复材料、%d 项附魔能力、%d 项显示名、%d 项附魔书、%d 项纹饰材质、%d 项工具）\n",
-			len(foods), len(stackSizes), len(maxDamages), len(repairItems), len(enchantable), len(displayNames), len(storedEnch), len(trimMaterials), len(tools))
+		fmt.Printf("已生成物品组件表（%d 种食物、%d 项堆叠上限、%d 项耐久上限、%d 项修复材料、%d 项附魔能力、%d 项护甲属性、%d 项显示名、%d 项附魔书、%d 项纹饰材质、%d 项工具）\n",
+			len(foods), len(stackSizes), len(maxDamages), len(repairItems), len(enchantable), len(armorValues), len(displayNames), len(storedEnch), len(trimMaterials), len(tools))
 	}
 	// 附魔表：附魔定义（注册表 ID = 文件路径字典序）与书架/透光方块标签。
 	enchantOrder := generated.entries["minecraft:enchantment"]
@@ -613,25 +613,32 @@ type foodValue struct {
 	Saturation float32
 }
 
-// loadItemComponents 从 reports/items.json 提取食物数值、堆叠上限、耐久上限与修复材料。
+// armorValue 是物品的护甲值与韧性（来自 minecraft:attribute_modifiers 组件）。
+type armorValue struct {
+	Armor     float32
+	Toughness float32
+}
+
+// loadItemComponents 从 reports/items.json 提取食物数值、堆叠上限、耐久上限、修复材料与护甲属性。
 // 全部数据来自官方服务端数据生成器报告，保证与版本一致。
 // repairItems 保留原始条目引用（物品名或 #标签名），由 writeItemComponents 展开。
-func loadItemComponents(path string) (map[string]foodValue, map[string]int32, map[string]int32, map[string][]string, map[string]int32, error) {
+func loadItemComponents(path string) (map[string]foodValue, map[string]int32, map[string]int32, map[string][]string, map[string]int32, map[string]armorValue, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	var file map[string]struct {
 		Components map[string]json.RawMessage `json:"components"`
 	}
 	if err := json.Unmarshal(content, &file); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, err
 	}
 	foods := make(map[string]foodValue)
 	stackSizes := make(map[string]int32)
 	maxDamages := make(map[string]int32)
 	repairItems := make(map[string][]string)
 	enchantable := make(map[string]int32)
+	armorValues := make(map[string]armorValue)
 	for name, item := range file {
 		if raw, ok := item.Components["minecraft:food"]; ok {
 			var food struct {
@@ -639,21 +646,21 @@ func loadItemComponents(path string) (map[string]foodValue, map[string]int32, ma
 				Saturation float32 `json:"saturation"`
 			}
 			if err := json.Unmarshal(raw, &food); err != nil {
-				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的食物组件：%w", name, err)
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的食物组件：%w", name, err)
 			}
 			foods[name] = foodValue{Nutrition: food.Nutrition, Saturation: food.Saturation}
 		}
 		if raw, ok := item.Components["minecraft:max_stack_size"]; ok {
 			var size int32
 			if err := json.Unmarshal(raw, &size); err != nil {
-				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的堆叠上限：%w", name, err)
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的堆叠上限：%w", name, err)
 			}
 			stackSizes[name] = size
 		}
 		if raw, ok := item.Components["minecraft:max_damage"]; ok {
 			var maxDamage int32
 			if err := json.Unmarshal(raw, &maxDamage); err != nil {
-				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的耐久上限：%w", name, err)
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的耐久上限：%w", name, err)
 			}
 			maxDamages[name] = maxDamage
 		}
@@ -662,11 +669,11 @@ func loadItemComponents(path string) (map[string]foodValue, map[string]int32, ma
 				Items json.RawMessage `json:"items"`
 			}
 			if err := json.Unmarshal(raw, &repairable); err != nil {
-				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的修复材料：%w", name, err)
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的修复材料：%w", name, err)
 			}
 			items, err := parseItemList(repairable.Items)
 			if err != nil {
-				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的修复材料条目：%w", name, err)
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的修复材料条目：%w", name, err)
 			}
 			repairItems[name] = items
 		}
@@ -675,12 +682,37 @@ func loadItemComponents(path string) (map[string]foodValue, map[string]int32, ma
 				Value int32 `json:"value"`
 			}
 			if err := json.Unmarshal(raw, &ench); err != nil {
-				return nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的附魔能力：%w", name, err)
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的附魔能力：%w", name, err)
 			}
 			enchantable[name] = ench.Value
 		}
+		if raw, ok := item.Components["minecraft:attribute_modifiers"]; ok {
+			var modifiers []struct {
+				Type      string  `json:"type"`
+				Amount    float64 `json:"amount"`
+				Operation string  `json:"operation"`
+			}
+			if err := json.Unmarshal(raw, &modifiers); err != nil {
+				return nil, nil, nil, nil, nil, nil, fmt.Errorf("解析 %s 的属性修饰符：%w", name, err)
+			}
+			value := armorValue{}
+			for _, modifier := range modifiers {
+				if modifier.Operation != "add_value" {
+					continue
+				}
+				switch modifier.Type {
+				case "minecraft:armor":
+					value.Armor += float32(modifier.Amount)
+				case "minecraft:armor_toughness":
+					value.Toughness += float32(modifier.Amount)
+				}
+			}
+			if value.Armor > 0 || value.Toughness > 0 {
+				armorValues[name] = value
+			}
+		}
 	}
-	return foods, stackSizes, maxDamages, repairItems, enchantable, nil
+	return foods, stackSizes, maxDamages, repairItems, enchantable, armorValues, nil
 }
 
 // loadTrimMaterials 从 reports/items.json 提取物品 → 纹饰材质映射
@@ -937,7 +969,7 @@ func loadToolComponents(path string) (map[string]toolComponent, error) {
 }
 
 // writeItemComponents 生成 item_components_generated.go：食物数值、堆叠上限、耐久上限、修复材料、附魔能力与显示名。
-func writeItemComponents(outDir, version string, foods map[string]foodValue, stackSizes, maxDamages map[string]int32, repairItems map[string][]string, enchantable map[string]int32, displayNames map[string]string, storedEnch map[string]bool, trimMaterials map[string]string, equippable map[string]string, tools map[string]toolComponent, itemIDs map[string]int32, itemTags map[string][]int32) error {
+func writeItemComponents(outDir, version string, foods map[string]foodValue, stackSizes, maxDamages map[string]int32, repairItems map[string][]string, enchantable map[string]int32, armorValues map[string]armorValue, displayNames map[string]string, storedEnch map[string]bool, trimMaterials map[string]string, equippable map[string]string, tools map[string]toolComponent, itemIDs map[string]int32, itemTags map[string][]int32) error {
 	var buf bytes.Buffer
 	buf.WriteString(licenseHeader)
 	fmt.Fprintf(&buf, "// Code generated by tools/genregistries from Minecraft %s reports/items.json; DO NOT EDIT.\n", version)
@@ -988,6 +1020,17 @@ func writeItemComponents(outDir, version string, foods map[string]foodValue, sta
 		fmt.Fprintf(&buf, "\t%q: %d,\n", name, enchantable[name])
 	}
 	buf.WriteString("}\n\n")
+	buf.WriteString("// ArmorStatsByItem 保存可装备物品的护甲值与韧性\n")
+	buf.WriteString("// （minecraft:attribute_modifiers 的 minecraft:armor / armor_toughness，\n")
+	buf.WriteString("// 仅 add_value 操作；未列出的物品不提供护甲值）。\n")
+	buf.WriteString("var ArmorStatsByItem = map[string]ArmorStat{\n")
+	for _, name := range sortedKeys(armorValues) {
+		value := armorValues[name]
+		fmt.Fprintf(&buf, "\t%q: {Armor: %v, Toughness: %v},\n", name, value.Armor, value.Toughness)
+	}
+	buf.WriteString("}\n\n")
+	buf.WriteString("// ArmorStat 是物品提供的护甲值与韧性。\n")
+	buf.WriteString("type ArmorStat struct {\n\tArmor     float32\n\tToughness float32\n}\n\n")
 	buf.WriteString("// ItemDisplayNames 保存物品在服务端 en_us 语言文件中的悬停名\n")
 	buf.WriteString("// （原版 ItemStack.getHoverName().getString() 的结果）。\n")
 	buf.WriteString("var ItemDisplayNames = map[string]string{\n")

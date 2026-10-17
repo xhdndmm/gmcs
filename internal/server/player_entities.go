@@ -146,7 +146,14 @@ func (s *Server) handlePlayerAttack(attacker *session, targetID int32, px, py, p
 		return
 	}
 	position := [3]float64{px, py + 1, pz}
-	if s.damagePlayer(target, playerAttackDamage, attacker.name, attacker.entityID, s.playerAttackDamageTypeID, &position) {
+	held := attacker.inventory.Get(attacker.selectedSlot)
+	damage := float32(playerAttackDamage)
+	if attacker.isFalling() {
+		damage *= playerCritMultiplier
+	}
+	// 锋利对玩家同样生效（亡灵/节肢杀手只按目标实体类型判定）。
+	damage += linearEnchantValue(1, 0.5, enchantLevel(held, enchants().sharpness))
+	if s.damagePlayer(target, damage, attacker.name, attacker.entityID, s.playerAttackDamageTypeID, &position) {
 		s.broadcastPacket(protocol.EncodeAnimate(attacker.entityID, 0))
 	}
 }

@@ -16,6 +16,8 @@ import (
 	"gmcs/internal/world"
 )
 
+// 本文件包含服务器关键路径的基准；新增热路径代码时应同时补充或更新基准。
+
 // BenchmarkServerTick 衡量实体 Tick 的成本（32 只生物的移动、避障与广播判定）。
 func BenchmarkServerTick(b *testing.B) {
 	cfg := config.Default()
@@ -586,6 +588,68 @@ func BenchmarkFireTick(b *testing.B) {
 		gameWorld.SetBlock(pos[0], pos[1], pos[2], fire)
 		gameWorld.SetBlock(planksPos[0], planksPos[1], planksPos[2], planks)
 		instance.fireTickBody(gameWorld, world.DimensionOverworld, pos, props)
+	}
+}
+
+// BenchmarkPlayerDamageMitigation 衡量一次玩家伤害的护甲减伤/保护附魔计算
+// （含 4 件护甲的物品栏读取；不在 tick 热路径，用于防止回归为重量级实现）。
+func BenchmarkPlayerDamageMitigation(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	protectionID, _ := registry.EnchantmentID("minecraft:protection")
+	sess := &session{server: instance, health: maxPlayerHealth, food: maxPlayerFood}
+	for slot, name := range map[int]string{
+		item.SlotFeet:  "minecraft:diamond_boots",
+		item.SlotLegs:  "minecraft:diamond_leggings",
+		item.SlotChest: "minecraft:diamond_chestplate",
+		item.SlotHead:  "minecraft:diamond_helmet",
+	} {
+		id, err := registry.ItemID(name)
+		if err != nil {
+			b.Fatal(err)
+		}
+		stack := item.Stack{ItemID: id, Count: 1}.WithEnchantment(protectionID, 4)
+		sess.inventory.Set(slot, stack)
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		instance.computePlayerDamage(sess, 10, instance.mobAttackDamageTypeID)
+	}
+}
+
+// BenchmarkBlockDropsFortune 衡量带时运的方块掉落计算（3 级时运煤矿石）。
+func BenchmarkBlockDropsFortune(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	state, err := registry.BlockStateID("minecraft:coal_ore")
+	if err != nil {
+		b.Fatal(err)
+	}
+	fortuneID, _ := registry.EnchantmentID("minecraft:fortune")
+	pickaxe, err := registry.ItemID("minecraft:diamond_pickaxe")
+	if err != nil {
+		b.Fatal(err)
+	}
+	held := item.Stack{ItemID: pickaxe, Count: 1}.WithEnchantment(fortuneID, 3)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		instance.blockDrops(state, held)
 	}
 }
 

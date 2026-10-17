@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"gmcs/internal/config"
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 	"gmcs/internal/world"
@@ -33,43 +34,46 @@ func TestBlockDropTable(t *testing.T) {
 	}
 
 	cases := []struct {
-		block string
-		item  string
-		count int32
+		block    string
+		item     string
+		minCount int32
+		maxCount int32
 	}{
-		{"minecraft:stone", "minecraft:cobblestone", 1},
-		{"minecraft:cobblestone", "minecraft:cobblestone", 1},
-		{"minecraft:grass_block", "minecraft:dirt", 1},
-		{"minecraft:dirt", "minecraft:dirt", 1},
-		{"minecraft:sand", "minecraft:sand", 1},
-		{"minecraft:oak_log", "minecraft:oak_log", 1},
-		{"minecraft:clay", "minecraft:clay_ball", 4},
-		{"minecraft:snow_block", "minecraft:snowball", 4},
-		{"minecraft:melon", "minecraft:melon_slice", 5},
-		{"minecraft:coal_ore", "minecraft:coal", 1},
-		{"minecraft:deepslate_coal_ore", "minecraft:coal", 1},
-		{"minecraft:iron_ore", "minecraft:raw_iron", 1},
-		{"minecraft:deepslate_iron_ore", "minecraft:raw_iron", 1},
-		{"minecraft:copper_ore", "minecraft:raw_copper", 1},
-		{"minecraft:gold_ore", "minecraft:raw_gold", 1},
-		{"minecraft:diamond_ore", "minecraft:diamond", 1},
-		{"minecraft:emerald_ore", "minecraft:emerald", 1},
-		{"minecraft:lapis_ore", "minecraft:lapis_lazuli", 1},
-		{"minecraft:redstone_ore", "minecraft:redstone", 1},
-		{"minecraft:nether_quartz_ore", "minecraft:quartz", 1},
-		{"minecraft:oak_leaves", "", 0},
-		{"minecraft:glass", "", 0},
-		{"minecraft:white_stained_glass", "", 0},
-		{"minecraft:glass_pane", "", 0},
-		{"minecraft:ice", "", 0},
-		{"minecraft:water", "", 0},
-		{"minecraft:bedrock", "", 0},
-		{"minecraft:oak_wall_sign", "", 0}, // 无对应物品的方块
+		{"minecraft:stone", "minecraft:cobblestone", 1, 1},
+		{"minecraft:cobblestone", "minecraft:cobblestone", 1, 1},
+		{"minecraft:grass_block", "minecraft:dirt", 1, 1},
+		{"minecraft:dirt", "minecraft:dirt", 1, 1},
+		{"minecraft:sand", "minecraft:sand", 1, 1},
+		{"minecraft:oak_log", "minecraft:oak_log", 1, 1},
+		{"minecraft:clay", "minecraft:clay_ball", 4, 4},
+		{"minecraft:snow_block", "minecraft:snowball", 4, 4},
+		{"minecraft:melon", "minecraft:melon_slice", 3, 7},
+		{"minecraft:coal_ore", "minecraft:coal", 1, 1},
+		{"minecraft:deepslate_coal_ore", "minecraft:coal", 1, 1},
+		{"minecraft:iron_ore", "minecraft:raw_iron", 1, 1},
+		{"minecraft:deepslate_iron_ore", "minecraft:raw_iron", 1, 1},
+		{"minecraft:copper_ore", "minecraft:raw_copper", 2, 5},
+		{"minecraft:gold_ore", "minecraft:raw_gold", 1, 1},
+		{"minecraft:nether_gold_ore", "minecraft:gold_nugget", 2, 6},
+		{"minecraft:diamond_ore", "minecraft:diamond", 1, 1},
+		{"minecraft:emerald_ore", "minecraft:emerald", 1, 1},
+		{"minecraft:lapis_ore", "minecraft:lapis_lazuli", 4, 8},
+		{"minecraft:redstone_ore", "minecraft:redstone", 4, 5},
+		{"minecraft:nether_quartz_ore", "minecraft:quartz", 1, 1},
+		{"minecraft:glass", "", 0, 0},
+		{"minecraft:white_stained_glass", "", 0, 0},
+		{"minecraft:glass_pane", "", 0, 0},
+		{"minecraft:ice", "", 0, 0},
+		{"minecraft:water", "", 0, 0},
+		{"minecraft:bedrock", "", 0, 0},
+		// 墙式告示牌掉落对应的站立告示牌。
+		{"minecraft:oak_wall_sign", "minecraft:oak_sign", 1, 1},
 	}
 	for _, tc := range cases {
 		item, count := instance.blockDrop(blockState(tc.block))
-		if item != tc.item || count != tc.count {
-			t.Errorf("blockDrop(%s) = (%q, %d)，want (%q, %d)", tc.block, item, count, tc.item, tc.count)
+		if item != tc.item || count < tc.minCount || count > tc.maxCount {
+			t.Errorf("blockDrop(%s) = (%q, %d)，want (%q, %d..%d)",
+				tc.block, item, count, tc.item, tc.minCount, tc.maxCount)
 		}
 	}
 
@@ -82,6 +86,108 @@ func TestBlockDropTable(t *testing.T) {
 		if _, err := registry.ItemID(spec.Item); err != nil {
 			t.Errorf("特例 %s 的掉落物 %s 不在物品注册表中", block, spec.Item)
 		}
+	}
+}
+
+// TestBlockDropsSilkTouch 验证精准采集掉落方块本身。
+func TestBlockDropsSilkTouch(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+
+	silkID, ok := registry.EnchantmentID("minecraft:silk_touch")
+	if !ok {
+		t.Fatal("缺少精准采集附魔")
+	}
+	held := item.Stack{ItemID: mustItemID(t, "minecraft:diamond_pickaxe"), Count: 1,
+		Enchantments: []item.EnchantmentEntry{{ID: silkID, Level: 1}}}
+	cases := []struct {
+		block string
+		item  string
+	}{
+		{"minecraft:stone", "minecraft:stone"},
+		{"minecraft:grass_block", "minecraft:grass_block"},
+		{"minecraft:glass", "minecraft:glass"},
+		{"minecraft:white_stained_glass", "minecraft:white_stained_glass"},
+		{"minecraft:ice", "minecraft:ice"},
+		{"minecraft:coal_ore", "minecraft:coal_ore"},
+		{"minecraft:melon", "minecraft:melon"},
+		{"minecraft:clay", "minecraft:clay"},
+		{"minecraft:oak_leaves", "minecraft:oak_leaves"},
+		{"minecraft:gravel", "minecraft:gravel"},
+		{"minecraft:snow_block", "minecraft:snow_block"},
+	}
+	for _, tc := range cases {
+		state, err := registry.BlockStateID(tc.block)
+		if err != nil {
+			t.Fatalf("未知方块 %s：%v", tc.block, err)
+		}
+		drops := instance.blockDrops(state, held)
+		if len(drops) != 1 || drops[0].Item != tc.item || drops[0].Count != 1 {
+			t.Errorf("精准采集 %s = %+v，want %s×1", tc.block, drops, tc.item)
+		}
+	}
+	// 刷怪笼与霜冰即使精准采集也不掉落。
+	spawner, err := registry.BlockStateID("minecraft:spawner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drops := instance.blockDrops(spawner, held); len(drops) != 0 {
+		t.Errorf("精准采集刷怪笼 = %+v，want 无掉落", drops)
+	}
+}
+
+// TestBlockDropsFortune 验证时运掉落公式。
+func TestBlockDropsFortune(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+
+	fortuneID, ok := registry.EnchantmentID("minecraft:fortune")
+	if !ok {
+		t.Fatal("缺少时运附魔")
+	}
+	held := item.Stack{ItemID: mustItemID(t, "minecraft:diamond_pickaxe"), Count: 1,
+		Enchantments: []item.EnchantmentEntry{{ID: fortuneID, Level: 3}}}
+	blockState := func(name string) uint16 {
+		state, err := registry.BlockStateID(name)
+		if err != nil {
+			t.Fatalf("未知方块 %s：%v", name, err)
+		}
+		return state
+	}
+	// 矿石：1..4 倍（时运 3 的 ore_drops）。
+	for i := 0; i < 32; i++ {
+		drops := instance.blockDrops(blockState("minecraft:coal_ore"), held)
+		if len(drops) != 1 || drops[0].Item != "minecraft:coal" || drops[0].Count < 1 || drops[0].Count > 4 {
+			t.Fatalf("时运煤矿 = %+v，want 煤 1..4", drops)
+		}
+	}
+	// 砂砾：时运 3 的燧石概率为 100%。
+	drops := instance.blockDrops(blockState("minecraft:gravel"), held)
+	if len(drops) != 1 || drops[0].Item != "minecraft:flint" {
+		t.Fatalf("时运 3 砂砾 = %+v，want 燧石", drops)
+	}
+	// 红石：4–5 + 0..3。
+	drops = instance.blockDrops(blockState("minecraft:redstone_ore"), held)
+	if len(drops) != 1 || drops[0].Item != "minecraft:redstone" || drops[0].Count < 4 || drops[0].Count > 8 {
+		t.Fatalf("时运红石 = %+v，want 红石 4..8", drops)
+	}
+	// 树叶：剪刀掉落树叶本身。
+	shears := item.Stack{ItemID: mustItemID(t, "minecraft:shears"), Count: 1}
+	drops = instance.blockDrops(blockState("minecraft:oak_leaves"), shears)
+	if len(drops) != 1 || drops[0].Item != "minecraft:oak_leaves" {
+		t.Fatalf("剪刀采叶 = %+v，want 橡木树叶", drops)
 	}
 }
 

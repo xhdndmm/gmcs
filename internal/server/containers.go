@@ -23,12 +23,9 @@ import (
 // 服务器侧的 containerState 持有并在每次修改后写回区块，因此崩溃或重启
 // 不会丢失已确认的物品移动。
 //
-// 限制（见 docs/TODO.md）：
-//   - 熔炉/高炉/烟熏炉（熔炼）、酿造台、附魔台等“处理型”容器尚未实现：
-//     它们需要烹饪/配方子系统，不属于存储容器；
-//   - 末影箱内容按玩家存储（原版为每玩家独立），暂未实现；
-//   - 玩家物品栏窗口（window 0）的 2×2 合成格与合成结果不参与点击处理
-//     （无合成系统），对其余槽位的操作已完整支持。
+// 处理型容器（熔炉家族/酿造台/切石机/锻造台/铁砧/砂轮/附魔台等）各自的
+// 运行时状态与点击钩子在对应文件中实现；末影箱按玩家独立存储（ender_chest.go）。
+// 玩家物品栏窗口（window 0）的 2×2 合成格与合成结果由 crafting.go 处理。
 
 // containerDef 描述一种容器方块对应的菜单与方块实体参数。
 type containerDef struct {
@@ -830,6 +827,21 @@ type slotLimiter interface {
 	SlotLimit(slot int) int32
 }
 
+// slotPicker 是可选接口：窗口 backing 可禁止从槽位取出物品
+// （原版 Slot.mayPickup，如生存模式带绑定诅咒的盔甲槽）。
+type slotPicker interface {
+	CanPickup(slot int, player *session) bool
+}
+
+// canPickupFrom 检查 backing 是否允许从槽位取出物品（未实现 slotPicker 时恒允许）。
+func canPickupFrom(backing slotBacking, slot int, player *session) bool {
+	picker, ok := backing.(slotPicker)
+	if !ok {
+		return true
+	}
+	return picker.CanPickup(slot, player)
+}
+
 // slotLimitAt 返回槽位的堆叠数量上限（未实现接口或返回 <= 0 时用 fallback）。
 func slotLimitAt(backing slotBacking, slot int, fallback int32) int32 {
 	limiter, ok := backing.(slotLimiter)
@@ -859,6 +871,9 @@ func (s *Server) applyContainerClick(player *session, backing slotBacking, worki
 		return s.applyQuickCraft(player, backing, working, cursor, click)
 	}
 	if slot < 0 || slot >= len(working) || !backing.Supported(slot) {
+		return cursor
+	}
+	if !canPickupFrom(backing, slot, player) {
 		return cursor
 	}
 	limit := cursor.MaxStack()
@@ -1176,7 +1191,7 @@ func (s *Server) applyQuickCraft(player *session, backing slotBacking, working [
 			return cursor
 		}
 		slot := int(click.Slot)
-		if slot < 0 || slot >= len(working) || !backing.Supported(slot) {
+		if slot < 0 || slot >= len(working) || !backing.Supported(slot) || !canPickupFrom(backing, slot, player) {
 			return cursor
 		}
 		if drag.kind != 2 && cursor.Count <= int32(len(drag.slots)) {

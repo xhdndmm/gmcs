@@ -32,9 +32,11 @@ import (
 // 工具按 minecraft:tool 的 damage_per_block 损耗耐久（硬度 0 的方块不损耗），
 // 耐久耗尽按原版移除物品并广播 Entity Event 0。
 //
+// 已实现效率/水下速掘附魔与不灭耐久（见 enchants.go）；精准采集/时运/剪刀
+// 与概率掉落见 block_drops.go。
+//
 // 已知限制（见 docs/TODO.md）：
-//   - 无效率附魔/挖掘疲劳/导管之力/水下挖掘/急迫等加成（无属性与效果系统）；
-//   - 精确采集/时运/剪刀/概率掉落未实现（掉落为简化掉落表）；
+//   - 挖掘疲劳/导管之力/急迫等状态效果加成未实现（无药水效果系统）；
 //   - 无出生点保护（mayInteract）与 mayBuild（冒险模式整类不支持）；
 //   - 延迟破坏的耐久损耗由读循环在下一个数据包处补发（Tick 线程不访问物品栏）。
 
@@ -162,15 +164,23 @@ func (s *session) resetMiningState() {
 	s.miningPendingDamage.Store(0)
 }
 
-// miningSpeedFor 返回玩家对指定方块的挖掘速度（原版 Player.getDestroySpeed 的
-// 简化：工具速度；悬空时 ÷5；gmcs 无属性/药水/附魔效果加成）。
+// miningSpeedFor 返回玩家对指定方块的挖掘速度（原版 Player.getDestroySpeed）：
+// 工具速度，效率附魔 +等级²+1（仅在工具速度 > 1 时），悬空时 ÷5，
+// 头部浸水时 ÷5（水下速掘附魔可免除），与原版顺序一致。
 func (s *Server) miningSpeedFor(player *session, held item.Stack, state uint16) float32 {
 	speed := float32(1)
 	if tool, ok := registry.ItemTool(held.ItemID); ok {
 		speed = tool.MiningSpeed(state)
 	}
+	speed = miningEnchantSpeed(held, speed)
 	if !player.playerOnGround() {
 		speed /= 5
+	}
+	if w := player.playerWorld(); w != nil {
+		x, y, z, _, _ := player.playerPosition()
+		if headInWater(w, x, y, z) && enchantLevel(held, enchants().aquaAffinity) <= 0 {
+			speed /= 5
+		}
 	}
 	return speed
 }
@@ -303,7 +313,7 @@ func (s *Server) destroyBlockByPlayer(player *session, held item.Stack, dim worl
 		return
 	}
 	if miningHasCorrectToolForDrops(state, held) {
-		s.dropBlockItem(dim, state, x, y, z)
+		s.dropBlockItem(dim, state, x, y, z, held)
 	}
 	if damage := miningToolDamage(held, state); damage > 0 {
 		player.applyToolDamage(damage)
@@ -324,6 +334,9 @@ func (s *session) applyToolDamage(amount int32) {
 	maxDamage, ok := registry.MaxDamage(stack.ItemID)
 	if !ok {
 		return // 不可损坏物品
+	}
+	if unbreakingSavesDurability(s.server, stack, false) {
+		return // 不灭附魔免除了本次损耗
 	}
 	stack.Damage += amount
 	if stack.Damage >= maxDamage {
@@ -601,7 +614,7 @@ func (s *Server) completeDelayedDestroy(player *session, held item.Stack, dim wo
 		return
 	}
 	if miningHasCorrectToolForDrops(state, held) {
-		s.dropBlockItem(dim, state, pos[0], pos[1], pos[2])
+		s.dropBlockItem(dim, state, pos[0], pos[1], pos[2], held)
 	}
 	if damage := miningToolDamage(held, state); damage > 0 {
 		player.miningPendingDamage.Add(damage)
