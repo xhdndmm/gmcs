@@ -818,7 +818,8 @@ func zlibDecompress(data []byte, limit int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
+	// 解压读取器关闭失败不影响已读取的数据。
+	defer func() { _ = reader.Close() }()
 	decoded, err := io.ReadAll(io.LimitReader(reader, int64(limit)+1))
 	if err != nil {
 		return nil, err

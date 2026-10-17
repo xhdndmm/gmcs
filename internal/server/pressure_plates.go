@@ -166,15 +166,6 @@ func plateSignalOfProps(info plateInfo, props map[string]string) int {
 	return 0
 }
 
-// plateSignalOfState 返回压力板状态当前的输出信号（非压力板返回 0）。
-func plateSignalOfState(state uint16) int {
-	entry, ok := plateStateTable[state]
-	if !ok {
-		return 0
-	}
-	return entry.signal
-}
-
 // plateTouchBox 返回压力板检测盒（世界坐标）：与原版 TOUCH_AABB 一致。
 func plateTouchBox(x, y, z int) world.Box {
 	return world.Box{

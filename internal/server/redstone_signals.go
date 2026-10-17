@@ -154,16 +154,6 @@ func isButtonName(name string) bool {
 	return buttonNames[name]
 }
 
-// isButtonState 报告方块状态是否为按钮（全部木质/石质变体）。
-func isButtonState(state uint16) bool {
-	name, props, ok := registry.StateProps(state)
-	if !ok || !buttonNames[name] {
-		return false
-	}
-	_ = props
-	return true
-}
-
 // connectedDirection 返回拉杆/按钮从“支撑方块”指向“组件自身”的方向
 // （原版 getConnectedDirection：floor=支撑在下方→up，ceiling→down，wall→facing）。
 func connectedDirection(props map[string]string) string {

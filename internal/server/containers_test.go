@@ -30,15 +30,6 @@ func activeSession(t *testing.T, instance *Server, name string) *session {
 	return nil
 }
 
-// appendHashedSlot 追加 HashedSlot 结构（客户端为 Container Click 提供的
-// 槽位哈希：物品 ID、数量、添加组件数、移除组件数）。
-func appendHashedSlot(dst []byte, itemID, count int32) []byte {
-	dst = protocol.AppendVarInt(dst, itemID)
-	dst = protocol.AppendVarInt(dst, count)
-	dst = protocol.AppendVarInt(dst, 0)  // 添加组件数
-	return protocol.AppendVarInt(dst, 0) // 移除组件数
-}
-
 // sendContainerClick 发送 Container Click 包（包含 changedSlots 与光标提示，
 // 与真实客户端一致；服务器只使用权威状态）。
 func sendContainerClick(t *testing.T, conn net.Conn, windowID, stateID int32, slot int16, button int8, mode int32) {

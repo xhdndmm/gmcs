@@ -73,18 +73,6 @@ func counterClockwiseDir(dir string) string {
 	return clockwiseDir(clockwiseDir(clockwiseDir(dir)))
 }
 
-// isRepeaterState 报告方块状态是否为红石中继器。
-func isRepeaterState(state uint16) bool {
-	name, _, ok := registry.StateProps(state)
-	return ok && name == repeaterName
-}
-
-// isObserverState 报告方块状态是否为侦测器。
-func isObserverState(state uint16) bool {
-	name, _, ok := registry.StateProps(state)
-	return ok && name == observerName
-}
-
 // yawToFacing 把玩家朝向（yaw）转换为水平朝向名（0=南、90=西、180=北、270=东）。
 func yawToFacing(yaw float32) string {
 	normalized := yaw

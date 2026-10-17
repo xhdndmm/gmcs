@@ -43,7 +43,8 @@ func (s *Server) verifySession(username, serverHash string) (*playerProfile, err
 	if err != nil {
 		return nil, fmt.Errorf("请求会话服务器：%w", err)
 	}
-	defer response.Body.Close()
+	// 响应体已被完整读取/编码，Close 错误无可恢复动作。
+	defer func() { _ = response.Body.Close() }()
 
 	switch response.StatusCode {
 	case http.StatusOK:

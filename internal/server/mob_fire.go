@@ -6,7 +6,6 @@ package server
 
 import (
 	"gmcs/internal/protocol"
-	"gmcs/internal/registry"
 	"gmcs/internal/world"
 )
 
@@ -95,12 +94,6 @@ func (s *Server) tickMobEnvironment(w *world.World, m *mob) (env mobEnvironment,
 		env.packets = append(env.packets, protocol.EncodeEntityMetadataByte(m.ID, 0, flags))
 	}
 	return env, len(env.packets) > 0
-}
-
-// isFireBlockState 报告状态是否为火/灵魂火方块
-// （registry 按状态 ID 的 O(1) 位表查询，tick 热路径每格调用一次）。
-func isFireBlockState(state uint16) bool {
-	return registry.IsFireState(state)
 }
 
 // damageMob 对生物结算一次环境伤害（无敌帧内忽略）：广播受击动画、伤害事件与

@@ -522,13 +522,6 @@ func (s *session) acceptMove(x, y, z float64, now time.Time) bool {
 	return math.Sqrt(distanceSq) <= allowed
 }
 
-// isSolidBlock 报告世界坐标处是否为固体方块（非空气、非水/岩浆）。
-// 仅用于视线遮挡等粗略判定；移动碰撞请使用 positionClear（形状级 AABB）。
-func isSolidBlock(w *world.World, x, y, z int) bool {
-	state := w.BlockAt(x, y, z)
-	return state != world.AirBlock && !isWaterState(state) && !isLavaState(state)
-}
-
 // playerBox 返回玩家碰撞盒（宽 0.6、高 1.8，脚底在 y）。
 func playerBox(x, y, z float64) world.Box {
 	return world.Box{
@@ -1111,6 +1104,9 @@ func (s *session) runOnlineAuthentication() bool {
 		slog.Debug("rejecting malformed encryption response", "remote", s.conn.RemoteAddr(), "error", err)
 		return false
 	}
+	// Minecraft 协议规定 Encryption Response 使用 RSA/PKCS#1 v1.5（不能用 OAEP）。
+	// 标准库出于 Bleichenbacher 攻击风险将该 API 标记为弃用，但协议兼容性
+	// 要求此处保留 PKCS#1 v1.5；不能替换为 rsa.DecryptOAEP。
 	sharedSecret, err := rsa.DecryptPKCS1v15(nil, s.server.rsaKey, encryptedSecret)
 	if err != nil || len(sharedSecret) != 16 {
 		slog.Debug("failed to decrypt shared secret", "remote", s.conn.RemoteAddr(), "error", err)

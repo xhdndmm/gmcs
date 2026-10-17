@@ -76,6 +76,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", cfg.ListenAddress, err)
 	}
+	// Serve 正常路径也会关闭 listener；这里兜底覆盖 Serve 之前的错误返回路径。
+	defer func() { _ = listener.Close() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGHUP, syscall.SIGTERM)
 	defer stop()

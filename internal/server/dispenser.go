@@ -91,12 +91,6 @@ func isDispenserBlockName(name string) bool {
 	return name == dispenserBlockName || name == dropperBlockName
 }
 
-// isDispenserState 报告方块状态是否为发射器/投掷器（用于注册表扫描）。
-func isDispenserState(state uint16) bool {
-	return registry.IsPropertyBlockState(dispenserBlockName, state) ||
-		registry.IsPropertyBlockState(dropperBlockName, state)
-}
-
 // refreshDispenser 处理发射器/投掷器的邻居变化（原版 DispenserBlock.neighborChanged）：
 // 电源上升沿调度 4 tick 后的发射计划刻并置 triggered；下降沿清除 triggered。
 func (s *Server) refreshDispenser(w *world.World, pos [3]int, state uint16) {

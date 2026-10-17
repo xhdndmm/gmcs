@@ -881,7 +881,7 @@ pprof（`BenchmarkServerTick`，alloc_objects）显示 tick 分配的 ≈95% 来
 生物环境扫描对每个方块状态最多做 3 次“水/岩浆/火”字符串 map 查找
 （`IsPropertyBlockState`）。新增按状态 ID 索引的类别位表 `StateKindOf`
 （约 26 KiB，包初始化时构建），`isWaterState`/`isLavaState`/
-`isFireBlockState` 与 `environmentInBox` 的逐格判定退化为一次数组访问。
+`registry.IsFireState` 与 `environmentInBox` 的逐格判定退化为一次数组访问。
 
 **2. 玩家状态的原子快照（session/entity）**
 

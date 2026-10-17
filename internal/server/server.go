@@ -424,6 +424,8 @@ func New(cfg config.Config) (*Server, error) {
 	if cfg.OnlineMode {
 		key, err := rsa.GenerateKey(rand.Reader, 1024)
 		if err != nil {
+			// 世界已启动预生成 worker：初始化失败时必须关闭，避免 goroutine 泄漏。
+			_ = gameWorld.Close()
 			return nil, fmt.Errorf("生成 RSA 密钥：%w", err)
 		}
 		rsaKey = key
@@ -473,6 +475,8 @@ func New(cfg config.Config) (*Server, error) {
 	server.initBrewingItems()
 	bucketItemID, bucketLavaItemID = initFurnaceItems()
 	if server.registryPackets, server.tagsPacket, err = buildRegistryPackets(); err != nil {
+		// 世界预生成 worker 已启动，构造注册表失败时同样需要释放。
+		_ = gameWorld.Close()
 		return nil, fmt.Errorf("构造注册表数据包：%w", err)
 	}
 	if len(server.containerDefs) == 0 {

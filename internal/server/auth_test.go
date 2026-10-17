@@ -213,6 +213,7 @@ func TestOnlineLoginFlow(t *testing.T) {
 	}
 
 	// Encryption Response（明文）：用服务器公钥加密共享密钥与验证令牌。
+	// 模拟原版客户端：协议固定 RSA/PKCS#1 v1.5，因此使用已弃用的 EncryptPKCS1v15。
 	publicKey, err := x509.ParsePKIXPublicKey(publicKeyDER)
 	if err != nil {
 		t.Fatalf("parse public key: %v", err)
