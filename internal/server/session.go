@@ -1575,6 +1575,8 @@ func splitItemCount(entry string) (string, int32) {
 }
 
 // keepAliveLoop 周期发送 Keep Alive；写失败时关闭连接以唤醒读循环。
+// 与原版一致：上一轮 Keep Alive 未响应时不再发送新包，而是按超时断开
+// （避免替换 pending 后旧响应被误判为“未请求的 Keep Alive”）。
 func (s *session) keepAliveLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(s.server.keepAliveInterval)
 	defer ticker.Stop()
@@ -1583,8 +1585,13 @@ func (s *session) keepAliveLoop(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			id := time.Now().UnixMilli()
 			s.keepAliveMu.Lock()
+			if s.pendingKeepAlive != 0 {
+				s.keepAliveMu.Unlock()
+				s.kickWithComponent("disconnect.timeout")
+				return
+			}
+			id := time.Now().UnixMilli()
 			s.pendingKeepAlive = id
 			s.keepAliveMu.Unlock()
 			if err := s.writePacket(protocol.EncodeKeepAlivePlay(id)); err != nil {
@@ -1610,12 +1617,20 @@ func (s *session) playReadLoop() {
 		}
 		switch packetID {
 		case protocol.PlayServerboundPacketIDKeepAlive:
-			if id, err := protocol.ParsePlayKeepAlive(packet); err == nil {
-				s.keepAliveMu.Lock()
-				if s.pendingKeepAlive == id {
-					s.pendingKeepAlive = 0
-				}
-				s.keepAliveMu.Unlock()
+			id, err := protocol.ParsePlayKeepAlive(packet)
+			if err != nil {
+				continue
+			}
+			s.keepAliveMu.Lock()
+			matched := s.pendingKeepAlive != 0 && s.pendingKeepAlive == id
+			if matched {
+				s.pendingKeepAlive = 0
+			}
+			s.keepAliveMu.Unlock()
+			if !matched {
+				// 原版：未请求或过期的 Keep Alive 直接断开。
+				s.kickWithComponent("disconnect.timeout")
+				return
 			}
 		case protocol.PlayServerboundPacketIDChatMessage:
 			if !s.chatBudget.allow(time.Now(), chatRate, chatBurst) {

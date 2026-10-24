@@ -38,7 +38,8 @@ import (
 // 经验修补（mending）：拾取的经验先用于修复带该附魔的物品
 // （每点经验 2 点耐久，见 repairWithExperience），剩余经验才计入经验条。
 //
-// 已知限制（见 docs/TODO.md）：经验球不随区块保存/加载（重启后未拾取的经验球消失）。
+// 经验球随维度目录的 entities.json 保存 Value/Count/Age/速度（原版
+// ExperienceOrb 保存 Age 与 Value），重启或区块重载后恢复。
 
 // 经验球常量（与原版一致）。
 const (

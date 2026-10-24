@@ -69,6 +69,84 @@ func TestMobPersistence(t *testing.T) {
 	}
 }
 
+// TestEntityPersistenceRejectsInvalidCoordinates 验证异常坐标的实体记录被跳过，
+// 不会以 NaN/极端坐标进入物理与协议编码。
+func TestEntityPersistenceRejectsInvalidCoordinates(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	content := []byte(`{
+		"mobs":[{"type":"minecraft:zombie","x":1e300,"y":64,"z":0,"health":20}],
+		"items":[{"item":"minecraft:stone","count":1,"x":0,"y":1e300,"z":0}],
+		"arrows":[{"x":0,"y":64,"z":1e300,"damage":6}],
+		"xp_orbs":[{"x":1e300,"y":64,"z":0,"value":7}]
+	}`)
+	if err := os.WriteFile(filepath.Join(cfg.WorldDir, entityFileName), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+	instance.entityMu.Lock()
+	mobs, items, arrows, orbs := len(instance.mobs), len(instance.items), len(instance.arrows), len(instance.xpOrbs)
+	instance.entityMu.Unlock()
+	if mobs != 0 || items != 0 || arrows != 0 || orbs != 0 {
+		t.Fatalf("异常记录未被跳过：mobs=%d items=%d arrows=%d orbs=%d", mobs, items, arrows, orbs)
+	}
+}
+
+// TestXPOrbPersistence 验证经验球的 Value/Count/Age/速度随 entities.json 恢复。
+func TestXPOrbPersistence(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	first, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawnX, spawnY, spawnZ := first.spawnPositionFor(world.DimensionOverworld)
+	orb := first.spawnXPOrb(world.DimensionOverworld, spawnX+1, spawnY+2, spawnZ+1, 7)
+	if orb == nil {
+		t.Fatal("spawnXPOrb returned nil")
+	}
+	first.entityMu.Lock()
+	orb.Count = 3
+	orb.AgeTicks = 123
+	orb.VelX, orb.VelY, orb.VelZ = 0.5, -0.25, 0.125
+	first.entityMu.Unlock()
+	if err := first.saveEntities(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.testWorld().Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.testWorld().Close()
+	second.entityMu.Lock()
+	restored := make([]*xpOrb, 0, len(second.xpOrbs))
+	for _, o := range second.xpOrbs {
+		restored = append(restored, o)
+	}
+	second.entityMu.Unlock()
+	if len(restored) != 1 {
+		t.Fatalf("expected 1 restored xp orb, got %d", len(restored))
+	}
+	got := restored[0]
+	if got.Value != 7 || got.Count != 3 || got.AgeTicks != 123 {
+		t.Fatalf("restored orb = value %d count %d age %d, want 7/3/123", got.Value, got.Count, got.AgeTicks)
+	}
+	if got.X != spawnX+1 || got.Y != spawnY+2 || got.Z != spawnZ+1 {
+		t.Fatalf("restored orb position = (%v,%v,%v)", got.X, got.Y, got.Z)
+	}
+	if got.VelX != 0.5 || got.VelY != -0.25 || got.VelZ != 0.125 {
+		t.Fatalf("restored orb velocity = (%v,%v,%v)", got.VelX, got.VelY, got.VelZ)
+	}
+}
+
 // TestMobPersistenceSkipsUnknownType 验证未知生物类型被跳过而不是导致失败。
 func TestMobPersistenceSkipsUnknownType(t *testing.T) {
 	cfg := config.Default()

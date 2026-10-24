@@ -21,14 +21,15 @@ import (
 	"gmcs/internal/world"
 )
 
-// 实体持久化：各维度世界目录下的 entities.json（生物 + 掉落物 + 箭矢）。
+// 实体持久化：各维度世界目录下的 entities.json（生物 + 掉落物 + 箭矢 + 经验球）。
 //
 // 说明：gmcs 的区块存储是自定义格式（不含实体），因此实体单独保存在
 // 维度目录的 entities.json 中（主世界为世界目录，下界/末地为其子目录）；
 // 文件采用“临时文件 + 重命名”的原子写入。恢复时保留类型、位置、朝向、
 // 生命、物品堆叠与 UUID（实体 ID 重新分配）；掉落物的速度、存活时间与
 // 拾取延迟同样保存（原版 `ItemEntity` 保存 Age/PickupDelay，速度属于
-// 实体基础字段），箭矢的速度与伤害保存。
+// 实体基础字段），箭矢的速度与伤害保存；经验球保存 Value/Count/Age/速度
+// （原版 ExperienceOrb 保存 Age 与 Value）。
 
 // entityFileName 是世界目录中实体数据的文件名。
 const entityFileName = "entities.json"
@@ -46,6 +47,22 @@ type entityFile struct {
 	Mobs   []mobRecord   `json:"mobs"`
 	Items  []itemRecord  `json:"items,omitempty"`
 	Arrows []arrowRecord `json:"arrows,omitempty"`
+	XPOrbs []xpOrbRecord `json:"xp_orbs,omitempty"`
+}
+
+// xpOrbRecord 是一条持久化的经验球。Count 是合并后的可拾取次数
+// （gmcs 的合并计数；原版每个经验球只有 Value）。
+type xpOrbRecord struct {
+	UUID     string  `json:"uuid"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	Z        float64 `json:"z"`
+	VelX     float64 `json:"velX,omitempty"`
+	VelY     float64 `json:"velY,omitempty"`
+	VelZ     float64 `json:"velZ,omitempty"`
+	Value    int32   `json:"value"`
+	Count    int32   `json:"count,omitempty"`
+	AgeTicks int     `json:"ageTicks,omitempty"`
 }
 
 // arrowRecord 是一条持久化的箭矢（保留速度与伤害）。
@@ -84,6 +101,31 @@ type itemRecord struct {
 	TrimMaterial string              `json:"trim_material,omitempty"`
 }
 
+// finiteFloat 报告浮点数是否为有限值（NaN/Inf 会破坏物理与协议编码）。
+func finiteFloat(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+// finitePosition 报告坐标是否全部为有限值。
+func finitePosition(x, y, z float64) bool {
+	return finiteFloat(x) && finiteFloat(y) && finiteFloat(z)
+}
+
+// validStoredY 报告 Y 是否在合理世界范围内（留 64 格余量，兼容掉入虚空/高空的实体）。
+func validStoredY(y float64) bool {
+	return y >= float64(world.WorldMinY-64) && y <= float64(world.WorldMinY+world.WorldHeight+64)
+}
+
+// maxStoredHorizontal 是存档坐标允许的最大水平绝对值（原版世界边界上限
+// 约 3000 万，额外留余量）。
+const maxStoredHorizontal = 30_000_000.0
+
+// validStoredPosition 同时校验有限性、水平范围与 Y 范围。
+func validStoredPosition(x, y, z float64) bool {
+	return finitePosition(x, y, z) && validStoredY(y) &&
+		math.Abs(x) <= maxStoredHorizontal && math.Abs(z) <= maxStoredHorizontal
+}
+
 // storedVelocity 过滤存档中的非有限速度（NaN/Inf 会让物理与协议编码异常），
 // 并对过大速度做限幅（正常玩法下远小于该值）。
 func storedVelocity(v float64) float64 {
@@ -96,6 +138,18 @@ func storedVelocity(v float64) float64 {
 	}
 	if v < -limit {
 		return -limit
+	}
+	return v
+}
+
+// storedDamage 过滤非有限/负伤害并限幅（异常存档不会产生秒杀或 NaN 伤害）。
+func storedDamage(v float32) float32 {
+	if !finiteFloat(float64(v)) || v < 0 {
+		return 0
+	}
+	const limit = 1000
+	if v > limit {
+		return limit
 	}
 	return v
 }
@@ -132,6 +186,7 @@ func (s *Server) saveEntities() error {
 		mobs   []mobRecord
 		items  []itemRecord
 		arrows []arrowRecord
+		xpOrbs []xpOrbRecord
 	}
 	files := make(map[world.Dimension]*dimFile, 3)
 	get := func(dim world.Dimension) *dimFile {
@@ -197,11 +252,26 @@ func (s *Server) saveEntities() error {
 			AgeTicks: a.AgeTicks,
 		})
 	}
+	for _, o := range s.xpOrbs {
+		file := get(o.Dim)
+		file.xpOrbs = append(file.xpOrbs, xpOrbRecord{
+			UUID:     hex.EncodeToString(o.UUID[:]),
+			X:        o.X,
+			Y:        o.Y,
+			Z:        o.Z,
+			VelX:     o.VelX,
+			VelY:     o.VelY,
+			VelZ:     o.VelZ,
+			Value:    o.Value,
+			Count:    o.Count,
+			AgeTicks: o.AgeTicks,
+		})
+	}
 	s.entityMu.Unlock()
 
 	var firstErr error
 	for _, file := range files {
-		content, err := json.MarshalIndent(entityFile{Mobs: file.mobs, Items: file.items, Arrows: file.arrows}, "", "  ")
+		content, err := json.MarshalIndent(entityFile{Mobs: file.mobs, Items: file.items, Arrows: file.arrows, XPOrbs: file.xpOrbs}, "", "  ")
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -251,11 +321,16 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 	restored := 0
 	restoredItems := 0
 	restoredArrows := 0
+	restoredOrbs := 0
 	s.entityMu.Lock()
 	for _, record := range file.Mobs {
 		kind, ok := kindByName[record.Type]
 		if !ok {
 			slog.Warn("跳过不支持的生物类型", "type", record.Type)
+			continue
+		}
+		if !validStoredPosition(record.X, record.Y, record.Z) {
+			slog.Warn("跳过坐标无效的生物记录", "type", record.Type)
 			continue
 		}
 		typeID, ok := s.mobTypeIDs[kind]
@@ -270,8 +345,15 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 		}
 		stats := mobKinds[kind]
 		health := record.Health
-		if health <= 0 {
+		if !finiteFloat(float64(health)) || health <= 0 || health > stats.health {
 			health = stats.health
+		}
+		yaw, pitch := record.Yaw, record.Pitch
+		if !finiteFloat(float64(yaw)) {
+			yaw = 0
+		}
+		if !finiteFloat(float64(pitch)) {
+			pitch = 0
 		}
 		m := &mob{
 			ID:     s.entityIDs.Add(1),
@@ -282,8 +364,8 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 			X:      record.X,
 			Y:      record.Y,
 			Z:      record.Z,
-			Yaw:    record.Yaw,
-			Pitch:  record.Pitch,
+			Yaw:    yaw,
+			Pitch:  pitch,
 			Health: health,
 		}
 		// 着火时长限幅（异常存档不会让生物永久燃烧）。
@@ -293,6 +375,10 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 		restored++
 	}
 	for _, record := range file.Items {
+		if !validStoredPosition(record.X, record.Y, record.Z) {
+			slog.Warn("跳过坐标无效的掉落物记录", "item", record.Item)
+			continue
+		}
 		stack, itemErr := item.FromName(record.Item, record.Count)
 		if itemErr != nil {
 			slog.Warn("跳过无效的掉落物记录", "item", record.Item, "error", itemErr)
@@ -307,7 +393,7 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 			stack.TrimPattern = record.TrimPattern
 			stack.TrimMaterial = record.TrimMaterial
 		}
-		stack.Count = min(stack.Count, stack.MaxStack())
+		stack = sanitizeStoredStack(stack)
 		uuid, uuidErr := parseMobUUID(record.UUID)
 		if uuidErr != nil {
 			slog.Warn("掉落物的 UUID 无效，重新生成", "uuid", record.UUID, "error", uuidErr)
@@ -334,6 +420,10 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 		if !s.arrowsEnabled {
 			break
 		}
+		if !validStoredPosition(record.X, record.Y, record.Z) {
+			slog.Warn("跳过坐标无效的箭矢记录")
+			continue
+		}
 		uuid, uuidErr := parseMobUUID(record.UUID)
 		if uuidErr != nil {
 			slog.Warn("箭矢的 UUID 无效，重新生成", "uuid", record.UUID, "error", uuidErr)
@@ -346,14 +436,51 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 			X:        record.X,
 			Y:        record.Y,
 			Z:        record.Z,
-			VelX:     record.VelX,
-			VelY:     record.VelY,
-			VelZ:     record.VelZ,
-			Damage:   record.Damage,
-			AgeTicks: record.AgeTicks,
+			VelX:     storedVelocity(record.VelX),
+			VelY:     storedVelocity(record.VelY),
+			VelZ:     storedVelocity(record.VelZ),
+			Damage:   storedDamage(record.Damage),
+			AgeTicks: clampStoredInt(record.AgeTicks, 0, arrowLifetimeTicks),
 		}
 		s.arrows[a.ID] = a
 		restoredArrows++
+	}
+	if s.xpOrbsEnabled {
+		for _, record := range file.XPOrbs {
+			if !validStoredPosition(record.X, record.Y, record.Z) {
+				slog.Warn("跳过坐标无效的经验球记录")
+				continue
+			}
+			if record.Value <= 0 {
+				slog.Warn("跳过数值无效的经验球记录", "value", record.Value)
+				continue
+			}
+			uuid, uuidErr := parseMobUUID(record.UUID)
+			if uuidErr != nil {
+				slog.Warn("经验球的 UUID 无效，重新生成", "uuid", record.UUID, "error", uuidErr)
+				uuid = newEntityUUID()
+			}
+			count := record.Count
+			if count <= 0 {
+				count = 1
+			}
+			o := &xpOrb{
+				ID:       s.entityIDs.Add(1),
+				UUID:     uuid,
+				Dim:      dim,
+				Value:    int32(clampStoredInt(int(record.Value), 1, 32767)),
+				Count:    int32(clampStoredInt(int(count), 1, 100000)),
+				X:        record.X,
+				Y:        record.Y,
+				Z:        record.Z,
+				VelX:     storedVelocity(record.VelX),
+				VelY:     storedVelocity(record.VelY),
+				VelZ:     storedVelocity(record.VelZ),
+				AgeTicks: clampStoredInt(record.AgeTicks, 0, xpOrbLifetime),
+			}
+			s.xpOrbs[o.ID] = o
+			restoredOrbs++
+		}
 	}
 	s.entityMu.Unlock()
 	if restored > 0 {
@@ -364,6 +491,9 @@ func (s *Server) loadEntitiesFor(dim world.Dimension) error {
 	}
 	if restoredArrows > 0 {
 		slog.Info("restored arrows from disk", "dimension", dim, "count", restoredArrows)
+	}
+	if restoredOrbs > 0 {
+		slog.Info("restored experience orbs from disk", "dimension", dim, "count", restoredOrbs)
 	}
 	return nil
 }

@@ -34,6 +34,9 @@ type arrowEntity struct {
 	// OwnerID 是射出该箭的玩家实体 ID（0 = 生物/环境箭矢）。
 	// 用于避免自伤、决定击杀经验归属。
 	OwnerID int32
+	// ShooterMobID 是射出该箭的生物实体 ID（0 = 玩家/环境箭矢）。
+	// 扫掠命中会跳过射手自身（箭矢生成在射手碰撞盒内）。
+	ShooterMobID int32
 	// Knockback 是冲击附魔等级（命中生物时额外击退）。
 	Knockback int32
 	// Flame 表示火焰附魔（命中时点燃目标 5 秒）。
@@ -104,9 +107,49 @@ func (s *Server) fireArrow(p pendingArrow) {
 	if arrow == nil {
 		return
 	}
+	s.entityMu.Lock()
+	arrow.ShooterMobID = p.mobID
+	s.entityMu.Unlock()
 	s.broadcastToNearby(p.dim,
 		protocol.EncodeEntitySoundEffect(s.soundArrowShoot, protocol.SoundCategoryHostile, p.mobID, 1, 1.2, 0),
 		arrow.X, arrow.Z, s.playerSnapshot())
+}
+
+// segmentIntersectsBox 报告线段 (x0,y0,z0)-(x1,y1,z1) 是否与轴对齐盒相交
+// （slab 方法）。用于箭矢的扫掠命中判定：箭速可达 3 格/tick，只在终点
+// 检测会直接穿过 0.6 格宽的生物。
+func segmentIntersectsBox(x0, y0, z0, x1, y1, z1 float64, box world.Box) bool {
+	tmin, tmax := 0.0, 1.0
+	if !clipSlab(x1-x0, x0, box.MinX, box.MaxX, &tmin, &tmax) {
+		return false
+	}
+	if !clipSlab(y1-y0, y0, box.MinY, box.MaxY, &tmin, &tmax) {
+		return false
+	}
+	return clipSlab(z1-z0, z0, box.MinZ, box.MaxZ, &tmin, &tmax)
+}
+
+// clipSlab 用一条轴上的区间裁剪参数区间 [tmin, tmax]。
+func clipSlab(d, origin, minValue, maxValue float64, tmin, tmax *float64) bool {
+	if math.Abs(d) < 1e-12 {
+		return origin >= minValue && origin <= maxValue
+	}
+	t1 := (minValue - origin) / d
+	t2 := (maxValue - origin) / d
+	if t1 > t2 {
+		t1, t2 = t2, t1
+	}
+	*tmin = max(*tmin, t1)
+	*tmax = min(*tmax, t2)
+	return *tmin <= *tmax
+}
+
+// expandBox 返回盒向外扩张 radius 的副本。
+func expandBox(box world.Box, radius float64) world.Box {
+	return world.Box{
+		MinX: box.MinX - radius, MinY: box.MinY - radius, MinZ: box.MinZ - radius,
+		MaxX: box.MaxX + radius, MaxY: box.MaxY + radius, MaxZ: box.MaxZ + radius,
+	}
 }
 
 // arrowHit 是一次待结算的箭矢玩家命中（位置为命中瞬间的快照）。
@@ -201,13 +244,11 @@ func (s *Server) tickArrows(players []*session) {
 		// 生物命中（在玩家之前检查；跳过死亡生物）。
 		hitMob := false
 		for _, m := range s.mobs {
-			if m.Dim != a.Dim || m.Dead {
+			if m.Dim != a.Dim || m.Dead || m.ID == a.ShooterMobID {
 				continue
 			}
-			box := mobBox(m.X, m.Y, m.Z)
-			if a.X < box.MinX-arrowHitRadius || a.X > box.MaxX+arrowHitRadius ||
-				a.Y < box.MinY-arrowHitRadius || a.Y > box.MaxY+arrowHitRadius ||
-				a.Z < box.MinZ-arrowHitRadius || a.Z > box.MaxZ+arrowHitRadius {
+			box := expandBox(mobBox(m.X, m.Y, m.Z), arrowHitRadius)
+			if !segmentIntersectsBox(startX, startY, startZ, a.X, a.Y, a.Z, box) {
 				continue
 			}
 			env := mobEnvironment{dim: a.Dim, kind: m.Kind, x: m.X, z: m.Z}
@@ -237,10 +278,8 @@ func (s *Server) tickArrows(players []*session) {
 					continue
 				}
 				px, py, pz, _, _ := player.playerPosition()
-				box := playerBox(px, py, pz)
-				if a.X < box.MinX-arrowHitRadius || a.X > box.MaxX+arrowHitRadius ||
-					a.Y < box.MinY-arrowHitRadius || a.Y > box.MaxY+arrowHitRadius ||
-					a.Z < box.MinZ-arrowHitRadius || a.Z > box.MaxZ+arrowHitRadius {
+				box := expandBox(playerBox(px, py, pz), arrowHitRadius)
+				if !segmentIntersectsBox(startX, startY, startZ, a.X, a.Y, a.Z, box) {
 					continue
 				}
 				hits = append(hits, arrowHit{
@@ -273,7 +312,12 @@ func (s *Server) tickArrows(players []*session) {
 		s.broadcastToNearby(move.dim, move.packet, move.x, move.z, players)
 	}
 	for _, removal := range removals {
-		s.broadcastPacket(protocol.EncodeEntityDestroy([]int32{removal.id}))
+		destroy := protocol.EncodeEntityDestroy([]int32{removal.id})
+		for _, player := range players {
+			if player.dimensionID() == removal.dim {
+				player.tryWrite(destroy)
+			}
+		}
 		sound := s.soundArrowHit
 		if removal.block {
 			sound = s.soundArrowHitBlock

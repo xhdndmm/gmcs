@@ -12,6 +12,7 @@ import (
 	"gmcs/internal/config"
 	"gmcs/internal/item"
 	"gmcs/internal/protocol"
+	"gmcs/internal/world"
 )
 
 // 堆肥桶测试：
@@ -114,6 +115,31 @@ func TestComposterReadyRecovery(t *testing.T) {
 		}
 	}
 	t.Fatal("level 7 应在兜底扫描周期内转换为 8")
+}
+
+// TestComposterScheduledOnChunkLoad 验证新加载区块中的 level 7 堆肥桶会
+// 立即登记转换（不再依赖 600 tick 兜底扫描）。
+func TestComposterScheduledOnChunkLoad(t *testing.T) {
+	instance := newHopperTestServer(t)
+	x, z := 40, 40
+	groundY := hopperTestPad(t, instance, x, z, 2)
+	setComposterLevel(t, instance, x, groundY+1, z, 7)
+
+	instance.registerLoadedChunkBlocks()
+	key := composterKey{dim: world.DimensionOverworld, x: x, y: groundY + 1, z: z}
+	instance.composterMu.Lock()
+	_, scheduled := instance.composterDue[key]
+	instance.composterMu.Unlock()
+	if !scheduled {
+		t.Fatal("新区块加载后 level 7 堆肥桶未登记转换")
+	}
+	for i := 0; i < composterReadyDelay+2; i++ {
+		if composterLevelAt(t, instance, x, groundY+1, z) == 8 {
+			return
+		}
+		instance.tick()
+	}
+	t.Fatal("已登记的堆肥桶未在 20 tick 内完成转换")
 }
 
 // TestComposterHopperInsert 验证上方漏斗向堆肥桶插入：

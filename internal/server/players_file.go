@@ -328,11 +328,17 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		s.setDimension(dim)
 	}
 	x, y, z := record.X, record.Y, record.Z
-	if math.IsNaN(x) || math.IsNaN(y) || math.IsNaN(z) ||
-		math.IsInf(x, 0) || math.IsInf(y, 0) || math.IsInf(z, 0) {
+	if !validStoredPosition(x, y, z) {
 		x, y, z = s.server.spawnPositionFor(s.dimensionID())
 	}
-	s.setPlayerPosition(x, y, z, record.Yaw, record.Pitch)
+	yaw, pitch := record.Yaw, record.Pitch
+	if !finiteFloat(float64(yaw)) {
+		yaw = 0
+	}
+	if !finiteFloat(float64(pitch)) || pitch < -90 || pitch > 90 {
+		pitch = 0
+	}
+	s.setPlayerPosition(x, y, z, yaw, pitch)
 
 	s.stateMu.Lock()
 	switch {
@@ -382,7 +388,7 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		stack.CustomName = stored.CustomName
 		stack.Enchantments = itemEnchantments(stored.Enchantments)
 		applyStoredTrim(&stack, stored)
-		s.enderChest.Set(stored.Slot, stack)
+		s.enderChest.Set(stored.Slot, sanitizeStoredStack(stack))
 	}
 	for _, stored := range record.Inventory {
 		if stored.Slot < 0 || stored.Slot >= item.InventorySlots || stored.Count <= 0 {
@@ -399,6 +405,24 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		stack.CustomName = stored.CustomName
 		stack.Enchantments = itemEnchantments(stored.Enchantments)
 		applyStoredTrim(&stack, stored)
-		s.inventory.Set(stored.Slot, stack)
+		s.inventory.Set(stored.Slot, sanitizeStoredStack(stack))
 	}
+}
+
+// sanitizeStoredStack 限制持久化物品的堆叠数量与耐久值；不可损坏物品的
+// damage 会被清零（否则客户端会显示异常耐久并在下一次槽位同步时出错）。
+func sanitizeStoredStack(stack item.Stack) item.Stack {
+	stack.Count = min(stack.Count, stack.MaxStack())
+	if maxDamage, ok := registry.MaxDamage(stack.ItemID); ok {
+		stack.Damage = min(max(stack.Damage, 0), maxDamage)
+	} else {
+		stack.Damage = 0
+	}
+	if stack.RepairCost < 0 {
+		stack.RepairCost = 0
+	}
+	if stack.PotionID < 0 || int(stack.PotionID) > registry.SyncEntryCount("minecraft:potion") {
+		stack.PotionID = 0
+	}
+	return stack
 }

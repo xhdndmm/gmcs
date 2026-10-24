@@ -192,19 +192,16 @@ func (s *Server) destroyHopper(dim world.Dimension, breaker *session, x, y, z in
 // 每 hopperFullScanInterval tick 做一次全量扫描兜底（覆盖命令放置等非交互路径，
 // 以及极端情况下加载跟踪列表溢出导致的遗漏）。
 func (s *Server) tickHoppers() {
+	// 新加载区块的增量扫描始终执行：除漏斗外还要为 level 7 的堆肥桶
+	// 重新登记定时转换（区块卸载/重启后无需等待 600 tick 兜底扫描）。
+	s.registerLoadedChunkBlocks()
 	if !s.hoppersEnabled {
 		return
 	}
 	s.hopperScanCounter++
-	fullScan := false
 	if s.hopperScanCounter >= hopperFullScanInterval {
 		s.hopperScanCounter = 0
-		fullScan = true
-	}
-	if fullScan {
 		s.scanHoppers()
-	} else {
-		s.registerLoadedChunkHoppers()
 	}
 	s.hopperMu.Lock()
 	states := make([]*hopperState, 0, len(s.hoppers))
@@ -269,13 +266,21 @@ func (s *Server) knownWorlds() []loadedWorld {
 	return worlds
 }
 
-// registerLoadedChunkHoppers 只扫描自上次调用以来新加载进内存的区块，
-// 注册其中的漏斗（含尚无方块实体记录的空漏斗）。
-func (s *Server) registerLoadedChunkHoppers() {
+// registerLoadedChunkBlocks 只扫描自上次调用以来新加载进内存的区块：
+// 注册其中的漏斗（含尚无方块实体记录的空漏斗），并为 level 7 的堆肥桶
+// 登记 20 tick 转换（区块加载后立即恢复，而不必等周期兜底扫描）。
+func (s *Server) registerLoadedChunkBlocks() {
 	for _, loaded := range s.knownWorlds() {
 		for _, pos := range loaded.world.TakeLoadedChunks() {
-			for _, block := range loaded.world.ChunkBlockStatePositions(pos.X, pos.Z, isHopperState) {
-				s.registerHopper(loaded.dim, block[0], block[1], block[2])
+			if s.hoppersEnabled {
+				for _, block := range loaded.world.ChunkBlockStatePositions(pos.X, pos.Z, isHopperState) {
+					s.registerHopper(loaded.dim, block[0], block[1], block[2])
+				}
+			}
+			for _, block := range loaded.world.ChunkBlockStatePositions(pos.X, pos.Z, isComposterState) {
+				if composterLevelOf(loaded.world.BlockAt(block[0], block[1], block[2])) == 7 {
+					s.scheduleComposterReady(loaded.dim, block[0], block[1], block[2])
+				}
 			}
 		}
 	}

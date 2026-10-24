@@ -260,6 +260,11 @@ func SyncEntryID(registryName, entry string) (int32, bool) {
 	return id, ok
 }
 
+// SyncEntryCount 返回同步注册表的条目数（用于校验持久化中的注册表 ID）。
+func SyncEntryCount(registryName string) int {
+	return len(syncEntries[registryName])
+}
+
 // AllTags 返回需要由服务器在配置阶段通过 Update Tags 完整发送的全部注册表标签：
 // 同步注册表（ID 为服务器发送顺序）与静态注册表（ID 为客户端内置的全局注册表 ID）。
 // 标签无法通过 Known Packs 获取，缺失会导致客户端解析本地数据失败。
