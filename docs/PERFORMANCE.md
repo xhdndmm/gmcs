@@ -1209,6 +1209,34 @@ per-section 索引（需要额外的位置→作物索引结构与其失效维�
 尚未验证：未在真实客户端中观察生长动画与骨粉粒子，也未与原版服务器逐 tick
 对拍生长分布。
 
+### 3.34 放置形态/农业/可开合方块批次后的复测
+
+本批（农业随机刻、方块放置形态、门/栅栏门与红石联动）只在交互路径与随机刻
+路径增加工作；Tick 主循环新增的只有 `tickCrops()`（见 3.33）。复测关键基准
+（`-count=3`，取三次范围）：
+
+```text
+BenchmarkServerTick-20            16032–16149 ns/op    50–56 B/op    1 alloc/op
+BenchmarkServerTickManyPlayers-20   311.1–311.6 µs/op  ~4.6–5.0 KB   30–32 allocs/op
+BenchmarkEntityTracking-20        4.79–4.87 µs/op      0 B/op        0 allocs/op
+BenchmarkCropTick-20              143.1–145.7 ns/op    0 B/op        0 allocs/op
+BenchmarkCropTick256-20           26.2–26.4 µs/op      5 B/op        0 allocs/op
+```
+
+`ServerTick`（16.1 µs）与 3.32 的 16.2 µs、`ManyPlayers`（311 µs）与 3.32 的
+303–312 µs 同量级，未观察到本批引入的 Tick 回归。
+
+放置形态与可开合方块的实现没有进入 Tick 热路径：红石开合只在
+`refreshRedstoneConsumers` 命中门/活板门/栅栏门时执行（需要一次
+`bestNeighborSignal` 与状态查表，均为低频事件）；生成表只保存放置用到的
+组合（约 2.8 千个状态 ID ≈ 6 KiB 数据 + map 开销，源码约 45 KiB），
+没有把台阶/半砖的全部 5–6 千个属性状态加入 `BlockPropertyStates`，
+避免启动内存膨胀。
+
+正确性验证：本批新增测试见 docs/TODO.md（放置形态、门/栅栏门、红石开合、
+农业随机刻）；`go test ./...` 与 `go test -race ./internal/server` 均通过。
+尚未验证：未在真实客户端观察放置/开合/生长表现，也未与原版服务器逐项对拍。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
