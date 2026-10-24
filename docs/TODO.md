@@ -676,6 +676,22 @@
   - 新增基准 `BenchmarkWeatherTick`（稳态）与 `BenchmarkWeatherTickTransition`
     （状态翻转 + 3 个包编码），实测见 [PERFORMANCE.md](PERFORMANCE.md) 3.35。
 
+- [x] 可开合方块音效批次：
+  - 门/活板门/栅栏门开合广播 Sound Effect 包（方块类别、音量 1、音高
+    0.9–1.0），对应原版 `DoorBlock`/`TrapDoorBlock`/`FenceGateBlock` 的
+    `level.playSound(null, pos, open ? xxxOpen : xxxClose, BLOCKS, 1.0F,
+    random*0.1F+0.9F)`；手动右键与红石驱动两条路径都播放；
+  - 音效集合按方块材质分组（对照 `BlockSetType`）：木质 `block.wooden_door.*`/
+    `block.wooden_trapdoor.*`、铁质 `block.iron_*`、铜质（含氧化与打蜡变体）
+    `block.copper_*`、竹 `block.bamboo_wood_*`、樱花木 `block.cherry_wood_*`、
+    下界木 `block.nether_wood_*`，栅栏门统一 `block.fence_gate.*`；
+    音效 ID 在 `New` 中解析（缺失时静默跳过）；
+  - 音高抖动复用与天气共享的独立随机流 `fxRand`（不消耗玩法随机数
+    `nextRandom`，因此不改变既有测试依赖的随机序列）；
+  - 新增测试：`TestOpenableSoundGroups`、`TestTrapdoorTogglePlaysSound`、
+    `TestFenceGateTogglePlaysSound`、`TestDoorTogglePlaysSound`、
+    `TestRedstoneOpenablePlaysSound`。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -732,7 +748,7 @@
   已按原版实现（见上“方块放置形态批次”），但仍存差异：台阶不做邻居形状更新
   （shape 恒为 straight，拐角台阶客户端显示为直台阶）、含水状态一律 false、
   栅栏门的 in_wall 恒为 false、门的铰链未实现邻居双门/固体判定（仅按点击
-  位置，双开门可能同向开启）、开合不广播音效、床/告示牌的放置朝向尚未实现；
+  位置，双开门可能同向开启）、床/告示牌的放置朝向尚未实现；
   可开合方块已响应红石信号（门/活板门/栅栏门，铁门只能由红石开合）
 - 容器限制：窗口距离已按原版实现（眼睛位置到方块碰撞盒 < 方块交互距离属性
   4.5 + 4.0 = 8.5，即 `Container.stillValidBlockEntity` 与

@@ -19,8 +19,9 @@ import (
 //   - DoorBlock/TrapDoorBlock/FenceGateBlock.neighborChanged：powered 变化时
 //     把 powered 与 open 一起设置；门的两半由 updateShape 同步。
 //
-// 已知近似（见 docs/TODO.md）：栅栏门 in_wall 恒为 false；开合不广播音效
-// （客户端自身预测播放）。
+// 已知近似（见 docs/TODO.md）：栅栏门 in_wall 恒为 false；门铰链未采用
+// 邻居双门/固体判定（仅按点击位置回退）；开合音效按方块材质分组广播，
+// 不使用逐方块 BlockSetType 的完整数据。
 
 // isFenceGateState 报告方块状态是否为栅栏门。
 func isFenceGateState(state uint16) bool {
@@ -95,12 +96,13 @@ func (s *Server) toggleFenceGate(player *session, w *world.World, use protocol.U
 		return false
 	}
 	next, found := uint16(0), false
+	opening := false
 	for facing := 0; facing < 4 && !found; facing++ {
 		switch current {
 		case closed[facing]:
-			next, found = open[facing], true
+			next, found, opening = open[facing], true, true
 		case open[facing], powered[facing]:
-			next, found = closed[facing], true
+			next, found, opening = closed[facing], true, false
 		}
 	}
 	if !found {
@@ -110,6 +112,7 @@ func (s *Server) toggleFenceGate(player *session, w *world.World, use protocol.U
 		return false
 	}
 	s.broadcastBlockUpdate(player.dimensionID(), use.X, use.Y, use.Z, int32(next))
+	s.playFenceGateSound(player.dimensionID(), [3]int{use.X, use.Y, use.Z}, opening)
 	return true
 }
 
@@ -174,6 +177,7 @@ func (s *Server) refreshFenceGate(w *world.World, dim world.Dimension, pos [3]in
 		}
 		if w.SetBlock(pos[0], pos[1], pos[2], next) {
 			s.broadcastBlockUpdate(dim, pos[0], pos[1], pos[2], int32(next))
+			s.playFenceGateSound(dim, pos, signal)
 		}
 		return
 	}
@@ -206,6 +210,7 @@ func (s *Server) refreshTrapdoor(w *world.World, dim world.Dimension, pos [3]int
 			}
 			if w.SetBlock(pos[0], pos[1], pos[2], next) {
 				s.broadcastBlockUpdate(dim, pos[0], pos[1], pos[2], int32(next))
+				s.playTrapdoorSound(dim, pos, name, signal)
 			}
 			return
 		}
@@ -253,6 +258,7 @@ func (s *Server) refreshDoor(w *world.World, dim world.Dimension, pos [3]int,
 			if w.SetBlock(pos[0], baseY+1, pos[2], upper) {
 				s.broadcastBlockUpdate(dim, pos[0], baseY+1, pos[2], int32(upper))
 			}
+			s.playDoorSound(dim, [3]int{pos[0], baseY, pos[2]}, name, signal)
 			return
 		}
 	}

@@ -223,14 +223,14 @@ func (s *Server) toggleTrapdoor(player *session, w *world.World, use protocol.Us
 		return false
 	}
 	var next uint16
-	found := false
+	found, opening := false, false
 	for half := 0; half < 2 && !found; half++ {
 		for facing := 0; facing < 4; facing++ {
 			switch current {
 			case closed[half][facing]:
-				next, found = open[half][facing], true
+				next, found, opening = open[half][facing], true, true
 			case open[half][facing]:
-				next, found = closed[half][facing], true
+				next, found, opening = closed[half][facing], true, false
 			}
 			if found {
 				break
@@ -244,8 +244,8 @@ func (s *Server) toggleTrapdoor(player *session, w *world.World, use protocol.Us
 		return false
 	}
 	s.broadcastBlockUpdate(player.dimensionID(), use.X, use.Y, use.Z, int32(next))
-	// 原版播放 block.wooden_trapdoor.toggle / 铁质音效；gmcs 未接入逐方块音效，
-	// 客户端自身预测会播放本地音效。
+	// 开合音效（原版 TrapDoorBlock.useWithoutItem 的 playSound）。
+	s.playTrapdoorSound(player.dimensionID(), [3]int{use.X, use.Y, use.Z}, name, opening)
 	return true
 }
 
@@ -365,18 +365,18 @@ func (s *Server) toggleDoor(player *session, w *world.World, use protocol.UseIte
 		return false
 	}
 	next, sibling := uint16(0), uint16(0)
-	found := false
+	found, opening := false, false
 	for facing := 0; facing < 4 && !found; facing++ {
 		for hinge := 0; hinge < 2; hinge++ {
 			switch current {
 			case closed[half][facing][hinge]:
 				next = open[half][facing][hinge]
 				sibling = open[1-half][facing][hinge]
-				found = true
+				found, opening = true, true
 			case open[half][facing][hinge]:
 				next = closed[half][facing][hinge]
 				sibling = closed[1-half][facing][hinge]
-				found = true
+				found, opening = true, false
 			}
 			if found {
 				break
@@ -400,6 +400,13 @@ func (s *Server) toggleDoor(player *session, w *world.World, use protocol.UseIte
 			s.broadcastBlockUpdate(dim, use.X, siblingY, use.Z, int32(sibling))
 		}
 	}
+	// 开合音效以门的下半格为中心（原版 DoorBlock.setOpen 用当前格，
+	// 客户端表现为同一位置；gmcs 统一取下半格便于两半一致）。
+	baseY := use.Y
+	if half == 1 {
+		baseY = use.Y - 1
+	}
+	s.playDoorSound(dim, [3]int{use.X, baseY, use.Z}, name, opening)
 	return true
 }
 

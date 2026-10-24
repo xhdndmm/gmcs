@@ -354,7 +354,7 @@ func (s *Server) fireTickBody(w *world.World, dim world.Dimension, pos [3]int, p
 	// 0.2 + age × 0.03 的概率直接被浇灭（FireBlock.tick 中先于年龄推进结算）。
 	// 原版还有一个「下方方块属于某标签时免浇灭」的额外条件，gmcs 未建模。
 	if s.isRaining() && s.fireRainingAround(dim, pos[0], pos[1], pos[2]) &&
-		s.weatherNextFloat() < weatherFireExtinguishBase+float32(age)*weatherFireExtinguishPerAge {
+		s.fxNextFloat() < weatherFireExtinguishBase+float32(age)*weatherFireExtinguishPerAge {
 		s.removeFire(w, dim, pos)
 		return
 	}

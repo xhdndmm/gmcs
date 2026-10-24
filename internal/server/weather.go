@@ -41,12 +41,12 @@ import (
 //   - 雷暴的闪电（LightningBolt）、炼药锅积水、雪层堆积未实现。
 const (
 	// gameEventStartRaining/gameEventStopRaining 对应 ClientboundGameEventPacket.Type 1/2。
-	gameEventStartRaining  = 1
-	gameEventStopRaining   = 2
-	gameEventRainLevel     = 7
-	gameEventThunderLevel  = 8
-	weatherLevelStep       = 0.01
-	weatherDefaultRandSeed = 0x2545F4914F6CDD1D
+	gameEventStartRaining = 1
+	gameEventStopRaining  = 2
+	gameEventRainLevel    = 7
+	gameEventThunderLevel = 8
+	weatherLevelStep      = 0.01
+	fxRandDefaultSeed     = 0x2545F4914F6CDD1D
 
 	// 雨天浇灭火焰的概率（原版 FireBlock.tick：0.2F + age * 0.03F）。
 	weatherFireExtinguishBase   = 0.2
@@ -85,14 +85,14 @@ type weatherState struct {
 	oThunderLevel float32
 }
 
-// weatherRandom 返回天气系统专用的确定性伪随机数。
-// 与 nextRandom 分开是为了不让天气抽取打乱生物/火焰等既有随机序列
-// （否则所有既有测试的随机流都会改变）。
-func (s *Server) weatherRandom() uint64 {
+// fxRandom 返回与玩法随机流（nextRandom）分离的确定性伪随机数：
+// 天气周期、音高抖动等抽取都走这条流，避免改变既有测试依赖的
+// nextRandom 序列（生物游荡/火焰蔓延等）。
+func (s *Server) fxRandom() uint64 {
 	for {
-		state := s.weatherRand.Load()
+		state := s.fxRand.Load()
 		next := state + 0x9E3779B97F4A7C15
-		if s.weatherRand.CompareAndSwap(state, next) {
+		if s.fxRand.CompareAndSwap(state, next) {
 			z := next
 			z ^= z >> 30
 			z *= 0xBF58476D1CE4E5B9
@@ -108,7 +108,7 @@ func (s *Server) weatherUniform(min, max int) int {
 	if max <= min {
 		return min
 	}
-	return min + int(s.weatherRandom()%uint64(max-min+1))
+	return min + int(s.fxRandom()%uint64(max-min+1))
 }
 
 // weatherSnapshot 返回当前天气状态的副本。
@@ -348,7 +348,7 @@ func (s *Server) fireRainingAround(dim world.Dimension, x, y, z int) bool {
 		s.isRainingAt(dim, x, y, z+1)
 }
 
-// weatherNextFloat 返回 [0,1) 的确定性随机浮点数（原版 RandomSource.nextFloat）。
-func (s *Server) weatherNextFloat() float32 {
-	return float32(s.weatherRandom()>>40) / float32(1<<24)
+// fxNextFloat 返回 [0,1) 的确定性随机浮点数（原版 RandomSource.nextFloat）。
+func (s *Server) fxNextFloat() float32 {
+	return float32(s.fxRandom()>>40) / float32(1<<24)
 }

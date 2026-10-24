@@ -194,17 +194,26 @@ type Server struct {
 
 	// 天气（见 weather.go）：weather 受 weatherMu 保护（tick goroutine 写、
 	// 命令与登录路径读）；rainingFlag 是只读快照，供实体环境扫描等热路径
-	// 无锁查询（每只生物每 tick 都会问一次）；weatherRand 是天气专用随机流，
-	// 与 nextRandom 分离以免改变既有随机序列；weatherEnabled 为 false 时
+	// 无锁查询（每只生物每 tick 都会问一次）；fxRand 是与玩法随机流
+	// （randState）分离的确定性随机源，天气与音高抖动共用，避免改变
+	// 既有测试依赖的 nextRandom 序列；weatherEnabled 为 false 时
 	// 完全不推进天气（测试通过 joinServer 关闭，保证既有用例的确定性）。
 	weatherMu      sync.Mutex
 	weather        weatherState
 	rainingFlag    atomic.Bool
-	weatherRand    atomic.Uint64
+	fxRand         atomic.Uint64
 	weatherEnabled bool
 	// tickScratch 是 tick 热路径复用的临时切片（由单线程 tick 驱动填充，
 	// 见 tickScratch 的说明）。
 	tickScratch tickScratch
+
+	// 门/活板门/栅栏门开合音效（按 BlockSetType 分组；缺失时为 0，静默）。
+	soundDoorOpen       [openableSoundGroups]int32
+	soundDoorClose      [openableSoundGroups]int32
+	soundTrapdoorOpen   [openableSoundGroups]int32
+	soundTrapdoorClose  [openableSoundGroups]int32
+	soundFenceGateOpen  int32
+	soundFenceGateClose int32
 
 	// 压力板点击音效（按木质/石质/金属分组；缺失时播放时静默跳过）。
 	plateClickOn  [plateSoundGroups]int32
@@ -481,7 +490,7 @@ func New(cfg config.Config) (*Server, error) {
 		spawns:                 make(map[world.Dimension]spawnPoint),
 		weatherEnabled:         true,
 	}
-	server.weatherRand.Store(weatherDefaultRandSeed)
+	server.fxRand.Store(fxRandDefaultSeed)
 	// 预计算主世界出生点（进入世界的第一个玩家必须立即得到可用坐标）。
 	server.spawnPositionFor(world.DimensionOverworld)
 	server.resolveMobRegistryIDs()
@@ -491,6 +500,7 @@ func New(cfg config.Config) (*Server, error) {
 	server.resolveHopperRegistryIDs()
 	server.resolveTntRegistryIDs()
 	server.resolvePlateSounds()
+	server.resolveOpenableSounds()
 	server.resolveFallDamageBlocks()
 	server.resolveContainerDefs()
 	server.initFurnaceKinds()
