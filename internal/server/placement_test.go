@@ -383,20 +383,98 @@ func TestPlaceLeverOnGround(t *testing.T) {
 	}, "右键拉杆应通电")
 }
 
-// TestDoorHingeIndex 验证门铰链按点击位置判定的回退分支。
+// TestDoorHingeIndex 验证门铰链判定：优先看邻居坚固面与相邻下半格门，
+// 否则按点击面与点击位置回退（点击顶面时恒为 left）。
 func TestDoorHingeIndex(t *testing.T) {
-	// 面朝南（stepZ=+1）：点击位置 dx<0.5 → right，dx>=0.5 → left。
-	if got := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), "south"); got != 0 {
-		t.Fatalf("south 中心点击铰链 = %d, want left(0)", got)
+	instance := newHopperTestServer(t)
+	x, z := 50, 50
+	groundY := hopperTestPad(t, instance, x, z, 3)
+	w := instance.testWorld()
+	stone, ok := registry.BlockStateIDs["minecraft:stone"]
+	if !ok {
+		t.Fatal("缺少石头方块状态")
 	}
-	left := protocol.UseItemOn{X: 0, CursorX: 0.2, CursorY: 0.5, CursorZ: 0.5, Direction: 1}
-	if got := doorHingeIndex(left, "south"); got != 1 {
-		t.Fatalf("south 偏西点击铰链 = %d, want right(1)", got)
+	// 点击顶面（Direction=1）：原版回退分支 stepX=stepZ=0 → 恒为 left。
+	top := protocol.UseItemOn{X: x, Y: groundY, Z: z, CursorX: 0.5, CursorY: 1, CursorZ: 0.5, Direction: 1}
+	if got := instance.doorHingeIndex(w, top, x, groundY+1, z); got != 0 {
+		t.Fatalf("点击顶面铰链 = %d, want left(0)", got)
 	}
-	// 面朝东（stepX=+1）：dz>0.5 → right。
-	right := protocol.UseItemOn{X: 0, CursorX: 0.5, CursorY: 0.5, CursorZ: 0.8, Direction: 1}
-	if got := doorHingeIndex(right, "east"); got != 1 {
-		t.Fatalf("east 偏南点击铰链 = %d, want right(1)", got)
+
+	// 点击南面（Direction=3，stepZ=+1）：dx<0.5 → right，dx>0.5 → left。
+	doorY := groundY + 1
+	doorZ := z + 1
+	southRight := protocol.UseItemOn{X: x, Y: doorY, Z: z, CursorX: 0.2, CursorY: 0.5, CursorZ: 0, Direction: 3}
+	if got := instance.doorHingeIndex(w, southRight, x, doorY, doorZ); got != 1 {
+		t.Fatalf("南面偏西点击铰链 = %d, want right(1)", got)
+	}
+	southLeft := protocol.UseItemOn{X: x, Y: doorY, Z: z, CursorX: 0.8, CursorY: 0.5, CursorZ: 0, Direction: 3}
+	if got := instance.doorHingeIndex(w, southLeft, x, doorY, doorZ); got != 0 {
+		t.Fatalf("南面偏东点击铰链 = %d, want left(0)", got)
+	}
+
+	// 顺时针侧（点击南面时 cw=west）有坚固面 → i>0 → right（覆盖点击位置）。
+	w.SetBlock(x-1, doorY, doorZ, stone)
+	if got := instance.doorHingeIndex(w, southLeft, x, doorY, doorZ); got != 1 {
+		t.Fatalf("顺时针侧有坚固面时铰链 = %d, want right(1)", got)
+	}
+	w.SetBlock(x-1, doorY, doorZ, world.AirBlock)
+
+	// 逆时针侧（east）有坚固面 → i<0 → left（覆盖点击位置）。
+	w.SetBlock(x+1, doorY, doorZ, stone)
+	if got := instance.doorHingeIndex(w, southRight, x, doorY, doorZ); got != 0 {
+		t.Fatalf("逆时针侧有坚固面时铰链 = %d, want left(0)", got)
+	}
+	w.SetBlock(x+1, doorY, doorZ, world.AirBlock)
+
+	// 逆时针侧是门的下半格 → right；顺时针侧是门的下半格 → left。
+	lower := registry.PlacementDoors["minecraft:oak_door"][0][0][0]
+	w.SetBlock(x+1, doorY, doorZ, lower)
+	if got := instance.doorHingeIndex(w, southLeft, x, doorY, doorZ); got != 1 {
+		t.Fatalf("逆时针侧有下半格门时铰链 = %d, want right(1)", got)
+	}
+	w.SetBlock(x+1, doorY, doorZ, world.AirBlock)
+	w.SetBlock(x-1, doorY, doorZ, lower)
+	if got := instance.doorHingeIndex(w, southRight, x, doorY, doorZ); got != 0 {
+		t.Fatalf("顺时针侧有下半格门时铰链 = %d, want left(0)", got)
+	}
+}
+
+// TestPlaceDoorPoweredWhenSignal 验证放置位置（或其上方一格）有红石信号时，
+// 门以 open=true、powered=true 放置（原版 DoorBlock.getStateForPlacement）。
+func TestPlaceDoorPoweredWhenSignal(t *testing.T) {
+	instance := newHopperTestServer(t)
+	x, z := 54, 54
+	groundY := hopperTestPad(t, instance, x, z, 4)
+	w := instance.testWorld()
+	redstone, ok := registry.BlockStateIDs["minecraft:redstone_block"]
+	if !ok {
+		t.Fatal("缺少红石块方块状态")
+	}
+	player := &session{server: instance, name: "DoorSignal"}
+	player.setPlayerPosition(float64(x)+0.5, float64(groundY+1), float64(z)+0.5, 0, 0)
+	use := protocol.UseItemOn{X: x, Y: groundY, Z: z, CursorX: 0.5, CursorY: 1, CursorZ: 0.5, Direction: 1}
+	if !instance.placeDoor(player, w, world.DimensionOverworld, use, "minecraft:oak_door") {
+		t.Fatal("门放置失败")
+	}
+	closed := registry.PlacementDoors["minecraft:oak_door"]
+	powered := registry.PlacementDoorsPowered["minecraft:oak_door"]
+	facing := yawToFacing(0)
+	facingIndex := horizontalFacingIndex(facing)
+	if got := w.BlockAt(x, groundY+1, z); got != closed[0][facingIndex][0] {
+		t.Fatalf("无信号时门应为关闭状态：%d want %d", got, closed[0][facingIndex][0])
+	}
+	// 移除门后在旁边放红石块，再次放置 → 直接是通电打开状态。
+	w.SetBlock(x, groundY+1, z, world.AirBlock)
+	w.SetBlock(x, groundY+2, z, world.AirBlock)
+	w.SetBlock(x+1, groundY+1, z, redstone)
+	if !instance.placeDoor(player, w, world.DimensionOverworld, use, "minecraft:oak_door") {
+		t.Fatal("第二次门放置失败")
+	}
+	if got := w.BlockAt(x, groundY+1, z); got != powered[0][facingIndex][0] {
+		t.Fatalf("相邻红石块时门应为通电打开状态：%d want %d", got, powered[0][facingIndex][0])
+	}
+	if got := w.BlockAt(x, groundY+2, z); got != powered[1][facingIndex][0] {
+		t.Fatalf("门上半格应为通电打开状态：%d want %d", got, powered[1][facingIndex][0])
 	}
 }
 
@@ -417,7 +495,8 @@ func TestPlaceDoorBothHalves(t *testing.T) {
 	sendUseItemOn(t, conn, x, groundY, z, 1)
 	table := registry.PlacementDoors["minecraft:oak_door"]
 	facing := yawToFacing(yaw)
-	hinge := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), facing)
+	// 点击顶面放置 → 铰链恒为 left（原版 getHinge 回退分支）。
+	hinge := 0
 	lower := table[0][horizontalFacingIndex(facing)][hinge]
 	upper := table[1][horizontalFacingIndex(facing)][hinge]
 	waitFor(t, func() bool { return w.BlockAt(x, groundY+1, z) == lower }, "门下半格未放置")
@@ -470,7 +549,7 @@ func TestDoorToggleBothHalves(t *testing.T) {
 	player.inventory.Set(item.SlotHotbarStart, testStack(t, "minecraft:oak_door", 1))
 	_, _, _, yaw, _ := player.playerPosition()
 	facing := yawToFacing(yaw)
-	hinge := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), facing)
+	hinge := 0 // 点击顶面放置 → left
 	facingIndex := horizontalFacingIndex(facing)
 	closed := registry.PlacementDoors["minecraft:oak_door"]
 	open := registry.PlacementDoorsOpen["minecraft:oak_door"]
@@ -505,7 +584,7 @@ func TestDoorBreakDropsOnce(t *testing.T) {
 	player.inventory.Set(item.SlotHotbarStart, testStack(t, "minecraft:oak_door", 1))
 	_, _, _, yaw, _ := player.playerPosition()
 	facing := yawToFacing(yaw)
-	hinge := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), facing)
+	hinge := 0 // 点击顶面放置 → left
 	facingIndex := horizontalFacingIndex(facing)
 	closed := registry.PlacementDoors["minecraft:oak_door"]
 	w.SetBlock(x, groundY+1, z, closed[0][facingIndex][hinge])

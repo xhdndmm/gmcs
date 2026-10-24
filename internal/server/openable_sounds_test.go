@@ -136,7 +136,8 @@ func TestDoorTogglePlaysSound(t *testing.T) {
 	player.inventory.Set(item.SlotHotbarStart, testStack(t, "minecraft:oak_door", 1))
 	_, _, _, yaw, _ := player.playerPosition()
 	facing := yawToFacing(yaw)
-	hinge := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), facing)
+	// 点击顶面放置 → 铰链恒为 left（原版 getHinge 回退分支）。
+	hinge := 0
 	facingIndex := horizontalFacingIndex(facing)
 	closed := registry.PlacementDoors["minecraft:oak_door"]
 	w.SetBlock(x, groundY+1, z, closed[0][facingIndex][hinge])

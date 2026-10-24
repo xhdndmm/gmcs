@@ -252,14 +252,69 @@ func (s *Server) toggleTrapdoor(player *session, w *world.World, use protocol.Us
 // —— 门（占上下两格） ——
 //
 // 对照 1.21.11 DoorBlock.getStateForPlacement：facing = 玩家水平朝向，
-// 铰链由点击位置回退分支决定（邻居门/固体的判定未实现，见 docs/TODO.md），
-// open/powered = 位置是否有红石信号（gmcs 未实现该检查，恒为关闭）。
+// hinge 由 DoorBlock.getHinge 决定（邻居坚固面/相邻门 + 点击位置回退），
+// open/powered = 位置（含上方一格）是否有红石信号。
 
-// doorHingeIndex 返回门的铰链索引（0=left、1=right），对应原版
-// DoorBlock.getHinge 中按点击位置判定的回退分支。
-func doorHingeIndex(use protocol.UseItemOn, facing string) int {
+// doorLowerAt 报告该位置是否为门的下半格（原版 DoorBlock.getHinge 中的
+// `state.getBlock() instanceof DoorBlock && HALF == LOWER`）。
+func (s *Server) doorLowerAt(w *world.World, pos [3]int) bool {
+	state := w.BlockAt(pos[0], pos[1], pos[2])
+	name, ok := s.blockNameOf(state)
+	if !ok {
+		return false
+	}
+	half, ok := doorHalfOf(name, state)
+	return ok && half == 0
+}
+
+// doorHingeIndex 返回门的铰链索引（0=left、1=right），移植原版
+// DoorBlock.getHinge(BlockPlaceContext)：
+//
+//  1. 以点击面为基准，逆时针侧（含上方一格）每个“面坚固”邻居计 −1，
+//     顺时针侧（含上方一格）计 +1，得到 i；
+//  2. 逆时针侧是门的下半格且顺时针侧不是，或 i > 0 → right；
+//  3. 顺时针侧是门的下半格且逆时针侧不是，或 i < 0 → left；
+//  4. 否则按点击位置相对门坐标的水平偏移回退（点击顶面/底面时恒为 left）。
+func (s *Server) doorHingeIndex(w *world.World, use protocol.UseItemOn, x, y, z int) int {
+	face := faceNames[use.Direction]
+	ccw := counterClockwiseDir(face)
+	cw := clockwiseDir(face)
+	base := [3]int{x, y, z}
+	above := [3]int{x, y + 1, z}
+	ccwPos := offsetDir(base, ccw)
+	ccwAbove := offsetDir(above, ccw)
+	cwPos := offsetDir(base, cw)
+	cwAbove := offsetDir(above, cw)
+
+	i := 0
+	if s.faceSturdy(w.BlockAt(ccwPos[0], ccwPos[1], ccwPos[2]), face) {
+		i--
+	}
+	if s.faceSturdy(w.BlockAt(ccwAbove[0], ccwAbove[1], ccwAbove[2]), face) {
+		i--
+	}
+	if s.faceSturdy(w.BlockAt(cwPos[0], cwPos[1], cwPos[2]), face) {
+		i++
+	}
+	if s.faceSturdy(w.BlockAt(cwAbove[0], cwAbove[1], cwAbove[2]), face) {
+		i++
+	}
+	ccwDoorLower := s.doorLowerAt(w, ccwPos)
+	cwDoorLower := s.doorLowerAt(w, cwPos)
+	if (ccwDoorLower && !cwDoorLower) || i > 0 {
+		return 1 // right
+	}
+	if (cwDoorLower && !ccwDoorLower) || i < 0 {
+		return 0 // left
+	}
+	return doorHingeFallback(use, face)
+}
+
+// doorHingeFallback 是原版 getHinge 尾部的点击位置回退：按点击面与点击位置
+// 相对门坐标的水平偏移判定，点击顶面/底面（stepX=stepZ=0）时恒为 left。
+func doorHingeFallback(use protocol.UseItemOn, face string) int {
 	stepX, stepZ := 0, 0
-	switch facing {
+	switch face {
 	case "east":
 		stepX = 1
 	case "west":
@@ -271,11 +326,11 @@ func doorHingeIndex(use protocol.UseItemOn, facing string) int {
 	}
 	dx := float64(use.CursorX)
 	dz := float64(use.CursorZ)
-	if (stepX >= 0 || dz >= 0.5) && (stepX <= 0 || dz <= 0.5) &&
-		(stepZ >= 0 || dx <= 0.5) && (stepZ <= 0 || dx >= 0.5) {
-		return 0 // left
+	if (stepX < 0 && dz < 0.5) || (stepX > 0 && dz > 0.5) ||
+		(stepZ < 0 && dx > 0.5) || (stepZ > 0 && dx < 0.5) {
+		return 1 // right
 	}
-	return 1 // right
+	return 0 // left
 }
 
 // doorHalfOf 返回门状态所处的半格（0=lower、1=upper）。
@@ -325,9 +380,18 @@ func (s *Server) placeDoor(player *session, w *world.World, dim world.Dimension,
 	_, _, _, yaw, _ := player.playerPosition()
 	facing := yawToFacing(yaw)
 	facingIndex := horizontalFacingIndex(facing)
-	hinge := doorHingeIndex(use, facing)
+	hinge := s.doorHingeIndex(w, use, x, y, z)
 	lower := table[0][facingIndex][hinge]
 	upper := table[1][facingIndex][hinge]
+	// 原版 getStateForPlacement：位置本身或上方一格有邻居信号时，
+	// 门以 open=true、powered=true 放置（铁门因此能直接被红石打开）。
+	if s.bestNeighborSignal(w, [3]int{x, y, z}) > 0 ||
+		s.bestNeighborSignal(w, [3]int{x, y + 1, z}) > 0 {
+		if powered, ok := registry.PlacementDoorsPowered[name]; ok {
+			lower = powered[0][facingIndex][hinge]
+			upper = powered[1][facingIndex][hinge]
+		}
+	}
 	if !w.SetBlock(x, y, z, lower) {
 		return false
 	}
