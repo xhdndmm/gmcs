@@ -621,13 +621,20 @@
   - 拉杆/按钮（`FaceAttachedHorizontalDirectionalBlock`）：按点击面决定
     face（floor/wall/ceiling）与 facing（顶面/底面用玩家水平朝向，侧面用
     点击面的反方向）；墙式附着方向直接决定红石供电目标（`connectedDirection`）；
+  - 门（`DoorBlock`）：facing = 玩家水平朝向、hinge 按点击位置回退分支；
+    放置时同时创建上下两格（需要两格空间）；右键开合同步两半（铁门只能由
+    红石开合）；破坏任一半移除另一半，且只有下半格掉落 1 个门（对应战利品表
+    的 half=lower 条件，`mining.go` 跳过上半格掉落）；
   - 新增生成器 `tools/genregistries/placement.go`：只生成放置会用到的属性
     组合（台阶 58、半砖 62、轴 67、朝向 48、活板门 21），找不到匹配状态时
     生成失败（版本升级后属性变化会立即暴露）；
   - 新增测试：`TestOrientPlacementStairs`/`Slab`/`Axis`/`Facing`/`Trapdoor`/
     `Ladder`/`Torch`/`FaceAttached`、`TestPlaceChestFacing`、`TestPlaceLogAxis`、
     `TestPlaceStairsOrientation`、`TestMergeSlabIntoDouble`、
-    `TestToggleTrapdoor`、`TestPlaceTorchOnWall`、`TestPlaceLeverOnGround`；
+    `TestToggleTrapdoor`、`TestPlaceTorchOnWall`、`TestPlaceLeverOnGround`、
+    `TestDoorHingeIndex`、`TestPlaceDoorBothHalves`、`TestDoorRequiresTwoBlocks`、
+    `TestDoorToggleBothHalves`、`TestDoorBreakDropsOnce`、
+    `TestIronDoorNotToggledByHand`；
     registry 侧 `TestPlacementTablesConsistent`（状态 ID 必须属于对应方块）。
 
 ## 待完成
@@ -682,11 +689,12 @@
   极少见掉落，爆炸仍无掉落；
   无出生点保护（mayInteract）与冒险模式 mayBuild；
   放置仅支持普通方块物品（带数据组件的物品不支持）；
-  放置形态（台阶/半砖/柱状/朝向方块/活板门/梯子/火把/拉杆/按钮）已按原版实现
-  （见上“方块放置形态批次”），但仍存差异：台阶不做邻居形状更新（shape 恒为
-  straight，拐角台阶客户端显示为直台阶）、含水状态一律 false、活板门放置时
-  不检查红石供电、门/床/告示牌/栅栏门的放置朝向尚未实现（门与栅栏门也还没有
-  右键开合）
+  放置形态（台阶/半砖/柱状/朝向方块/活板门/梯子/火把/拉杆/按钮/门）已按原版
+  实现（见上“方块放置形态批次”），但仍存差异：台阶不做邻居形状更新（shape 恒为
+  straight，拐角台阶客户端显示为直台阶）、含水状态一律 false、活板门/门放置时
+  不检查红石供电（门也不会被红石打开）、门的铰链未实现邻居双门/固体判定
+  （仅按点击位置，双开门可能同向开启）、床/告示牌/栅栏门的放置朝向尚未实现
+  （栅栏门也还没有右键开合）
 - 容器限制：窗口距离已按原版实现（眼睛位置到方块碰撞盒 < 方块交互距离属性
   4.5 + 4.0 = 8.5，即 `Container.stillValidBlockEntity` 与
   `AbstractContainerMenu.stillValid` 的 `isWithinBlockInteractionRange(pos, 4.0)`）；

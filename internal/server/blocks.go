@@ -251,6 +251,10 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if !player.sneaking && s.toggleTrapdoor(player, w, use, current) {
 		return
 	}
+	// 门：右键开合（铁门只能用红石开合，见 toggleDoor）。
+	if !player.sneaking && s.toggleDoor(player, w, use, current) {
+		return
+	}
 	placeX := use.X + offset[0]
 	placeY := use.Y + offset[1]
 	placeZ := use.Z + offset[2]
@@ -267,6 +271,11 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	}
 	// 半砖：点击同种单半砖时叠成双半砖（放置位置就是被点击的半砖）。
 	if s.tryMergeSlab(player, w, dim, use, current, name) {
+		return
+	}
+	// 门：占上下两格，单独放置（空间不足时什么都不做，与原版一致）。
+	if _, isDoor := registry.PlacementDoors[name]; isDoor {
+		s.placeDoor(player, w, dim, use, name)
 		return
 	}
 	existing := w.BlockAt(placeX, placeY, placeZ)

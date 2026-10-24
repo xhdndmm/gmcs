@@ -300,6 +300,8 @@ func (s *Server) finishBreakBlock(player *session, held item.Stack, dim world.Di
 	}
 	// 双格植物：同步移除另一半（不掉落，与 DoublePlantBlock 的邻居更新等价）。
 	s.removeDoublePlantPair(w, dim, x, y, z, state)
+	// 门：同步移除另一半（掉落由被破坏格的战利品表结算）。
+	s.removeDoorPair(w, dim, x, y, z, state)
 	return true, false
 }
 
@@ -318,7 +320,14 @@ func (s *Server) destroyBlockByPlayer(player *session, held item.Stack, dim worl
 		// 原版：创造模式破坏不产生掉落也不损耗耐久。
 		return
 	}
-	if miningHasCorrectToolForDrops(state, held) {
+	// 门的上半格不掉落（原版战利品表带 half=lower 条件）；耐久损耗照常。
+	dropAllowed := true
+	if name, ok := s.blockNameOf(state); ok {
+		if half, ok := doorHalfOf(name, state); ok && half == 1 {
+			dropAllowed = false
+		}
+	}
+	if dropAllowed && miningHasCorrectToolForDrops(state, held) {
 		s.dropBlockItem(dim, state, x, y, z, held)
 	}
 	if damage := miningToolDamage(held, state); damage > 0 {

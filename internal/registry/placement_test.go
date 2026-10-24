@@ -30,7 +30,8 @@ func TestPlacementTablesConsistent(t *testing.T) {
 	if len(PlacementStairs) == 0 || len(PlacementSlabs) == 0 || len(PlacementAxis) == 0 ||
 		len(PlacementFacing) == 0 || len(PlacementTrapdoors) == 0 ||
 		len(PlacementTrapdoorsOpen) == 0 || len(PlacementWallTorches) == 0 ||
-		len(PlacementLadders) == 0 || len(PlacementFaceAttached) == 0 {
+		len(PlacementLadders) == 0 || len(PlacementFaceAttached) == 0 ||
+		len(PlacementDoors) == 0 || len(PlacementDoorsOpen) == 0 {
 		t.Fatal("放置形态表为空（生成器未运行？）")
 	}
 
@@ -82,6 +83,24 @@ func TestPlacementTablesConsistent(t *testing.T) {
 			ids = append(ids, row[:]...)
 		}
 		check("PlacementFaceAttached", ids, name)
+	}
+	for name, table := range PlacementDoors {
+		var ids []uint16
+		for _, half := range table {
+			for _, row := range half {
+				ids = append(ids, row[:]...)
+			}
+		}
+		check("PlacementDoors", ids, name)
+	}
+	for name, table := range PlacementDoorsOpen {
+		var ids []uint16
+		for _, half := range table {
+			for _, row := range half {
+				ids = append(ids, row[:]...)
+			}
+		}
+		check("PlacementDoorsOpen", ids, name)
 	}
 
 	// 台阶与活板门的 bottom/top 状态必须不同。

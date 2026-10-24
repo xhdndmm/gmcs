@@ -98,6 +98,8 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 	trapdoors := make(map[string][2][4]uint16)
 	trapdoorsOpen := make(map[string][2][4]uint16)
 	faceAttached := make(map[string][3][4]uint16)
+	doors := make(map[string][2][4][2]uint16)
+	doorsOpen := make(map[string][2][4][2]uint16)
 	wallTorches := make(map[string][4]uint16)
 	ladders := make(map[string][4]uint16)
 
@@ -138,6 +140,33 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 				table[i] = id
 			}
 			slabs[name] = table
+		case strings.HasSuffix(name, "_door"):
+			var table [2][4][2]uint16
+			var openTable [2][4][2]uint16
+			for half, halfValue := range []string{"lower", "upper"} {
+				for facingIndex, facingValue := range placementHorizontalFacingValues {
+					for hingeIndex, hingeValue := range []string{"left", "right"} {
+						id, err := placementStateID(data, map[string]string{
+							"half": halfValue, "facing": facingValue, "hinge": hingeValue,
+							"open": "false", "powered": "false",
+						})
+						if err != nil {
+							return fmt.Errorf("%s: %w", name, err)
+						}
+						table[half][facingIndex][hingeIndex] = id
+						openID, err := placementStateID(data, map[string]string{
+							"half": halfValue, "facing": facingValue, "hinge": hingeValue,
+							"open": "true", "powered": "false",
+						})
+						if err != nil {
+							return fmt.Errorf("%s: %w", name, err)
+						}
+						openTable[half][facingIndex][hingeIndex] = openID
+					}
+				}
+			}
+			doors[name] = table
+			doorsOpen[name] = openTable
 		case strings.HasSuffix(name, "_trapdoor"):
 			var table [2][4]uint16
 			var openTable [2][4]uint16
@@ -253,6 +282,8 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 	writeFacingTable(&b, facing)
 	writeTrapdoorsTable(&b, "PlacementTrapdoors", "活板门的关闭放置状态", "open=false、powered=false", trapdoors)
 	writeTrapdoorsTable(&b, "PlacementTrapdoorsOpen", "活板门的打开状态", "open=true、powered=false", trapdoorsOpen)
+	writeDoorsTable(&b, "PlacementDoors", "门的关闭放置状态", "open=false、powered=false", doors)
+	writeDoorsTable(&b, "PlacementDoorsOpen", "门的打开状态", "open=true、powered=false", doorsOpen)
 	writeFaceAttachedTable(&b, faceAttached)
 	writeSimpleFacingTable(&b, "PlacementWallTorches", "墙式火把", wallTorches)
 	writeSimpleFacingTable(&b, "PlacementLadders", "梯子", ladders)
@@ -398,6 +429,27 @@ func writeTrapdoorsTable(b *strings.Builder, varName, title, extra string, table
 		fmt.Fprintf(b, "\t%q: {{%d, %d, %d, %d}, {%d, %d, %d, %d}},\n", name,
 			states[0][0], states[0][1], states[0][2], states[0][3],
 			states[1][0], states[1][1], states[1][2], states[1][3])
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeDoorsTable(b *strings.Builder, varName, title, extra string, table map[string][2][4][2]uint16) {
+	fmt.Fprintf(b, "// %s 是%s：map[方块名][half][facing][hinge]。\n", varName, title)
+	b.WriteString("// half：0=lower、1=upper；facing：0=north…3=east；hinge：0=left、1=right。\n")
+	fmt.Fprintf(b, "// 其余属性为 %s、waterlogged=false。\n", extra)
+	fmt.Fprintf(b, "var %s = map[string][2][4][2]uint16{\n", varName)
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {", name)
+		for half := 0; half < 2; half++ {
+			fmt.Fprintf(b, "%s{", map[bool]string{true: ", ", false: ""}[half == 1])
+			for facing := 0; facing < 4; facing++ {
+				fmt.Fprintf(b, "%s{%d, %d}", map[bool]string{true: ", ", false: ""}[facing > 0],
+					states[half][facing][0], states[half][facing][1])
+			}
+			fmt.Fprintf(b, "}")
+		}
+		fmt.Fprintf(b, "},\n")
 	}
 	b.WriteString("}\n\n")
 }

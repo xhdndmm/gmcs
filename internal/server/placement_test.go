@@ -382,3 +382,175 @@ func TestPlaceLeverOnGround(t *testing.T) {
 		return ok && name == "minecraft:lever" && props["powered"] == "true"
 	}, "右键拉杆应通电")
 }
+
+// TestDoorHingeIndex 验证门铰链按点击位置判定的回退分支。
+func TestDoorHingeIndex(t *testing.T) {
+	// 面朝南（stepZ=+1）：点击位置 dx<0.5 → right，dx>=0.5 → left。
+	if got := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), "south"); got != 0 {
+		t.Fatalf("south 中心点击铰链 = %d, want left(0)", got)
+	}
+	left := protocol.UseItemOn{X: 0, CursorX: 0.2, CursorY: 0.5, CursorZ: 0.5, Direction: 1}
+	if got := doorHingeIndex(left, "south"); got != 1 {
+		t.Fatalf("south 偏西点击铰链 = %d, want right(1)", got)
+	}
+	// 面朝东（stepX=+1）：dz>0.5 → right。
+	right := protocol.UseItemOn{X: 0, CursorX: 0.5, CursorY: 0.5, CursorZ: 0.8, Direction: 1}
+	if got := doorHingeIndex(right, "east"); got != 1 {
+		t.Fatalf("east 偏南点击铰链 = %d, want right(1)", got)
+	}
+}
+
+// TestPlaceDoorBothHalves 验证放置门时同时创建上下两格并消耗 1 个物品。
+func TestPlaceDoorBothHalves(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "DoorPlacer")
+	defer conn.Close()
+
+	x, groundY, z := farmTestSpot(t, instance)
+	w := instance.testWorld()
+	player := activeSession(t, instance, "DoorPlacer")
+	player.inventory.Set(item.SlotHotbarStart, testStack(t, "minecraft:oak_door", 1))
+	_, _, _, yaw, _ := player.playerPosition()
+
+	sendUseItemOn(t, conn, x, groundY, z, 1)
+	table := registry.PlacementDoors["minecraft:oak_door"]
+	facing := yawToFacing(yaw)
+	hinge := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), facing)
+	lower := table[0][horizontalFacingIndex(facing)][hinge]
+	upper := table[1][horizontalFacingIndex(facing)][hinge]
+	waitFor(t, func() bool { return w.BlockAt(x, groundY+1, z) == lower }, "门下半格未放置")
+	waitFor(t, func() bool { return w.BlockAt(x, groundY+2, z) == upper }, "门上半格未放置")
+	if count := player.inventory.Get(item.SlotHotbarStart).Count; count != 0 {
+		t.Fatalf("放置门应消耗 1 个物品：count=%d", count)
+	}
+}
+
+// TestDoorRequiresTwoBlocks 验证上方被占用时不放置门。
+func TestDoorRequiresTwoBlocks(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "DoorBlocked")
+	defer conn.Close()
+
+	x, groundY, z := farmTestSpot(t, instance)
+	w := instance.testWorld()
+	stone, ok := registry.BlockStateIDs["minecraft:stone"]
+	if !ok {
+		t.Fatal("缺少石头方块状态")
+	}
+	w.SetBlock(x, groundY+2, z, stone)
+	player := activeSession(t, instance, "DoorBlocked")
+	player.inventory.Set(item.SlotHotbarStart, testStack(t, "minecraft:oak_door", 1))
+
+	sendUseItemOn(t, conn, x, groundY, z, 1)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	if state := w.BlockAt(x, groundY+1, z); state != world.AirBlock {
+		t.Fatalf("上方被占用时不应放置门：state=%d", state)
+	}
+	if count := player.inventory.Get(item.SlotHotbarStart).Count; count != 1 {
+		t.Fatalf("失败的放置不应消耗物品：count=%d", count)
+	}
+}
+
+// TestDoorToggleBothHalves 验证右键门会同时切换上下两格的 open 状态。
+func TestDoorToggleBothHalves(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "DoorUser")
+	defer conn.Close()
+
+	x, groundY, z := farmTestSpot(t, instance)
+	w := instance.testWorld()
+	player := activeSession(t, instance, "DoorUser")
+	player.inventory.Set(item.SlotHotbarStart, testStack(t, "minecraft:oak_door", 1))
+	_, _, _, yaw, _ := player.playerPosition()
+	facing := yawToFacing(yaw)
+	hinge := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), facing)
+	facingIndex := horizontalFacingIndex(facing)
+	closed := registry.PlacementDoors["minecraft:oak_door"]
+	open := registry.PlacementDoorsOpen["minecraft:oak_door"]
+	w.SetBlock(x, groundY+1, z, closed[0][facingIndex][hinge])
+	w.SetBlock(x, groundY+2, z, closed[1][facingIndex][hinge])
+
+	// 右键下半格 → 两格都打开。
+	sendUseItemOn(t, conn, x, groundY+1, z, 1)
+	waitFor(t, func() bool { return w.BlockAt(x, groundY+1, z) == open[0][facingIndex][hinge] },
+		"门下半格未打开")
+	waitFor(t, func() bool { return w.BlockAt(x, groundY+2, z) == open[1][facingIndex][hinge] },
+		"门上半格未同步打开")
+	// 再右键 → 两格都关闭。
+	sendUseItemOn(t, conn, x, groundY+1, z, 1)
+	waitFor(t, func() bool { return w.BlockAt(x, groundY+1, z) == closed[0][facingIndex][hinge] },
+		"门下半格未关闭")
+	waitFor(t, func() bool { return w.BlockAt(x, groundY+2, z) == closed[1][facingIndex][hinge] },
+		"门上半格未同步关闭")
+}
+
+// TestDoorBreakDropsOnce 验证破坏门的一半会移除另一半，并且只掉落 1 个门。
+func TestDoorBreakDropsOnce(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "DoorBreaker")
+	defer conn.Close()
+
+	x, groundY, z := farmTestSpot(t, instance)
+	w := instance.testWorld()
+	player := activeSession(t, instance, "DoorBreaker")
+	player.inventory.Set(item.SlotHotbarStart, testStack(t, "minecraft:oak_door", 1))
+	_, _, _, yaw, _ := player.playerPosition()
+	facing := yawToFacing(yaw)
+	hinge := doorHingeIndex(useAt(0, 0, 0, 1, 0.5), facing)
+	facingIndex := horizontalFacingIndex(facing)
+	closed := registry.PlacementDoors["minecraft:oak_door"]
+	w.SetBlock(x, groundY+1, z, closed[0][facingIndex][hinge])
+	w.SetBlock(x, groundY+2, z, closed[1][facingIndex][hinge])
+	player.inventory.Set(item.SlotHotbarStart, item.Empty())
+
+	breakBlockSurvival(t, conn, instance, player, x, groundY+1, z)
+	waitFor(t, func() bool { return w.BlockAt(x, groundY+1, z) == world.AirBlock }, "门下半格未被破坏")
+	waitFor(t, func() bool { return w.BlockAt(x, groundY+2, z) == world.AirBlock }, "门上半格未随下半格移除")
+	doorID, err := registry.ItemID("minecraft:oak_door")
+	if err != nil {
+		t.Fatal(err)
+	}
+	countDrops := func() int {
+		instance.entityMu.Lock()
+		defer instance.entityMu.Unlock()
+		total := 0
+		for _, entity := range instance.items {
+			if entity.Stack.ItemID == doorID {
+				total += int(entity.Stack.Count)
+			}
+		}
+		return total
+	}
+	waitFor(t, func() bool { return countDrops() == 1 }, "破坏下半格应只掉落 1 个门")
+}
+
+// TestIronDoorNotToggledByHand 验证铁门不能手动开合。
+func TestIronDoorNotToggledByHand(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "IronDoor")
+	defer conn.Close()
+
+	x, groundY, z := farmTestSpot(t, instance)
+	w := instance.testWorld()
+	table := registry.PlacementDoors["minecraft:iron_door"]
+	w.SetBlock(x, groundY+1, z, table[0][0][0])
+	w.SetBlock(x, groundY+2, z, table[1][0][0])
+
+	sendUseItemOn(t, conn, x, groundY+1, z, 1)
+	sendChatCommand(t, conn, "/list")
+	expectSystemChat(t, conn, "当前有")
+	if state := w.BlockAt(x, groundY+1, z); state != table[0][0][0] {
+		t.Fatalf("铁门不应被右键打开：state=%d", state)
+	}
+}

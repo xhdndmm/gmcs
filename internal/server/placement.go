@@ -248,3 +248,184 @@ func (s *Server) toggleTrapdoor(player *session, w *world.World, use protocol.Us
 	// 客户端自身预测会播放本地音效。
 	return true
 }
+
+// —— 门（占上下两格） ——
+//
+// 对照 1.21.11 DoorBlock.getStateForPlacement：facing = 玩家水平朝向，
+// 铰链由点击位置回退分支决定（邻居门/固体的判定未实现，见 docs/TODO.md），
+// open/powered = 位置是否有红石信号（gmcs 未实现该检查，恒为关闭）。
+
+// doorHingeIndex 返回门的铰链索引（0=left、1=right），对应原版
+// DoorBlock.getHinge 中按点击位置判定的回退分支。
+func doorHingeIndex(use protocol.UseItemOn, facing string) int {
+	stepX, stepZ := 0, 0
+	switch facing {
+	case "east":
+		stepX = 1
+	case "west":
+		stepX = -1
+	case "south":
+		stepZ = 1
+	case "north":
+		stepZ = -1
+	}
+	dx := float64(use.CursorX)
+	dz := float64(use.CursorZ)
+	if (stepX >= 0 || dz >= 0.5) && (stepX <= 0 || dz <= 0.5) &&
+		(stepZ >= 0 || dx <= 0.5) && (stepZ <= 0 || dx >= 0.5) {
+		return 0 // left
+	}
+	return 1 // right
+}
+
+// doorHalfOf 返回门状态所处的半格（0=lower、1=upper）。
+func doorHalfOf(name string, state uint16) (int, bool) {
+	for _, tables := range []map[string][2][4][2]uint16{
+		registry.PlacementDoors, registry.PlacementDoorsOpen,
+	} {
+		table, ok := tables[name]
+		if !ok {
+			continue
+		}
+		for half := 0; half < 2; half++ {
+			for facing := 0; facing < 4; facing++ {
+				for hinge := 0; hinge < 2; hinge++ {
+					if table[half][facing][hinge] == state {
+						return half, true
+					}
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// isIronDoorName 报告方块名是否为铁门（只能用红石开合）。
+func isIronDoorName(name string) bool {
+	return strings.Contains(name, "iron_door")
+}
+
+// placeDoor 放置门（上下两格）；返回 false 表示空间不足或无法放置。
+func (s *Server) placeDoor(player *session, w *world.World, dim world.Dimension, use protocol.UseItemOn, name string) bool {
+	table, ok := registry.PlacementDoors[name]
+	if !ok {
+		return false
+	}
+	offset := blockFaceOffsets[use.Direction]
+	x, y, z := use.X+offset[0], use.Y+offset[1], use.Z+offset[2]
+	if _, ok := world.SectionIndex(y); !ok {
+		return false
+	}
+	if _, ok := world.SectionIndex(y + 1); !ok {
+		return false
+	}
+	if w.BlockAt(x, y, z) != world.AirBlock || w.BlockAt(x, y+1, z) != world.AirBlock {
+		return false
+	}
+	_, _, _, yaw, _ := player.playerPosition()
+	facing := yawToFacing(yaw)
+	facingIndex := horizontalFacingIndex(facing)
+	hinge := doorHingeIndex(use, facing)
+	lower := table[0][facingIndex][hinge]
+	upper := table[1][facingIndex][hinge]
+	if !w.SetBlock(x, y, z, lower) {
+		return false
+	}
+	if !w.SetBlock(x, y+1, z, upper) {
+		w.SetBlock(x, y, z, world.AirBlock)
+		return false
+	}
+	s.broadcastBlockUpdate(dim, x, y, z, int32(lower))
+	s.broadcastBlockUpdate(dim, x, y+1, z, int32(upper))
+	s.updateRedstoneAround(dim, x, y, z)
+	s.updateRedstoneAround(dim, x, y+1, z)
+	s.updateFluidsAround(dim, x, y, z)
+	s.updateFluidsAround(dim, x, y+1, z)
+	s.consumeHeldItem(player)
+	return true
+}
+
+// toggleDoor 处理右键开合门（原版 DoorBlock.useWithoutItem：切换 open，
+// 通过邻居更新把同样的 open 值同步到另一半；铁门只能由红石打开）。
+func (s *Server) toggleDoor(player *session, w *world.World, use protocol.UseItemOn, current uint16) bool {
+	name, ok := s.blockNameOf(current)
+	if !ok || isIronDoorName(name) {
+		return false
+	}
+	closed, ok := registry.PlacementDoors[name]
+	if !ok {
+		return false
+	}
+	open, ok := registry.PlacementDoorsOpen[name]
+	if !ok {
+		return false
+	}
+	half, ok := doorHalfOf(name, current)
+	if !ok {
+		return false
+	}
+	next, sibling := uint16(0), uint16(0)
+	found := false
+	for facing := 0; facing < 4 && !found; facing++ {
+		for hinge := 0; hinge < 2; hinge++ {
+			switch current {
+			case closed[half][facing][hinge]:
+				next = open[half][facing][hinge]
+				sibling = open[1-half][facing][hinge]
+				found = true
+			case open[half][facing][hinge]:
+				next = closed[half][facing][hinge]
+				sibling = closed[1-half][facing][hinge]
+				found = true
+			}
+			if found {
+				break
+			}
+		}
+	}
+	if !found {
+		return false
+	}
+	dim := player.dimensionID()
+	if w.SetBlock(use.X, use.Y, use.Z, next) {
+		s.broadcastBlockUpdate(dim, use.X, use.Y, use.Z, int32(next))
+	}
+	// 另一半（半格索引相反的 y 方向）。
+	siblingY := use.Y + 1
+	if half == 1 {
+		siblingY = use.Y - 1
+	}
+	if siblingName, ok := s.blockNameOf(w.BlockAt(use.X, siblingY, use.Z)); ok && siblingName == name {
+		if w.SetBlock(use.X, siblingY, use.Z, sibling) {
+			s.broadcastBlockUpdate(dim, use.X, siblingY, use.Z, int32(sibling))
+		}
+	}
+	return true
+}
+
+// removeDoorPair 在门的一格被移除后移除另一格（不掉落，掉落由被破坏格的
+// 战利品表结算：只有下半格掉落门）。
+func (s *Server) removeDoorPair(w *world.World, dim world.Dimension, x, y, z int, state uint16) {
+	name, ok := s.blockNameOf(state)
+	if !ok {
+		return
+	}
+	half, ok := doorHalfOf(name, state)
+	if !ok {
+		return
+	}
+	siblingY := y + 1
+	if half == 1 {
+		siblingY = y - 1
+	}
+	other := w.BlockAt(x, siblingY, z)
+	if otherName, ok := s.blockNameOf(other); !ok || otherName != name {
+		return
+	}
+	if otherHalf, ok := doorHalfOf(name, other); !ok || otherHalf == half {
+		return
+	}
+	if w.SetBlock(x, siblingY, z, world.AirBlock) {
+		s.broadcastBlockUpdate(dim, x, siblingY, z, int32(world.AirBlock))
+	}
+}
