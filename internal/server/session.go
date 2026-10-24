@@ -126,8 +126,9 @@ type session struct {
 	// 读循环在传送后设置，服务器 Tick 线程递减。
 	portalCooldown atomic.Int32 // inventory 是玩家物品栏，由会话串行访问。
 	inventory      item.Inventory
-	// selectedSlot 是当前选中的快捷栏槽位（0–8），由会话串行访问。
-	selectedSlot int
+	// selectedSlot 是当前选中的快捷栏槽位（0–8）。写入由读循环进行，
+	// 但周期自动保存（后台 goroutine）与玩家数据快照也会读取，故用原子字段。
+	selectedSlot atomic.Int32
 
 	// 容器窗口状态（由会话串行访问）：openContainer 是当前打开的容器，
 	// windowID 是窗口编号（0 保留给玩家物品栏），windowState 是槽位状态号，
@@ -1338,6 +1339,8 @@ func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch fl
 			protocol.EncodeRespawn(s.server.spawnInfo(dim, s.gameModeID()), 0),
 			// 1.20.2+ 协议：Respawn 后必须重发“开始等待区块”。
 			protocol.EncodeGameEvent(13, 0),
+			// 客户端在 Respawn 后重置选中槽位，重新同步（与原版登录/重生行为一致）。
+			protocol.EncodeSetHeldSlot(int32(s.selectedHotbarSlot())),
 		)
 	}
 	packets = append(packets, protocol.EncodeSetCenterChunk(int32(centerX), int32(centerZ)))
@@ -1471,8 +1474,9 @@ func (s *session) runPlay() {
 		// 仅新玩家发放初始物品；恢复的玩家沿用其已保存的物品栏。
 		s.giveStartingItems()
 	}
-	// 进入世界时同步完整物品栏
+	// 进入世界时同步完整物品栏与选中的快捷栏槽位。
 	packets = append(packets, s.inventoryContentPacket())
+	packets = append(packets, protocol.EncodeSetHeldSlot(int32(s.selectedHotbarSlot())))
 	health, food, saturation := s.healthStatus()
 	packets = append(packets, protocol.EncodeUpdateHealth(health, food, saturation))
 	// 世界时间（下界/末地为固定时间，不发送时间更新包）与经验条。
@@ -1524,6 +1528,20 @@ func (s *session) runPlay() {
 	s.server.returnInventoryCraft(s)
 	s.server.auditLog("leave", "player", s.name, "uuid", uuidString(s.uuid))
 	slog.Info("player disconnected", "name", s.name)
+}
+
+// selectedHotbarSlot 返回当前选中的快捷栏槽位（0–8）。
+func (s *session) selectedHotbarSlot() int {
+	return int(s.selectedSlot.Load())
+}
+
+// setSelectedHotbarSlot 设置选中的快捷栏槽位；越界值被忽略
+// （与原版 Inventory.setSelectedSlot 一样不接受 0–8 之外的值）。
+func (s *session) setSelectedHotbarSlot(slot int) {
+	if slot < item.SlotHotbarStart || slot > item.SlotHotbarEnd {
+		return
+	}
+	s.selectedSlot.Store(int32(slot))
 }
 
 // inventoryContentPacket 返回玩家物品栏窗口（窗口 0）的完整内容包。

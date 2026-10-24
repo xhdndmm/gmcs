@@ -318,7 +318,7 @@ func (s *Server) activateEndPortal(w *world.World, centerX, y, centerZ int) bool
 // consumeSelectedItem 消耗手持物品一个（按物品名匹配；不匹配时不做任何事）。
 // 用于末影之眼等按次消耗的物品。
 func (s *Server) consumeSelectedItem(player *session, itemName string) {
-	slot := player.selectedSlot
+	slot := player.selectedHotbarSlot()
 	stack := player.inventory.Get(slot)
 	if stack.IsEmpty() {
 		return

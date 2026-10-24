@@ -149,7 +149,7 @@ func (s *Server) dropItemFromPlayer(player *session, dropStack bool) {
 	if player.gameModeID() != uint8(config.GameModeSurvival) && player.gameModeID() != uint8(config.GameModeCreative) {
 		return
 	}
-	slot := player.selectedSlot
+	slot := player.selectedHotbarSlot()
 	stack := player.inventory.Get(slot)
 	if stack.IsEmpty() {
 		return
@@ -180,11 +180,10 @@ func (s *Server) dropItemFromPlayer(player *session, dropStack bool) {
 func (s *Server) dropPlayerInventory(player *session) {
 	px, py, pz, _, _ := player.playerPosition()
 	for slot := 0; slot < item.InventorySlots; slot++ {
-		stack := player.inventory.Get(slot)
+		stack := player.inventory.Take(slot)
 		if stack.IsEmpty() {
 			continue
 		}
-		player.inventory.Set(slot, item.Empty())
 		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), item.Empty().AppendSlot(nil)))
 		if hasVanishingCurse(stack) {
 			continue

@@ -1068,6 +1068,48 @@ CPU 持平、内存小幅下降。两场景的收发包总量与流量基本一�
 `TestShieldDoesNotBlockBypassingDamage`；`go test -race` 覆盖弓/盾牌/进食/骷髅箭矢路径。
 尚未验证：真实客户端拉弓动画/格挡动画与逐 tick 伤害数值对拍；弩/三叉戟未实现。
 
+### 3.29 耐久原子化、快捷栏槽位持久化与箭矢扫掠基准（本批，实测）
+
+改动内容与成本：
+
+- 物品栏耐久/经验修补从 `Get` → 修改 → `Set` 改为 `Inventory.Damage` /
+  `Inventory.Repair`（内部互斥锁内一次完成）。只影响受伤、挖掘完成与经验拾取
+  路径，不在每 tick 的实体循环里；没有新增分配（两个方法均不逃逸）。
+  回归测试 `TestInventoryDamageConcurrentAccumulates` 用 8 goroutine × 25 次
+  并发扣耐久，验证总量不丢失（旧实现会丢更新）。
+- 选中快捷栏槽位从 `int` 改为 `atomic.Int32`。读循环之外的读取者是每 30 秒的
+  周期自动保存（后台 goroutine）与 `players.json` 快照；改前这些路径不读该字段，
+  改后必须原子化才能避免数据竞争。原子 load/store 的成本在
+  `BenchmarkServerTick` 噪声内（见下）。
+- 新增 `BenchmarkArrowSweepAgainstMobs`：每次循环对 32 个扩张包围盒执行
+  “线段 vs AABB”（`tickArrows` 的核心判定，线段长 1.2 格）：
+
+```text
+BenchmarkArrowSweepAgainstMobs-20   121.8 ns/op   0 B/op   0 allocs/op
+BenchmarkArrowSweepAgainstMobs-20   123.4 ns/op   0 B/op   0 allocs/op
+BenchmarkArrowSweepAgainstMobs-20   121.4 ns/op   0 B/op   0 allocs/op
+```
+
+折算约 3.8 ns/目标；箭矢数量较少时该扫描不构成 tick 热点（只有存在飞行箭矢时
+才执行）。注意这是判定函数本身的微基准，不包含伤害结算、广播与掉落。
+
+复测（`-benchtime=0.5s -count=3`）：
+
+```text
+BenchmarkServerTick-20       15892 / 16058 / 15381 ns/op   1 alloc/op
+BenchmarkEntityTracking-20    4895 /  4691 /  4713 ns/op   0 allocs/op
+```
+
+与 3.27（17.3–17.5 µs）、3.28（16.8 µs）及上一批（15.8–16.3 µs）相比处于噪声
+范围，未见回退。
+
+正确性验证：`go test ./...` 全绿；新增 `TestInventoryDamageBreaksItem`、
+`TestInventoryDamageRejectsNonDamageable`、`TestInventoryRepair`、
+`TestInventoryDamageConcurrentAccumulates`、`TestEncodeSetHeldSlot`、
+`TestSelectedHotbarSlotPersists`；`go test -race ./...` 覆盖周期保存读取
+选中槽位的路径。尚未验证：真实客户端重启后快捷栏选中的视觉效果
+（包 ID 与 VarInt 字段已对照官方 `packets.json` 与 1.21.11 服务端字节码）。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

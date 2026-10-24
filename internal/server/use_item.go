@@ -37,7 +37,7 @@ func (s *Server) handleUseItem(player *session, hand int32) {
 	default:
 		return
 	}
-	slot := player.selectedSlot
+	slot := player.selectedHotbarSlot()
 	if hand == 1 {
 		slot = item.SlotOffhand
 	}

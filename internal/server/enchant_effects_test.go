@@ -310,7 +310,7 @@ func TestMeleeFireAspectAndKnockback(t *testing.T) {
 	}
 	weapon := item.Stack{ItemID: mustItemID(t, "minecraft:diamond_sword"), Count: 1}
 	weapon = weapon.WithEnchantment(fireID, 2).WithEnchantment(knockbackID, 3)
-	player.inventory.Set(player.selectedSlot, weapon)
+	player.inventory.Set(player.selectedHotbarSlot(), weapon)
 	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	zombie := instance.addMob(world.DimensionOverworld, mobZombie, spawnX, spawnY, spawnZ+1)
 	instance.handleAttack(player, zombie.ID)

@@ -64,6 +64,9 @@ type playerRecord struct {
 	Experience int32        `json:"experience"`
 	GameMode   string       `json:"game_mode"`
 	Inventory  []playerItem `json:"inventory"`
+	// SelectedSlot 是选中的快捷栏槽位（0–8，对应原版 SelectedItemSlot）。
+	// 旧记录缺省为 0。
+	SelectedSlot int32 `json:"selected_slot,omitempty"`
 	// EnderItems 是末影箱内容（27 槽，按玩家独立存储）。
 	EnderItems []playerItem `json:"ender_inventory"`
 }
@@ -269,22 +272,23 @@ func playerRecordFromSession(player *session) playerRecord {
 		})
 	}
 	return playerRecord{
-		UUID:       hex.EncodeToString(player.uuid[:]),
-		Name:       player.name,
-		Dimension:  player.dimensionID().Name(),
-		X:          x,
-		Y:          y,
-		Z:          z,
-		Yaw:        yaw,
-		Pitch:      pitch,
-		Health:     health,
-		Dead:       dead,
-		Food:       food,
-		Saturation: saturation,
-		Experience: experience,
-		GameMode:   modeName,
-		Inventory:  items,
-		EnderItems: enderItems,
+		UUID:         hex.EncodeToString(player.uuid[:]),
+		Name:         player.name,
+		Dimension:    player.dimensionID().Name(),
+		X:            x,
+		Y:            y,
+		Z:            z,
+		Yaw:          yaw,
+		Pitch:        pitch,
+		Health:       health,
+		Dead:         dead,
+		Food:         food,
+		Saturation:   saturation,
+		Experience:   experience,
+		GameMode:     modeName,
+		Inventory:    items,
+		EnderItems:   enderItems,
+		SelectedSlot: int32(player.selectedHotbarSlot()),
 	}
 }
 
@@ -372,6 +376,9 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		s.gameMode.Store(uint32(mode))
 	}
 	s.stateMu.Unlock()
+
+	// 选中的快捷栏槽位（越界值由 setter 忽略，保持默认 0）。
+	s.setSelectedHotbarSlot(int(record.SelectedSlot))
 
 	for _, stored := range record.EnderItems {
 		if stored.Slot < 0 || stored.Slot >= enderChestSlots || stored.Count <= 0 {

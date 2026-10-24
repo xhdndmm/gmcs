@@ -322,3 +322,48 @@ func TestLoadPlayerDataRejectsCorruptFile(t *testing.T) {
 		t.Fatal("损坏的 players.json 应返回错误")
 	}
 }
+
+// TestSelectedHotbarSlotPersists 验证选中的快捷栏槽位随 players.json 保存，
+// 并在重连后通过 Set Held Slot 包下发给客户端（原版 SelectedItemSlot 行为）。
+func TestSelectedHotbarSlotPersists(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.ViewDistance = 2 // 与 joinServer 内部设置一致（重连时复用）
+	instance, conn := joinServer(t, cfg, "Hotbar")
+	addr := conn.RemoteAddr().String()
+	sess := findSession(t, instance, "Hotbar")
+
+	sess.setSelectedHotbarSlot(5)
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitPlayerOffline(t, instance, sess.uuid)
+
+	record := readSavedPlayer(t, cfg.WorldDir, sess.uuid)
+	if record.SelectedSlot != 5 {
+		t.Fatalf("保存的选中槽位 = %d, want 5", record.SelectedSlot)
+	}
+
+	// 重连：服务端恢复槽位并通过 Set Held Slot 告知客户端。
+	var heldSlot int32 = -1
+	conn2 := joinAt(t, cfg, addr, "Hotbar", func(id int32, payload []byte) {
+		if id != protocol.PlayPacketIDSetHeldSlot {
+			return
+		}
+		_, offset, err := protocol.DecodeVarInt(payload) // 跳过包 ID
+		if err != nil {
+			return
+		}
+		if value, _, err := protocol.DecodeVarInt(payload[offset:]); err == nil {
+			heldSlot = value
+		}
+	})
+	defer conn2.Close()
+	if heldSlot != 5 {
+		t.Fatalf("重连后的 Set Held Slot = %d, want 5", heldSlot)
+	}
+	if got := findSession(t, instance, "Hotbar").selectedHotbarSlot(); got != 5 {
+		t.Fatalf("重连后会话槽位 = %d, want 5", got)
+	}
+}

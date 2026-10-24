@@ -37,6 +37,8 @@ const (
 	PlayPacketIDSetCenterChunk     = 0x5C // clientbound
 	PlayPacketIDSetDefaultSpawn    = 0x5F // clientbound
 	PlayPacketIDSetPlayerInventory = 0x6A // clientbound
+	// PlayPacketIDSetHeldSlot 是 Set Held Slot（切换选中的快捷栏槽位）。
+	PlayPacketIDSetHeldSlot = 0x67 // clientbound
 	// PlayPacketIDUpdateTime 是 Update Time（世界时间）。
 	PlayPacketIDUpdateTime = 0x6F // clientbound
 	// PlayPacketIDSetExperience 是 Set Experience（经验条）。
@@ -428,6 +430,12 @@ func EncodeSetPlayerInventory(slot int32, slotData []byte) []byte {
 	packet := AppendVarInt(nil, int32(PlayPacketIDSetPlayerInventory))
 	packet = AppendVarInt(packet, slot)
 	return append(packet, slotData...)
+}
+
+// EncodeSetHeldSlot 编码 Set Held Slot 包（切换客户端选中的快捷栏槽位，0–8）。
+func EncodeSetHeldSlot(slot int32) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDSetHeldSlot))
+	return AppendVarInt(packet, slot)
 }
 
 // UnpackPosition 解包协议的 Position 类型（与 PackPosition 互逆）。

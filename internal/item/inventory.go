@@ -4,7 +4,11 @@
 
 package item
 
-import "sync"
+import (
+	"sync"
+
+	"gmcs/internal/registry"
+)
 
 // 玩家物品栏的槽位布局（与容器的槽位编号一致）。
 const (
@@ -100,4 +104,78 @@ func (inv *Inventory) Slots() [InventorySlots]Stack {
 	inv.mu.Lock()
 	defer inv.mu.Unlock()
 	return inv.slots
+}
+
+// Take 在持锁状态下取走槽位物品并清空槽位。
+// 越界或空槽位返回空堆栈。用于死亡掉落等“读取并清空”场景，
+// 避免 Get 后 Set(Empty) 之间被其他 goroutine 的写入覆盖。
+func (inv *Inventory) Take(slot int) Stack {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	if slot < 0 || slot >= InventorySlots {
+		return Empty()
+	}
+	stack := inv.slots[slot]
+	inv.slots[slot] = Empty()
+	return stack
+}
+
+// Damage 在持锁状态下对槽位施加耐久损耗，返回损耗前（若损坏则为损坏时）
+// 的堆栈与其最大耐久。
+//
+// 槽位越界、为空、物品不可损坏或 amount <= 0 时返回 ok=false 且不修改槽位。
+// 耐久达到上限时槽位被清空，返回的堆栈仍保留 Damage 值（调用方可据此
+// 播放损坏音效）；否则返回更新后的堆栈。
+func (inv *Inventory) Damage(slot int, amount int32) (stack Stack, maxDamage int32, ok bool) {
+	if amount <= 0 {
+		return Empty(), 0, false
+	}
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	if slot < 0 || slot >= InventorySlots {
+		return Empty(), 0, false
+	}
+	current := inv.slots[slot]
+	if current.IsEmpty() {
+		return current, 0, false
+	}
+	limit, damageable := registry.MaxDamage(current.ItemID)
+	if !damageable {
+		return current, 0, false
+	}
+	current.Damage += amount
+	if current.Damage >= limit {
+		inv.slots[slot] = Empty()
+		return current, limit, true
+	}
+	inv.slots[slot] = current
+	return current, limit, true
+}
+
+// Repair 在持锁状态下修复槽位物品的耐久（原版经验修补每点经验修复 2 点耐久）。
+//
+// points 是本次可用于修复的经验点数。返回修复后的堆栈与实际消耗的经验点
+// （向上取整）。槽位越界、为空、不可损坏或没有耐久损耗时返回 ok=false。
+func (inv *Inventory) Repair(slot int, points int32) (stack Stack, used int32, ok bool) {
+	if points <= 0 {
+		return Empty(), 0, false
+	}
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	if slot < 0 || slot >= InventorySlots {
+		return Empty(), 0, false
+	}
+	current := inv.slots[slot]
+	if current.IsEmpty() {
+		return current, 0, false
+	}
+	limit, damageable := registry.MaxDamage(current.ItemID)
+	if !damageable || current.Damage <= 0 || current.Damage >= limit {
+		return current, 0, false
+	}
+	repair := min(2*points, current.Damage)
+	used = (repair + 1) / 2
+	current.Damage -= repair
+	inv.slots[slot] = current
+	return current, used, true
 }

@@ -705,3 +705,35 @@ func BenchmarkItemWaterFlowPush(b *testing.B) {
 		instance.itemWaterFlowPush(gameWorld, box, 0.01, 0.01)
 	}
 }
+
+// benchArrowHits 防止编译器消除扫掠判定结果。
+var benchArrowHits int
+
+// BenchmarkArrowSweepAgainstMobs 衡量箭矢扫掠碰撞的判定成本：单 tick 对 32 只
+// 生物各做一次“线段 vs 扩张包围盒”（tickArrows 的核心循环，见 arrows.go）。
+// 线段长 1.2 格，接近满速箭一 tick 的位移；前几个包围盒落在路径上，
+// 命中与未命中两条分支都被执行。
+func BenchmarkArrowSweepAgainstMobs(b *testing.B) {
+	const mobCount = 32
+	boxes := make([]world.Box, 0, mobCount)
+	for i := 0; i < mobCount; i++ {
+		// 前 4 只沿 +x 排开（与线段相交），其余分散到两侧。
+		x := float64(i) * 0.3
+		z := float64(i) * 2
+		boxes = append(boxes, expandBox(mobBox(x, 64, z), arrowHitRadius))
+	}
+	const startX, startY, startZ = 0.5, 65, 0.5
+	const endX, endY, endZ = startX + 1.2, startY, startZ
+
+	hits := 0
+	b.ReportAllocs()
+	for b.Loop() {
+		hits = 0
+		for _, box := range boxes {
+			if segmentIntersectsBox(startX, startY, startZ, endX, endY, endZ, box) {
+				hits++
+			}
+		}
+	}
+	benchArrowHits = hits
+}

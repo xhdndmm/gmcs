@@ -77,11 +77,12 @@ func (s *Server) swapItemWithOffhand(player *session) {
 		return
 	}
 	player.cancelUseItem()
-	main := player.inventory.Get(player.selectedSlot)
+	slot := player.selectedHotbarSlot()
+	main := player.inventory.Get(slot)
 	off := player.inventory.Get(item.SlotOffhand)
-	player.inventory.Set(player.selectedSlot, off)
+	player.inventory.Set(slot, off)
 	player.inventory.Set(item.SlotOffhand, main)
-	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(player.selectedSlot), off.AppendSlot(nil)))
+	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), off.AppendSlot(nil)))
 	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(item.SlotOffhand), main.AppendSlot(nil)))
 }
 
@@ -168,7 +169,7 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	w := s.worldFor(dim)
 	// 打火石点燃下界传送门 / 末影之眼填充末地传送门框（不受潜行影响）。
 	current := w.BlockAt(use.X, use.Y, use.Z)
-	if held := player.inventory.Get(player.selectedSlot); !held.IsEmpty() {
+	if held := player.inventory.Get(player.selectedHotbarSlot()); !held.IsEmpty() {
 		if heldName, ok := registry.ItemName(held.ItemID); ok {
 			switch heldName {
 			case flintAndSteelName:
@@ -252,7 +253,7 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if existing != world.AirBlock && !isWaterState(existing) && !isLavaState(existing) {
 		return // 目标位置不可替换
 	}
-	stack := player.inventory.Get(player.selectedSlot)
+	stack := player.inventory.Get(player.selectedHotbarSlot())
 	if stack.IsEmpty() {
 		return
 	}
@@ -294,9 +295,10 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	s.pushEntitiesUp(dim, w, placeX, placeY, placeZ, state)
 	if player.gameModeID() != uint8(config.GameModeCreative) {
 		// 生存模式消耗一个物品并同步槽位（创意模式不消耗）。
+		slot := player.selectedHotbarSlot()
 		stack.Count--
-		player.inventory.Set(player.selectedSlot, stack)
-		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(player.selectedSlot), stack.AppendSlot(nil)))
+		player.inventory.Set(slot, stack)
+		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
 	}
 }
 
@@ -399,7 +401,7 @@ func mobBox(x, y, z float64) world.Box {
 func (s *Server) handleSetCarriedItem(player *session, slot int32) {
 	// 切换快捷栏物品会取消进食/弓蓄力/盾牌格挡（与原版切换物品一致）。
 	player.cancelUseItem()
-	player.selectedSlot = int(slot)
+	player.setSelectedHotbarSlot(int(slot))
 }
 
 // handleSetCreativeSlot 处理创造模式物品栏设置（Set Creative Mode Slot）。

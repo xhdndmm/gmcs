@@ -83,7 +83,7 @@ func (s *Server) placeFluidSource(w *world.World, dim world.Dimension, x, y, z i
 // tryUseBucket 处理玩家右键方块时的桶逻辑（放在容器交互之后、方块放置之前）。
 // 返回 true 表示已处理（调用方跳过后续放置流程）。
 func (s *Server) tryUseBucket(player *session, w *world.World, use protocol.UseItemOn) bool {
-	stack := player.inventory.Get(player.selectedSlot)
+	stack := player.inventory.Get(player.selectedHotbarSlot())
 	if stack.IsEmpty() {
 		return false
 	}
@@ -167,7 +167,7 @@ func bucketEmptySound(fluidName string) string {
 // consumeWithRemainder 的玩家版本）：数量归零时直接替换槽位物品，
 // 否则把 result 放入背包（放不下时掉落）。
 func (s *Server) replaceHeldItemWithRemainder(player *session, resultItemID int32) {
-	slot := player.selectedSlot
+	slot := player.selectedHotbarSlot()
 	stack := player.inventory.Get(slot)
 	stack.Count--
 	if stack.Count <= 0 {

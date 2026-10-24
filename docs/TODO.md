@@ -509,6 +509,26 @@
   - 复测 `BenchmarkServerTick` 15.8–16.3 µs/1 alloc、`BenchmarkEntityTracking`
     4.7–4.8 µs/0 alloc；本轮未新增箭矢专项基准，扫掠判定的单次成本未单独测量。
 
+- [x] 并发安全与玩家数据完善批次：
+  - 物品栏耐久/修复改为锁内读-改-写（`Inventory.Damage` / `Inventory.Repair`）：
+    Tick 线程的护甲损耗、经验修补与读循环的槽位操作不再互相覆盖；
+    旧的 `Get` → 修改 → `Set` 在并发下会丢失耐久更新（已加回归测试）；
+  - 选中快捷栏槽位改为原子字段并持久化（`players.json` 新增可选
+    `selected_slot`，对应原版 `SelectedItemSlot`）；进入世界、跨维度传送与
+    重生后发送 Clientbound `set_held_slot`（0x67，VarInt 槽位），
+    包 ID 取自 1.21.11 官方 `packets.json`，字段类型经
+    `ClientboundSetHeldSlotPacket` 字节码（`ByteBufCodecs` 的 VarInt）核对；
+    serverbound `set_carried_item` 的越界槽位被忽略
+    （原版 `Inventory.setSelectedSlot` 会抛异常断开客户端）；
+  - 周期自动保存（后台 goroutine）与玩家数据快照现在可安全读取选中槽位；
+  - 新增测试：`TestInventoryDamageBreaksItem`、
+    `TestInventoryDamageRejectsNonDamageable`、`TestInventoryRepair`、
+    `TestInventoryDamageConcurrentAccumulates`、`TestEncodeSetHeldSlot`、
+    `TestSelectedHotbarSlotPersists`；
+  - 新增 `BenchmarkArrowSweepAgainstMobs`（每次 32 个目标，121–123 ns/op、
+    0 alloc，约 3.8 ns/目标）；复测 `BenchmarkServerTick` 15.4–16.1 µs/1 alloc、
+    `BenchmarkEntityTracking` 4.7–4.9 µs/0 alloc（与前两批持平）。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -550,8 +570,9 @@
   但**尚未与真实正版客户端进行在线对测**
 - 玩家数据为 gmcs 自定义 players.json（非原版 playerdata）：退出/关闭与每 30 秒周期保存、
   死亡状态与经验持久化；强杀（SIGKILL）或崩溃最坏丢失约一个保存周期的进度。
-  选中的快捷栏槽位不持久化（重连后回到 0 号槽；原版保存 `SelectedItemSlot` 并在
-  登录后发送 Clientbound `set_held_slot`），gmcs 尚未实现该客户端包
+  选中的快捷栏槽位已持久化（`selected_slot`），进入世界/跨维度传送/重生后
+  发送 `set_held_slot` 同步客户端；生命上限、经验等级与末影箱以外的
+  原版玩家字段（如末影珍珠冷却、属性修饰符）仍未保存
 - 方块交互：挖掘系统已按原版实现（见上“完整挖掘系统”），仍存差异：
   效率/水下速掘附魔已实现；急迫/挖掘疲劳等状态效果未实现（无药水效果系统）；
   精准采集/时运/剪刀与概率掉落已实现，但未覆盖全部方块的战利品表

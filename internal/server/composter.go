@@ -282,7 +282,7 @@ func (s *Server) tryComposterUse(player *session, w *world.World, x, y, z int, s
 	if level < 0 {
 		return false
 	}
-	held := player.inventory.Get(player.selectedSlot)
+	held := player.inventory.Get(player.selectedHotbarSlot())
 	if level < 8 && registry.CompostChance(held.ItemID) > 0 {
 		if level < 7 {
 			// 填入（level 7 时原版同样返回成功但不消耗、不填入）。
@@ -297,8 +297,9 @@ func (s *Server) tryComposterUse(player *session, w *world.World, x, y, z int, s
 				if held.Count <= 0 {
 					held = item.Empty()
 				}
-				player.inventory.Set(player.selectedSlot, held)
-				player.tryWrite(protocol.EncodeSetPlayerInventory(int32(player.selectedSlot), held.AppendSlot(nil)))
+				slot := player.selectedHotbarSlot()
+				player.inventory.Set(slot, held)
+				player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), held.AppendSlot(nil)))
 			}
 		}
 		return true

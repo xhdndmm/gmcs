@@ -233,7 +233,7 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 	// Chunk Batch Start → [视距内区块 ×N] → Chunk Batch Finished →
 	// Synchronize Player Position → Player Info → System Chat → Declare Commands →
 	// Update Recipes → Recipe Book Add → Recipe Book Settings →
-	// Container Set Content（窗口 0 物品栏）→ Update Health
+	// Container Set Content（窗口 0 物品栏）→ Set Held Slot → Update Health
 	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x0C} {
 		id, _ := readCompressedPacket(t, conn)
 		if id != want {
@@ -250,7 +250,7 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 	if id, _ := readCompressedPacket(t, conn); id != 0x0B {
 		t.Fatalf("expected chunk batch finished, got %#x", id)
 	}
-	for _, want := range []int32{0x46, 0x44, 0x77, 0x10, 0x83, 0x48, 0x4A, 0x12, 0x66} {
+	for _, want := range []int32{0x46, 0x44, 0x77, 0x10, 0x83, 0x48, 0x4A, 0x12, 0x67, 0x66} {
 		id, _ := readCompressedPacket(t, conn)
 		if id != want {
 			t.Fatalf("expected play packet %#x, got %#x", want, id)

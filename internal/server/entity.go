@@ -1167,7 +1167,7 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 		return // 受击无敌帧内：忽略。
 	}
 	m.HurtCooldown = mobHurtCooldownTicks
-	held := player.inventory.Get(player.selectedSlot)
+	held := player.inventory.Get(player.selectedHotbarSlot())
 	damage := float32(playerAttackDamage)
 	// 跳跃暴击：下落中攻击造成 1.5 倍伤害（与原版一致）。
 	if player.isFalling() {
@@ -1397,6 +1397,8 @@ func (s *Server) respawnPlayer(player *session) {
 	s.broadcastPlayerMove(player)
 	health, food, saturation := player.healthStatus()
 	player.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))
+	// 客户端在重生后会重建玩家实体，重新同步选中的快捷栏槽位。
+	player.tryWrite(protocol.EncodeSetHeldSlot(int32(player.selectedHotbarSlot())))
 	slog.Info("player respawned", "name", player.name)
 }
 

@@ -278,23 +278,14 @@ func unbreakingSavesDurability(server *Server, stack item.Stack, armor bool) boo
 }
 
 // damageInventoryItem 对物品栏槽位施加耐久损耗；耐久耗尽时移除物品并同步。
-// 仅修改物品栏并发送 Set Player Inventory（可在 Tick 或读循环调用）。
+// 读-改-写在物品栏锁内一次完成，避免与读循环的槽位写入互相覆盖
+// （Tick 线程的护甲损耗与读循环的容器操作可能并发）。
 func (s *session) damageInventoryItem(slot int, amount int32) {
-	if amount <= 0 {
-		return
-	}
-	stack := s.inventory.Get(slot)
-	if stack.IsEmpty() {
-		return
-	}
-	maxDamage, ok := registry.MaxDamage(stack.ItemID)
+	stack, maxDamage, ok := s.inventory.Damage(slot, amount)
 	if !ok {
 		return
 	}
-	stack.Damage += amount
-	s.inventory.Set(slot, stack)
 	if stack.Damage >= maxDamage {
-		s.inventory.Set(slot, item.Empty())
 		s.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), item.Empty().AppendSlot(nil)))
 		// 原版物品损坏：Range/Entity Event 0（播放损坏音效）。
 		x, _, z, _, _ := s.playerPosition()
@@ -345,7 +336,7 @@ func lootingLevel(held item.Stack) int32 {
 
 // mendingItems 返回带经验修补的可损坏物品槽位。
 // 按固定槽位顺序遍历（原版随机选择；gmcs 使用确定顺序以便测试）。
-// 不读取 selectedSlot 等读循环独占字段：本函数可能在 Tick 线程调用。
+// 一次加锁取整栏快照，避免在 Tick 线程反复加锁。
 func (s *session) mendingItems() []int {
 	var slots []int
 	mending := enchants().mending
@@ -365,24 +356,25 @@ func (s *session) mendingItems() []int {
 
 // repairWithExperience 消耗经验修复带经验修补的物品，返回消耗的经验点数。
 // 原版 repair_with_xp 的 multiply 因子为 2（每点经验修复 2 点耐久）。
+// 修复在物品栏锁内完成，避免与读循环的槽位写入互相覆盖。
 func (s *session) repairWithExperience(points int32) int32 {
 	if points <= 0 {
 		return 0
 	}
 	remaining := points
+	mending := enchants().mending
 	for _, slot := range s.mendingItems() {
 		if remaining <= 0 {
 			break
 		}
-		stack := s.inventory.Get(slot)
-		maxDamage, ok := registry.MaxDamage(stack.ItemID)
-		if !ok || stack.Damage <= 0 || stack.Damage >= maxDamage {
+		// 快照之后槽位可能被读循环移动/清空：重新确认附魔后再修复。
+		if enchantLevel(s.inventory.Get(slot), mending) <= 0 {
 			continue
 		}
-		repair := min(int32(2)*remaining, stack.Damage)
-		used := (repair + 1) / 2
-		stack.Damage -= repair
-		s.inventory.Set(slot, stack)
+		stack, used, ok := s.inventory.Repair(slot, remaining)
+		if !ok || used <= 0 {
+			continue
+		}
 		s.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
 		remaining -= used
 	}

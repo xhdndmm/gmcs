@@ -22,7 +22,7 @@ import (
 
 // playerEquipmentStacks 把玩家的 6 个装备槽写入 out（索引即 Set Equipment 槽位编号）。
 func playerEquipmentStacks(player *session, out *[protocol.EquipmentSlotCount]item.Stack) {
-	out[protocol.EquipmentMainHand] = player.inventory.Get(player.selectedSlot)
+	out[protocol.EquipmentMainHand] = player.inventory.Get(player.selectedHotbarSlot())
 	out[protocol.EquipmentOffHand] = player.inventory.Get(item.SlotOffhand)
 	out[protocol.EquipmentFeet] = player.inventory.Get(item.SlotFeet)
 	out[protocol.EquipmentLegs] = player.inventory.Get(item.SlotLegs)

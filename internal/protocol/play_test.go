@@ -375,6 +375,26 @@ func TestEncodeSetPlayerInventory(t *testing.T) {
 	}
 }
 
+// TestEncodeSetHeldSlot 验证 Set Held Slot 的包 ID 与 VarInt 槽位编码
+// （1.21.11 官方 protocol_id 103；字段为 VarInt，非固定的字节）。
+func TestEncodeSetHeldSlot(t *testing.T) {
+	packet := EncodeSetHeldSlot(7)
+	packetID, offset, err := DecodeVarInt(packet)
+	if err != nil || packetID != PlayPacketIDSetHeldSlot {
+		t.Fatalf("packet id %#x (err=%v), want %#x", packetID, err, PlayPacketIDSetHeldSlot)
+	}
+	if PlayPacketIDSetHeldSlot != 103 {
+		t.Fatalf("Set Held Slot packet id = %d, want 103", PlayPacketIDSetHeldSlot)
+	}
+	slot, size, err := DecodeVarInt(packet[offset:])
+	if err != nil || slot != 7 {
+		t.Fatalf("slot %d (err=%v), want 7", slot, err)
+	}
+	if offset+size != len(packet) {
+		t.Fatalf("unexpected trailing bytes: % x", packet[offset+size:])
+	}
+}
+
 func TestEncodePlayerInfoRemove(t *testing.T) {
 	uuid := [16]byte{9, 8, 7}
 	packet := EncodePlayerInfoRemove([][16]byte{uuid})

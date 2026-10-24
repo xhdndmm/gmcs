@@ -260,7 +260,7 @@ func TestBucketPlaceAndPickup(t *testing.T) {
 	}
 	// 放在快捷栏并选中。
 	player.inventory.Set(0, item.Stack{ItemID: waterBucketID, Count: 1})
-	player.selectedSlot = 0
+	player.setSelectedHotbarSlot(0)
 
 	// 直接调用桶逻辑（等价于 Use Item On 包中点击下方方块顶面）。
 	use := protocol.UseItemOn{X: baseX, Y: floorY - 1, Z: baseZ, Direction: 1}
@@ -276,7 +276,7 @@ func TestBucketPlaceAndPickup(t *testing.T) {
 	}
 
 	// 空桶收集水源。
-	player.selectedSlot = 0
+	player.setSelectedHotbarSlot(0)
 	use = protocol.UseItemOn{X: baseX, Y: floorY, Z: baseZ, Direction: 0}
 	if !instance.tryUseBucket(player, w, use) {
 		t.Fatal("tryUseBucket(pickup) = false, want true")

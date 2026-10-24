@@ -146,7 +146,7 @@ func (s *Server) handlePlayerAttack(attacker *session, targetID int32, px, py, p
 		return
 	}
 	position := [3]float64{px, py + 1, pz}
-	held := attacker.inventory.Get(attacker.selectedSlot)
+	held := attacker.inventory.Get(attacker.selectedHotbarSlot())
 	damage := float32(playerAttackDamage)
 	if attacker.isFalling() {
 		damage *= playerCritMultiplier

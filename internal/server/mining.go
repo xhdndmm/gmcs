@@ -326,27 +326,28 @@ func (s *session) applyToolDamage(amount int32) {
 	if amount <= 0 {
 		return
 	}
-	slot := s.selectedSlot
+	slot := s.selectedHotbarSlot()
 	stack := s.inventory.Get(slot)
 	if stack.IsEmpty() {
 		return
 	}
-	maxDamage, ok := registry.MaxDamage(stack.ItemID)
-	if !ok {
+	if _, ok := registry.MaxDamage(stack.ItemID); !ok {
 		return // 不可损坏物品
 	}
 	if unbreakingSavesDurability(s.server, stack, false) {
 		return // 不灭附魔免除了本次损耗
 	}
-	stack.Damage += amount
+	// Damage 在锁内完成读-改-写：读循环可能同时修改选中槽位（容器/丢弃）。
+	stack, maxDamage, ok := s.inventory.Damage(slot, amount)
+	if !ok {
+		return // 槽位在判定后被清空
+	}
 	if stack.Damage >= maxDamage {
-		s.inventory.Set(slot, item.Empty())
 		s.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), item.Empty().AppendSlot(nil)))
 		x, _, z, _, _ := s.playerPosition()
 		s.server.writeToNearbyPlayers(protocol.EncodeEntityEvent(s.entityID, 0), s.dimensionID(), x, z, nil)
 		return
 	}
-	s.inventory.Set(slot, stack)
 	s.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
 }
 
@@ -370,7 +371,7 @@ func (s *session) applyDeferredMiningEffects() {
 	if state == world.AirBlock {
 		return
 	}
-	held := s.inventory.Get(s.selectedSlot)
+	held := s.inventory.Get(s.selectedHotbarSlot())
 	s.server.destroyBlockByPlayer(s, held, dim, pos[0], pos[1], pos[2], state)
 }
 
@@ -399,7 +400,7 @@ func (s *Server) startDestroyBlock(player *session, action protocol.PlayerAction
 	dim := player.dimensionID()
 	w := s.worldFor(dim)
 	state := w.BlockAt(action.X, action.Y, action.Z)
-	held := player.inventory.Get(player.selectedSlot) // 读循环：可直接访问物品栏
+	held := player.inventory.Get(player.selectedHotbarSlot()) // 读循环：可直接访问物品栏
 	if player.gameModeID() == uint8(config.GameModeCreative) {
 		// 原版：创造模式在 START 时立即破坏（含 canDestroyBlock /
 		// GameMasterBlock 校验；被拒绝时回发方块状态）。
@@ -442,7 +443,7 @@ func (s *Server) stopDestroyBlock(player *session, action protocol.PlayerAction)
 	w := s.worldFor(dim)
 	state := w.BlockAt(action.X, action.Y, action.Z)
 	if state != world.AirBlock {
-		held := player.inventory.Get(player.selectedSlot)
+		held := player.inventory.Get(player.selectedHotbarSlot())
 		progress := s.destroyProgressFor(player, held, state) * float32(s.gameTicks.Load()-start+1)
 		if progress >= stopDestroyProgress {
 			// 完成破坏：清除跟踪、广播进度 -1，再执行破坏（原版顺序）。
