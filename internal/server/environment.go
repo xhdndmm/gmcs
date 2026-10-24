@@ -66,32 +66,33 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 
 	// 岩浆：点燃 15 秒 + 结算岩浆伤害（无敌帧限制频率）。
 	if inLava {
-		if s.fireTicks < lavaFireTicks {
-			s.fireTicks = lavaFireTicks
+		if s.fireTicks.Load() < lavaFireTicks {
+			s.fireTicks.Store(lavaFireTicks)
 		}
 		server.damagePlayerWithMessage(s, envLavaDamage, "lava", 0, server.lavaDamageTypeID, nil,
 			"%s tried to swim in lava")
 	}
 	// 入水熄灭（原版还包含雨与气泡柱，gmcs 目前无天气）。
 	if inWater {
-		s.fireTicks = 0
+		s.fireTicks.Store(0)
 	}
 	// 着火：每秒 1 点火焰伤害并递减；岩浆中由岩浆伤害取代。
-	if s.fireTicks > 0 {
-		if s.fireTicks%20 == 0 && !inLava {
+	if ticks := s.fireTicks.Load(); ticks > 0 {
+		if ticks%20 == 0 && !inLava {
 			server.damagePlayerWithMessage(s, envFireDamage, "fire", 0, server.fireDamageTypeID, nil,
 				"%s burned to death")
 		}
-		s.fireTicks--
+		s.fireTicks.Add(-1)
 	}
 	// 火方块：点燃 8 秒；玩家在火中每 tick 额外 +rand(1..2)（原版 BaseFireBlock
 	// 的方块内效果：非火免实体先累加再取 igniteForSeconds(8) 下限；
 	// 方块内效果在 baseTick 之后应用，因此入火当帧结束时着火时长就是完整值）。
 	if inFire {
-		s.fireTicks += 1 + int(server.nextRandom()%2)
-		if s.fireTicks < mobFireBlockTicks {
-			s.fireTicks = mobFireBlockTicks
+		ticks := s.fireTicks.Load() + 1 + int32(server.nextRandom()%2)
+		if ticks < mobFireBlockTicks {
+			ticks = mobFireBlockTicks
 		}
+		s.fireTicks.Store(ticks)
 	}
 	// 岩浆块：站在顶面时周期性伤害。
 	if supportedAt(w, x, y, z) && fluidAt(w, x, y-0.1, z, world.MagmaBlock) {
@@ -102,24 +103,26 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 	// 呼吸附魔按原版 oxygen_bonus 属性把上限提高到 300 + 等级×20
 	// （LivingEntity.getMaxAirSupply）；上限缓存在 airCapacity。
 	maxAir := s.airCapacityValue()
+	air := s.air.Load()
 	if headInWater(w, x, y, z) {
-		if s.air > -20 {
-			s.air--
+		if air > -20 {
+			air--
 		}
-		if s.air <= -20 {
-			s.air = 0
+		if air <= -20 {
+			air = 0
 			server.damagePlayerWithMessage(s, envDrownDamage, "drowning", 0, server.drownDamageTypeID, nil,
 				"%s drowned")
 		}
-	} else if s.air < maxAir {
-		s.air = maxAir
+	} else if air < int32(maxAir) {
+		air = int32(maxAir)
 	}
+	s.air.Store(air)
 	s.syncEnvironmentMetadata(server, players, x, z)
 }
 
 // syncEnvironmentMetadata 把着火与氧气状态变化同步给附近玩家（含本人）。
 func (s *session) syncEnvironmentMetadata(server *Server, players []*session, x, z float64) {
-	onFire := s.fireTicks > 0
+	onFire := s.fireTicks.Load() > 0
 	if onFire != s.envFireSynced {
 		s.envFireSynced = onFire
 		var flags byte
@@ -131,10 +134,11 @@ func (s *session) syncEnvironmentMetadata(server *Server, players []*session, x,
 	}
 	// 氧气：跨过 20 的整数倍、重置或耗尽时同步（降低包量；客户端气泡
 	// 按步长刷新，视觉可接受）。呼吸附魔会提高上限，重置值也随之变化。
-	maxAir := s.airCapacityValue()
-	if s.air != s.envAirSynced && (s.air == maxAir || s.air <= 0 || s.air%20 == 0) {
-		s.envAirSynced = s.air
-		packet := protocol.EncodeEntityMetadataVarInt(s.entityID, 1, int32(s.air))
+	maxAir := int32(s.airCapacityValue())
+	air := s.air.Load()
+	if air != s.envAirSynced && (air == maxAir || air <= 0 || air%20 == 0) {
+		s.envAirSynced = air
+		packet := protocol.EncodeEntityMetadataVarInt(s.entityID, 1, air)
 		server.broadcastToNearby(s.dimensionID(), packet, x, z, players)
 	}
 }

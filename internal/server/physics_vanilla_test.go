@@ -206,8 +206,8 @@ func TestEnvironmentBoxOverlapIgnites(t *testing.T) {
 	// 玩家：盒子 x ∈ [0.45, 1.05]（相对 baseX）覆盖火方块。
 	player.setPlayerPosition(float64(baseX)+0.75, float64(floorY), float64(baseZ)+0.5, 0, 0)
 	runTicks(instance, 1)
-	if player.fireTicks < mobFireBlockTicks {
-		t.Fatalf("边缘玩家未被点燃：fireTicks = %d, want ≥ %d", player.fireTicks, mobFireBlockTicks)
+	if ticks := player.fireTicks.Load(); ticks < mobFireBlockTicks {
+		t.Fatalf("边缘玩家未被点燃：fireTicks = %d, want ≥ %d", ticks, mobFireBlockTicks)
 	}
 }
 
@@ -232,7 +232,7 @@ func TestEnvironmentBoxDoesNotOverreach(t *testing.T) {
 	// 玩家盒 x ∈ [-0.2, 0.4]（相对 baseX），与火方块 [1, 2] 不重叠。
 	player.setPlayerPosition(float64(baseX)+0.1, float64(floorY), float64(baseZ)+0.5, 0, 0)
 	runTicks(instance, 1)
-	if player.fireTicks != 0 {
-		t.Fatalf("不重叠的火方块点燃了玩家：fireTicks = %d, want 0", player.fireTicks)
+	if ticks := player.fireTicks.Load(); ticks != 0 {
+		t.Fatalf("不重叠的火方块点燃了玩家：fireTicks = %d, want 0", ticks)
 	}
 }

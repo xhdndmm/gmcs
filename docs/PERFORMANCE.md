@@ -1110,6 +1110,32 @@ BenchmarkEntityTracking-20    4895 /  4691 /  4713 ns/op   0 allocs/op
 选中槽位的路径。尚未验证：真实客户端重启后快捷栏选中的视觉效果
 （包 ID 与 VarInt 字段已对照官方 `packets.json` 与 1.21.11 服务端字节码）。
 
+### 3.30 环境状态原子化与持久化（本批，实测）
+
+`fireTicks`/`air` 从 Tick goroutine 独占的 `int` 改为 `atomic.Int32`，使每 30 秒的
+后台自动保存可以读取它们而无需加锁；`exhaustion`/`foodTimer` 原本就受
+`stateMu` 保护，保存时与生命/饥饿值在同一临界区内读取。环境 Tick 每玩家每帧新增
+约 6 次原子 load/store（x86-64 上是普通内存操作，无锁前缀），无新增分配。
+
+复测（`-benchtime=0.5s -count=3`）：
+
+```text
+BenchmarkServerTick-20             15547 / 15492 / 15853 ns/op   1 alloc/op
+BenchmarkServerTickManyPlayers-20 311138 / 308270 / 311579 ns/op
+                                   46–47 allocs/op
+BenchmarkEntityTracking-20          4823 /  4740 /  4788 ns/op   0 allocs/op
+```
+
+`BenchmarkServerTickManyPlayers`（32 生物 + 100 玩家，包含每玩家环境 Tick）为
+308–312 µs，与上一批记录（321–327 µs）相比在噪声范围内甚至略低；单生物
+Tick 与实体跟踪同样持平。
+
+正确性验证：`go test ./...` 全绿；新增 `TestEnvironmentStatePersists`
+（保存 `air=120`/`fire_ticks=45`/`exhaustion=2.5`/`food_timer=33` 后重连恢复）；
+既有环境测试（岩浆点燃、入水熄灭、每秒火焰伤害、溺水、判定盒范围）全部改为
+原子访问后继续通过。尚未验证：与原版 playerdata 的 Air/Fire 数值逐项对拍
+（字段语义来自原版 `Player` 存档字段，未做端到端存档对照）。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

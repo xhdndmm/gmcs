@@ -68,8 +68,8 @@ func TestLavaIgnitesAndDamagesPlayer(t *testing.T) {
 	if want := float32(maxPlayerHealth - envLavaDamage); health != want {
 		t.Fatalf("岩浆伤害后生命 = %v, want %v", health, want)
 	}
-	if player.fireTicks <= 0 {
-		t.Fatalf("岩浆未点燃玩家：fireTicks = %d", player.fireTicks)
+	if ticks := player.fireTicks.Load(); ticks <= 0 {
+		t.Fatalf("岩浆未点燃玩家：fireTicks = %d", ticks)
 	}
 	// 着火标志同步（索引 0、值 1）。
 	payload := expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
@@ -83,8 +83,8 @@ func TestLavaIgnitesAndDamagesPlayer(t *testing.T) {
 		t.Fatal("无法设置水方块")
 	}
 	instance.tick()
-	if player.fireTicks != 0 {
-		t.Fatalf("入水后 fireTicks = %d, want 0", player.fireTicks)
+	if ticks := player.fireTicks.Load(); ticks != 0 {
+		t.Fatalf("入水后 fireTicks = %d, want 0", ticks)
 	}
 	payload = expectPlayPacket(t, conn, protocol.PlayPacketIDEntityMetadata)
 	if flags := metadataByteValue(t, payload, 0); flags&1 != 0 {
@@ -146,13 +146,13 @@ func TestFireDamagePerSecond(t *testing.T) {
 	processBarrier(t, conn)
 
 	clearHurtCooldown(player)
-	player.fireTicks = 20
+	player.fireTicks.Store(20)
 	instance.tick()
 	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-envFireDamage {
 		t.Fatalf("火焰伤害后生命 = %v, want %v", health, maxPlayerHealth-envFireDamage)
 	}
-	if player.fireTicks != 19 {
-		t.Fatalf("fireTicks = %d, want 19", player.fireTicks)
+	if ticks := player.fireTicks.Load(); ticks != 19 {
+		t.Fatalf("fireTicks = %d, want 19", ticks)
 	}
 }
 
@@ -177,14 +177,14 @@ func TestDrowningDamagesPlayer(t *testing.T) {
 	}
 	player.setPlayerPosition(x, float64(by), z, 0, 0)
 	clearHurtCooldown(player)
-	player.air = -19
+	player.air.Store(-19)
 
 	instance.tick()
 	if health, _, _ := player.healthStatus(); health != maxPlayerHealth-envDrownDamage {
 		t.Fatalf("溺水伤害后生命 = %v, want %v", health, maxPlayerHealth-envDrownDamage)
 	}
-	if player.air != 0 {
-		t.Fatalf("溺水后 air = %d, want 0", player.air)
+	if air := player.air.Load(); air != 0 {
+		t.Fatalf("溺水后 air = %d, want 0", air)
 	}
 
 	// 头部出水：氧气立即恢复。
@@ -193,8 +193,8 @@ func TestDrowningDamagesPlayer(t *testing.T) {
 		t.Fatal("无法清除水方块")
 	}
 	instance.tick()
-	if player.air != maxPlayerAir {
-		t.Fatalf("出水后 air = %d, want %d", player.air, maxPlayerAir)
+	if air := player.air.Load(); air != int32(maxPlayerAir) {
+		t.Fatalf("出水后 air = %d, want %d", air, maxPlayerAir)
 	}
 }
 

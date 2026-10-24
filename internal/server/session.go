@@ -231,14 +231,16 @@ type session struct {
 	// 悬空时 ÷5（Player.getDestroySpeed）。
 	onGround bool
 
-	// 环境效果状态（仅由服务器 Tick goroutine 访问）：
+	// 环境效果状态由服务器 Tick goroutine 推进；周期自动保存（后台
+	// goroutine）与 players.json 快照需要读取，因此用原子字段发布。
 	// fireTicks 是剩余着火 tick（岩浆点燃 15 秒；每秒 1 点火焰伤害）；
 	// air 是剩余氧气（300 = 满，头部浸水时下降，低于 -20 后每秒 2 点溺水伤害）；
-	// envFireSynced/envAirSynced 记录最近同步给客户端的着火/氧气值，避免重复发送。
-	fireTicks     int
-	air           int
+	// envFireSynced/envAirSynced 记录最近同步给客户端的着火/氧气值
+	// （仅 Tick goroutine 访问），避免重复发送。
+	fireTicks     atomic.Int32
+	air           atomic.Int32
 	envFireSynced bool
-	envAirSynced  int
+	envAirSynced  int32
 
 	// 高频包限流（令牌桶，仅读循环访问）：聊天/命令与移动都会转发给
 	// 其他玩家，防止单客户端包洪泛放大广播成本。
@@ -289,7 +291,6 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		health:          maxPlayerHealth,
 		food:            maxPlayerFood,
 		saturation:      playerSaturation,
-		air:             maxPlayerAir,
 		envAirSynced:    maxPlayerAir,
 		sentChunks:      make(map[world.ChunkPos]struct{}),
 		// 附魔种子与原版一致在会话创建时随机初始化（Player.enchantmentSeed）。

@@ -529,6 +529,18 @@
     0 alloc，约 3.8 ns/目标）；复测 `BenchmarkServerTick` 15.4–16.1 µs/1 alloc、
     `BenchmarkEntityTracking` 4.7–4.9 µs/0 alloc（与前两批持平）。
 
+- [x] 玩家环境状态持久化批次：
+  - `players.json` 新增可选字段 `air`（指针，区分“0 氧气”与旧记录缺失）、
+    `fire_ticks`、`exhaustion`、`food_timer`，对应原版 playerdata 的
+    `Air`/`Fire`/`foodExhaustionLevel`/`foodTickTimer`；重连后继续着火/溺水倒计时，
+    不再无条件满氧气；旧存档缺省按满氧气处理；
+  - 非法值限幅：氧气 [-20, 360]（360 = 300 + 呼吸 III）、着火 [0, 300]、
+    疲劳度 [0, 40]、饥饿计时 [0, 80]；NaN 疲劳度归零；
+  - `fireTicks`/`air` 改为 `atomic.Int32`（原为 Tick goroutine 独占字段），
+    周期自动保存（后台 goroutine）可安全读取；环境 Tick 内改用 Load/Store，
+    无新增分配；
+  - 新增测试 `TestEnvironmentStatePersists`（保存 + 重连恢复）。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -569,10 +581,10 @@
   实现依据 1.21.11 服务端字节码逐条移植（含客户端 `LastSeenMessagesTracker`），
   但**尚未与真实正版客户端进行在线对测**
 - 玩家数据为 gmcs 自定义 players.json（非原版 playerdata）：退出/关闭与每 30 秒周期保存、
-  死亡状态与经验持久化；强杀（SIGKILL）或崩溃最坏丢失约一个保存周期的进度。
-  选中的快捷栏槽位已持久化（`selected_slot`），进入世界/跨维度传送/重生后
-  发送 `set_held_slot` 同步客户端；生命上限、经验等级与末影箱以外的
-  原版玩家字段（如末影珍珠冷却、属性修饰符）仍未保存
+  死亡状态、经验与氧量/着火/饥饿疲劳度/饥饿计时持久化；强杀（SIGKILL）或崩溃
+  最坏丢失约一个保存周期的进度。选中的快捷栏槽位已持久化（`selected_slot`），
+  进入世界/跨维度传送/重生后发送 `set_held_slot` 同步客户端；末影珍珠冷却、
+  属性修饰符、药水效果等尚未保存
 - 方块交互：挖掘系统已按原版实现（见上“完整挖掘系统”），仍存差异：
   效率/水下速掘附魔已实现；急迫/挖掘疲劳等状态效果未实现（无药水效果系统）；
   精准采集/时运/剪刀与概率掉落已实现，但未覆盖全部方块的战利品表

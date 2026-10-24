@@ -329,8 +329,8 @@ func (s *Server) tickArrows(players []*session) {
 	for _, hit := range hits {
 		position := [3]float64{hit.srcX, hit.srcY, hit.srcZ}
 		if s.damagePlayer(hit.player, hit.damage, "an arrow", 0, s.arrowDamageTypeID, &position) && hit.flame {
-			if hit.player.fireTicks < arrowFlameTicks {
-				hit.player.fireTicks = arrowFlameTicks
+			if hit.player.fireTicks.Load() < arrowFlameTicks {
+				hit.player.fireTicks.Store(arrowFlameTicks)
 			}
 		}
 	}

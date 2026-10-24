@@ -37,6 +37,11 @@ const (
 	playerFileName = "players.json"
 	// defaultPlayerAutosaveInterval 是玩家数据的周期自动保存间隔。
 	defaultPlayerAutosaveInterval = 30 * time.Second
+	// maxStoredAir 是持久化氧气值的上限（原版 300 + 呼吸 III 的 60）。
+	maxStoredAir = maxPlayerAir + 3*20
+	// maxStoredExhaustion 是持久化疲劳度的合理上限（每 4 点折算 1 点饥饿，
+	// 正常游玩不会超过 4；为受伤/自然恢复的瞬时累加留出余量）。
+	maxStoredExhaustion = 40
 )
 
 type playerFile struct {
@@ -64,6 +69,15 @@ type playerRecord struct {
 	Experience int32        `json:"experience"`
 	GameMode   string       `json:"game_mode"`
 	Inventory  []playerItem `json:"inventory"`
+	// Air 是剩余氧气（原版 Air：300 为满，-20 以下脉发溣水）。
+	// 缺省（旧记录）表示按满氧气处理，因此用指针区分“0”与“未保存”。
+	Air *int32 `json:"air,omitempty"`
+	// FireTicks 是剩余着火 tick（原版 Fire）。
+	FireTicks int32 `json:"fire_ticks,omitempty"`
+	// Exhaustion 是饥饿疲劳度（原版 foodExhaustionLevel）。
+	Exhaustion float32 `json:"exhaustion,omitempty"`
+	// FoodTimer 是饥饿系统计时（原版 foodTickTimer，0–80）。
+	FoodTimer int32 `json:"food_timer,omitempty"`
 	// SelectedSlot 是选中的快捷栏槽位（0–8，对应原版 SelectedItemSlot）。
 	// 旧记录缺省为 0。
 	SelectedSlot int32 `json:"selected_slot,omitempty"`
@@ -247,6 +261,8 @@ func playerRecordFromSession(player *session) playerRecord {
 	food := player.food
 	saturation := player.saturation
 	experience := player.experience
+	exhaustion := player.exhaustion
+	foodTimer := player.foodTimer
 	player.stateMu.Unlock()
 	dead := player.dead.Load()
 	gameMode := player.gameModeID()
@@ -289,6 +305,10 @@ func playerRecordFromSession(player *session) playerRecord {
 		Inventory:    items,
 		EnderItems:   enderItems,
 		SelectedSlot: int32(player.selectedHotbarSlot()),
+		Air:          new(player.air.Load()),
+		FireTicks:    player.fireTicks.Load(),
+		Exhaustion:   exhaustion,
+		FoodTimer:    int32(foodTimer),
 	}
 }
 
@@ -375,7 +395,38 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 	if mode, ok := config.GameModeID(record.GameMode); ok {
 		s.gameMode.Store(uint32(mode))
 	}
+	// 疲劳度与饥饿计时（原版 foodExhaustionLevel / foodTickTimer）。
+	exhaustion := record.Exhaustion
+	if math.IsNaN(float64(exhaustion)) || exhaustion < 0 {
+		exhaustion = 0
+	} else if exhaustion > maxStoredExhaustion {
+		exhaustion = maxStoredExhaustion
+	}
+	s.exhaustion = exhaustion
+	foodTimer := record.FoodTimer
+	if foodTimer < 0 {
+		foodTimer = 0
+	} else if foodTimer > playerFoodTickInterval {
+		foodTimer = playerFoodTickInterval
+	}
+	s.foodTimer = int(foodTimer)
 	s.stateMu.Unlock()
+
+	// 氧气与着火（原版 Air/Fire）；旧记录没有 Air 时保持满氧气。
+	if record.Air != nil {
+		air := *record.Air
+		if air < -20 || air > maxStoredAir {
+			air = maxPlayerAir
+		}
+		s.air.Store(air)
+	}
+	fireTicks := record.FireTicks
+	if fireTicks < 0 {
+		fireTicks = 0
+	} else if fireTicks > maxStoredFireTicks {
+		fireTicks = maxStoredFireTicks
+	}
+	s.fireTicks.Store(fireTicks)
 
 	// 选中的快捷栏槽位（越界值由 setter 忽略，保持默认 0）。
 	s.setSelectedHotbarSlot(int(record.SelectedSlot))
@@ -413,6 +464,14 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		stack.Enchantments = itemEnchantments(stored.Enchantments)
 		applyStoredTrim(&stack, stored)
 		s.inventory.Set(stored.Slot, sanitizeStoredStack(stack))
+	}
+
+	// 氧气上限受头部呼吸附魔影响；原版读取存档时经 setAirSupply 把值
+	// clamp 到当前上限（没有呼吸附魔时 300）。
+	respiration := enchantLevel(s.inventory.Get(item.SlotHead), enchants().respiration)
+	maxAir := int32(maxPlayerAir + int(respiration)*20)
+	if air := s.air.Load(); air > maxAir {
+		s.air.Store(maxAir)
 	}
 }
 

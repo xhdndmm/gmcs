@@ -367,3 +367,71 @@ func TestSelectedHotbarSlotPersists(t *testing.T) {
 		t.Fatalf("重连后会话槽位 = %d, want 5", got)
 	}
 }
+
+// TestEnvironmentStatePersists 验证氧气、着火、疲劳度与饥饿计时随 players.json
+// 保存并在重连后恢复（对应原版 playerdata 的 Air/Fire/foodExhaustionLevel/
+// foodTickTimer）。
+func TestEnvironmentStatePersists(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	cfg.ViewDistance = 2 // 与 joinServer 内部设置一致（重连时复用）
+	instance, conn := joinServer(t, cfg, "EnvSaver")
+	addr := conn.RemoteAddr().String()
+	sess := findSession(t, instance, "EnvSaver")
+
+	sess.air.Store(120)
+	sess.fireTicks.Store(45)
+	sess.stateMu.Lock()
+	sess.exhaustion = 2.5
+	sess.foodTimer = 33
+	sess.stateMu.Unlock()
+
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitPlayerOffline(t, instance, sess.uuid)
+
+	record := readSavedPlayer(t, cfg.WorldDir, sess.uuid)
+	if record.Air == nil || *record.Air != 120 {
+		t.Fatalf("保存的氧气 = %v, want 120", record.Air)
+	}
+	if record.FireTicks != 45 {
+		t.Fatalf("保存的着火 tick = %d, want 45", record.FireTicks)
+	}
+	if math.Abs(float64(record.Exhaustion-2.5)) > 1e-6 {
+		t.Fatalf("保存的疲劳度 = %v, want 2.5", record.Exhaustion)
+	}
+	if record.FoodTimer != 33 {
+		t.Fatalf("保存的饥饿计时 = %d, want 33", record.FoodTimer)
+	}
+
+	conn2 := joinAt(t, cfg, addr, "EnvSaver")
+	defer conn2.Close()
+	sess2 := findSession(t, instance, "EnvSaver")
+	if got := sess2.air.Load(); got != 120 {
+		t.Fatalf("重连后氧气 = %d, want 120", got)
+	}
+	if got := sess2.fireTicks.Load(); got != 45 {
+		t.Fatalf("重连后着火 tick = %d, want 45", got)
+	}
+	sess2.stateMu.Lock()
+	exhaustion, foodTimer := sess2.exhaustion, sess2.foodTimer
+	sess2.stateMu.Unlock()
+	if math.Abs(float64(exhaustion-2.5)) > 1e-6 || foodTimer != 33 {
+		t.Fatalf("重连后疲劳度/饥饿计时 = %v/%d, want 2.5/33", exhaustion, foodTimer)
+	}
+
+	// 没有呼吸附魔时，保存的 360 点氧气应在读取时 clamp 到 300
+	// （原版 setAirSupply → clamp 到 getMaxAirSupply）。
+	sess2.air.Store(maxStoredAir)
+	if err := conn2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitPlayerOffline(t, instance, sess2.uuid)
+	conn3 := joinAt(t, cfg, addr, "EnvSaver")
+	defer conn3.Close()
+	if got := findSession(t, instance, "EnvSaver").air.Load(); got != maxPlayerAir {
+		t.Fatalf("无呼吸附魔时重连氧气 = %d, want %d", got, maxPlayerAir)
+	}
+}

@@ -262,8 +262,8 @@ func TestPlayerIgnitesInFire(t *testing.T) {
 	}
 	instance.tick()
 	// 火中的玩家至少被点燃 8 秒（可能因玩家额外累加略高）。
-	if player.fireTicks < mobFireBlockTicks {
-		t.Fatalf("玩家着火 tick = %d, want ≥ %d", player.fireTicks, mobFireBlockTicks)
+	if ticks := player.fireTicks.Load(); ticks < mobFireBlockTicks {
+		t.Fatalf("玩家着火 tick = %d, want ≥ %d", ticks, mobFireBlockTicks)
 	}
 	healthBefore := player.health
 	for i := 0; i < 25; i++ {
@@ -281,7 +281,7 @@ func TestPlayerIgnitesInFire(t *testing.T) {
 	}
 	w.SetBlock(baseX, floorY, baseZ, water)
 	instance.tick()
-	if player.fireTicks != 0 {
-		t.Fatalf("入水后玩家着火 tick = %d, want 0", player.fireTicks)
+	if ticks := player.fireTicks.Load(); ticks != 0 {
+		t.Fatalf("入水后玩家着火 tick = %d, want 0", ticks)
 	}
 }
