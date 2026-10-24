@@ -284,6 +284,58 @@ func (s *Server) registerViewer(dim world.Dimension, x, y, z int, def *container
 	return container
 }
 
+// closeWindowOutOfReach 在玩家离开窗口方块的交互距离时关闭窗口
+// （原版 ServerPlayer#tick 中 `if (containerMenu != inventoryMenu &&
+// !containerMenu.stillValid(this)) closeContainer()`）。由会话读循环在每个
+// 数据包处理后调用，因此不会跨 goroutine 修改会话状态；没有窗口时开销为
+// 一次原子读。
+func (s *Server) closeWindowOutOfReach(player *session) {
+	switch {
+	case player.openContainer != nil:
+		container := player.openContainer
+		if !player.withinContainerReach(container.pos[0], container.pos[1], container.pos[2]) {
+			s.closeContainer(player, true)
+		}
+	case player.getAnvil() != nil:
+		if state := player.getAnvil(); !s.anvilStillValid(player, state) {
+			s.closeAnvil(player, true)
+		}
+	case player.getGrindstone() != nil:
+		if state := player.getGrindstone(); !s.grindstoneStillValid(player, state) {
+			s.closeGrindstone(player, true)
+		}
+	case player.getEnchanting() != nil:
+		if state := player.getEnchanting(); !s.enchantingStillValid(player, state) {
+			s.closeEnchanting(player, true)
+		}
+	case player.getStonecutter() != nil:
+		state := player.getStonecutter()
+		state.mu.Lock()
+		pos := state.pos
+		state.mu.Unlock()
+		if !player.withinContainerReach(pos[0], pos[1], pos[2]) {
+			s.closeStonecutter(player, true)
+		}
+	case player.getSmithing() != nil:
+		state := player.getSmithing()
+		state.mu.Lock()
+		pos := state.pos
+		state.mu.Unlock()
+		if !player.withinContainerReach(pos[0], pos[1], pos[2]) {
+			s.closeSmithing(player, true)
+		}
+	case player.getOpenCraft() != nil:
+		state := player.getOpenCraft()
+		state.mu.Lock()
+		pos, hasPos := state.pos, state.hasPos
+		state.mu.Unlock()
+		// 工作台/切石机等窗口只校验距离（方块被破坏时由方块更新路径关闭）。
+		if hasPos && !player.withinContainerReach(pos[0], pos[1], pos[2]) {
+			s.closeCrafting(player, true)
+		}
+	}
+}
+
 // closeContainer 关闭玩家当前的容器窗口：退出观察者集合，最后一个观察者
 // 离开时把内容写回区块并移除服务器侧状态。sendClose 表示是否向客户端发送
 // Close Container（客户端主动关闭时为 false）。

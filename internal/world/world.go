@@ -425,10 +425,16 @@ func floorMod(a, b int) int {
 func (w *World) Chunk(x, z int) (*Chunk, error) {
 	pos := ChunkPos{X: x, Z: z}
 	for {
-		// 快路径：缓存命中（读锁）。
+		// 快路径：缓存命中（读锁）。关闭状态必须与缓存一起在同一次读锁内
+		// 判定：预生成 worker 可能在 Close 之前把区块发布进缓存，
+		// 关闭后的调用必须一律报错（见 TestPrefetchAfterClose）。
 		w.mu.RLock()
 		chunk, ok := w.chunks[pos]
+		closed := w.closed
 		w.mu.RUnlock()
+		if closed {
+			return nil, fmt.Errorf("世界已关闭")
+		}
 		if ok {
 			return chunk, nil
 		}

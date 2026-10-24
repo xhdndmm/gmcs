@@ -319,6 +319,11 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	} else {
 		return
 	}
+	// 树叶：玩家放置的树叶为 persistent=true（原版 LeavesBlock.getStateForPlacement），
+	// 不会像自然生成的树叶一样衰减。
+	if persistent, ok := leafPersistentState(name); ok {
+		state = persistent
+	}
 	if !w.SetBlock(placeX, placeY, placeZ, state) {
 		return
 	}

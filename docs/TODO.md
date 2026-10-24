@@ -857,6 +857,31 @@
   - 新增测试：`TestDoorHingeIndex`（回退、两侧坚固面、两侧下半格门）、
     `TestPlaceDoorPoweredWhenSignal`（无信号→关闭、相邻红石块→通电打开）。
 
+- [x] 玩法缺陷修复批次（熔炉点燃/窗口自动关闭/树叶衰减/出生点卡住）：
+  - 熔炉 `lit` 属性：对照原版 `AbstractFurnaceBlockEntity.setLit`，燃烧开始/结束时
+    写回方块状态并广播 Block Update；为此把熔炉族（`furnace`/`blast_furnace`/
+    `smoker`）加入生成器的属性状态表（`propStateBlocks`），使 `StateProps`/
+    `BlockStateWithProps` 能读写 `facing`+`lit`；新增 `TestFurnaceLitPropertyFollowsBurning`；
+  - 窗口自动关闭：原版在 `ServerPlayer#tick` 用 `containerMenu.stillValid` 关闭
+    离得太远的窗口；gmcs 在读循环处理每个包前调用 `closeWindowOutOfReach`，
+    覆盖箱子/木桶/漏斗等容器、熔炉族、酿造台、铁砧、砂轮机、附魔台、切石机、
+    锻造台、工作台合成格（会话 goroutine 串行访问窗口字段，无跨线程竞态）；
+    新增 `TestContainerClosesWhenOutOfReach`；
+  - 树叶衰减：新增 `internal/server/leaves.go`。玩家放置的树叶用生成器产出的
+    `LeafPersistentStates`（`persistent=true、distance=7`）且永不衰减；自然树叶
+    在原木/树叶被移除（含爆炸摧毁）时对周围 15³ 做一次“6 格内是否仍有原木”
+    判定，没有则按方块战利品表掉落并移除；新增 `TestLeavesDecayAfterLogRemoved`、
+    `TestPlacedLeavesDoNotDecay`；
+  - 出生点碰撞：`world.FindSpawn` 的候选列新增“玩家碰撞盒不与碰撞形状相交且确有
+    支撑面”的校验（栅栏/墙/箱子顶面等此前会被当作可站立地面，导致玩家包围盒嵌进
+    方块、所有移动被穿墙校验拒绝）；进入世界时再对恢复位置做一次兜底（
+    `unstickPlayerPosition`：先向上推、再逐圈找空位）；新增
+    `TestUnstickPlayerPosition`、`TestJoinPositionIsMovable`、
+    `TestSpawnColumnAvoidsCollisionShapes`；
+  - `TestPrefetchAfterClose` 偶发失败（CI 红）：`World.Chunk` 的缓存命中快速路径
+    未读取 `closed`，预取 worker 在 Close 前发布的区块会在 Close 后被当作成功返回；
+    改为在同一次 RLock 内读取 `closed`。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -886,6 +911,23 @@
 
 - [ ] 真实网络环境的负载与长时间稳定性测试（工具与单机 loopback 基线已有，
   见 PERFORMANCE.md 3.7、3.13、3.18）
+
+- [ ] **TNT 爆炸后客户端断线（未定位）**：用户报告“TNT 点燃爆炸后丢失连接，
+  提示网络协议错误”。已用 1.21.11 客户端 jar + 客户端映射（`client.txt`）逐字节
+  核对爆炸路径上的全部报文，**未发现编码缺陷**：
+  - `Explode`（0x24）：客户端 `ClientboundExplodePacket` 的 7 个字段顺序与类型
+    完全一致（Vec3、f32 power、**i32** blockCount、optional<Vec3>、
+    `ParticleTypes.STREAM_CODEC`、`Holder<SoundEvent>`、`List<ExplosionParticleInfo>`），
+    已加回归测试 `TestEncodeExplosionLayout`；
+  - `Block Update`（0x08）、`Sound`（0x73）、`Set Entity Motion`（0x63，
+    含 `LpVec3` 位布局与客户端 `xe` 类一致）、`Remove Entities`（0x4B，
+    VarInt 数组）、`Add Entity`（0x01，字段含三个角度字节）、
+    `Set Entity Data`（0x61）、`Entity Position Sync`（0x23）、`Respawn`（0x50，
+    含 1.21.9+ 新增的 `seaLevel` 字段）字段与 ID 均与客户端一致；
+  - 未验证/待排查方向：需要客户端侧完整断线文本或服务器日志（是否是 tick
+    goroutine panic 导致连接被关闭、是否只在特定方块被炸毁时出现）。此外
+    gmcs 尚未发送 `Player Combat Kill`（0x42），死亡界面因此不显示，属于
+    已知的兼容性缺口（见“已知限制”）。
 
 ## 已知限制
 

@@ -7,6 +7,7 @@ package server
 import (
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 
 	"gmcs/internal/item"
@@ -42,6 +43,11 @@ type furnaceState struct {
 	cookProgress  int32
 	cookTotal     int32
 	cookXP        float64
+
+	// lit 是方块 state 的 lit 属性镜像（燃烧时为 true）；litDirty 表示
+	// 需要在 Tick 锁外写回方块并广播（原版 AbstractFurnaceBlockEntity.setLit）。
+	lit      bool
+	litDirty bool
 
 	dirty bool // 有未写回方块实体的变更
 }
@@ -96,6 +102,7 @@ func (s *Server) registerFurnace(dim world.Dimension, x, y, z int) *furnaceState
 		burnTotal:     entity.BurnTotal,
 		cookProgress:  entity.CookProgress,
 		cookTotal:     entity.CookTotal,
+		lit:           furnaceLitOf(blockState),
 		dirty:         true,
 	}
 	for i := range state.slots {
@@ -166,7 +173,68 @@ func (s *Server) tickFurnaces() {
 				s.broadcastFurnaceUpdate(container)
 			}
 		}
+		// 燃烧状态变化时同步方块 lit 属性（锁外写方块，避免与世界锁交叉）。
+		s.applyFurnaceLit(state)
 	}
+}
+
+// applyFurnaceLit 把熔炉方块的 lit 属性同步到世界并广播。
+// 原版 AbstractFurnaceBlockEntity.setLit：方块状态变化时设置 LIT 并广播方块更新。
+func (s *Server) applyFurnaceLit(state *furnaceState) {
+	state.mu.Lock()
+	if !state.litDirty {
+		state.mu.Unlock()
+		return
+	}
+	state.litDirty = false
+	lit := state.lit
+	dim, pos := state.dim, state.pos
+	state.mu.Unlock()
+
+	w := s.worldFor(dim)
+	if w == nil {
+		return
+	}
+	current := w.BlockAt(pos[0], pos[1], pos[2])
+	next, ok := furnaceStateWithLit(current, lit)
+	if !ok || next == current {
+		return
+	}
+	if w.SetBlock(pos[0], pos[1], pos[2], next) {
+		s.broadcastBlockUpdate(dim, pos[0], pos[1], pos[2], int32(next))
+	}
+}
+
+// furnaceLitOf 报告熔炉方块状态是否为 lit=true。
+func furnaceLitOf(state uint16) bool {
+	name, props, ok := registry.StateProps(state)
+	if !ok || !strings.HasPrefix(name, "minecraft:") {
+		return false
+	}
+	return props["lit"] == "true"
+}
+
+// furnaceStateWithLit 返回熔炉方块状态把 lit 设为指定值后的状态。
+func furnaceStateWithLit(state uint16, lit bool) (uint16, bool) {
+	name, props, ok := registry.StateProps(state)
+	if !ok {
+		return 0, false
+	}
+	switch name {
+	case "minecraft:furnace", "minecraft:blast_furnace", "minecraft:smoker":
+	default:
+		return 0, false
+	}
+	next := make(map[string]string, len(props)+1)
+	for key, value := range props {
+		next[key] = value
+	}
+	if lit {
+		next["lit"] = "true"
+	} else {
+		next["lit"] = "false"
+	}
+	return registry.BlockStateWithProps(name, next)
 }
 
 // scanFurnaces 把已加载区块中的熔炉类方块实体注册到运行时表（全部已加载维度）。
@@ -255,6 +323,11 @@ func (s *Server) tickFurnace(state *furnaceState) bool {
 			state.cookProgress = 0
 		}
 		changed = true
+	}
+	// lit 属性跟随燃烧状态（原版 setLit；只在变化时写回方块）。
+	if lit := state.burnRemaining > 0; lit != state.lit {
+		state.lit = lit
+		state.litDirty = true
 	}
 	return changed
 }

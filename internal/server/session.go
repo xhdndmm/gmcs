@@ -1400,6 +1400,20 @@ func (s *session) runPlay() {
 		s.setPlayerPosition(spawnX, spawnY, spawnZ, 0, 0)
 	}
 	x, y, z, yaw, pitch := s.playerPosition()
+	// 兜底：玩家初始位置若与方块碰撞形状重叠（恢复的旧存档被地形改动覆盖、
+	// 出生点被后放置的方块占据等），必须推到空位，否则客户端的所有移动都会
+	// 被穿墙校验拒绝，表现为“出生后无法移动”。
+	if w := s.server.worldFor(dim); w != nil {
+		if nx, ny, nz, moved := unstickPlayerPosition(w, x, y, z); moved {
+			x, y, z = nx, ny, nz
+			s.setPlayerPosition(x, y, z, yaw, pitch)
+			if !restored {
+				spawnX, spawnY, spawnZ = x, y, z
+			}
+			slog.Warn("玩家初始位置位于方块内，已推送到最近空位",
+				"name", s.name, "dimension", dim.Name(), "y", y)
+		}
+	}
 
 	login := protocol.LoginPlayData{
 		EntityID:            s.entityID,
@@ -1643,6 +1657,10 @@ func (s *session) playReadLoop() {
 		if err != nil {
 			return
 		}
+		// 窗口方块的有效性检查（原版 ServerPlayer#tick 的 stillValid）：
+		// 玩家走远或方块变化时自动关闭窗口。放在读循环里执行，
+		// 保证窗口字段仍只由本会话的读循环串行访问。
+		s.server.closeWindowOutOfReach(s)
 		switch packetID {
 		case protocol.PlayServerboundPacketIDKeepAlive:
 			id, err := protocol.ParsePlayKeepAlive(packet)

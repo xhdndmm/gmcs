@@ -269,6 +269,8 @@ func (s *Server) removeBlockAndBroadcast(dim world.Dimension, w *world.World, x,
 	s.broadcastBlockUpdate(dim, x, y, z, int32(world.AirBlock))
 	s.updateRedstoneAround(dim, x, y, z)
 	s.updateFluidsAround(dim, x, y, z)
+	// 树叶衰减：失去原木支撑的自然树叶掉落消失（原版 LeavesBlock 的 distance）。
+	s.decayLeavesAround(dim, w, x, y, z, current)
 	if current == world.ObsidianBlock {
 		// 破坏黑曜石框后与之相连的传送门熄灭（近似原版行为）。
 		s.clearPortalsNear(dim, x, y, z)

@@ -518,3 +518,19 @@ var PlacementWallTorches = map[string][4]uint16{
 var PlacementLadders = map[string][4]uint16{
 	"minecraft:ladder": {5519, 5521, 5523, 5525},
 }
+
+// LeafPersistentStates 是树叶的玩家放置状态：map[方块名]状态 ID。
+// 属性为 persistent=true、distance=7、waterlogged=false（原版放置不衰减）。
+var LeafPersistentStates = map[string]uint16{
+	"minecraft:acacia_leaves":           389,
+	"minecraft:azalea_leaves":           529,
+	"minecraft:birch_leaves":            333,
+	"minecraft:cherry_leaves":           417,
+	"minecraft:dark_oak_leaves":         445,
+	"minecraft:flowering_azalea_leaves": 557,
+	"minecraft:jungle_leaves":           361,
+	"minecraft:mangrove_leaves":         501,
+	"minecraft:oak_leaves":              277,
+	"minecraft:pale_oak_leaves":         473,
+	"minecraft:spruce_leaves":           305,
+}

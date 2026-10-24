@@ -56,7 +56,19 @@ func (w *World) FindSpawn(halfSize float64) (x, y, z float64, ok bool) {
 		if !found {
 			return 0, 0, 0, false
 		}
-		return float64(blockX) + 0.5, float64(groundY + 1), float64(blockZ) + 0.5, true
+		// 出生点的玩家碰撞盒必须既无重叠也确有支撑面：栅栏/墙/箱子/台阶
+		// 之类的“地面顶面”若与玩家碰撞盒相交，原版移动校验会认为玩家处于
+		// 穿墙状态而拒绝全部移动，因此这类列必须跳过。
+		box := spawnPlayerBox(blockX, groundY+1, blockZ)
+		top, _, supported := w.SurfaceBelow(box, 1)
+		if !supported {
+			return 0, 0, 0, false
+		}
+		feetY := int(math.Ceil(top))
+		if w.Collides(spawnPlayerBox(blockX, feetY, blockZ)) {
+			return 0, 0, 0, false
+		}
+		return float64(blockX) + 0.5, float64(feetY), float64(blockZ) + 0.5, true
 	}
 
 	if x, y, z, found := consider(0, 0); found {
@@ -130,6 +142,19 @@ func spawnGroundY(chunk *Chunk, x, z int, dimension Dimension) (int, bool) {
 		return 0, false
 	}
 	return groundY, true
+}
+
+// spawnPlayerBox 返回站在方块列 (blockX, blockZ)、脚部位于 feetY 的玩家
+// 碰撞盒（与原版玩家包围盒一致：底边宽 0.6、高 1.8）。
+func spawnPlayerBox(blockX, feetY, blockZ int) Box {
+	const half = 0.3
+	cx := float64(blockX) + 0.5
+	cz := float64(blockZ) + 0.5
+	fy := float64(feetY)
+	return Box{
+		MinX: cx - half, MinY: fy, MinZ: cz - half,
+		MaxX: cx + half, MaxY: fy + 1.8, MaxZ: cz + half,
+	}
 }
 
 // IsDecorationState 报告状态是否是非固体装饰（花/草等），用于出生点空间判定。

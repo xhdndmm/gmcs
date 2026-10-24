@@ -107,6 +107,8 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 	gatesPowered := make(map[string][2][4]uint16)
 	wallTorches := make(map[string][4]uint16)
 	ladders := make(map[string][4]uint16)
+	// leaves：树叶方块 → 玩家放置状态（persistent=true、distance=7、waterlogged=false）。
+	leaves := make(map[string]uint16)
 
 	names := make([]string, 0, len(blocks))
 	for name := range blocks {
@@ -121,6 +123,15 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 		}
 		baseProps := data.states[0].props
 		switch {
+		case strings.HasSuffix(name, "_leaves"):
+			// 玩家放置的树叶：原版 LeavesBlock.getStateForPlacement 把 PERSISTENT 置 true。
+			id, err := placementStateID(data, map[string]string{
+				"persistent": "true", "distance": "7", "waterlogged": "false",
+			})
+			if err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			leaves[name] = id
 		case strings.HasSuffix(name, "_stairs"):
 			var table [2][4]uint16
 			for half, halfValue := range []string{"bottom", "top"} {
@@ -351,6 +362,9 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 	writeFaceAttachedTable(&b, faceAttached)
 	writeSimpleFacingTable(&b, "PlacementWallTorches", "墙式火把", wallTorches)
 	writeSimpleFacingTable(&b, "PlacementLadders", "梯子", ladders)
+	writeSimpleUint16Table(&b, "LeafPersistentStates",
+		"树叶的玩家放置状态", "persistent=true、distance=7、waterlogged=false（原版放置不衰减）",
+		leaves)
 
 	source := []byte(b.String())
 	formatted, err := format.Source(source)
@@ -556,6 +570,16 @@ func writeSimpleFacingTable(b *strings.Builder, varName, comment string, table m
 		states := table[name]
 		fmt.Fprintf(b, "\t%q: {%d, %d, %d, %d},\n", name,
 			states[0], states[1], states[2], states[3])
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeSimpleUint16Table(b *strings.Builder, varName, comment, extra string, table map[string]uint16) {
+	fmt.Fprintf(b, "// %s 是%s：map[方块名]状态 ID。\n", varName, comment)
+	fmt.Fprintf(b, "// 属性为 %s。\n", extra)
+	fmt.Fprintf(b, "var %s = map[string]uint16{\n", varName)
+	for _, name := range sortedNames(table) {
+		fmt.Fprintf(b, "\t%q: %d,\n", name, table[name])
 	}
 	b.WriteString("}\n\n")
 }

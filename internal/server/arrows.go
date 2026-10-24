@@ -357,6 +357,7 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 	radiusSquared := float64(radius) * float64(radius)
 	var updates [][]byte
 	var destroyedCells [][3]int
+	var destroyedStates []uint16
 	destroyed := 0
 	for dx := -rangeInt; dx <= rangeInt; dx++ {
 		for dy := -rangeInt; dy <= rangeInt; dy++ {
@@ -380,6 +381,7 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 				}
 				destroyed++
 				destroyedCells = append(destroyedCells, [3]int{bx, by, bz})
+				destroyedStates = append(destroyedStates, state)
 				updates = append(updates, protocol.EncodeBlockUpdate(bx, by, bz, int32(world.AirBlock)))
 				// 容器/处理型方块被炸毁：注销运行时状态、关闭观察窗口并把
 				// 内容物掉落到世界（原版爆炸摧毁容器会掉落内容物）。
@@ -388,9 +390,10 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 		}
 	}
 	// 爆炸改变了大量方块：通知周围的流体重新评估（注：邻域扇出可能很大，
-	// 但仅调度计划刻、不在此处扩散）。
-	for _, cell := range destroyedCells {
+	// 但仅调度计划刻、不在此处扩散），并重新判定被摧毁原木/树叶周围的树叶衰减。
+	for i, cell := range destroyedCells {
 		s.updateFluidsAround(dim, cell[0], cell[1], cell[2])
+		s.decayLeavesAround(dim, w, cell[0], cell[1], cell[2], destroyedStates[i])
 	}
 
 	explosionPacket := protocol.EncodeExplosion(x, y, z, radius, int32(destroyed), protocol.ParticleExplosionEmitter)

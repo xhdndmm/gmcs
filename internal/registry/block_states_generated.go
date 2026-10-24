@@ -108,6 +108,16 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 6664, Props: map[string]string{"powered": "true"}},
 		{ID: 6665, Props: map[string]string{"powered": "false"}},
 	},
+	"minecraft:blast_furnace": {
+		{ID: 20560, Props: map[string]string{"facing": "north", "lit": "true"}},
+		{ID: 20561, Props: map[string]string{"facing": "north", "lit": "false"}},
+		{ID: 20562, Props: map[string]string{"facing": "south", "lit": "true"}},
+		{ID: 20563, Props: map[string]string{"facing": "south", "lit": "false"}},
+		{ID: 20564, Props: map[string]string{"facing": "west", "lit": "true"}},
+		{ID: 20565, Props: map[string]string{"facing": "west", "lit": "false"}},
+		{ID: 20566, Props: map[string]string{"facing": "east", "lit": "true"}},
+		{ID: 20567, Props: map[string]string{"facing": "east", "lit": "false"}},
+	},
 	"minecraft:brewing_stand": {
 		{ID: 9251, Props: map[string]string{"has_bottle_0": "true", "has_bottle_1": "true", "has_bottle_2": "true"}},
 		{ID: 9252, Props: map[string]string{"has_bottle_0": "true", "has_bottle_1": "true", "has_bottle_2": "false"}},
@@ -810,6 +820,16 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 3683, Props: map[string]string{"age": "15", "east": "false", "north": "false", "south": "false", "up": "true", "west": "false"}},
 		{ID: 3684, Props: map[string]string{"age": "15", "east": "false", "north": "false", "south": "false", "up": "false", "west": "true"}},
 		{ID: 3685, Props: map[string]string{"age": "15", "east": "false", "north": "false", "south": "false", "up": "false", "west": "false"}},
+	},
+	"minecraft:furnace": {
+		{ID: 5126, Props: map[string]string{"facing": "north", "lit": "true"}},
+		{ID: 5127, Props: map[string]string{"facing": "north", "lit": "false"}},
+		{ID: 5128, Props: map[string]string{"facing": "south", "lit": "true"}},
+		{ID: 5129, Props: map[string]string{"facing": "south", "lit": "false"}},
+		{ID: 5130, Props: map[string]string{"facing": "west", "lit": "true"}},
+		{ID: 5131, Props: map[string]string{"facing": "west", "lit": "false"}},
+		{ID: 5132, Props: map[string]string{"facing": "east", "lit": "true"}},
+		{ID: 5133, Props: map[string]string{"facing": "east", "lit": "false"}},
 	},
 	"minecraft:heavy_weighted_pressure_plate": {
 		{ID: 11045, Props: map[string]string{"power": "0"}},
@@ -2507,6 +2527,16 @@ var BlockPropertyStates = map[string][]PropertyState{
 	"minecraft:rose_bush": {
 		{ID: 12717, Props: map[string]string{"half": "upper"}},
 		{ID: 12718, Props: map[string]string{"half": "lower"}},
+	},
+	"minecraft:smoker": {
+		{ID: 20552, Props: map[string]string{"facing": "north", "lit": "true"}},
+		{ID: 20553, Props: map[string]string{"facing": "north", "lit": "false"}},
+		{ID: 20554, Props: map[string]string{"facing": "south", "lit": "true"}},
+		{ID: 20555, Props: map[string]string{"facing": "south", "lit": "false"}},
+		{ID: 20556, Props: map[string]string{"facing": "west", "lit": "true"}},
+		{ID: 20557, Props: map[string]string{"facing": "west", "lit": "false"}},
+		{ID: 20558, Props: map[string]string{"facing": "east", "lit": "true"}},
+		{ID: 20559, Props: map[string]string{"facing": "east", "lit": "false"}},
 	},
 	"minecraft:soul_fire": {
 		{ID: 3686, Props: map[string]string{}},
