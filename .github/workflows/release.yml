@@ -21,6 +21,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: 测试
+        run: |
+          chmod +x scripts/test.sh
+          scripts/test.sh
+
       - name: 构建全部平台产物
         env:
           VERSION: ${{ github.ref_name }}
