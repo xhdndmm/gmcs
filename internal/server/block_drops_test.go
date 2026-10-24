@@ -14,6 +14,147 @@ import (
 	"gmcs/internal/world"
 )
 
+// TestBlockDropsCrops 验证作物掉落按官方 loot_table 的成熟度（age）与时运公式：
+// 小麦/甜菜根未成熟只掉种子；胡萝卜/马铃薯未成熟掉 1 个自身；
+// 成熟时按 binomial_with_bonus_count（extra=3, p=0.5714286）追加；
+// 下界疣成熟时 2–4 + uniform(0..时运)。
+func TestBlockDropsCrops(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+
+	state := func(name string, age int) uint16 {
+		t.Helper()
+		base, err := registry.BlockStateID(name)
+		if err != nil {
+			t.Fatalf("未知方块 %s：%v", name, err)
+		}
+		id := base + uint16(age)
+		if got, ok := registry.BlockStateAge(id); !ok || got != age {
+			t.Fatalf("%s 的 age=%d 状态推导失败：got=%d ok=%v", name, age, got, ok)
+		}
+		return id
+	}
+	find := func(drops []blockDropSpec, itemName string) (int32, bool) {
+		for _, drop := range drops {
+			if drop.Item == itemName {
+				return drop.Count, true
+			}
+		}
+		return 0, false
+	}
+
+	// 未成熟小麦：仅 1 个种子。
+	if drops := instance.blockDrops(state("minecraft:wheat", 6), item.Empty()); len(drops) != 1 ||
+		drops[0].Item != "minecraft:wheat_seeds" || drops[0].Count != 1 {
+		t.Fatalf("未成熟小麦 = %+v，want 1 种子", drops)
+	}
+	// 成熟小麦：1 小麦 + 1..4 种子（时运 0：1 + Binomial(3)）。
+	for i := 0; i < 32; i++ {
+		drops := instance.blockDrops(state("minecraft:wheat", 7), item.Empty())
+		if count, ok := find(drops, "minecraft:wheat"); !ok || count != 1 {
+			t.Fatalf("成熟小麦 = %+v，want 1 小麦", drops)
+		}
+		if count, ok := find(drops, "minecraft:wheat_seeds"); !ok || count < 1 || count > 4 {
+			t.Fatalf("成熟小麦种子 = %d，want 1..4", count)
+		}
+	}
+	// 成熟胡萝卜：1..4（未成熟固定 1）。
+	for i := 0; i < 32; i++ {
+		drops := instance.blockDrops(state("minecraft:carrots", 7), item.Empty())
+		if len(drops) != 1 || drops[0].Item != "minecraft:carrot" || drops[0].Count < 1 || drops[0].Count > 4 {
+			t.Fatalf("成熟胡萝卜 = %+v，want 胡萝卜 1..4", drops)
+		}
+	}
+	if drops := instance.blockDrops(state("minecraft:carrots", 0), item.Empty()); len(drops) != 1 || drops[0].Count != 1 {
+		t.Fatalf("未成熟胡萝卜 = %+v，want 1 胡萝卜", drops)
+	}
+	// 成熟马铃薯：1..4 马铃薯，毒马铃薯最多 1 个。
+	for i := 0; i < 32; i++ {
+		drops := instance.blockDrops(state("minecraft:potatoes", 7), item.Empty())
+		if count, ok := find(drops, "minecraft:potato"); !ok || count < 1 || count > 4 {
+			t.Fatalf("成熟马铃薯 = %+v，want 马铃薯 1..4", drops)
+		}
+		if count, ok := find(drops, "minecraft:poisonous_potato"); ok && count != 1 {
+			t.Fatalf("毒马铃薯数量 = %d，want 1", count)
+		}
+	}
+	// 成熟甜菜根：1 甜菜根 + 1..4 种子；未成熟仅 1 种子。
+	drops := instance.blockDrops(state("minecraft:beetroots", 3), item.Empty())
+	if count, ok := find(drops, "minecraft:beetroot"); !ok || count != 1 {
+		t.Fatalf("成熟甜菜根 = %+v，want 1 甜菜根", drops)
+	}
+	if count, ok := find(drops, "minecraft:beetroot_seeds"); !ok || count < 1 || count > 4 {
+		t.Fatalf("成熟甜菜根种子 = %d，want 1..4", count)
+	}
+	if drops := instance.blockDrops(state("minecraft:beetroots", 2), item.Empty()); len(drops) != 1 ||
+		drops[0].Item != "minecraft:beetroot_seeds" || drops[0].Count != 1 {
+		t.Fatalf("未成熟甜菜根 = %+v，want 1 种子", drops)
+	}
+	// 下界疣：成熟 2..4，未成熟 1。
+	for i := 0; i < 32; i++ {
+		drops := instance.blockDrops(state("minecraft:nether_wart", 3), item.Empty())
+		if len(drops) != 1 || drops[0].Item != "minecraft:nether_wart" || drops[0].Count < 2 || drops[0].Count > 4 {
+			t.Fatalf("成熟下界疣 = %+v，want 2..4", drops)
+		}
+	}
+	if drops := instance.blockDrops(state("minecraft:nether_wart", 1), item.Empty()); len(drops) != 1 || drops[0].Count != 1 {
+		t.Fatalf("未成熟下界疣 = %+v，want 1", drops)
+	}
+	// 时运 3 提高种子数量上限（1 + Binomial(6) = 1..7），且精准采集不改变作物掉落。
+	fortuneID, ok := registry.EnchantmentID("minecraft:fortune")
+	if !ok {
+		t.Fatal("缺少时运附魔")
+	}
+	silkID, ok := registry.EnchantmentID("minecraft:silk_touch")
+	if !ok {
+		t.Fatal("缺少精准采集附魔")
+	}
+	fortuneHeld := item.Stack{ItemID: mustItemID(t, "minecraft:diamond_hoe"), Count: 1,
+		Enchantments: []item.EnchantmentEntry{{ID: fortuneID, Level: 3}}}
+	silkHeld := item.Stack{ItemID: mustItemID(t, "minecraft:diamond_hoe"), Count: 1,
+		Enchantments: []item.EnchantmentEntry{{ID: silkID, Level: 1}}}
+	for i := 0; i < 32; i++ {
+		drops = instance.blockDrops(state("minecraft:wheat", 7), fortuneHeld)
+		if count, ok := find(drops, "minecraft:wheat_seeds"); !ok || count < 1 || count > 7 {
+			t.Fatalf("时运 3 小麦种子 = %d，want 1..7", count)
+		}
+	}
+	drops = instance.blockDrops(state("minecraft:wheat", 7), silkHeld)
+	if count, ok := find(drops, "minecraft:wheat"); !ok || count != 1 {
+		t.Fatalf("精准采集小麦 = %+v，want 仍为 1 小麦", drops)
+	}
+
+	// 甜浆果丛：age 3 → 2–3，age 2 → 1–2，更低无掉落。
+	for i := 0; i < 32; i++ {
+		drops = instance.blockDrops(state("minecraft:sweet_berry_bush", 3), item.Empty())
+		if len(drops) != 1 || drops[0].Item != "minecraft:sweet_berries" || drops[0].Count < 2 || drops[0].Count > 3 {
+			t.Fatalf("成熟甜浆果丛 = %+v，want 2..3", drops)
+		}
+	}
+	for i := 0; i < 32; i++ {
+		drops = instance.blockDrops(state("minecraft:sweet_berry_bush", 2), item.Empty())
+		if len(drops) != 1 || drops[0].Count < 1 || drops[0].Count > 2 {
+			t.Fatalf("半成熟甜浆果丛 = %+v，want 1..2", drops)
+		}
+	}
+	if drops := instance.blockDrops(state("minecraft:sweet_berry_bush", 1), item.Empty()); len(drops) != 0 {
+		t.Fatalf("未成熟甜浆果丛 = %+v，want 无掉落", drops)
+	}
+	// 火把花作物：任何年龄都只掉 1 个种子（age 只有 0–1 两个状态）。
+	for _, age := range []int{0, 1} {
+		drops = instance.blockDrops(state("minecraft:torchflower_crop", age), item.Empty())
+		if len(drops) != 1 || drops[0].Item != "minecraft:torchflower_seeds" || drops[0].Count != 1 {
+			t.Fatalf("火把花 age=%d = %+v，want 1 种子", age, drops)
+		}
+	}
+}
+
 // TestBlockDropTable 校验简化掉落表：同名默认、不同名特例、无掉落方块。
 func TestBlockDropTable(t *testing.T) {
 	cfg := config.Default()

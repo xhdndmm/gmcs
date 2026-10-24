@@ -236,3 +236,37 @@ func TestStaticRegistryTags(t *testing.T) {
 		}
 	}
 }
+
+// TestBlockStateAge 验证作物成熟度由状态区间推导，且非作物/越界状态返回 false。
+func TestBlockStateAge(t *testing.T) {
+	base, err := BlockStateID("minecraft:wheat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for age := 0; age <= 7; age++ {
+		got, ok := BlockStateAge(base + uint16(age))
+		if !ok || got != age {
+			t.Fatalf("wheat age=%d: got (%d, %v)", age, got, ok)
+		}
+	}
+	if _, ok := BlockStateAge(base + 8); ok {
+		t.Fatal("越过小麦状态区间的 ID 不应被识别为作物")
+	}
+	stone, err := BlockStateID("minecraft:stone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := BlockStateAge(stone); ok {
+		t.Fatal("石头不应有作物年龄")
+	}
+	// 只有 age 属性的作物都必须能完整推导（防止数据更新后区间长度变化）。
+	for name, maxAge := range cropAgeMax {
+		base, err := BlockStateID(name)
+		if err != nil {
+			t.Fatalf("%s 不在方块注册表：%v", name, err)
+		}
+		if got, ok := BlockStateAge(base + uint16(maxAge)); !ok || got != maxAge {
+			t.Fatalf("%s 最大年龄推导失败：got=(%d,%v)", name, got, ok)
+		}
+	}
+}

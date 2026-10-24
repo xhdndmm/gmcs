@@ -174,6 +174,52 @@ type stateCacheEntry struct {
 	ok bool
 }
 
+// cropAgeMax 是单一 age 属性作物方块的最大成熟度。这些方块的注册状态
+// 区间按 age 从 0 升序排列（每个年龄一个状态），因此 age = 状态 ID - 区间起点。
+var cropAgeMax = map[string]int{
+	"minecraft:wheat":            7,
+	"minecraft:carrots":          7,
+	"minecraft:potatoes":         7,
+	"minecraft:beetroots":        3,
+	"minecraft:nether_wart":      3,
+	"minecraft:sweet_berry_bush": 3,
+	"minecraft:torchflower_crop": 1,
+}
+
+// blockStateRangeOf 返回状态所属方块的连续状态 ID 区间。
+func blockStateRangeOf(state uint16) (BlockStateRange, bool) {
+	lo, hi := 0, len(blockStateNameRanges)-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		r := blockStateNameRanges[mid]
+		switch {
+		case state < r.Start:
+			hi = mid - 1
+		case state > r.End:
+			lo = mid + 1
+		default:
+			return r, true
+		}
+	}
+	return BlockStateRange{}, false
+}
+
+// BlockStateAge 返回作物方块状态的成熟度（0..最大值）。
+// 仅支持 wheat/carrots/potatoes/beetroots/nether_wart；其他方块返回 false。
+// 实现前提：这些方块只有 age 一个属性，状态区间内按 age 升序排列
+// （区间长度必须等于最大 age+1，否则返回 false 而不猜测）。
+func BlockStateAge(state uint16) (int, bool) {
+	r, ok := blockStateRangeOf(state)
+	if !ok {
+		return 0, false
+	}
+	maxAge, ok := cropAgeMax[r.Name]
+	if !ok || int(r.End-r.Start) != maxAge {
+		return 0, false
+	}
+	return int(state - r.Start), true
+}
+
 var stateLookupCache sync.Map
 
 // stateCacheKey 构造缓存键："name|k1=v1,k2=v2"（属性按名称排序，保证确定性）。

@@ -1136,6 +1136,23 @@ Tick 与实体跟踪同样持平。
 原子访问后继续通过。尚未验证：与原版 playerdata 的 Air/Fire 数值逐项对拍
 （字段语义来自原版 `Player` 存档字段，未做端到端存档对照）。
 
+### 3.31 作物掉落表（本批，实测）
+
+作物掉落只在方块被破坏时计算一次，不在 Tick 热路径。实现上先在方块名上做
+switch（只有 7 个作物会进入后续的 `BlockStateAge` 区间二分），因此非作物方块
+只多一次字符串比较。
+
+复测 `BenchmarkBlockDropsFortune`（煤矿 + 时运 3，`-count=3`）：
+
+```text
+BenchmarkBlockDropsFortune-20   67.35 / 67.46 / 66.31 ns/op   24 B/op   1 alloc/op
+```
+
+与 3.27 记录的 60.5 ns/op 相差约 6 ns（多出的分支与测量波动）；相对一次方块
+破坏的毫秒级耗时（含世界锁、广播与掉落物生成）可以忽略，按 AGENTS §4.2 不做
+进一步微优化。行为正确性由 `TestBlockDropsCrops`（成熟度/时运/精准采集）与
+`TestBlockStateAge`（区间推导边界）覆盖。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

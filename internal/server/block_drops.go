@@ -22,10 +22,12 @@ import (
 //   - 时运：矿石按 ore_drops（随机倍数）、红石/西瓜按 uniform_bonus_count、
 //     砂砾的燧石概率按 table_bonus、树叶的树苗/木棍概率按 table_bonus；
 //   - 剪刀采集树叶掉落树叶本身；
+//   - 作物按方块状态 age 判定成熟度（小麦/甜菜根/胡萝卜/马铃薯/下界疣），
+//     时运按原版 apply_bonus（binomial_with_bonus_count / uniform_bonus_count）；
 //   - 少数与原版一致的“不同名”特例见 blockDropOverrides；
 //   - 无工具要求：挖掘系统已按“正确工具”门控掉落（miningHasCorrectToolForDrops）。
 //
-// 尚未覆盖（docs/TODO.md）：作物/甘蔗/藤蔓等依赖方块状态与工具的特殊表、
+// 尚未覆盖（docs/TODO.md）：甘蔗/竹笋等需剪刀或者非 age 属性的特殊表、
 // 爆炸破坏（gmcs 的爆炸不产生掉落）、生物头颅等极少见掉落。
 
 // blockDropSpec 是一条掉落规则（Item 为空表示无掉落）。
@@ -139,6 +141,93 @@ func (s *Server) uniformBonusMultiplier(fortune, multiplier int32) int32 {
 	return int32(s.nextRandom()%uint64(fortune+1)) * multiplier
 }
 
+// binomialBonus 复刻原版 BinomialWithBonusCount：在 base 上追加
+// Binomial(extra+时运等级, probability) 次成功（每次成功 +1）。
+func (s *Server) binomialBonus(base, extra, fortune int32, probability float64) int32 {
+	count := base
+	threshold := uint64(probability * 1_000_000)
+	trials := extra + fortune
+	for i := int32(0); i < trials; i++ {
+		if s.nextRandom()%1_000_000 < threshold {
+			count++
+		}
+	}
+	return count
+}
+
+// cropDrops 返回作物的掉落（对照 1.21.11 官方 loot_table/blocks 逐条移植）。
+// handled=false 表示该方块不是本函数处理的作物。
+// 注意：原版作物表没有精准采集条件，因此精准采集不影响作物掉落。
+func (s *Server) cropDrops(name string, state uint16, fortune int32) ([]blockDropSpec, bool) {
+	switch name {
+	case "minecraft:wheat", "minecraft:beetroots", "minecraft:carrots",
+		"minecraft:potatoes", "minecraft:nether_wart", "minecraft:sweet_berry_bush",
+		"minecraft:torchflower_crop":
+	default:
+		return nil, false
+	}
+	age, ok := registry.BlockStateAge(state)
+	if !ok {
+		return nil, false
+	}
+	switch name {
+	case "minecraft:wheat":
+		if age >= 7 {
+			return []blockDropSpec{
+				{Item: "minecraft:wheat", Count: 1},
+				{Item: "minecraft:wheat_seeds", Count: s.binomialBonus(1, 3, fortune, 0.5714286)},
+			}, true
+		}
+		return []blockDropSpec{{Item: "minecraft:wheat_seeds", Count: 1}}, true
+	case "minecraft:beetroots":
+		if age >= 3 {
+			return []blockDropSpec{
+				{Item: "minecraft:beetroot", Count: 1},
+				{Item: "minecraft:beetroot_seeds", Count: s.binomialBonus(1, 3, fortune, 0.5714286)},
+			}, true
+		}
+		return []blockDropSpec{{Item: "minecraft:beetroot_seeds", Count: 1}}, true
+	case "minecraft:carrots":
+		count := int32(1)
+		if age >= 7 {
+			count = s.binomialBonus(1, 3, fortune, 0.5714286)
+		}
+		return []blockDropSpec{{Item: "minecraft:carrot", Count: count}}, true
+	case "minecraft:potatoes":
+		count := int32(1)
+		drops := []blockDropSpec{{Item: "minecraft:potato", Count: count}}
+		if age >= 7 {
+			drops[0].Count = s.binomialBonus(1, 3, fortune, 0.5714286)
+			// 成熟马铃薯额外 2% 概率掉一个毒马铃薯。
+			if s.nextRandom()%1000 < 20 {
+				drops = append(drops, blockDropSpec{Item: "minecraft:poisonous_potato", Count: 1})
+			}
+		}
+		return drops, true
+	case "minecraft:sweet_berry_bush":
+		// age 3：2–3 + uniform(0..时运)；age 2：1–2 + uniform；更低无掉落。
+		switch age {
+		case 3:
+			return []blockDropSpec{{Item: "minecraft:sweet_berries",
+				Count: s.randIntBetween(2, 3) + s.uniformBonus(fortune)}}, true
+		case 2:
+			return []blockDropSpec{{Item: "minecraft:sweet_berries",
+				Count: s.randIntBetween(1, 2) + s.uniformBonus(fortune)}}, true
+		default:
+			return nil, true
+		}
+	case "minecraft:torchflower_crop":
+		// 成熟与否都只掉 1 个火把花种子（官方表无 age 条件）。
+		return []blockDropSpec{{Item: "minecraft:torchflower_seeds", Count: 1}}, true
+	default: // minecraft:nether_wart
+		if age >= 3 {
+			count := s.randIntBetween(2, 4) + s.uniformBonus(fortune)
+			return []blockDropSpec{{Item: "minecraft:nether_wart", Count: count}}, true
+		}
+		return []blockDropSpec{{Item: "minecraft:nether_wart", Count: 1}}, true
+	}
+}
+
 // wallVariantItem 返回墙式方块对应的物品名（原版战利品表的自映射）。
 func wallVariantItem(name string) string {
 	switch {
@@ -219,6 +308,12 @@ func (s *Server) blockDrops(state uint16, held item.Stack) []blockDropSpec {
 	silk := hasSilkTouch(held) > 0
 	fortune := fortuneLevel(held)
 	shears := isShearsItem(held.ItemID)
+
+	// 作物：按方块状态 age 判定成熟度（必须在精准采集分支之前：
+	// 原版作物战利品表没有精准采集条件）。
+	if drops, handled := s.cropDrops(name, state, fortune); handled {
+		return drops
+	}
 
 	// 树叶：剪刀或精准采集掉树叶本身；否则按原版概率表掉树苗/木棍/苹果。
 	if strings.HasSuffix(name, "_leaves") {
