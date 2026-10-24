@@ -194,7 +194,7 @@ func TestNodePermissions(t *testing.T) {
 	if got := names(&session{name: "Alice"}); got != "help,list,spawn,gamemode" {
 		t.Fatalf("Alice commands = %q", got)
 	}
-	if got := names(&session{name: "Bob"}); got != "help,list,spawn,seed,say,gamemode,tp,give,time,xp,clear,kick,kill,dimension,save-all" {
+	if got := names(&session{name: "Bob"}); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,xp,clear,kick,kill,dimension,save-all" {
 		t.Fatalf("Bob commands = %q", got)
 	}
 	if got := names(&session{name: "Guest"}); got != "help,list,spawn" {
@@ -262,10 +262,10 @@ func TestOpLevels(t *testing.T) {
 	if got := join(commandNames("Frank"), ","); got != "help,list,spawn" {
 		t.Fatalf("level 1 commands = %q", got)
 	}
-	if got := join(commandNames("Bob"), ","); got != "help,list,spawn,seed,say,gamemode,tp,give,time,xp,clear" {
+	if got := join(commandNames("Bob"), ","); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,xp,clear" {
 		t.Fatalf("level 2 commands = %q", got)
 	}
-	if got := join(commandNames("Carol"), ","); got != "help,list,spawn,seed,say,gamemode,tp,give,time,xp,clear,kick,kill,dimension,save-all" {
+	if got := join(commandNames("Carol"), ","); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,xp,clear,kick,kill,dimension,save-all" {
 		t.Fatalf("level 3 commands = %q", got)
 	}
 }

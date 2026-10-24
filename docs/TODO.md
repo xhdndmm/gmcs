@@ -647,6 +647,35 @@
     `TestRedstoneOpensFenceGate`；
     registry 侧 `TestPlacementTablesConsistent`（状态 ID 必须属于对应方块）。
 
+- [x] 天气系统批次：
+  - 周期推进（对照 `ServerLevel.advanceWeatherCycle` 字节码）：
+    `clearWeatherTime` 强制放晴倒计时；`rainTime`/`thunderTime` 递减到 0 时
+    翻转状态，随后按原版区间重掷（下雨 3600–15600、放晴 12000–180000、
+    打雷 12000–24000、不打雷 12000–180000）；
+  - 客户端同步：`rainLevel`/`thunderLevel` 以 0.01 步进逼近 0/1 并 clamp，
+    值变化时广播 Game Event 7（雨强度）/8（雷强度）；下雨状态翻转时广播
+    Game Event 1（开始）/2（停止）并补发一次强度；进入世界时额外同步一次
+    当前天气（原版只在变化时广播，差异见 MIGRATION）；
+  - `isRainingAt`（`Level.getPrecipitationAt`）：未下雨、维度不是主世界、
+    区块未加载、上方有阻挡方块时为否；天空暴露用“有碰撞形状”近似
+    `Heightmap.MOTION_BLOCKING`（水/火/草/花不阻挡降水）；
+  - 联动：雨天滋润耕地（`FarmBlock.randomTick` 的 `isRainingAt(pos.above())`）、
+    浇灭火焰（`FireBlock.tick`：自身 + 四个水平邻居任一降雨时按
+    0.2 + age × 0.03 概率熄灭）、雨天阻止火焰蔓延、雨中清除玩家与生物着火
+    （`Entity.baseTick` + `Entity.isInRain` 的脚部/包围盒顶部两次判定）；
+  - 新增命令 `/weather <clear|rain|thunder> [秒]`（权限等级 2、
+    节点 `gmcs.command.weather`，含 Tab 补全与帮助文本）；
+  - 测试确定性：天气使用独立随机流（`weatherRand`），不影响既有的
+    `nextRandom` 序列；`joinServer`/`newHopperTestServer` 关闭天气推进
+    （`weatherEnabled=false`），天气行为由 `weather_test.go` 显式驱动；
+  - 新增测试：`TestWeatherCycleTogglesRain`、`TestWeatherClearCountdownRestartsRain`、
+    `TestWeatherBroadcastTransition`、`TestWeatherJoinSync`、
+    `TestWeatherRainHydratesFarmland`、`TestWeatherExtinguishesFire`、
+    `TestWeatherExtinguishesPlayerFire`、`TestWeatherCommand`、
+    `TestWeatherSkyExposure`、`TestWeatherDisabled`；
+  - 新增基准 `BenchmarkWeatherTick`（稳态）与 `BenchmarkWeatherTickTransition`
+    （状态翻转 + 3 个包编码），实测见 [PERFORMANCE.md](PERFORMANCE.md) 3.35。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -741,12 +770,19 @@
 - 农业限制（见上“农业系统批次”）：无光照引擎，作物按“上方整列没有方块 =
   天光 15，否则 0”近似判定，因此**只有露天农田**可以种植与生长（火把照明、
   玻璃温室、树荫下都不生长）；原版 `CropBlock.canSurvive` 的邻块变化复检
-  未实现（作物不会因上方被盖住而破坏）；无天气（雨天浇水未实现）；
+  未实现（作物不会因上方被盖住而破坏）；雨天浇水已实现（见“天气系统批次”）；
   随机刻作用于内存中所有已加载区块（原版仅模拟距离内，表现为离开后
   视距+4 范围内的作物仍生长到 15 秒卸载宽限结束）；踩踏农田只对玩家判定
   （生物不跟踪下落距离）；pitcher_pod（双格作物）、西瓜/南瓜茎结果、
   可可豆（需丛林原木面）未实现；种植只接受“目标位置为空气”
   （原版可替换方块如草/雪层未覆盖）
+- 天气限制（见上“天气系统批次”）：无群系降水类型与温度建模（主世界所有群系按
+  降雨处理，没有雪原降雪/沙漠无雨）；雷暴不产生闪电（无 LightningBolt、不点燃
+  火焰、不劈中实体）；炼药锅不积水、雪层不堆积；天气状态不持久化
+  （`rainTime`/`thunderTime` 重启后归零，原版写入 level.dat）；天空暴露用
+  “有碰撞形状的方块”近似 `Heightmap.MOTION_BLOCKING`；无游戏规则
+  `doWeatherCycle`（始终推进，需关闭时只能改代码/命令）；`/weather` 的
+  duration 按整数秒解析（原版 TimeArgument 支持 `1d`/`30s` 等后缀）
 - 附魔数值效果已实现（护甲减伤、锋利/亡灵杀手/节肢杀手、击退/火焰附加/
   抢夺、效率/水下速掘、保护类、摔落保护、呼吸、不灭、经验修补、精准采集/
   时运、绑定/消失诅咒）；弓附魔（力量/冲击/火矢/无限）与盾牌格挡已实现；

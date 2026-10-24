@@ -191,6 +191,17 @@ type Server struct {
 	soundHoeTill     int32
 	soundCropPlant   int32
 	soundBoneMealUse int32
+
+	// 天气（见 weather.go）：weather 受 weatherMu 保护（tick goroutine 写、
+	// 命令与登录路径读）；rainingFlag 是只读快照，供实体环境扫描等热路径
+	// 无锁查询（每只生物每 tick 都会问一次）；weatherRand 是天气专用随机流，
+	// 与 nextRandom 分离以免改变既有随机序列；weatherEnabled 为 false 时
+	// 完全不推进天气（测试通过 joinServer 关闭，保证既有用例的确定性）。
+	weatherMu      sync.Mutex
+	weather        weatherState
+	rainingFlag    atomic.Bool
+	weatherRand    atomic.Uint64
+	weatherEnabled bool
 	// tickScratch 是 tick 热路径复用的临时切片（由单线程 tick 驱动填充，
 	// 见 tickScratch 的说明）。
 	tickScratch tickScratch
@@ -468,7 +479,9 @@ func New(cfg config.Config) (*Server, error) {
 		permissionIndex:        buildPermissionIndex(cfg),
 		worlds:                 map[world.Dimension]*world.World{world.DimensionOverworld: gameWorld},
 		spawns:                 make(map[world.Dimension]spawnPoint),
+		weatherEnabled:         true,
 	}
+	server.weatherRand.Store(weatherDefaultRandSeed)
 	// 预计算主世界出生点（进入世界的第一个玩家必须立即得到可用坐标）。
 	server.spawnPositionFor(world.DimensionOverworld)
 	server.resolveMobRegistryIDs()

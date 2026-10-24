@@ -308,8 +308,9 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 			}
 			continue
 		}
-		if id == 0x6F || id == 0x65 {
-			// Update Time / Set Experience（进入世界的同步包）可以穿插其中。
+		if id == 0x6F || id == 0x65 || id == 0x26 {
+			// Update Time / Set Experience / Game Event（进入世界的同步包，
+			// 包含天气）可以穿插其中。
 			continue
 		}
 		if id != 0x3F {

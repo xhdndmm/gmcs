@@ -271,7 +271,7 @@ func (s *Server) tickFarmlandAt(key containerKey) {
 		s.unregisterFarmland(key.dim, key.x, key.y, key.z)
 		return
 	}
-	if farmlandNearWater(w, key.x, key.y, key.z) {
+	if farmlandNearWater(w, key.x, key.y, key.z) || s.isRainingAt(key.dim, key.x, key.y+1, key.z) {
 		if moisture < 7 {
 			if next, ok := registry.FarmlandStateWithMoisture(7); ok &&
 				w.SetBlock(key.x, key.y, key.z, next) {

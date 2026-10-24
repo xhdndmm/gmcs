@@ -72,8 +72,9 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 		server.damagePlayerWithMessage(s, envLavaDamage, "lava", 0, server.lavaDamageTypeID, nil,
 			"%s tried to swim in lava")
 	}
-	// 入水熄灭（原版还包含雨与气泡柱，gmcs 目前无天气）。
-	if inWater {
+	// 入水/降雨熄灭（原版 Entity.baseTick：入水、雨中或气泡柱时 clearFire；
+	// 雨中判定为脚部方块与包围盒顶部方块各一次，见 entityInRain）。
+	if inWater || server.entityInRain(s.dimensionID(), x, y, z, playerBox(x, y, z).MaxY) {
 		s.fireTicks.Store(0)
 	}
 	// 着火：每秒 1 点火焰伤害并递减；岩浆中由岩浆伤害取代。

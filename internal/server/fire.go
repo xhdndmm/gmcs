@@ -284,8 +284,9 @@ func (s *Server) fireCheckBurnOut(w *world.World, dim world.Dimension, pos [3]in
 		return
 	}
 	target := w.BlockAt(pos[0], pos[1], pos[2])
-	// 原版此处还有“正在下雨且附近下雨 → 直接烧毁”的短路；gmcs 无天气，恒走点燃分支。
-	if s.nextInt(age+10) < 5 {
+	// 原版：随机判定通过后，若目标位置正在下雨（看不到天空）则不点燃，
+	// 直接进入“烧毁该方块”分支（FireBlock.checkBurnOut）。
+	if s.nextInt(age+10) < 5 && !s.isRainingAt(dim, pos[0], pos[1], pos[2]) {
 		newAge := age + s.nextInt(5)/4
 		if newAge > fireMaxAge {
 			newAge = fireMaxAge
@@ -349,7 +350,14 @@ func (s *Server) fireTickBody(w *world.World, dim world.Dimension, pos [3]int, p
 	if err != nil {
 		age = 0
 	}
-	// 原版在此处检查“下雨且附近下雨 → 有 0.2 + age × 0.03 概率熄灭”；gmcs 无天气。
+	// 原版：正在下雨且火焰附近（自身 + 四个水平邻居）下雨时，按
+	// 0.2 + age × 0.03 的概率直接被浇灭（FireBlock.tick 中先于年龄推进结算）。
+	// 原版还有一个「下方方块属于某标签时免浇灭」的额外条件，gmcs 未建模。
+	if s.isRaining() && s.fireRainingAround(dim, pos[0], pos[1], pos[2]) &&
+		s.weatherNextFloat() < weatherFireExtinguishBase+float32(age)*weatherFireExtinguishPerAge {
+		s.removeFire(w, dim, pos)
+		return
+	}
 	newAge := age + s.nextInt(3)/2
 	if newAge > fireMaxAge {
 		newAge = fireMaxAge
@@ -417,7 +425,6 @@ func (s *Server) fireTickBody(w *world.World, dim world.Dimension, pos [3]int, p
 				if s.nextInt(spreadChance) > odds {
 					continue
 				}
-				// 原版此处还有“正在下雨且目标附近下雨 → 不点燃”的短路；gmcs 无天气。
 				targetAge := age + s.nextInt(5)/4
 				if targetAge > fireMaxAge {
 					targetAge = fireMaxAge

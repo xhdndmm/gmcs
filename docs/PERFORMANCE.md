@@ -1237,6 +1237,45 @@ BenchmarkCropTick256-20           26.2–26.4 µs/op      5 B/op        0 allocs
 农业随机刻）；`go test ./...` 与 `go test -race ./internal/server` 均通过。
 尚未验证：未在真实客户端观察放置/开合/生长表现，也未与原版服务器逐项对拍。
 
+### 3.35 天气系统（本批，实测）
+
+天气进入 Tick 主循环（`tickWeather`）并新增两条**逐实体**判定：
+`Entity.baseTick` 语义的雨中灭火会为每个玩家与每只生物各查询一次
+`isRainingAt`。为避免在非雨天付出锁开销，`isRaining()` 改为读取
+`atomic.Bool` 快照（`rainingFlag`），`isRainingAt` 在未下雨时提前返回。
+
+专用基准（`-count=3`，取范围）：
+
+```text
+BenchmarkWeatherTick-20             13.7 ns/op     0 B/op     0 allocs/op   （稳态：计时递减 + 强度推进 + 一次锁）
+BenchmarkWeatherTickTransition-20   69.6 ns/op    32 B/op     4 allocs/op   （状态翻转：编码 3 个 Game Event 包）
+```
+
+主循环复测：本批提交（当前 `HEAD`）与父提交在不同时刻测量会有 5–10% 的
+整机漂移，因此用 `git worktree add /tmp/gmcs-base <父提交>` 在同一时段做 A/B
+（两组都 `-count=5`）：
+
+```text
+                                 父提交（64cf49e）          本批（天气）
+BenchmarkServerTick-20           16.92–17.36 µs/op        17.09–17.89 µs/op
+BenchmarkServerTickManyPlayers   331–336 µs/op            325–399 µs/op（中位 ~327，两次数值为系统噪声）
+BenchmarkEntityTracking-20       5.11–5.22 µs/op          5.08–5.21 µs/op
+BenchmarkCropTick256-20          28.2–29.4 µs/op          28.5–30.0 µs/op
+```
+
+结论：`ServerTick` 增加约 0.2–0.5 µs（32 只生物 + 1 名玩家各一次
+`isRainingAt` 的无锁快速返回，约 10–20 ns/实体），在 50 ms 的 tick 预算中是
+0.001% 量级；`EntityTracking`/`CropTick` 与天气无关，差异属测量噪声。
+天气状态机本身每 tick 固定 13.7 ns、零分配；只有下雨状态翻转的那一 tick
+才编码 3 个包（69.6 ns），强度平滑期间每 tick 最多 2 个包。
+
+正确性验证：`weather_test.go` 10 个测试覆盖周期推进、强制放晴、广播顺序、
+加入同步、耕地滋润、火焰与实体浇灭、`/weather` 参数、天空暴露判定与关闭
+天气；`go test ./...`（`internal/server` 19.0 s）与
+`go test -race ./internal/server ./internal/world ./internal/registry` 通过。
+尚未验证：未与原版服务器逐 tick 对拍天气序列，也未在真实客户端观察降雨
+渲染；闪电/炼药锅/积雪未实现（见 docs/TODO.md 天气限制）。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

@@ -52,6 +52,7 @@ var commands = []commandSpec{
 	{Name: "tp", ArgName: "target", Level: 2, Node: "gmcs.command.tp"},
 	{Name: "give", ArgName: "item", Level: 2, Node: "gmcs.command.give"},
 	{Name: "time", ArgName: "value", Level: 2, Node: "gmcs.command.time"},
+	{Name: "weather", ArgName: "type", Level: 2, Node: "gmcs.command.weather"},
 	{Name: "xp", ArgName: "amount", Level: 2, Node: "gmcs.command.xp"},
 	{Name: "clear", ArgName: "target", Level: 2, Node: "gmcs.command.clear"},
 	{Name: "kick", ArgName: "player", Level: 3, Node: "gmcs.command.kick"},
@@ -235,6 +236,8 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 		s.handleGiveCommand(player, commandArgument(commandLine, fields))
 	case "time":
 		s.handleTimeCommand(player, commandArgument(commandLine, fields))
+	case "weather":
+		s.handleWeatherCommand(player, commandArgument(commandLine, fields))
 	case "xp":
 		s.handleXPCommand(player, commandArgument(commandLine, fields))
 	case "clear":
@@ -434,6 +437,52 @@ func (s *Server) handleTimeCommand(player *session, argument string) {
 	}
 }
 
+// handleWeatherCommand 实现 /weather <clear|rain|thunder> [秒]：
+// 与原版 /weather 一致，clear 写入强制放晴时长，rain/thunder 写入雨/雷计时
+// （原版参数是 TimeArgument 秒，这里同样按秒 × 20 换算成 tick）。
+func (s *Server) handleWeatherCommand(player *session, argument string) {
+	fields := strings.Fields(strings.ToLower(argument))
+	if len(fields) == 0 || len(fields) > 2 {
+		player.tryWrite(protocol.EncodeSystemChat("用法：/weather <clear|rain|thunder> [秒]"))
+		return
+	}
+	// 方言与原版一致：省略秒数时按当前状态的不利区间随机取值。
+	var ticks int32 = -1
+	if len(fields) == 2 {
+		seconds, err := strconv.ParseInt(fields[1], 10, 32)
+		if err != nil || seconds <= 0 {
+			player.tryWrite(protocol.EncodeSystemChat("时长无效（正整数秒）。"))
+			return
+		}
+		if seconds > weatherMaxCommandSeconds {
+			seconds = weatherMaxCommandSeconds
+		}
+		ticks = int32(seconds) * 20
+	}
+	switch fields[0] {
+	case "clear":
+		if ticks < 0 {
+			ticks = int32(s.weatherUniform(weatherRainTimeIdleMin, weatherRainTimeIdleMax))
+		}
+		s.setWeatherParameters(ticks, 0, false, false)
+	case "rain":
+		if ticks < 0 {
+			ticks = int32(s.weatherUniform(weatherThunderTimeThunderingMin, weatherThunderTimeThunderingMax))
+		}
+		s.setWeatherParameters(0, ticks, true, false)
+	case "thunder":
+		if ticks < 0 {
+			ticks = int32(s.weatherUniform(weatherThunderTimeThunderingMin, weatherThunderTimeThunderingMax))
+		}
+		s.setWeatherParameters(0, ticks, true, true)
+	default:
+		player.tryWrite(protocol.EncodeSystemChat("未知天气类型：" + fields[0]))
+		return
+	}
+	slog.Info("weather changed", "name", player.name, "type", fields[0], "ticks", ticks)
+	player.tryWrite(protocol.EncodeSystemChat("已将天气设置为 " + fields[0]))
+}
+
 // handleXPCommand 实现 /xp add <数量>：增加经验值。
 func (s *Server) handleXPCommand(player *session, argument string) {
 	fields := strings.Fields(strings.ToLower(argument))
@@ -560,6 +609,7 @@ func (s *Server) helpText(player *session) string {
 		"tp":        "/tp <x> <y> <z> 或 /tp <玩家> — 传送",
 		"give":      "/give <物品> [数量] — 给予物品",
 		"time":      "/time set|add|query — 查看/修改世界时间",
+		"weather":   "/weather <clear|rain|thunder> [秒] — 设置天气",
 		"xp":        "/xp add <数量> — 增加经验值",
 		"clear":     "/clear [玩家] — 清空物品栏",
 		"kick":      "/kick <玩家> — 踢出玩家",
@@ -654,6 +704,13 @@ func (s *Server) commandSuggestions(player *session, text string) (matches []str
 		return matches, space + 2, len(argument)
 	case "time":
 		for _, word := range []string{"set", "add", "query"} {
+			if strings.HasPrefix(word, prefix) {
+				matches = append(matches, word)
+			}
+		}
+		return matches, space + 2, len(argument)
+	case "weather":
+		for _, word := range []string{"clear", "rain", "thunder"} {
 			if strings.HasPrefix(word, prefix) {
 				matches = append(matches, word)
 			}

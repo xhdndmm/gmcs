@@ -79,6 +79,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `/tp <x> <y> <z>` 或 `/tp <玩家>` | 传送到坐标或在线玩家（含其所在维度，等级 2） |
 | `/give <物品> [数量]` | 给予物品（带/不带 `minecraft:` 前缀；放不下时掉落，等级 2） |
 | `/time set <day\|noon\|night\|midnight\|tick>` / `/time add <tick>` / `/time query` | 查询/修改世界时间（等级 2） |
+| `/weather <clear\|rain\|thunder> [秒]` | 设置天气（省略秒数时按原版区间随机，等级 2） |
 | `/xp add <数量>` | 增加经验值（等级 2） |
 | `/clear [玩家]` | 清空物品栏（等级 2） |
 | `/kick <玩家>` | 踢出在线玩家（等级 3） |
@@ -86,9 +87,9 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `/dimension <overworld\|the_nether\|the_end>` | 传送到目标维度出生点（等级 3） |
 | `/save-all` | 立即保存全部已加载世界（等级 3） |
 
->命令补全（Tab）覆盖命令名、`/gamemode`/`/time`/`/dimension` 参数与 `/kick`/`/tp`/`/clear`/`/kill` 在线玩家名，聊天输入时还会补全在线玩家名；
+>命令补全（Tab）覆盖命令名、`/gamemode`/`/time`/`/weather`/`/dimension` 参数与 `/kick`/`/tp`/`/clear`/`/kill` 在线玩家名，聊天输入时还会补全在线玩家名；
 `ops` 名单项支持 `name`（等价 4 级）或 `name:level`（1–4 级），命令树按玩家等级过滤并在执行时再次校验
-（`/say`、`/gamemode`、`/seed`、`/tp`、`/give`、`/time`、`/xp`、`/clear` 需 2 级，
+（`/say`、`/gamemode`、`/seed`、`/tp`、`/give`、`/time`、`/weather`、`/xp`、`/clear` 需 2 级，
 `/kick`、`/kill`、`/dimension`、`/save-all` 需 3 级；`/help`、`/list`、`/spawn` 所有玩家可用）。
 也可以不改 `ops`，而在 `permissions` 中按玩家授予权限节点（如
 `"permissions": {"Alice": "gmcs.command.gamemode", "*": "gmcs.command.spawn"}`）：
@@ -155,6 +156,12 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 - **昼夜循环**：24000 tick（20 分钟）一天，进入世界与每 20 tick 同步世界时间；
   `/time set|add|query` 可查询与修改。无光照引擎，因此刷怪只看时间、不看亮度
   （洞穴内白天不刷怪）。
+- **天气**：主世界按原版 `advanceWeatherCycle` 周期推进下雨与雷暴
+  （下雨 3600–15600 tick、放晴 12000–180000 tick，雷暴同理），强度以 0.01
+  步进平滑并广播 Game Event 1/2/7/8；`/weather clear|rain|thunder [秒]` 可手动
+  指定。降雨只影响主世界：浇灭火焰、阻止火焰蔓延、清除玩家与生物身上的火、
+  滋润耕地（`isRainingAt` = 下雨 + 看得到天空 + 上方无阻挡方块）。
+  未实现闪电、炼药锅积水与积雪、群系降水类型；天气不持久化（重启后晴朗）。
 - 数值：玩家 20 点生命；玩家攻击 4 点，下落中攻击为跳跃暴击（×1.5）；受击无敌帧
   0.5 秒与击退；掉落物：僵尸 0–2 腐肉与稀有铁锭/胡萝卜/土豆、骷髅骨头与箭、
   苦力怕火药、蜘蛛线/蜘蛛眼、末影人末影珍珠、牛皮革/牛肉、猪猪排、羊白色羊毛/羊肉；
@@ -185,7 +192,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 - 经验球随维度目录的 `entities.json` 保存 Value/Count/Age/速度，重启后恢复
   （未拾取的经验球不再丢失）。
 - 限制：生物寻路为地表模型（不考虑头顶净空与水中游泳；末影人瞬移为随机尝试）、
-  爆炸无方块掉落、无光照引擎、无状态效果/药水效果与天气；完整列表见 [TODO.md](TODO.md)。
+  爆炸无方块掉落、无光照引擎、无状态效果/药水效果；完整列表见 [TODO.md](TODO.md)。
 
 ### 方块交互与玩家物理
 
@@ -333,7 +340,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   方块时退化为泥土；玩家落到耕地上会按 `FarmBlock.fallOn` 踩踏退化；骨粉按
   `BoneMealItem.applyBonemeal` 催熟 2–5 级（满龄不消耗）并广播世界事件 1505。
   已知近似：gmcs 无光照引擎，天光近似为“上方整列无方块”，因此只有露天农田
-  可以种植与生长；无天气（雨天浇水分支未实现）。
+  可以种植与生长；雨天会通过 `isRainingAt(pos.above())` 把耕地湿度提升到 7。
 - **末影箱**：右键打开按玩家独立的 27 槽空间（所有末影箱共享同一份内容），
   随玩家数据（`players.json` 的 `ender_inventory`）持久化。
 - **玩家皮肤层**：其他玩家可见的皮肤层（披风/外衣/袖子/裤腿/帽子）按客户端
@@ -428,14 +435,15 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 - **玩家半径**：与原版 1.21.11 一致，火焰只在 128 格内存有非旁观玩家时推进
   （规则 `fire_spread_radius_around_player` 的默认值；gmcs 无游戏规则），
   区块未加载时同样只重新排程。
-- 已知差异：无天气（雨天不灭火、下雨也不阻止点燃）、无难度设置（按默认 Easy）、
-  含水方块状态未建模。详见 [TODO.md](TODO.md)。
+- 已知差异：无难度设置（按默认 Easy）、含水方块状态未建模、
+  雷暴不产生闪电。详见 [TODO.md](TODO.md)。
 - **着火（玩家与生物）**：站在火/灵魂火方块上点燃 8 秒（玩家在火中每 tick 额外
   +1…2 tick），接触岩浆点燃 15 秒并受 4 点岩浆伤害；着火每秒 1 点火焰伤害
   （受受伤无敌帧限制），入水立即熄灭；着火状态通过实体共享标志（Set Entity Data
   索引 0 bit0，变化时才广播）同步，并随 entities.json 持久化。火/水/岩浆的相交按
   实体碰撞盒覆盖的方块判定（收缩 1e-7，与原版 `Entity.checkInsideBlocks` 的 AABB
-  处理一致），而不是只看脚部与上方一格。
+  处理一致），而不是只看脚部与上方一格。降雨时也会熄灭实体着火（`Entity.isInRain`）
+  以及火焰方块（`FireBlock.tick` 的浇灭分支）。
 
 ### 日志与审计
 

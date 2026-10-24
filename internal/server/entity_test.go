@@ -44,6 +44,9 @@ func joinServerObserved(t *testing.T, cfg config.Config, name string, observers 
 	instance.chunkUnloadGrace = 0
 	instance.dimensionIdleGrace = time.Hour
 	instance.playerAutosaveInterval = time.Hour // 玩家数据由测试显式保存/断言
+	// 天气关闭：随机天气会在长时间 tick 的用例（农业/火焰/生物）里突然下雨，
+	// 也会给加入流程注入 3 个 Game Event 包；天气行为由 weather_test.go 显式驱动。
+	instance.weatherEnabled = false
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

@@ -1359,9 +1359,12 @@ func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch fl
 		return err
 	}
 	if previous != dim {
-		// 下界/末地为固定时间；进入主世界时同步时间。
+		// 下界/末地为固定时间；进入主世界时同步时间与当前天气。
 		if dim == world.DimensionOverworld {
 			s.tryWrite(protocol.EncodeUpdateTime(s.server.worldAge.Load(), s.server.worldAge.Load()%worldDayLength, true))
+			for _, packet := range s.server.weatherJoinPackets() {
+				s.tryWrite(packet)
+			}
 		}
 		// 跟踪集切换到新维度并恢复；随后一帧统一补发范围内的实体。
 		s.server.resumeEntityTracking(s, dim)
@@ -1489,6 +1492,8 @@ func (s *session) runPlay() {
 		packets = append(packets,
 			protocol.EncodeUpdateTime(s.server.worldAge.Load(), s.server.worldAge.Load()%worldDayLength, true),
 		)
+		// 当前天气（gmcs 在进入世界时主动同步，见 weatherJoinPackets）。
+		packets = append(packets, s.server.weatherJoinPackets()...)
 	}
 	experienceBar, experienceLevel, experienceTotal := s.experienceStatus()
 	packets = append(packets, protocol.EncodeSetExperience(experienceBar, experienceLevel, experienceTotal))

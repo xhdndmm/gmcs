@@ -55,8 +55,8 @@ func (s *Server) tickMobEnvironment(w *world.World, m *mob) (env mobEnvironment,
 
 	env = mobEnvironment{dim: m.Dim, kind: m.Kind, x: m.X, z: m.Z}
 
-	// 入水熄灭（原版 Entity.baseTick：入水/气泡柱时 clearFire）。
-	if inWater {
+	// 入水/降雨熄灭（原版 Entity.baseTick：入水、雨中或气泡柱时 clearFire）。
+	if inWater || s.entityInRain(m.Dim, m.X, m.Y, m.Z, mobBox(m.X, m.Y, m.Z).MaxY) {
 		m.FireTicks = 0
 	}
 	// 岩浆：结算岩浆伤害（原版 lavaHurt；点燃在下方，只有伤害生效才点燃）。

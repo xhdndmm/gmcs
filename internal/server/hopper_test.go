@@ -27,6 +27,8 @@ func newHopperTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 天气关闭：本文件用 tick 驱动漏斗，不希望在用例中途开始下雨。
+	instance.weatherEnabled = false
 	t.Cleanup(func() { _ = instance.worldFor(world.DimensionOverworld).Close() })
 	return instance
 }
