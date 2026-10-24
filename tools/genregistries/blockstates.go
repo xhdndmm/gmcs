@@ -46,6 +46,7 @@ var propStateBlocks = []string{
 	"minecraft:dispenser",
 	"minecraft:dropper",
 	"minecraft:end_portal_frame",
+	"minecraft:farmland",
 	"minecraft:fire",
 	"minecraft:heavy_weighted_pressure_plate",
 	"minecraft:hopper",

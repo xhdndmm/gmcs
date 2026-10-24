@@ -6,6 +6,7 @@ package registry
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -238,6 +239,63 @@ func BlockStateAge(state uint16) (int, bool) {
 	}
 	return int(state-r.Start) / info.stride, true
 }
+
+// BlockStateMaxAge 返回作物方块的最高年龄；非 cropAges 中的方块返回 false。
+func BlockStateMaxAge(state uint16) (int, bool) {
+	r, ok := blockStateRangeOf(state)
+	if !ok {
+		return 0, false
+	}
+	info, ok := cropAges[r.Name]
+	if !ok || int(r.End-r.Start) != (info.maxAge+1)*info.stride-1 {
+		return 0, false
+	}
+	return info.maxAge, true
+}
+
+// BlockStateWithAge 返回与 state 同一作物方块、指定年龄的状态 ID。
+// 对于 stride > 1 的作物（如 pitcher_crop），返回该年龄组的第一个状态
+// （双格植物为上半格），调用方需自行确认适用的子状态。
+func BlockStateWithAge(state uint16, age int) (uint16, bool) {
+	r, ok := blockStateRangeOf(state)
+	if !ok {
+		return 0, false
+	}
+	info, ok := cropAges[r.Name]
+	if !ok || int(r.End-r.Start) != (info.maxAge+1)*info.stride-1 {
+		return 0, false
+	}
+	if age < 0 || age > info.maxAge {
+		return 0, false
+	}
+	return r.Start + uint16(age*info.stride), true
+}
+
+// FarmlandMoisture 返回耕地状态的含水量（0..7）；非耕地返回 false。
+func FarmlandMoisture(state uint16) (int, bool) {
+	name, props, ok := StateProps(state)
+	if !ok || name != farmLandBlockName {
+		return 0, false
+	}
+	moisture, err := strconv.Atoi(props["moisture"])
+	if err != nil || moisture < 0 || moisture > 7 {
+		return 0, false
+	}
+	return moisture, true
+}
+
+// FarmlandStateWithMoisture 返回指定含水量的耕地状态（0..7）。
+func FarmlandStateWithMoisture(moisture int) (uint16, bool) {
+	if moisture < 0 || moisture > 7 {
+		return 0, false
+	}
+	return BlockStateWithProps(farmLandBlockName, map[string]string{
+		"moisture": strconv.Itoa(moisture),
+	})
+}
+
+// farmLandBlockName 是耕地方块名（1.20.5+ 原版类名为 FarmBlock）。
+const farmLandBlockName = "minecraft:farmland"
 
 // BlockStateHalfUpper 报告双格植物状态是否为上半格。
 // 双格植物的状态区间只有两种状态，按 upper→lower 排列（blocks.json 已核对）。

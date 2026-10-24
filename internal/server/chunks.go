@@ -349,6 +349,7 @@ func (s *Server) releaseChunkCaches(dim world.Dimension, unloaded []world.ChunkP
 		return
 	}
 	s.dropHoppersInChunks(dim, unloaded)
+	s.dropFarmBlocksInChunks(dim, unloaded)
 	for _, pos := range unloaded {
 		s.evictChunkPacket(dim, pos)
 	}

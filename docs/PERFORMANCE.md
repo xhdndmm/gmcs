@@ -1173,6 +1173,42 @@ BenchmarkBlockDropsFortune-20   67.35 / 67.46 / 66.31 ns/op   24 B/op   1 alloc/
 `preventDropFromBottomPart` 移除另一半）与官方方块战利品表得出。
 尚未验证：未在原版服务器上逐方块实测掉落数量分布。
 
+### 3.33 农业随机刻（本批，实测）
+
+作物与耕地采用“逐登记位置掷骰”的随机刻：每个位置每 tick 以 3/4096 的概率
+被选中（与原版“每 section 3 个随机位置”的期望一致），命中后才读取方块、
+按 `CropBlock.getGrowthSpeed` 决定是否生长。因此绝大多数 tick 只消耗一次
+`nextRandom()` 与一次 `ChunkLoaded` 查询。
+
+基准（`-count=3`，日志不参与计时）：
+
+```text
+BenchmarkCropTick-20       143–148 ns/op    0 B/op   0 allocs/op   （1 作物 + 1 耕地）
+BenchmarkCropTick256-20    26.5 µs/op       5 B/op   0 allocs/op   （256 作物 + 256 耕地）
+BenchmarkServerTick-20     15.9 µs/op      51 B/op   1 alloc/op    （无作物，与上批一致）
+```
+
+即约 52 ns / 登记位置 / tick（线性），16×16 农田每 tick 约 26.5 µs（占 50 ms
+tick 预算的 0.05%），64×64 农田按线性外推约 0.42 ms（0.8%）。没有新增分配，
+`BenchmarkServerTick` 与上一批（15.4–16.1 µs）一致。
+
+设计取舍：原版用“每 section 随机位置 → 查方块”的方式，成本与作物数量无关；
+gmcs 逐个已登记位置掷骰，实现简单且不持有逐 section 的方块索引，但成本随农田
+规模线性增长。在当前实测规模下开销可忽略，按 AGENTS §4.2 不做进一步的
+per-section 索引（需要额外的位置→作物索引结构与其失效维护）。
+
+正确性验证：`TestHoeTillsSoil`、`TestHoeTillingRequiresAirAbove`、
+`TestHoeTillsCoarseAndRootedDirt`、`TestPlantCropOnFarmland`、
+`TestPlantCropRequiresFarmland`、`TestPlantCropRequiresSkyLight`、
+`TestBoneMealGrowsCrop`、`TestNetherWartPlantAndGrowth`、
+`TestCropRandomTickGrowth`、`TestCropGrowthSpeed`、
+`TestFarmlandMoistureNearWater`、`TestFarmlandWithCropStaysFarmland`、
+`TestTrampleFarmland`，以及 registry 的 `TestFarmlandMoistureStates`、
+`TestBlockStateAgeRoundTrip`。语义逐条对照 1.21.11 字节码
+（`HoeItem`/`CropBlock`/`NetherWartBlock`/`FarmBlock`/`BoneMealItem`）实现；
+尚未验证：未在真实客户端中观察生长动画与骨粉粒子，也未与原版服务器逐 tick
+对拍生长分布。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

@@ -570,6 +570,39 @@
     `TestBlockDropsCrops`；
   - 行为变化：双格植物不再双倍掉落，且不会留下悬空的另一半。
 
+- [x] 农业系统批次：
+  - 锄头耕地（对照 `HoeItem.useOn` 字节码）：草方块/土径/泥土 → 耕地
+    （moisture=0），砂土 → 泥土，缠根泥土 → 泥土并掉落 1 个垂滴根须；
+    要求点击面不是底面且上方为空气；播放 `item.hoe.till`、消耗 1 点耐久
+    （不灭附魔按既有规则免除）；
+  - 作物种植（`BlockItem.place` + `CropBlock.canSurvive`）：小麦/甜菜根/
+    胡萝卜/马铃薯/火把花种在耕地上、下界疣只能种在灵魂沙；非创造模式消耗
+    1 个物品，播放 `item.crop.plant`；新增耕地属性状态表（8 档 moisture）；
+  - 作物随机刻（`CropBlock.randomTick`/`NetherWartBlock.randomTick`）：
+    每登记位置 3/4096 概率被选中（等价原版“每 section 3 个随机位置”），
+    作物按 `getGrowthSpeed`（3×3 耕地含水量、行列/对角减半）与
+    `nextInt(25/speed+1) == 0` 生长；下界疣不看光照、按 1/10 概率生长；
+  - 耕地随机刻（`FarmBlock.randomTick`）：4 格半径内有水 → 湿度 7；
+    否则湿度递减，湿度 0 且上方不是 `maintains_farmland` 标签方块 → 泥土；
+  - 踩踏农田（`FarmBlock.fallOn` 玩家分支）：下落 >0.5 格时按
+    `nextFloat() < fall-0.5` 判定退化为泥土；
+  - 骨粉（`BoneMealItem.useOn`/`applyBonemeal`）：先试被点击方块、再试点击
+    面外侧；催熟 2–5 级（钳制到最大年龄），满龄不接受，成功时消耗 1 个并
+    广播世界事件 1505；下界疣不是可催熟方块（原版如此）；
+  - 作物/耕地注册：新加载区块增量扫描 + 种植/耕作时即时登记，方块移除时
+    注销，区块卸载时丢弃；随机刻使用复用的键快照（零分配）；
+  - 新增测试：`TestHoeTillsSoil`、`TestHoeTillingRequiresAirAbove`、
+    `TestHoeTillsCoarseAndRootedDirt`、`TestPlantCropOnFarmland`、
+    `TestPlantCropRequiresFarmland`、`TestPlantCropRequiresSkyLight`、
+    `TestBoneMealGrowsCrop`、`TestNetherWartPlantAndGrowth`、
+    `TestCropRandomTickGrowth`、`TestCropGrowthSpeed`、
+    `TestFarmlandMoistureNearWater`、`TestFarmlandWithCropStaysFarmland`、
+    `TestTrampleFarmland`（registry 侧：`TestFarmlandMoistureStates`、
+    `TestBlockStateAgeRoundTrip`）；
+  - 新增基准 `BenchmarkCropTick`（1 作物 + 1 耕地）与
+    `BenchmarkCropTick256`（16×16 农田），实测见
+    [PERFORMANCE.md](PERFORMANCE.md) 3.33。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -655,6 +688,15 @@
   玩家与生物不由服务端推动（玩家由客户端移动负责，生物不建模水流漂流）、
   下界水蒸发以外无其他流体交互；
   岩浆伤害为 4 点/0.5 秒（受受伤无敌帧限制），死亡消息按原版（岩浆/着火/溺水/岩浆块）
+- 农业限制（见上“农业系统批次”）：无光照引擎，作物按“上方整列没有方块 =
+  天光 15，否则 0”近似判定，因此**只有露天农田**可以种植与生长（火把照明、
+  玻璃温室、树荫下都不生长）；原版 `CropBlock.canSurvive` 的邻块变化复检
+  未实现（作物不会因上方被盖住而破坏）；无天气（雨天浇水未实现）；
+  随机刻作用于内存中所有已加载区块（原版仅模拟距离内，表现为离开后
+  视距+4 范围内的作物仍生长到 15 秒卸载宽限结束）；踩踏农田只对玩家判定
+  （生物不跟踪下落距离）；pitcher_pod（双格作物）、西瓜/南瓜茎结果、
+  可可豆（需丛林原木面）未实现；种植只接受“目标位置为空气”
+  （原版可替换方块如草/雪层未覆盖）
 - 附魔数值效果已实现（护甲减伤、锋利/亡灵杀手/节肢杀手、击退/火焰附加/
   抢夺、效率/水下速掘、保护类、摔落保护、呼吸、不灭、经验修补、精准采集/
   时运、绑定/消失诅咒）；弓附魔（力量/冲击/火矢/无限）与盾牌格挡已实现；

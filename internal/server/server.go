@@ -180,6 +180,17 @@ type Server struct {
 	composterMu          sync.Mutex
 	composterDue         map[composterKey]int64
 	composterScanCounter int
+	// 农业：crops/farmlands 是已登记的作物与耕地位置（受 farmMu 保护）；
+	// 两个 scratch 切片是 tick 热路径复用的键快照（仅 tick goroutine 使用）。
+	farmMu              sync.Mutex
+	crops               map[containerKey]struct{}
+	farmlands           map[containerKey]struct{}
+	farmCropScratch     []containerKey
+	farmFarmlandScratch []containerKey
+	// soundHoeTill/soundCropPlant/soundBoneMealUse 是农业音效（缺失时为 0，静默）。
+	soundHoeTill     int32
+	soundCropPlant   int32
+	soundBoneMealUse int32
 	// tickScratch 是 tick 热路径复用的临时切片（由单线程 tick 驱动填充，
 	// 见 tickScratch 的说明）。
 	tickScratch tickScratch

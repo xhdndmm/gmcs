@@ -326,6 +326,7 @@ func (s *Server) tick() {
 	s.tickXPOrbs(players)
 	s.tickHoppers()
 	s.tickComposters()
+	s.tickCrops()
 	s.tickWorldTime(players)
 	s.tickFurnaces()
 	s.tickBrewingStands()
@@ -1579,5 +1580,18 @@ func (s *Server) resolveMobRegistryIDs() {
 	// 盾牌格挡音效：可选。
 	if shieldBlock, ok := staticLookup("minecraft:sound_event", "minecraft:item.shield.block"); ok {
 		s.soundShieldBlock = shieldBlock
+	}
+	// 农业音效（锄地/种植/骨粉）：可选，缺失时静默。
+	for _, entry := range []struct {
+		name   string
+		target *int32
+	}{
+		{"minecraft:item.hoe.till", &s.soundHoeTill},
+		{"minecraft:item.crop.plant", &s.soundCropPlant},
+		{"minecraft:item.bone_meal.use", &s.soundBoneMealUse},
+	} {
+		if id, ok := staticLookup("minecraft:sound_event", entry.name); ok {
+			*entry.target = id
+		}
 	}
 }

@@ -193,6 +193,10 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 			return
 		}
 	}
+	// 农业物品（锄头/种子/骨粉）按原版顺序在方块交互之前处理。
+	if s.tryFarmUse(player, w, use, current) {
+		return
+	}
 	if !player.sneaking {
 		// 拉杆/按钮：切换红石状态。
 		if s.handleRedstoneUse(w, use.X, use.Y, use.Z, current) {

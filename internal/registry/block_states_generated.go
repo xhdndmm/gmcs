@@ -287,6 +287,16 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 9274, Props: map[string]string{"eye": "false", "facing": "west"}},
 		{ID: 9275, Props: map[string]string{"eye": "false", "facing": "east"}},
 	},
+	"minecraft:farmland": {
+		{ID: 5118, Props: map[string]string{"moisture": "0"}},
+		{ID: 5119, Props: map[string]string{"moisture": "1"}},
+		{ID: 5120, Props: map[string]string{"moisture": "2"}},
+		{ID: 5121, Props: map[string]string{"moisture": "3"}},
+		{ID: 5122, Props: map[string]string{"moisture": "4"}},
+		{ID: 5123, Props: map[string]string{"moisture": "5"}},
+		{ID: 5124, Props: map[string]string{"moisture": "6"}},
+		{ID: 5125, Props: map[string]string{"moisture": "7"}},
+	},
 	"minecraft:fire": {
 		{ID: 3174, Props: map[string]string{"age": "0", "east": "true", "north": "true", "south": "true", "up": "true", "west": "true"}},
 		{ID: 3175, Props: map[string]string{"age": "0", "east": "true", "north": "true", "south": "true", "up": "true", "west": "false"}},

@@ -282,6 +282,13 @@ func (s *Server) registerLoadedChunkBlocks() {
 					s.scheduleComposterReady(loaded.dim, block[0], block[1], block[2])
 				}
 			}
+			// 农业：登记新加载区块中的作物与耕地，使其立即参与随机刻。
+			for _, block := range loaded.world.ChunkBlockStatePositions(pos.X, pos.Z, isGrowableCropState) {
+				s.registerCrop(loaded.dim, block[0], block[1], block[2])
+			}
+			for _, block := range loaded.world.ChunkBlockStatePositions(pos.X, pos.Z, isFarmlandState) {
+				s.registerFarmland(loaded.dim, block[0], block[1], block[2])
+			}
 		}
 	}
 }

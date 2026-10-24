@@ -265,6 +265,7 @@ func (s *Server) removeBlockAndBroadcast(dim world.Dimension, w *world.World, x,
 	if !w.SetBlock(x, y, z, world.AirBlock) {
 		return false
 	}
+	s.unregisterFarm(dim, x, y, z)
 	s.broadcastBlockUpdate(dim, x, y, z, int32(world.AirBlock))
 	s.updateRedstoneAround(dim, x, y, z)
 	s.updateFluidsAround(dim, x, y, z)

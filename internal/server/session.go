@@ -615,6 +615,10 @@ func (s *session) updateFallState(w *world.World, x, y, z float64) {
 	}
 	s.airborne = false
 	fall := s.fallStartY - top
+	// 踩踏农田（原版 FarmBlock.fallOn）：下落距离不足 0.5 时不触发。
+	if fall > 0.5 {
+		s.server.tryTrampleFarmland(s.dimensionID(), w, surface, top, x, z, fall)
+	}
 	if fall <= fallDamageThreshold {
 		return
 	}

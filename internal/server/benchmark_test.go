@@ -737,3 +737,89 @@ func BenchmarkArrowSweepAgainstMobs(b *testing.B) {
 	}
 	benchArrowHits = hits
 }
+
+// BenchmarkCropTick 衡量随机刻路径的固定成本：1 个已登记作物 + 1 块耕地。
+// 绝大多数 tick 只做“3/4096 选中判定”，用于确认农业随机刻不会给
+// 主循环带来明显开销。
+func BenchmarkCropTick(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	gameWorld := instance.worldFor(world.DimensionOverworld)
+	spawnX, _, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	x, z := int(math.Floor(spawnX))+4, int(math.Floor(spawnZ))+4
+	groundYf, ok := gameWorld.GroundY(x, z)
+	if !ok {
+		b.Fatal("no ground at spawn area")
+	}
+	groundY := int(math.Floor(groundYf)) - 1
+	farmland, ok := registry.FarmlandStateWithMoisture(7)
+	if !ok {
+		b.Fatal("缺少耕地状态")
+	}
+	wheat, ok := registry.BlockStateIDs["minecraft:wheat"]
+	if !ok {
+		b.Fatal("缺少小麦状态")
+	}
+	gameWorld.SetBlock(x, groundY, z, farmland)
+	gameWorld.SetBlock(x, groundY+1, z, wheat)
+	instance.registerFarmland(world.DimensionOverworld, x, groundY, z)
+	instance.registerCrop(world.DimensionOverworld, x, groundY+1, z)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		instance.tickCrops()
+	}
+}
+
+// BenchmarkCropTick256 衡量 256 株作物 + 256 块耕地的随机刻成本
+// （16×16 农田；随机刻为逐登记位置线性成本，用于评估大型农田的开销）。
+func BenchmarkCropTick256(b *testing.B) {
+	cfg := config.Default()
+	cfg.WorldDir = b.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	gameWorld := instance.worldFor(world.DimensionOverworld)
+	spawnX, _, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	baseX, baseZ := int(math.Floor(spawnX))-8, int(math.Floor(spawnZ))-8
+	groundYf, ok := gameWorld.GroundY(baseX, baseZ)
+	if !ok {
+		b.Fatal("no ground at spawn area")
+	}
+	groundY := int(math.Floor(groundYf)) - 1
+	farmland, ok := registry.FarmlandStateWithMoisture(7)
+	if !ok {
+		b.Fatal("缺少耕地状态")
+	}
+	wheat, ok := registry.BlockStateIDs["minecraft:wheat"]
+	if !ok {
+		b.Fatal("缺少小麦状态")
+	}
+	for dx := 0; dx < 16; dx++ {
+		for dz := 0; dz < 16; dz++ {
+			x, z := baseX+dx, baseZ+dz
+			gameWorld.SetBlock(x, groundY, z, farmland)
+			gameWorld.SetBlock(x, groundY+1, z, wheat)
+			instance.registerFarmland(world.DimensionOverworld, x, groundY, z)
+			instance.registerCrop(world.DimensionOverworld, x, groundY+1, z)
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		instance.tickCrops()
+	}
+}
