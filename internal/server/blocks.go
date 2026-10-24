@@ -247,15 +247,15 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if s.tryUseBucket(player, w, use) {
 		return
 	}
+	// 活板门：右键开合（原版 TrapDoorBlock.useWithoutItem；潜行时改为放置方块）。
+	if !player.sneaking && s.toggleTrapdoor(player, w, use, current) {
+		return
+	}
 	placeX := use.X + offset[0]
 	placeY := use.Y + offset[1]
 	placeZ := use.Z + offset[2]
 	if _, ok := world.SectionIndex(placeY); !ok {
 		return
-	}
-	existing := w.BlockAt(placeX, placeY, placeZ)
-	if existing != world.AirBlock && !isWaterState(existing) && !isLavaState(existing) {
-		return // 目标位置不可替换
 	}
 	stack := player.inventory.Get(player.selectedHotbarSlot())
 	if stack.IsEmpty() {
@@ -265,11 +265,22 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if !ok {
 		return
 	}
+	// 半砖：点击同种单半砖时叠成双半砖（放置位置就是被点击的半砖）。
+	if s.tryMergeSlab(player, w, dim, use, current, name) {
+		return
+	}
+	existing := w.BlockAt(placeX, placeY, placeZ)
+	if existing != world.AirBlock && !isWaterState(existing) && !isLavaState(existing) {
+		return // 目标位置不可替换
+	}
 	state, ok := registry.BlockStateIDs[name]
 	if !ok {
 		// 少数物品对应不同名的方块（如红石粉 → 红石线）。
 		if blockName, exists := itemBlockOverrides[name]; exists {
 			state, ok = registry.BlockStateIDs[blockName]
+			if ok {
+				name = blockName
+			}
 		}
 	}
 	if !ok {
@@ -283,6 +294,12 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		if hopperState, ok := orientHopperPlacement(int(use.Direction)); ok {
 			state = hopperState
 		}
+	}
+	// 其他方块的放置形态（台阶/半砖/柱状/朝向/活板门/梯子/火把）。
+	if oriented, _, ok := orientPlacement(name, state, placeYaw, placePitch, use); ok {
+		state = oriented
+	} else {
+		return
 	}
 	if !w.SetBlock(placeX, placeY, placeZ, state) {
 		return

@@ -1,0 +1,439 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
+package main
+
+import (
+	"fmt"
+	"go/format"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// 方块放置形态生成：为“放置时需要按朝向/形态选择状态”的方块生成最小状态子集。
+//
+// 与 block_states_generated.go 不同，这里不保存全部属性（台阶每种有 80 个状态，
+// 全部展开会显著增加启动内存），只保存放置会用到的组合：
+//   - 台阶：half × facing（shape=straight、waterlogged=false）；
+//   - 半砖：type（bottom/top/double，waterlogged=false）；
+//   - 原木/柱状方块：axis；
+//   - 朝向方块：facing（水平 4 向或全向 6 向）；
+//   - 活板门：half × facing（open/powered/waterlogged=false）；
+//   - 墙式火把与梯子：facing（waterlogged=false）。
+//
+// 生成依据 reports/blocks.json 的属性组合；找不到匹配状态时生成器报错
+// （版本升级后属性变化会立即暴露，而不是静默产出错误 ID）。
+//
+// 生成产物：internal/registry/block_placement_generated.go。
+
+// placementFixedProps 是各类朝向方块在放置时的固定属性（其余属性取状态表
+// 最低 ID 状态的基线值，waterlogged 一律取 false）。
+var placementFixedProps = map[string]map[string]string{
+	"minecraft:chest":         {"type": "single"},
+	"minecraft:trapped_chest": {"type": "single"},
+	"minecraft:furnace":       {"lit": "false"},
+	"minecraft:blast_furnace": {"lit": "false"},
+	"minecraft:smoker":        {"lit": "false"},
+	"minecraft:barrel":        {"open": "false"},
+	"minecraft:campfire":      {"lit": "true", "signal_fire": "false"},
+	"minecraft:soul_campfire": {"lit": "true", "signal_fire": "false"},
+	"minecraft:lectern":       {"has_book": "false", "powered": "false"},
+	"minecraft:beehive":       {"honey_level": "0"},
+	"minecraft:bee_nest":      {"honey_level": "0"},
+}
+
+// placementHorizontalBlocks 是使用水平四向 facing 的方块
+// （原版 HorizontalDirectionalBlock 系）。
+var placementHorizontalBlocks = map[string]bool{
+	"minecraft:furnace":        true,
+	"minecraft:blast_furnace":  true,
+	"minecraft:smoker":         true,
+	"minecraft:chest":          true,
+	"minecraft:trapped_chest":  true,
+	"minecraft:ender_chest":    true,
+	"minecraft:carved_pumpkin": true,
+	"minecraft:jack_o_lantern": true,
+	"minecraft:stonecutter":    true,
+	"minecraft:loom":           true,
+	"minecraft:beehive":        true,
+	"minecraft:bee_nest":       true,
+	"minecraft:campfire":       true,
+	"minecraft:soul_campfire":  true,
+	"minecraft:lectern":        true,
+}
+
+// placementVerticalFacingBlocks 是使用全向六向 facing 的方块。
+var placementVerticalFacingBlocks = map[string]bool{
+	"minecraft:barrel": true,
+}
+
+// placementWallTorchBlocks 是墙式火把方块（由地面火把放置时按点击面转换）。
+var placementWallTorchBlocks = map[string]bool{
+	"minecraft:wall_torch":          true,
+	"minecraft:soul_wall_torch":     true,
+	"minecraft:redstone_wall_torch": true,
+}
+
+// placementAxisExcluded 是不参与轴朝向放置的方块（无对应物品，或属性不是
+// 标准六向柱状：下界传送门只有 x/z 两个轴）。
+var placementAxisExcluded = map[string]bool{
+	"minecraft:nether_portal": true,
+}
+
+// placementFacingValues 是 facing 属性按方向索引的取值（0=down … 5=east）。
+var placementFacingValues = []string{"down", "up", "north", "south", "west", "east"}
+
+// placementHorizontalFacingValues 是水平四向的取值（north/south/west/east）。
+var placementHorizontalFacingValues = []string{"north", "south", "west", "east"}
+
+// writePlacementStates 生成放置形态状态表。
+func writePlacementStates(outDir, version string, blocks map[string]blockShapeData) error {
+	stairs := make(map[string][2][4]uint16)
+	slabs := make(map[string][3]uint16)
+	axis := make(map[string][3]uint16)
+	facing := make(map[string][6]uint16)
+	trapdoors := make(map[string][2][4]uint16)
+	trapdoorsOpen := make(map[string][2][4]uint16)
+	faceAttached := make(map[string][3][4]uint16)
+	wallTorches := make(map[string][4]uint16)
+	ladders := make(map[string][4]uint16)
+
+	names := make([]string, 0, len(blocks))
+	for name := range blocks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		data := blocks[name]
+		if len(data.states) == 0 {
+			continue
+		}
+		baseProps := data.states[0].props
+		switch {
+		case strings.HasSuffix(name, "_stairs"):
+			var table [2][4]uint16
+			for half, halfValue := range []string{"bottom", "top"} {
+				for facingIndex, facingValue := range placementHorizontalFacingValues {
+					id, err := placementStateID(data, map[string]string{
+						"half": halfValue, "facing": facingValue, "shape": "straight",
+					})
+					if err != nil {
+						return fmt.Errorf("%s: %w", name, err)
+					}
+					table[half][facingIndex] = id
+				}
+			}
+			stairs[name] = table
+		case strings.HasSuffix(name, "_slab"):
+			var table [3]uint16
+			for i, typeValue := range []string{"bottom", "top", "double"} {
+				id, err := placementStateID(data, map[string]string{"type": typeValue})
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				table[i] = id
+			}
+			slabs[name] = table
+		case strings.HasSuffix(name, "_trapdoor"):
+			var table [2][4]uint16
+			var openTable [2][4]uint16
+			for half, halfValue := range []string{"bottom", "top"} {
+				for facingIndex, facingValue := range placementHorizontalFacingValues {
+					id, err := placementStateID(data, map[string]string{
+						"half": halfValue, "facing": facingValue,
+						"open": "false", "powered": "false",
+					})
+					if err != nil {
+						return fmt.Errorf("%s: %w", name, err)
+					}
+					table[half][facingIndex] = id
+					openID, err := placementStateID(data, map[string]string{
+						"half": halfValue, "facing": facingValue,
+						"open": "true", "powered": "false",
+					})
+					if err != nil {
+						return fmt.Errorf("%s: %w", name, err)
+					}
+					openTable[half][facingIndex] = openID
+				}
+			}
+			trapdoors[name] = table
+			trapdoorsOpen[name] = openTable
+		case name == "minecraft:lever", strings.HasSuffix(name, "_button"):
+			var table [3][4]uint16
+			for faceIndex, faceValue := range []string{"floor", "wall", "ceiling"} {
+				for facingIndex, facingValue := range placementHorizontalFacingValues {
+					id, err := placementStateID(data, map[string]string{
+						"face": faceValue, "facing": facingValue, "powered": "false",
+					})
+					if err != nil {
+						return fmt.Errorf("%s: %w", name, err)
+					}
+					table[faceIndex][facingIndex] = id
+				}
+			}
+			faceAttached[name] = table
+		case placementHorizontalBlocks[name], strings.HasSuffix(name, "_glazed_terracotta"):
+			var table [6]uint16
+			for facingIndex, facingValue := range placementFacingValues {
+				if facingIndex < 2 {
+					continue // 水平方块不使用上下朝向
+				}
+				id, err := placementStateID(data, placementOverrides(name, map[string]string{
+					"facing": facingValue,
+				}))
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				table[facingIndex] = id
+			}
+			facing[name] = table
+		case placementVerticalFacingBlocks[name], strings.HasSuffix(name, "_shulker_box"):
+			var table [6]uint16
+			for facingIndex, facingValue := range placementFacingValues {
+				id, err := placementStateID(data, placementOverrides(name, map[string]string{
+					"facing": facingValue,
+				}))
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				table[facingIndex] = id
+			}
+			facing[name] = table
+		case placementWallTorchBlocks[name]:
+			var table [4]uint16
+			for facingIndex, facingValue := range placementHorizontalFacingValues {
+				id, err := placementStateID(data, map[string]string{"facing": facingValue})
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				table[facingIndex] = id
+			}
+			wallTorches[name] = table
+		case name == "minecraft:ladder":
+			var table [4]uint16
+			for facingIndex, facingValue := range placementHorizontalFacingValues {
+				id, err := placementStateID(data, map[string]string{"facing": facingValue})
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				table[facingIndex] = id
+			}
+			ladders[name] = table
+		default:
+			if placementAxisExcluded[name] || !hasAxisOnly(baseProps) {
+				continue
+			}
+			var table [3]uint16
+			for i, axisValue := range []string{"x", "y", "z"} {
+				id, err := placementStateID(data, map[string]string{"axis": axisValue})
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				table[i] = id
+			}
+			axis[name] = table
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(licenseHeader)
+	fmt.Fprintf(&b, "// Code generated by tools/genregistries from Minecraft %s reports/blocks.json; DO NOT EDIT.\n", version)
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// 放置形态状态表（只含放置会用到的属性组合，见 tools/genregistries/placement.go）。\n")
+	fmt.Fprintf(&b, "\npackage registry\n\n")
+
+	writeStairsTable(&b, stairs)
+	writeSlabsTable(&b, slabs)
+	writeAxisTable(&b, axis)
+	writeFacingTable(&b, facing)
+	writeTrapdoorsTable(&b, "PlacementTrapdoors", "活板门的关闭放置状态", "open=false、powered=false", trapdoors)
+	writeTrapdoorsTable(&b, "PlacementTrapdoorsOpen", "活板门的打开状态", "open=true、powered=false", trapdoorsOpen)
+	writeFaceAttachedTable(&b, faceAttached)
+	writeSimpleFacingTable(&b, "PlacementWallTorches", "墙式火把", wallTorches)
+	writeSimpleFacingTable(&b, "PlacementLadders", "梯子", ladders)
+
+	source := []byte(b.String())
+	formatted, err := format.Source(source)
+	if err != nil {
+		return fmt.Errorf("格式化生成代码：%w（原始内容长度 %d）", err, len(source))
+	}
+	path := filepath.Join(outDir, "block_placement_generated.go")
+	if err := os.WriteFile(path, formatted, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("已生成放置形态表（台阶 %d、半砖 %d、轴 %d、朝向 %d、活板门 %d）\n",
+		len(stairs), len(slabs), len(axis), len(facing), len(trapdoors))
+	return nil
+}
+
+// placementOverrides 合并方块固定属性与本次覆盖。
+func placementOverrides(name string, overrides map[string]string) map[string]string {
+	fixed := placementFixedProps[name]
+	if len(fixed) == 0 {
+		return overrides
+	}
+	merged := make(map[string]string, len(fixed)+len(overrides))
+	for k, v := range fixed {
+		merged[k] = v
+	}
+	for k, v := range overrides {
+		merged[k] = v
+	}
+	return merged
+}
+
+// hasAxisOnly 报告默认属性只包含 axis/waterlogged（柱状方块）。
+func hasAxisOnly(props map[string]string) bool {
+	if _, ok := props["axis"]; !ok {
+		return false
+	}
+	for key := range props {
+		if key != "axis" && key != "waterlogged" {
+			return false
+		}
+	}
+	return true
+}
+
+// placementStateID 返回“基线属性（最低状态 ID）+ 覆盖”对应的状态 ID。
+// waterlogged 在状态 ID 顺序中通常把 true 排在前面，放置时一律取 false。
+func placementStateID(data blockShapeData, overrides map[string]string) (uint16, error) {
+	if len(data.states) == 0 {
+		return 0, fmt.Errorf("没有状态")
+	}
+	want := make(map[string]string, len(data.states[0].props)+len(overrides))
+	for key, value := range data.states[0].props {
+		want[key] = value
+	}
+	if _, ok := want["waterlogged"]; ok {
+		if _, overridden := overrides["waterlogged"]; !overridden {
+			want["waterlogged"] = "false"
+		}
+	}
+	for key, value := range overrides {
+		if _, ok := want[key]; !ok {
+			return 0, fmt.Errorf("缺少属性 %q", key)
+		}
+		want[key] = value
+	}
+	for _, state := range data.states {
+		if len(state.props) != len(want) {
+			continue
+		}
+		match := true
+		for key, value := range want {
+			if state.props[key] != value {
+				match = false
+				break
+			}
+		}
+		if match {
+			return state.id, nil
+		}
+	}
+	return 0, fmt.Errorf("找不到属性组合 %v 的状态", want)
+}
+
+func writeStairsTable(b *strings.Builder, table map[string][2][4]uint16) {
+	b.WriteString("// PlacementStairs 是台阶方块的放置状态：map[方块名][half][facing]。\n")
+	b.WriteString("// half：0=bottom、1=top；facing：0=north、1=south、2=west、3=east。\n")
+	b.WriteString("// 其余属性取默认值（shape=straight、waterlogged=false）。\n")
+	b.WriteString("var PlacementStairs = map[string][2][4]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {{%d, %d, %d, %d}, {%d, %d, %d, %d}},\n", name,
+			states[0][0], states[0][1], states[0][2], states[0][3],
+			states[1][0], states[1][1], states[1][2], states[1][3])
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeSlabsTable(b *strings.Builder, table map[string][3]uint16) {
+	b.WriteString("// PlacementSlabs 是半砖方块的放置状态：map[方块名][type]。\n")
+	b.WriteString("// type：0=bottom、1=top、2=double。\n")
+	b.WriteString("var PlacementSlabs = map[string][3]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {%d, %d, %d},\n", name, states[0], states[1], states[2])
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeAxisTable(b *strings.Builder, table map[string][3]uint16) {
+	b.WriteString("// PlacementAxis 是柱状方块的放置状态：map[方块名][axis]。\n")
+	b.WriteString("// axis：0=x、1=y、2=z。\n")
+	b.WriteString("var PlacementAxis = map[string][3]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {%d, %d, %d},\n", name, states[0], states[1], states[2])
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeFacingTable(b *strings.Builder, table map[string][6]uint16) {
+	b.WriteString("// PlacementFacing 是朝向方块的放置状态：map[方块名][direction]。\n")
+	b.WriteString("// direction：0=down、1=up、2=north、3=south、4=west、5=east。\n")
+	b.WriteString("// 水平四向方块的 0/1 项为 0（不使用）。\n")
+	b.WriteString("var PlacementFacing = map[string][6]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {%d, %d, %d, %d, %d, %d},\n", name,
+			states[0], states[1], states[2], states[3], states[4], states[5])
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeTrapdoorsTable(b *strings.Builder, varName, title, extra string, table map[string][2][4]uint16) {
+	fmt.Fprintf(b, "// %s 是%s：map[方块名][half][facing]。\n", varName, title)
+	b.WriteString("// half：0=bottom、1=top；facing：0=north、1=south、2=west、3=east。\n")
+	fmt.Fprintf(b, "// 其余属性为 %s、waterlogged=false。\n", extra)
+	fmt.Fprintf(b, "var %s = map[string][2][4]uint16{\n", varName)
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {{%d, %d, %d, %d}, {%d, %d, %d, %d}},\n", name,
+			states[0][0], states[0][1], states[0][2], states[0][3],
+			states[1][0], states[1][1], states[1][2], states[1][3])
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeFaceAttachedTable(b *strings.Builder, table map[string][3][4]uint16) {
+	b.WriteString("// PlacementFaceAttached 是拉杆/按钮的放置状态：map[方块名][face][facing]。\n")
+	b.WriteString("// face：0=floor、1=wall、2=ceiling；facing：0=north、1=south、2=west、3=east。\n")
+	b.WriteString("// 其余属性取默认值（powered=false）。\n")
+	b.WriteString("var PlacementFaceAttached = map[string][3][4]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {{%d, %d, %d, %d}, {%d, %d, %d, %d}, {%d, %d, %d, %d}},\n", name,
+			states[0][0], states[0][1], states[0][2], states[0][3],
+			states[1][0], states[1][1], states[1][2], states[1][3],
+			states[2][0], states[2][1], states[2][2], states[2][3])
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeSimpleFacingTable(b *strings.Builder, varName, comment string, table map[string][4]uint16) {
+	fmt.Fprintf(b, "// %s 是%s的放置状态：map[方块名][facing]。\n", varName, comment)
+	b.WriteString("// facing：0=north、1=south、2=west、3=east。\n")
+	fmt.Fprintf(b, "var %s = map[string][4]uint16{\n", varName)
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {%d, %d, %d, %d},\n", name,
+			states[0], states[1], states[2], states[3])
+	}
+	b.WriteString("}\n\n")
+}
+
+func sortedNames[T any](m map[string]T) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}

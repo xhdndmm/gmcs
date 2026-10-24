@@ -603,6 +603,33 @@
     `BenchmarkCropTick256`（16×16 农田），实测见
     [PERFORMANCE.md](PERFORMANCE.md) 3.33。
 
+- [x] 方块放置形态批次：
+  - 台阶（`StairBlock.getStateForPlacement`）：facing = 玩家水平朝向，
+    half 由点击面/点击高度决定（点击顶面或侧面低处 → bottom）；
+  - 半砖（`SlabBlock.getStateForPlacement`）：type 判定同上；点击同种单半砖
+    时叠成双半砖（原版“单半砖可替换”，放置位置即被点击的半砖）；
+  - 柱状方块（`RotatedPillarBlock`）：axis = 点击面的轴（原木/木头/菌柄/
+    菌核/玄武岩/深板岩/锁链/干草块等 67 个方块）；
+  - 朝向方块（`HorizontalDirectionalBlock`）：facing = 水平朝向的反方向
+    （箱子/陷阱箱/末影箱/熔炉/烟熏炉/高炉/南瓜灯/织布机/切石机/蜂箱/营火/
+    讲台/带釉陶瓦）；木桶/潜影盒使用六向 facing（含上下）；
+  - 活板门（`TrapDoorBlock`）：facing = 水平朝向的反方向、half 由点击面
+    决定；右键开合（`useWithoutItem`，保留 facing/half/powered）；
+  - 梯子（`LadderBlock`）：只能贴在水平面，facing = 点击面的反方向；
+  - 火把（`WallOrFloorItem`）：点击顶面放地面火把、点击侧面放墙式变体
+    （facing = 点击面的反方向）、点击底面不放置；
+  - 拉杆/按钮（`FaceAttachedHorizontalDirectionalBlock`）：按点击面决定
+    face（floor/wall/ceiling）与 facing（顶面/底面用玩家水平朝向，侧面用
+    点击面的反方向）；墙式附着方向直接决定红石供电目标（`connectedDirection`）；
+  - 新增生成器 `tools/genregistries/placement.go`：只生成放置会用到的属性
+    组合（台阶 58、半砖 62、轴 67、朝向 48、活板门 21），找不到匹配状态时
+    生成失败（版本升级后属性变化会立即暴露）；
+  - 新增测试：`TestOrientPlacementStairs`/`Slab`/`Axis`/`Facing`/`Trapdoor`/
+    `Ladder`/`Torch`/`FaceAttached`、`TestPlaceChestFacing`、`TestPlaceLogAxis`、
+    `TestPlaceStairsOrientation`、`TestMergeSlabIntoDouble`、
+    `TestToggleTrapdoor`、`TestPlaceTorchOnWall`、`TestPlaceLeverOnGround`；
+    registry 侧 `TestPlacementTablesConsistent`（状态 ID 必须属于对应方块）。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -654,7 +681,12 @@
   实现，双格植物破坏任一半只结算一次并移除另一半；仍未覆盖生物头颅等
   极少见掉落，爆炸仍无掉落；
   无出生点保护（mayInteract）与冒险模式 mayBuild；
-  放置仅支持普通方块物品（带数据组件的物品不支持）
+  放置仅支持普通方块物品（带数据组件的物品不支持）；
+  放置形态（台阶/半砖/柱状/朝向方块/活板门/梯子/火把/拉杆/按钮）已按原版实现
+  （见上“方块放置形态批次”），但仍存差异：台阶不做邻居形状更新（shape 恒为
+  straight，拐角台阶客户端显示为直台阶）、含水状态一律 false、活板门放置时
+  不检查红石供电、门/床/告示牌/栅栏门的放置朝向尚未实现（门与栅栏门也还没有
+  右键开合）
 - 容器限制：窗口距离已按原版实现（眼睛位置到方块碰撞盒 < 方块交互距离属性
   4.5 + 4.0 = 8.5，即 `Container.stillValidBlockEntity` 与
   `AbstractContainerMenu.stillValid` 的 `isWithinBlockInteractionRange(pos, 4.0)`）；
