@@ -830,6 +830,20 @@
     `TestFenceGateTogglePlaysSound`、`TestDoorTogglePlaysSound`、
     `TestRedstoneOpenablePlaysSound`。
 
+- [x] 栅栏门 in_wall 批次：
+  - 对照 1.21.11 `FenceGateBlock.getStateForPlacement` 与 `updateShape`（javap 字节码）：
+    `in_wall` 由**沿 facing 轴的前后两个邻居**是否为 `minecraft:walls` 标签方块决定
+    （不是垂直方向），放置时计算、邻块变化时重新计算，且不影响 open/powered；
+  - 生成器：`PlacementFenceGates`/`Open`/`Powered` 从 `[facing]` 扩展为
+    `[inWall][facing]`（每方块 24 个状态，整体表仍小于 1 KiB），
+    registry 测试新增“in_wall 必须区分状态”断言；
+  - 服务端：`placeFenceGate` 按邻居墙选择状态；`refreshOpenable` 对栅栏门同时
+    维护 in_wall 与 open/powered（邻居区块未加载时保留原值，避免跨区块边界误判）；
+    开合音效只在开合变化时播放，in_wall 变化静默；
+  - 新增测试：`TestFenceGateInWallOnPlacement`、
+    `TestFenceGateInWallUpdatesOnNeighborChange`、
+    `TestFenceGateInWallIgnoresPerpendicularWalls`。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -896,8 +910,8 @@
   放置形态（台阶/半砖/柱状/朝向方块/活板门/梯子/火把/拉杆/按钮/门/栅栏门）
   已按原版实现（见上“方块放置形态批次”），但仍存差异：台阶不做邻居形状更新
   （shape 恒为 straight，拐角台阶客户端显示为直台阶）、含水状态一律 false、
-  栅栏门的 in_wall 恒为 false、门的铰链未实现邻居双门/固体判定（仅按点击
-  位置，双开门可能同向开启）、床/告示牌的放置朝向尚未实现；
+  门的铰链未实现邻居双门/固体判定（仅按点击位置，双开门可能同向开启）、
+  床/告示牌的放置朝向尚未实现；
   可开合方块已响应红石信号（门/活板门/栅栏门，铁门只能由红石开合）
 
 - 容器限制：窗口距离已按原版实现（眼睛位置到方块碰撞盒 < 方块交互距离属性

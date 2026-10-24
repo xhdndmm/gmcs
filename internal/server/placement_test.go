@@ -569,7 +569,7 @@ func TestPlaceFenceGateFacing(t *testing.T) {
 	_, _, _, yaw, _ := player.playerPosition()
 
 	sendUseItemOn(t, conn, x, groundY, z, 1)
-	want := registry.PlacementFenceGates["minecraft:oak_fence_gate"][horizontalFacingIndex(yawToFacing(yaw))]
+	want := registry.PlacementFenceGates["minecraft:oak_fence_gate"][0][horizontalFacingIndex(yawToFacing(yaw))]
 	waitFor(t, func() bool {
 		return instance.testWorld().BlockAt(x, groundY+1, z) == want
 	}, "栅栏门应按玩家朝向放置")
@@ -585,8 +585,8 @@ func TestToggleFenceGate(t *testing.T) {
 
 	x, groundY, z := farmTestSpot(t, instance)
 	w := instance.testWorld()
-	closed := registry.PlacementFenceGates["minecraft:oak_fence_gate"][0]
-	open := registry.PlacementFenceGatesOpen["minecraft:oak_fence_gate"][0]
+	closed := registry.PlacementFenceGates["minecraft:oak_fence_gate"][0][0]
+	open := registry.PlacementFenceGatesOpen["minecraft:oak_fence_gate"][0][0]
 	w.SetBlock(x, groundY, z, closed)
 
 	sendUseItemOn(t, conn, x, groundY, z, 1)
@@ -682,7 +682,7 @@ func TestRedstoneOpensFenceGate(t *testing.T) {
 			w.SetBlock(baseX+dx, y+dy, baseZ, world.AirBlock)
 		}
 	}
-	closed := registry.PlacementFenceGates["minecraft:oak_fence_gate"][0]
+	closed := registry.PlacementFenceGates["minecraft:oak_fence_gate"][0][0]
 	w.SetBlock(baseX+1, y, baseZ, closed)
 	lever := placeState(t, instance, baseX, y, baseZ, leverName,
 		map[string]string{"face": "floor", "facing": "north", "powered": "false"})
@@ -690,7 +690,7 @@ func TestRedstoneOpensFenceGate(t *testing.T) {
 	if !instance.handleRedstoneUse(w, baseX, y, baseZ, lever) {
 		t.Fatal("handleRedstoneUse(lever) = false, want true")
 	}
-	powered := registry.PlacementFenceGatesPowered["minecraft:oak_fence_gate"][0]
+	powered := registry.PlacementFenceGatesPowered["minecraft:oak_fence_gate"][0][0]
 	if got := w.BlockAt(baseX+1, y, baseZ); got != powered {
 		t.Fatalf("通电后栅栏门应为打开状态：%d want %d", got, powered)
 	}

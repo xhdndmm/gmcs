@@ -102,9 +102,9 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 	doorsOpen := make(map[string][2][4][2]uint16)
 	doorsPowered := make(map[string][2][4][2]uint16)
 	trapdoorsPowered := make(map[string][2][4]uint16)
-	gates := make(map[string][4]uint16)
-	gatesOpen := make(map[string][4]uint16)
-	gatesPowered := make(map[string][4]uint16)
+	gates := make(map[string][2][4]uint16)
+	gatesOpen := make(map[string][2][4]uint16)
+	gatesPowered := make(map[string][2][4]uint16)
 	wallTorches := make(map[string][4]uint16)
 	ladders := make(map[string][4]uint16)
 
@@ -183,30 +183,33 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 			doorsOpen[name] = openTable
 			doorsPowered[name] = poweredTable
 		case strings.HasSuffix(name, "_fence_gate"):
-			var table [4]uint16
-			var openTable [4]uint16
-			var poweredTable [4]uint16
-			for facingIndex, facingValue := range placementHorizontalFacingValues {
-				for variant, target := range []map[string]string{
-					{"open": "false", "powered": "false", "in_wall": "false"},
-					{"open": "true", "powered": "false", "in_wall": "false"},
-					{"open": "true", "powered": "true", "in_wall": "false"},
-				} {
-					props := map[string]string{"facing": facingValue}
-					for k, v := range target {
-						props[k] = v
-					}
-					id, err := placementStateID(data, props)
-					if err != nil {
-						return fmt.Errorf("%s: %w", name, err)
-					}
-					switch variant {
-					case 0:
-						table[facingIndex] = id
-					case 1:
-						openTable[facingIndex] = id
-					default:
-						poweredTable[facingIndex] = id
+			// in_wall：0=false、1=true（沿 facing 轴的两侧邻居是否为墙）。
+			var table [2][4]uint16
+			var openTable [2][4]uint16
+			var poweredTable [2][4]uint16
+			for inWall, inWallValue := range []string{"false", "true"} {
+				for facingIndex, facingValue := range placementHorizontalFacingValues {
+					for variant, target := range []map[string]string{
+						{"open": "false", "powered": "false"},
+						{"open": "true", "powered": "false"},
+						{"open": "true", "powered": "true"},
+					} {
+						props := map[string]string{"facing": facingValue, "in_wall": inWallValue}
+						for k, v := range target {
+							props[k] = v
+						}
+						id, err := placementStateID(data, props)
+						if err != nil {
+							return fmt.Errorf("%s: %w", name, err)
+						}
+						switch variant {
+						case 0:
+							table[inWall][facingIndex] = id
+						case 1:
+							openTable[inWall][facingIndex] = id
+						default:
+							poweredTable[inWall][facingIndex] = id
+						}
 					}
 				}
 			}
@@ -342,9 +345,9 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 	writeDoorsTable(&b, "PlacementDoors", "门的关闭放置状态", "open=false、powered=false", doors)
 	writeDoorsTable(&b, "PlacementDoorsOpen", "门的打开状态", "open=true、powered=false", doorsOpen)
 	writeDoorsTable(&b, "PlacementDoorsPowered", "门的通电打开状态", "open=true、powered=true", doorsPowered)
-	writeGatesTable(&b, "PlacementFenceGates", "栅栏门的关闭放置状态", "open=false、powered=false、in_wall=false", gates)
-	writeGatesTable(&b, "PlacementFenceGatesOpen", "栅栏门的打开状态", "open=true、powered=false、in_wall=false", gatesOpen)
-	writeGatesTable(&b, "PlacementFenceGatesPowered", "栅栏门的通电打开状态", "open=true、powered=true、in_wall=false", gatesPowered)
+	writeGatesTable(&b, "PlacementFenceGates", "栅栏门的关闭放置状态", "open=false、powered=false", gates)
+	writeGatesTable(&b, "PlacementFenceGatesOpen", "栅栏门的打开状态", "open=true、powered=false", gatesOpen)
+	writeGatesTable(&b, "PlacementFenceGatesPowered", "栅栏门的通电打开状态", "open=true、powered=true", gatesPowered)
 	writeFaceAttachedTable(&b, faceAttached)
 	writeSimpleFacingTable(&b, "PlacementWallTorches", "墙式火把", wallTorches)
 	writeSimpleFacingTable(&b, "PlacementLadders", "梯子", ladders)
@@ -494,15 +497,17 @@ func writeTrapdoorsTable(b *strings.Builder, varName, title, extra string, table
 	b.WriteString("}\n\n")
 }
 
-func writeGatesTable(b *strings.Builder, varName, title, extra string, table map[string][4]uint16) {
-	fmt.Fprintf(b, "// %s 是%s：map[方块名][facing]。\n", varName, title)
+func writeGatesTable(b *strings.Builder, varName, title, extra string, table map[string][2][4]uint16) {
+	fmt.Fprintf(b, "// %s 是%s：map[方块名][inWall][facing]。\n", varName, title)
+	b.WriteString("// inWall：0=两侧无墙、1=沿 facing 轴的一侧有墙（仅影响外观与碰撞盒）；\n")
 	b.WriteString("// facing：0=north、1=south、2=west、3=east。\n")
 	fmt.Fprintf(b, "// 其余属性为 %s。\n", extra)
-	fmt.Fprintf(b, "var %s = map[string][4]uint16{\n", varName)
+	fmt.Fprintf(b, "var %s = map[string][2][4]uint16{\n", varName)
 	for _, name := range sortedNames(table) {
 		states := table[name]
-		fmt.Fprintf(b, "\t%q: {%d, %d, %d, %d},\n", name,
-			states[0], states[1], states[2], states[3])
+		fmt.Fprintf(b, "\t%q: {{%d, %d, %d, %d}, {%d, %d, %d, %d}},\n", name,
+			states[0][0], states[0][1], states[0][2], states[0][3],
+			states[1][0], states[1][1], states[1][2], states[1][3])
 	}
 	b.WriteString("}\n\n")
 }

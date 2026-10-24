@@ -112,7 +112,7 @@ func TestFenceGateTogglePlaysSound(t *testing.T) {
 	if !ok {
 		t.Fatal("缺少栅栏门放置状态表")
 	}
-	state := closed[0]
+	state := closed[0][0]
 	w.SetBlock(x, groundY+1, z, state)
 
 	sendUseItemOn(t, conn, x, groundY+1, z, 1)
@@ -167,19 +167,19 @@ func TestRedstoneOpenablePlaysSound(t *testing.T) {
 		t.Fatal("缺少栅栏门放置状态表")
 	}
 	pos := [3]int{x, groundY + 1, z}
-	w.SetBlock(pos[0], pos[1], pos[2], closed[0])
+	w.SetBlock(pos[0], pos[1], pos[2], closed[0][0])
 	w.SetBlock(x+1, pos[1], z, redstone)
 	instance.broadcastBlockUpdate(world.DimensionOverworld, x+1, pos[1], z, int32(redstone))
 
 	// 红石块相邻 → 栅栏门应被打开；没有玩家在线时音效包被丢弃，
 	// 因此这里只断言状态变化与音效 ID 已解析（音效广播由上面的 e2e 用例覆盖）。
-	instance.refreshOpenable(w, world.DimensionOverworld, pos, closed[0])
+	instance.refreshOpenable(w, world.DimensionOverworld, pos, closed[0][0])
 	powered, ok := registry.PlacementFenceGatesPowered["minecraft:oak_fence_gate"]
 	if !ok {
 		t.Fatal("缺少栅栏门通电状态表")
 	}
-	if got := w.BlockAt(pos[0], pos[1], pos[2]); got != powered[0] {
-		t.Fatalf("红石未打开栅栏门：state=%d want %d", got, powered[0])
+	if got := w.BlockAt(pos[0], pos[1], pos[2]); got != powered[0][0] {
+		t.Fatalf("红石未打开栅栏门：state=%d want %d", got, powered[0][0])
 	}
 	if instance.soundFenceGateOpen == 0 {
 		t.Fatal("栅栏门音效未解析，红石开合将静默")

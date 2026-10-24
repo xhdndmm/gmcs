@@ -123,14 +123,19 @@ func TestPlacementTablesConsistent(t *testing.T) {
 	}
 	for _, gates := range []struct {
 		name  string
-		table map[string][4]uint16
+		table map[string][2][4]uint16
 	}{
 		{"PlacementFenceGates", PlacementFenceGates},
 		{"PlacementFenceGatesOpen", PlacementFenceGatesOpen},
 		{"PlacementFenceGatesPowered", PlacementFenceGatesPowered},
 	} {
 		for name, table := range gates.table {
-			check(gates.name, table[:], name)
+			check(gates.name, table[0][:], name)
+			check(gates.name, table[1][:], name)
+			// in_wall 必须真正区分状态（否则放置/邻块更新会写回同一状态）。
+			if table[0] == table[1] {
+				t.Fatalf("%s: %s 的 in_wall 状态相同", gates.name, name)
+			}
 		}
 	}
 

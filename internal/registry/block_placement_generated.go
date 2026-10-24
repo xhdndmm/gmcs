@@ -427,58 +427,61 @@ var PlacementDoorsPowered = map[string][2][4][2]uint16{
 	"minecraft:weathered_copper_door":       {{{26021, 26025}, {26037, 26041}, {26053, 26057}, {26069, 26073}}, {{26013, 26017}, {26029, 26033}, {26045, 26049}, {26061, 26065}}},
 }
 
-// PlacementFenceGates 是栅栏门的关闭放置状态：map[方块名][facing]。
+// PlacementFenceGates 是栅栏门的关闭放置状态：map[方块名][inWall][facing]。
+// inWall：0=两侧无墙、1=沿 facing 轴的一侧有墙（仅影响外观与碰撞盒）；
 // facing：0=north、1=south、2=west、3=east。
-// 其余属性为 open=false、powered=false、in_wall=false。
-var PlacementFenceGates = map[string][4]uint16{
-	"minecraft:acacia_fence_gate":   {13385, 13393, 13401, 13409},
-	"minecraft:bamboo_fence_gate":   {13545, 13553, 13561, 13569},
-	"minecraft:birch_fence_gate":    {13321, 13329, 13337, 13345},
-	"minecraft:cherry_fence_gate":   {13417, 13425, 13433, 13441},
-	"minecraft:crimson_fence_gate":  {21047, 21055, 21063, 21071},
-	"minecraft:dark_oak_fence_gate": {13449, 13457, 13465, 13473},
-	"minecraft:jungle_fence_gate":   {13353, 13361, 13369, 13377},
-	"minecraft:mangrove_fence_gate": {13513, 13521, 13529, 13537},
-	"minecraft:oak_fence_gate":      {8452, 8460, 8468, 8476},
-	"minecraft:pale_oak_fence_gate": {13481, 13489, 13497, 13505},
-	"minecraft:spruce_fence_gate":   {13289, 13297, 13305, 13313},
-	"minecraft:warped_fence_gate":   {21079, 21087, 21095, 21103},
+// 其余属性为 open=false、powered=false。
+var PlacementFenceGates = map[string][2][4]uint16{
+	"minecraft:acacia_fence_gate":   {{13385, 13393, 13401, 13409}, {13381, 13389, 13397, 13405}},
+	"minecraft:bamboo_fence_gate":   {{13545, 13553, 13561, 13569}, {13541, 13549, 13557, 13565}},
+	"minecraft:birch_fence_gate":    {{13321, 13329, 13337, 13345}, {13317, 13325, 13333, 13341}},
+	"minecraft:cherry_fence_gate":   {{13417, 13425, 13433, 13441}, {13413, 13421, 13429, 13437}},
+	"minecraft:crimson_fence_gate":  {{21047, 21055, 21063, 21071}, {21043, 21051, 21059, 21067}},
+	"minecraft:dark_oak_fence_gate": {{13449, 13457, 13465, 13473}, {13445, 13453, 13461, 13469}},
+	"minecraft:jungle_fence_gate":   {{13353, 13361, 13369, 13377}, {13349, 13357, 13365, 13373}},
+	"minecraft:mangrove_fence_gate": {{13513, 13521, 13529, 13537}, {13509, 13517, 13525, 13533}},
+	"minecraft:oak_fence_gate":      {{8452, 8460, 8468, 8476}, {8448, 8456, 8464, 8472}},
+	"minecraft:pale_oak_fence_gate": {{13481, 13489, 13497, 13505}, {13477, 13485, 13493, 13501}},
+	"minecraft:spruce_fence_gate":   {{13289, 13297, 13305, 13313}, {13285, 13293, 13301, 13309}},
+	"minecraft:warped_fence_gate":   {{21079, 21087, 21095, 21103}, {21075, 21083, 21091, 21099}},
 }
 
-// PlacementFenceGatesOpen 是栅栏门的打开状态：map[方块名][facing]。
+// PlacementFenceGatesOpen 是栅栏门的打开状态：map[方块名][inWall][facing]。
+// inWall：0=两侧无墙、1=沿 facing 轴的一侧有墙（仅影响外观与碰撞盒）；
 // facing：0=north、1=south、2=west、3=east。
-// 其余属性为 open=true、powered=false、in_wall=false。
-var PlacementFenceGatesOpen = map[string][4]uint16{
-	"minecraft:acacia_fence_gate":   {13383, 13391, 13399, 13407},
-	"minecraft:bamboo_fence_gate":   {13543, 13551, 13559, 13567},
-	"minecraft:birch_fence_gate":    {13319, 13327, 13335, 13343},
-	"minecraft:cherry_fence_gate":   {13415, 13423, 13431, 13439},
-	"minecraft:crimson_fence_gate":  {21045, 21053, 21061, 21069},
-	"minecraft:dark_oak_fence_gate": {13447, 13455, 13463, 13471},
-	"minecraft:jungle_fence_gate":   {13351, 13359, 13367, 13375},
-	"minecraft:mangrove_fence_gate": {13511, 13519, 13527, 13535},
-	"minecraft:oak_fence_gate":      {8450, 8458, 8466, 8474},
-	"minecraft:pale_oak_fence_gate": {13479, 13487, 13495, 13503},
-	"minecraft:spruce_fence_gate":   {13287, 13295, 13303, 13311},
-	"minecraft:warped_fence_gate":   {21077, 21085, 21093, 21101},
+// 其余属性为 open=true、powered=false。
+var PlacementFenceGatesOpen = map[string][2][4]uint16{
+	"minecraft:acacia_fence_gate":   {{13383, 13391, 13399, 13407}, {13379, 13387, 13395, 13403}},
+	"minecraft:bamboo_fence_gate":   {{13543, 13551, 13559, 13567}, {13539, 13547, 13555, 13563}},
+	"minecraft:birch_fence_gate":    {{13319, 13327, 13335, 13343}, {13315, 13323, 13331, 13339}},
+	"minecraft:cherry_fence_gate":   {{13415, 13423, 13431, 13439}, {13411, 13419, 13427, 13435}},
+	"minecraft:crimson_fence_gate":  {{21045, 21053, 21061, 21069}, {21041, 21049, 21057, 21065}},
+	"minecraft:dark_oak_fence_gate": {{13447, 13455, 13463, 13471}, {13443, 13451, 13459, 13467}},
+	"minecraft:jungle_fence_gate":   {{13351, 13359, 13367, 13375}, {13347, 13355, 13363, 13371}},
+	"minecraft:mangrove_fence_gate": {{13511, 13519, 13527, 13535}, {13507, 13515, 13523, 13531}},
+	"minecraft:oak_fence_gate":      {{8450, 8458, 8466, 8474}, {8446, 8454, 8462, 8470}},
+	"minecraft:pale_oak_fence_gate": {{13479, 13487, 13495, 13503}, {13475, 13483, 13491, 13499}},
+	"minecraft:spruce_fence_gate":   {{13287, 13295, 13303, 13311}, {13283, 13291, 13299, 13307}},
+	"minecraft:warped_fence_gate":   {{21077, 21085, 21093, 21101}, {21073, 21081, 21089, 21097}},
 }
 
-// PlacementFenceGatesPowered 是栅栏门的通电打开状态：map[方块名][facing]。
+// PlacementFenceGatesPowered 是栅栏门的通电打开状态：map[方块名][inWall][facing]。
+// inWall：0=两侧无墙、1=沿 facing 轴的一侧有墙（仅影响外观与碰撞盒）；
 // facing：0=north、1=south、2=west、3=east。
-// 其余属性为 open=true、powered=true、in_wall=false。
-var PlacementFenceGatesPowered = map[string][4]uint16{
-	"minecraft:acacia_fence_gate":   {13382, 13390, 13398, 13406},
-	"minecraft:bamboo_fence_gate":   {13542, 13550, 13558, 13566},
-	"minecraft:birch_fence_gate":    {13318, 13326, 13334, 13342},
-	"minecraft:cherry_fence_gate":   {13414, 13422, 13430, 13438},
-	"minecraft:crimson_fence_gate":  {21044, 21052, 21060, 21068},
-	"minecraft:dark_oak_fence_gate": {13446, 13454, 13462, 13470},
-	"minecraft:jungle_fence_gate":   {13350, 13358, 13366, 13374},
-	"minecraft:mangrove_fence_gate": {13510, 13518, 13526, 13534},
-	"minecraft:oak_fence_gate":      {8449, 8457, 8465, 8473},
-	"minecraft:pale_oak_fence_gate": {13478, 13486, 13494, 13502},
-	"minecraft:spruce_fence_gate":   {13286, 13294, 13302, 13310},
-	"minecraft:warped_fence_gate":   {21076, 21084, 21092, 21100},
+// 其余属性为 open=true、powered=true。
+var PlacementFenceGatesPowered = map[string][2][4]uint16{
+	"minecraft:acacia_fence_gate":   {{13382, 13390, 13398, 13406}, {13378, 13386, 13394, 13402}},
+	"minecraft:bamboo_fence_gate":   {{13542, 13550, 13558, 13566}, {13538, 13546, 13554, 13562}},
+	"minecraft:birch_fence_gate":    {{13318, 13326, 13334, 13342}, {13314, 13322, 13330, 13338}},
+	"minecraft:cherry_fence_gate":   {{13414, 13422, 13430, 13438}, {13410, 13418, 13426, 13434}},
+	"minecraft:crimson_fence_gate":  {{21044, 21052, 21060, 21068}, {21040, 21048, 21056, 21064}},
+	"minecraft:dark_oak_fence_gate": {{13446, 13454, 13462, 13470}, {13442, 13450, 13458, 13466}},
+	"minecraft:jungle_fence_gate":   {{13350, 13358, 13366, 13374}, {13346, 13354, 13362, 13370}},
+	"minecraft:mangrove_fence_gate": {{13510, 13518, 13526, 13534}, {13506, 13514, 13522, 13530}},
+	"minecraft:oak_fence_gate":      {{8449, 8457, 8465, 8473}, {8445, 8453, 8461, 8469}},
+	"minecraft:pale_oak_fence_gate": {{13478, 13486, 13494, 13502}, {13474, 13482, 13490, 13498}},
+	"minecraft:spruce_fence_gate":   {{13286, 13294, 13302, 13310}, {13282, 13290, 13298, 13306}},
+	"minecraft:warped_fence_gate":   {{21076, 21084, 21092, 21100}, {21072, 21080, 21088, 21096}},
 }
 
 // PlacementFaceAttached 是拉杆/按钮的放置状态：map[方块名][face][facing]。
