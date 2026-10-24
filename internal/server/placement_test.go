@@ -554,3 +554,144 @@ func TestIronDoorNotToggledByHand(t *testing.T) {
 		t.Fatalf("铁门不应被右键打开：state=%d", state)
 	}
 }
+
+// TestPlaceFenceGateFacing 验证栅栏门按玩家水平朝向放置（未通电为关闭）。
+func TestPlaceFenceGateFacing(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "GatePlacer")
+	defer conn.Close()
+
+	x, groundY, z := farmTestSpot(t, instance)
+	player := activeSession(t, instance, "GatePlacer")
+	player.inventory.Set(item.SlotHotbarStart, testStack(t, "minecraft:oak_fence_gate", 1))
+	_, _, _, yaw, _ := player.playerPosition()
+
+	sendUseItemOn(t, conn, x, groundY, z, 1)
+	want := registry.PlacementFenceGates["minecraft:oak_fence_gate"][horizontalFacingIndex(yawToFacing(yaw))]
+	waitFor(t, func() bool {
+		return instance.testWorld().BlockAt(x, groundY+1, z) == want
+	}, "栅栏门应按玩家朝向放置")
+}
+
+// TestToggleFenceGate 验证右键开合栅栏门。
+func TestToggleFenceGate(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "GateUser")
+	defer conn.Close()
+
+	x, groundY, z := farmTestSpot(t, instance)
+	w := instance.testWorld()
+	closed := registry.PlacementFenceGates["minecraft:oak_fence_gate"][0]
+	open := registry.PlacementFenceGatesOpen["minecraft:oak_fence_gate"][0]
+	w.SetBlock(x, groundY, z, closed)
+
+	sendUseItemOn(t, conn, x, groundY, z, 1)
+	waitFor(t, func() bool { return w.BlockAt(x, groundY, z) == open }, "右键应打开栅栏门")
+	sendUseItemOn(t, conn, x, groundY, z, 1)
+	waitFor(t, func() bool { return w.BlockAt(x, groundY, z) == closed }, "再次右键应关闭栅栏门")
+}
+
+// TestRedstoneOpensTrapdoor 验证红石信号开合活板门。
+func TestRedstoneOpensTrapdoor(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "TrapdoorRedstone")
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	w := instance.testWorld()
+	baseX, baseY, baseZ := redstoneBase(instance)
+	y := baseY + 1
+	for dx := 0; dx <= 1; dx++ {
+		for dy := 0; dy <= 1; dy++ {
+			w.SetBlock(baseX+dx, y+dy, baseZ, world.AirBlock)
+		}
+	}
+	closed := registry.PlacementTrapdoors["minecraft:oak_trapdoor"][0][0]
+	w.SetBlock(baseX+1, y, baseZ, closed)
+	lever := placeState(t, instance, baseX, y, baseZ, leverName,
+		map[string]string{"face": "floor", "facing": "north", "powered": "false"})
+
+	if !instance.handleRedstoneUse(w, baseX, y, baseZ, lever) {
+		t.Fatal("handleRedstoneUse(lever) = false, want true")
+	}
+	powered := registry.PlacementTrapdoorsPowered["minecraft:oak_trapdoor"][0][0]
+	if got := w.BlockAt(baseX+1, y, baseZ); got != powered {
+		t.Fatalf("通电后活板门应为打开状态：%d want %d", got, powered)
+	}
+	current := w.BlockAt(baseX, y, baseZ)
+	if !instance.handleRedstoneUse(w, baseX, y, baseZ, current) {
+		t.Fatal("handleRedstoneUse(lever off) = false, want true")
+	}
+	if got := w.BlockAt(baseX+1, y, baseZ); got != closed {
+		t.Fatalf("断电后活板门应关闭：%d want %d", got, closed)
+	}
+}
+
+// TestRedstoneOpensDoor 验证红石信号同时开合门的上下两格。
+func TestRedstoneOpensDoor(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "DoorRedstone")
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	w := instance.testWorld()
+	baseX, baseY, baseZ := redstoneBase(instance)
+	y := baseY + 1
+	for dx := 0; dx <= 1; dx++ {
+		for dy := 0; dy <= 2; dy++ {
+			w.SetBlock(baseX+dx, y+dy, baseZ, world.AirBlock)
+		}
+	}
+	closed := registry.PlacementDoors["minecraft:oak_door"]
+	w.SetBlock(baseX+1, y, baseZ, closed[0][0][0])
+	w.SetBlock(baseX+1, y+1, baseZ, closed[1][0][0])
+	lever := placeState(t, instance, baseX, y, baseZ, leverName,
+		map[string]string{"face": "floor", "facing": "north", "powered": "false"})
+
+	if !instance.handleRedstoneUse(w, baseX, y, baseZ, lever) {
+		t.Fatal("handleRedstoneUse(lever) = false, want true")
+	}
+	powered := registry.PlacementDoorsPowered["minecraft:oak_door"]
+	if got := w.BlockAt(baseX+1, y, baseZ); got != powered[0][0][0] {
+		t.Fatalf("通电后门下半格应为打开状态：%d want %d", got, powered[0][0][0])
+	}
+	if got := w.BlockAt(baseX+1, y+1, baseZ); got != powered[1][0][0] {
+		t.Fatalf("通电后门上半格应同步打开：%d want %d", got, powered[1][0][0])
+	}
+}
+
+// TestRedstoneOpensFenceGate 验证红石信号开合栅栏门。
+func TestRedstoneOpensFenceGate(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, _ := joinServer(t, cfg, "GateRedstone")
+	defer instance.worldFor(world.DimensionOverworld).Close()
+
+	w := instance.testWorld()
+	baseX, baseY, baseZ := redstoneBase(instance)
+	y := baseY + 1
+	for dx := 0; dx <= 1; dx++ {
+		for dy := 0; dy <= 1; dy++ {
+			w.SetBlock(baseX+dx, y+dy, baseZ, world.AirBlock)
+		}
+	}
+	closed := registry.PlacementFenceGates["minecraft:oak_fence_gate"][0]
+	w.SetBlock(baseX+1, y, baseZ, closed)
+	lever := placeState(t, instance, baseX, y, baseZ, leverName,
+		map[string]string{"face": "floor", "facing": "north", "powered": "false"})
+
+	if !instance.handleRedstoneUse(w, baseX, y, baseZ, lever) {
+		t.Fatal("handleRedstoneUse(lever) = false, want true")
+	}
+	powered := registry.PlacementFenceGatesPowered["minecraft:oak_fence_gate"][0]
+	if got := w.BlockAt(baseX+1, y, baseZ); got != powered {
+		t.Fatalf("通电后栅栏门应为打开状态：%d want %d", got, powered)
+	}
+}

@@ -255,6 +255,10 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if !player.sneaking && s.toggleDoor(player, w, use, current) {
 		return
 	}
+	// 栅栏门：右键开合。
+	if !player.sneaking && s.toggleFenceGate(player, w, use, current) {
+		return
+	}
 	placeX := use.X + offset[0]
 	placeY := use.Y + offset[1]
 	placeZ := use.Z + offset[2]
@@ -282,6 +286,12 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if existing != world.AirBlock && !isWaterState(existing) && !isLavaState(existing) {
 		return // 目标位置不可替换
 	}
+	_, _, _, placeYaw, placePitch := player.playerPosition()
+	// 栅栏门：单格，朝向按玩家水平朝向，通电位置直接以打开状态放置。
+	if _, isGate := registry.PlacementFenceGates[name]; isGate {
+		s.placeFenceGate(player, w, dim, placeX, placeY, placeZ, name, placeYaw)
+		return
+	}
 	state, ok := registry.BlockStateIDs[name]
 	if !ok {
 		// 少数物品对应不同名的方块（如红石粉 → 红石线）。
@@ -296,7 +306,6 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		return // 手持物品不是可放置的方块
 	}
 	// 红石类方向方块（中继器/比较器/侦测器/活塞）按玩家视线方向设置朝向。
-	_, _, _, placeYaw, placePitch := player.playerPosition()
 	state = orientPlacementState(state, placeYaw, placePitch)
 	if blockName, hasName := s.blockNameOf(state); hasName && blockName == hopperBlockName {
 		// 漏斗：按点击面决定朝向（原版 HopperBlock.getStateForPlacement）。

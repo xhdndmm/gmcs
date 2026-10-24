@@ -625,6 +625,14 @@
     放置时同时创建上下两格（需要两格空间）；右键开合同步两半（铁门只能由
     红石开合）；破坏任一半移除另一半，且只有下半格掉落 1 个门（对应战利品表
     的 half=lower 条件，`mining.go` 跳过上半格掉落）；
+  - 栅栏门（`FenceGateBlock`）：facing = 玩家水平朝向，放置位置通电时直接以
+    打开状态放置，右键开合；
+  - 可开合方块的红石联动（`neighborChanged` 语义）：门/活板门/栅栏门在邻居
+    信号变化时把 powered 与 open 一起设置（门的两半同步；手动打开且未通电
+    的方块不会被误关）；新增 `server/openables.go`，接入
+    `refreshRedstoneConsumers`；
+  - 生成器新增 `PlacementDoorsPowered`/`PlacementTrapdoorsPowered` 与
+    `PlacementFenceGates`/`Open`/`Powered` 表；
   - 新增生成器 `tools/genregistries/placement.go`：只生成放置会用到的属性
     组合（台阶 58、半砖 62、轴 67、朝向 48、活板门 21），找不到匹配状态时
     生成失败（版本升级后属性变化会立即暴露）；
@@ -634,7 +642,9 @@
     `TestToggleTrapdoor`、`TestPlaceTorchOnWall`、`TestPlaceLeverOnGround`、
     `TestDoorHingeIndex`、`TestPlaceDoorBothHalves`、`TestDoorRequiresTwoBlocks`、
     `TestDoorToggleBothHalves`、`TestDoorBreakDropsOnce`、
-    `TestIronDoorNotToggledByHand`；
+    `TestIronDoorNotToggledByHand`、`TestPlaceFenceGateFacing`、
+    `TestToggleFenceGate`、`TestRedstoneOpensTrapdoor`、`TestRedstoneOpensDoor`、
+    `TestRedstoneOpensFenceGate`；
     registry 侧 `TestPlacementTablesConsistent`（状态 ID 必须属于对应方块）。
 
 ## 待完成
@@ -689,12 +699,12 @@
   极少见掉落，爆炸仍无掉落；
   无出生点保护（mayInteract）与冒险模式 mayBuild；
   放置仅支持普通方块物品（带数据组件的物品不支持）；
-  放置形态（台阶/半砖/柱状/朝向方块/活板门/梯子/火把/拉杆/按钮/门）已按原版
-  实现（见上“方块放置形态批次”），但仍存差异：台阶不做邻居形状更新（shape 恒为
-  straight，拐角台阶客户端显示为直台阶）、含水状态一律 false、活板门/门放置时
-  不检查红石供电（门也不会被红石打开）、门的铰链未实现邻居双门/固体判定
-  （仅按点击位置，双开门可能同向开启）、床/告示牌/栅栏门的放置朝向尚未实现
-  （栅栏门也还没有右键开合）
+  放置形态（台阶/半砖/柱状/朝向方块/活板门/梯子/火把/拉杆/按钮/门/栅栏门）
+  已按原版实现（见上“方块放置形态批次”），但仍存差异：台阶不做邻居形状更新
+  （shape 恒为 straight，拐角台阶客户端显示为直台阶）、含水状态一律 false、
+  栅栏门的 in_wall 恒为 false、门的铰链未实现邻居双门/固体判定（仅按点击
+  位置，双开门可能同向开启）、开合不广播音效、床/告示牌的放置朝向尚未实现；
+  可开合方块已响应红石信号（门/活板门/栅栏门，铁门只能由红石开合）
 - 容器限制：窗口距离已按原版实现（眼睛位置到方块碰撞盒 < 方块交互距离属性
   4.5 + 4.0 = 8.5，即 `Container.stillValidBlockEntity` 与
   `AbstractContainerMenu.stillValid` 的 `isWithinBlockInteractionRange(pos, 4.0)`）；

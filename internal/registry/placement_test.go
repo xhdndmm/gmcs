@@ -31,7 +31,10 @@ func TestPlacementTablesConsistent(t *testing.T) {
 		len(PlacementFacing) == 0 || len(PlacementTrapdoors) == 0 ||
 		len(PlacementTrapdoorsOpen) == 0 || len(PlacementWallTorches) == 0 ||
 		len(PlacementLadders) == 0 || len(PlacementFaceAttached) == 0 ||
-		len(PlacementDoors) == 0 || len(PlacementDoorsOpen) == 0 {
+		len(PlacementDoors) == 0 || len(PlacementDoorsOpen) == 0 ||
+		len(PlacementDoorsPowered) == 0 || len(PlacementTrapdoorsPowered) == 0 ||
+		len(PlacementFenceGates) == 0 || len(PlacementFenceGatesOpen) == 0 ||
+		len(PlacementFenceGatesPowered) == 0 {
 		t.Fatal("放置形态表为空（生成器未运行？）")
 	}
 
@@ -101,6 +104,34 @@ func TestPlacementTablesConsistent(t *testing.T) {
 			}
 		}
 		check("PlacementDoorsOpen", ids, name)
+	}
+	for name, table := range PlacementDoorsPowered {
+		var ids []uint16
+		for _, half := range table {
+			for _, row := range half {
+				ids = append(ids, row[:]...)
+			}
+		}
+		check("PlacementDoorsPowered", ids, name)
+	}
+	for name, table := range PlacementTrapdoorsPowered {
+		var ids []uint16
+		for _, row := range table {
+			ids = append(ids, row[:]...)
+		}
+		check("PlacementTrapdoorsPowered", ids, name)
+	}
+	for _, gates := range []struct {
+		name  string
+		table map[string][4]uint16
+	}{
+		{"PlacementFenceGates", PlacementFenceGates},
+		{"PlacementFenceGatesOpen", PlacementFenceGatesOpen},
+		{"PlacementFenceGatesPowered", PlacementFenceGatesPowered},
+	} {
+		for name, table := range gates.table {
+			check(gates.name, table[:], name)
+		}
 	}
 
 	// 台阶与活板门的 bottom/top 状态必须不同。

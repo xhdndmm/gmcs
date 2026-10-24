@@ -319,6 +319,33 @@ var PlacementTrapdoorsOpen = map[string][2][4]uint16{
 	"minecraft:weathered_copper_trapdoor":       {{26536, 26552, 26568, 26584}, {26528, 26544, 26560, 26576}},
 }
 
+// PlacementTrapdoorsPowered 是活板门的通电打开状态：map[方块名][half][facing]。
+// half：0=bottom、1=top；facing：0=north、1=south、2=west、3=east。
+// 其余属性为 open=true、powered=true、waterlogged=false。
+var PlacementTrapdoorsPowered = map[string][2][4]uint16{
+	"minecraft:acacia_trapdoor":                 {{7178, 7194, 7210, 7226}, {7170, 7186, 7202, 7218}},
+	"minecraft:bamboo_trapdoor":                 {{7498, 7514, 7530, 7546}, {7490, 7506, 7522, 7538}},
+	"minecraft:birch_trapdoor":                  {{7050, 7066, 7082, 7098}, {7042, 7058, 7074, 7090}},
+	"minecraft:cherry_trapdoor":                 {{7242, 7258, 7274, 7290}, {7234, 7250, 7266, 7282}},
+	"minecraft:copper_trapdoor":                 {{26342, 26358, 26374, 26390}, {26334, 26350, 26366, 26382}},
+	"minecraft:crimson_trapdoor":                {{20921, 20937, 20953, 20969}, {20913, 20929, 20945, 20961}},
+	"minecraft:dark_oak_trapdoor":               {{7306, 7322, 7338, 7354}, {7298, 7314, 7330, 7346}},
+	"minecraft:exposed_copper_trapdoor":         {{26406, 26422, 26438, 26454}, {26398, 26414, 26430, 26446}},
+	"minecraft:iron_trapdoor":                   {{12374, 12390, 12406, 12422}, {12366, 12382, 12398, 12414}},
+	"minecraft:jungle_trapdoor":                 {{7114, 7130, 7146, 7162}, {7106, 7122, 7138, 7154}},
+	"minecraft:mangrove_trapdoor":               {{7434, 7450, 7466, 7482}, {7426, 7442, 7458, 7474}},
+	"minecraft:oak_trapdoor":                    {{6922, 6938, 6954, 6970}, {6914, 6930, 6946, 6962}},
+	"minecraft:oxidized_copper_trapdoor":        {{26470, 26486, 26502, 26518}, {26462, 26478, 26494, 26510}},
+	"minecraft:pale_oak_trapdoor":               {{7370, 7386, 7402, 7418}, {7362, 7378, 7394, 7410}},
+	"minecraft:spruce_trapdoor":                 {{6986, 7002, 7018, 7034}, {6978, 6994, 7010, 7026}},
+	"minecraft:warped_trapdoor":                 {{20985, 21001, 21017, 21033}, {20977, 20993, 21009, 21025}},
+	"minecraft:waxed_copper_trapdoor":           {{26598, 26614, 26630, 26646}, {26590, 26606, 26622, 26638}},
+	"minecraft:waxed_exposed_copper_trapdoor":   {{26662, 26678, 26694, 26710}, {26654, 26670, 26686, 26702}},
+	"minecraft:waxed_oxidized_copper_trapdoor":  {{26726, 26742, 26758, 26774}, {26718, 26734, 26750, 26766}},
+	"minecraft:waxed_weathered_copper_trapdoor": {{26790, 26806, 26822, 26838}, {26782, 26798, 26814, 26830}},
+	"minecraft:weathered_copper_trapdoor":       {{26534, 26550, 26566, 26582}, {26526, 26542, 26558, 26574}},
+}
+
 // PlacementDoors 是门的关闭放置状态：map[方块名][half][facing][hinge]。
 // half：0=lower、1=upper；facing：0=north…3=east；hinge：0=left、1=right。
 // 其余属性为 open=false、powered=false、waterlogged=false。
@@ -371,6 +398,87 @@ var PlacementDoorsOpen = map[string][2][4][2]uint16{
 	"minecraft:waxed_oxidized_copper_door":  {{{26214, 26218}, {26230, 26234}, {26246, 26250}, {26262, 26266}}, {{26206, 26210}, {26222, 26226}, {26238, 26242}, {26254, 26258}}},
 	"minecraft:waxed_weathered_copper_door": {{{26278, 26282}, {26294, 26298}, {26310, 26314}, {26326, 26330}}, {{26270, 26274}, {26286, 26290}, {26302, 26306}, {26318, 26322}}},
 	"minecraft:weathered_copper_door":       {{{26022, 26026}, {26038, 26042}, {26054, 26058}, {26070, 26074}}, {{26014, 26018}, {26030, 26034}, {26046, 26050}, {26062, 26066}}},
+}
+
+// PlacementDoorsPowered 是门的通电打开状态：map[方块名][half][facing][hinge]。
+// half：0=lower、1=upper；facing：0=north…3=east；hinge：0=left、1=right。
+// 其余属性为 open=true、powered=true、waterlogged=false。
+var PlacementDoorsPowered = map[string][2][4][2]uint16{
+	"minecraft:acacia_door":                 {{{14058, 14062}, {14074, 14078}, {14090, 14094}, {14106, 14110}}, {{14050, 14054}, {14066, 14070}, {14082, 14086}, {14098, 14102}}},
+	"minecraft:bamboo_door":                 {{{14378, 14382}, {14394, 14398}, {14410, 14414}, {14426, 14430}}, {{14370, 14374}, {14386, 14390}, {14402, 14406}, {14418, 14422}}},
+	"minecraft:birch_door":                  {{{13930, 13934}, {13946, 13950}, {13962, 13966}, {13978, 13982}}, {{13922, 13926}, {13938, 13942}, {13954, 13958}, {13970, 13974}}},
+	"minecraft:cherry_door":                 {{{14122, 14126}, {14138, 14142}, {14154, 14158}, {14170, 14174}}, {{14114, 14118}, {14130, 14134}, {14146, 14150}, {14162, 14166}}},
+	"minecraft:copper_door":                 {{{25829, 25833}, {25845, 25849}, {25861, 25865}, {25877, 25881}}, {{25821, 25825}, {25837, 25841}, {25853, 25857}, {25869, 25873}}},
+	"minecraft:crimson_door":                {{{21320, 21324}, {21336, 21340}, {21352, 21356}, {21368, 21372}}, {{21312, 21316}, {21328, 21332}, {21344, 21348}, {21360, 21364}}},
+	"minecraft:dark_oak_door":               {{{14186, 14190}, {14202, 14206}, {14218, 14222}, {14234, 14238}}, {{14178, 14182}, {14194, 14198}, {14210, 14214}, {14226, 14230}}},
+	"minecraft:exposed_copper_door":         {{{25893, 25897}, {25909, 25913}, {25925, 25929}, {25941, 25945}}, {{25885, 25889}, {25901, 25905}, {25917, 25921}, {25933, 25937}}},
+	"minecraft:iron_door":                   {{{6604, 6608}, {6620, 6624}, {6636, 6640}, {6652, 6656}}, {{6596, 6600}, {6612, 6616}, {6628, 6632}, {6644, 6648}}},
+	"minecraft:jungle_door":                 {{{13994, 13998}, {14010, 14014}, {14026, 14030}, {14042, 14046}}, {{13986, 13990}, {14002, 14006}, {14018, 14022}, {14034, 14038}}},
+	"minecraft:mangrove_door":               {{{14314, 14318}, {14330, 14334}, {14346, 14350}, {14362, 14366}}, {{14306, 14310}, {14322, 14326}, {14338, 14342}, {14354, 14358}}},
+	"minecraft:oak_door":                    {{{5462, 5466}, {5478, 5482}, {5494, 5498}, {5510, 5514}}, {{5454, 5458}, {5470, 5474}, {5486, 5490}, {5502, 5506}}},
+	"minecraft:oxidized_copper_door":        {{{25957, 25961}, {25973, 25977}, {25989, 25993}, {26005, 26009}}, {{25949, 25953}, {25965, 25969}, {25981, 25985}, {25997, 26001}}},
+	"minecraft:pale_oak_door":               {{{14250, 14254}, {14266, 14270}, {14282, 14286}, {14298, 14302}}, {{14242, 14246}, {14258, 14262}, {14274, 14278}, {14290, 14294}}},
+	"minecraft:spruce_door":                 {{{13866, 13870}, {13882, 13886}, {13898, 13902}, {13914, 13918}}, {{13858, 13862}, {13874, 13878}, {13890, 13894}, {13906, 13910}}},
+	"minecraft:warped_door":                 {{{21384, 21388}, {21400, 21404}, {21416, 21420}, {21432, 21436}}, {{21376, 21380}, {21392, 21396}, {21408, 21412}, {21424, 21428}}},
+	"minecraft:waxed_copper_door":           {{{26085, 26089}, {26101, 26105}, {26117, 26121}, {26133, 26137}}, {{26077, 26081}, {26093, 26097}, {26109, 26113}, {26125, 26129}}},
+	"minecraft:waxed_exposed_copper_door":   {{{26149, 26153}, {26165, 26169}, {26181, 26185}, {26197, 26201}}, {{26141, 26145}, {26157, 26161}, {26173, 26177}, {26189, 26193}}},
+	"minecraft:waxed_oxidized_copper_door":  {{{26213, 26217}, {26229, 26233}, {26245, 26249}, {26261, 26265}}, {{26205, 26209}, {26221, 26225}, {26237, 26241}, {26253, 26257}}},
+	"minecraft:waxed_weathered_copper_door": {{{26277, 26281}, {26293, 26297}, {26309, 26313}, {26325, 26329}}, {{26269, 26273}, {26285, 26289}, {26301, 26305}, {26317, 26321}}},
+	"minecraft:weathered_copper_door":       {{{26021, 26025}, {26037, 26041}, {26053, 26057}, {26069, 26073}}, {{26013, 26017}, {26029, 26033}, {26045, 26049}, {26061, 26065}}},
+}
+
+// PlacementFenceGates 是栅栏门的关闭放置状态：map[方块名][facing]。
+// facing：0=north、1=south、2=west、3=east。
+// 其余属性为 open=false、powered=false、in_wall=false。
+var PlacementFenceGates = map[string][4]uint16{
+	"minecraft:acacia_fence_gate":   {13385, 13393, 13401, 13409},
+	"minecraft:bamboo_fence_gate":   {13545, 13553, 13561, 13569},
+	"minecraft:birch_fence_gate":    {13321, 13329, 13337, 13345},
+	"minecraft:cherry_fence_gate":   {13417, 13425, 13433, 13441},
+	"minecraft:crimson_fence_gate":  {21047, 21055, 21063, 21071},
+	"minecraft:dark_oak_fence_gate": {13449, 13457, 13465, 13473},
+	"minecraft:jungle_fence_gate":   {13353, 13361, 13369, 13377},
+	"minecraft:mangrove_fence_gate": {13513, 13521, 13529, 13537},
+	"minecraft:oak_fence_gate":      {8452, 8460, 8468, 8476},
+	"minecraft:pale_oak_fence_gate": {13481, 13489, 13497, 13505},
+	"minecraft:spruce_fence_gate":   {13289, 13297, 13305, 13313},
+	"minecraft:warped_fence_gate":   {21079, 21087, 21095, 21103},
+}
+
+// PlacementFenceGatesOpen 是栅栏门的打开状态：map[方块名][facing]。
+// facing：0=north、1=south、2=west、3=east。
+// 其余属性为 open=true、powered=false、in_wall=false。
+var PlacementFenceGatesOpen = map[string][4]uint16{
+	"minecraft:acacia_fence_gate":   {13383, 13391, 13399, 13407},
+	"minecraft:bamboo_fence_gate":   {13543, 13551, 13559, 13567},
+	"minecraft:birch_fence_gate":    {13319, 13327, 13335, 13343},
+	"minecraft:cherry_fence_gate":   {13415, 13423, 13431, 13439},
+	"minecraft:crimson_fence_gate":  {21045, 21053, 21061, 21069},
+	"minecraft:dark_oak_fence_gate": {13447, 13455, 13463, 13471},
+	"minecraft:jungle_fence_gate":   {13351, 13359, 13367, 13375},
+	"minecraft:mangrove_fence_gate": {13511, 13519, 13527, 13535},
+	"minecraft:oak_fence_gate":      {8450, 8458, 8466, 8474},
+	"minecraft:pale_oak_fence_gate": {13479, 13487, 13495, 13503},
+	"minecraft:spruce_fence_gate":   {13287, 13295, 13303, 13311},
+	"minecraft:warped_fence_gate":   {21077, 21085, 21093, 21101},
+}
+
+// PlacementFenceGatesPowered 是栅栏门的通电打开状态：map[方块名][facing]。
+// facing：0=north、1=south、2=west、3=east。
+// 其余属性为 open=true、powered=true、in_wall=false。
+var PlacementFenceGatesPowered = map[string][4]uint16{
+	"minecraft:acacia_fence_gate":   {13382, 13390, 13398, 13406},
+	"minecraft:bamboo_fence_gate":   {13542, 13550, 13558, 13566},
+	"minecraft:birch_fence_gate":    {13318, 13326, 13334, 13342},
+	"minecraft:cherry_fence_gate":   {13414, 13422, 13430, 13438},
+	"minecraft:crimson_fence_gate":  {21044, 21052, 21060, 21068},
+	"minecraft:dark_oak_fence_gate": {13446, 13454, 13462, 13470},
+	"minecraft:jungle_fence_gate":   {13350, 13358, 13366, 13374},
+	"minecraft:mangrove_fence_gate": {13510, 13518, 13526, 13534},
+	"minecraft:oak_fence_gate":      {8449, 8457, 8465, 8473},
+	"minecraft:pale_oak_fence_gate": {13478, 13486, 13494, 13502},
+	"minecraft:spruce_fence_gate":   {13286, 13294, 13302, 13310},
+	"minecraft:warped_fence_gate":   {21076, 21084, 21092, 21100},
 }
 
 // PlacementFaceAttached 是拉杆/按钮的放置状态：map[方块名][face][facing]。

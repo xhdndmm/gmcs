@@ -670,6 +670,8 @@ func (s *Server) refreshRedstoneConsumers(w *world.World, dim world.Dimension, p
 			s.checkDiodeUpdate(w, dim, candidate, state)
 		case isTorchState(state):
 			s.checkTorchUpdate(w, dim, candidate, state)
+		case isTrapdoorState(state), isDoorState(state), isFenceGateState(state):
+			s.refreshOpenable(w, dim, candidate, state)
 		case isHopperState(state):
 			s.refreshHopperEnabled(w, candidate, state)
 		}
