@@ -1153,6 +1153,26 @@ BenchmarkBlockDropsFortune-20   67.35 / 67.46 / 66.31 ns/op   24 B/op   1 alloc/
 进一步微优化。行为正确性由 `TestBlockDropsCrops`（成熟度/时运/精准采集）与
 `TestBlockStateAge`（区间推导边界）覆盖。
 
+### 3.32 剩余植物掉落与双格植物判定（本批）
+
+新增可可豆/海泡菜/瓜类茎/瓶子草掉落，并把双格植物上半格判定从
+`StateProps`（未收录这些属性状态）改为状态区间推导；破坏双格植物任一半时
+额外做一次 ±1 格查询与移除。每次方块破坏只会多一次二分查找与取模；没有新增
+分配，也没有进入 Tick 路径，因此未新增基准。`BenchmarkBlockDropsFortune`
+实测 71 ns/op、24 B/op、1 alloc（与 3.31 的 66–67 ns/op 同量级）；
+`BenchmarkServerTick` 16.2 µs/op、61 B/op、1 alloc，
+`BenchmarkServerTickManyPlayers` 303 µs/op、4904 B/op、31 alloc，均与上一批一致。
+
+正确性验证：`TestBlockStateAge`、`TestBlockStateHalfUpper`、
+`TestBlockStateCropUpperHalf`、`TestBlockStatePickleCount`、
+`TestBlockDropsCrops`、`TestRemoveDoublePlantPair` 均通过；区间顺序
+（可可豆 age×facing、海泡菜 pickles×waterlogged、瓶子草 age×half、
+双格植物 upper→lower）逐一对照官方 `reports/blocks.json` 的状态列表核对；
+双格植物的掉落语义对照 1.21.11 服务端 `DoublePlantBlock.playerWillDestroy`
+（非创造模式按被破坏状态结算战利品表，创造模式调用
+`preventDropFromBottomPart` 移除另一半）与官方方块战利品表得出。
+尚未验证：未在原版服务器上逐方块实测掉落数量分布。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）

@@ -48,6 +48,18 @@ func TestBlockDropsCrops(t *testing.T) {
 		}
 		return 0, false
 	}
+	rangeStart := func(name string) uint16 {
+		t.Helper()
+		base, err := registry.BlockStateID(name)
+		if err != nil {
+			t.Fatalf("未知方块 %s：%v", name, err)
+		}
+		r, ok := registry.BlockStateRangeOf(base)
+		if !ok {
+			t.Fatalf("方块 %s 没有状态区间", name)
+		}
+		return r.Start
+	}
 
 	// 未成熟小麦：仅 1 个种子。
 	if drops := instance.blockDrops(state("minecraft:wheat", 6), item.Empty()); len(drops) != 1 ||
@@ -151,6 +163,64 @@ func TestBlockDropsCrops(t *testing.T) {
 		drops = instance.blockDrops(state("minecraft:torchflower_crop", age), item.Empty())
 		if len(drops) != 1 || drops[0].Item != "minecraft:torchflower_seeds" || drops[0].Count != 1 {
 			t.Fatalf("火把花 age=%d = %+v，want 1 种子", age, drops)
+		}
+	}
+	// 可可豆：age 0/1 掉 1，age 2 掉 3（age×facing，stride=4）。
+	cocoaBase := rangeStart("minecraft:cocoa")
+	for age, want := range []int32{1, 1, 3} {
+		drops = instance.blockDrops(cocoaBase+uint16(age*4), item.Empty())
+		if len(drops) != 1 || drops[0].Item != "minecraft:cocoa_beans" || drops[0].Count != want {
+			t.Fatalf("可可 age=%d = %+v，want %d 可可豆", age, drops, want)
+		}
+	}
+	// 瓶子草作物：破坏任一半都按该年龄掉落（上半格由移除逻辑清理）。
+	pitcherBase := rangeStart("minecraft:pitcher_crop")
+	for age := 0; age <= 3; age++ {
+		for half := 0; half <= 1; half++ {
+			id := pitcherBase + uint16(age*2+half)
+			drops = instance.blockDrops(id, item.Empty())
+			if len(drops) != 1 || drops[0].Item != "minecraft:pitcher_pod" || drops[0].Count != 1 {
+				t.Fatalf("瓶子草 age=%d half=%d = %+v，want 1 荚", age, half, drops)
+			}
+		}
+	}
+	drops = instance.blockDrops(pitcherBase+uint16(4*2), item.Empty())
+	if len(drops) != 1 || drops[0].Item != "minecraft:pitcher_plant" || drops[0].Count != 1 {
+		t.Fatalf("成熟瓶子草上半格 = %+v，want 1 瓶子草", drops)
+	}
+	// 海泡菜：数量等于 pickles（主序，waterlogged 次序）；两种含水状态一致。
+	pickleBase := rangeStart("minecraft:sea_pickle")
+	for pickles := 1; pickles <= 4; pickles++ {
+		for waterlogged := 0; waterlogged <= 1; waterlogged++ {
+			id := pickleBase + uint16((pickles-1)*2+waterlogged)
+			drops = instance.blockDrops(id, item.Empty())
+			if len(drops) != 1 || drops[0].Item != "minecraft:sea_pickle" || drops[0].Count != int32(pickles) {
+				t.Fatalf("海泡菜 pickles=%d = %+v，want %d", pickles, drops, pickles)
+			}
+		}
+	}
+	// 瓜类茎：Bin(3, (age+1)/15) 个种子，最多 3 个。
+	for _, stem := range []struct{ block, seed string }{
+		{"minecraft:melon_stem", "minecraft:melon_seeds"},
+		{"minecraft:pumpkin_stem", "minecraft:pumpkin_seeds"},
+	} {
+		for i := 0; i < 32; i++ {
+			drops = instance.blockDrops(state(stem.block, 7), item.Empty())
+			if len(drops) == 0 {
+				continue // 二项分布允许 0 个
+			}
+			if len(drops) != 1 || drops[0].Item != stem.seed || drops[0].Count < 1 || drops[0].Count > 3 {
+				t.Fatalf("%s = %+v，want 0..3 种子", stem.block, drops)
+			}
+		}
+	}
+	// 双格植物：上下半格都按下半格掉落结算（剪切 → 2 个矮草）。
+	shears := item.Stack{ItemID: mustItemID(t, "minecraft:shears"), Count: 1}
+	tallGrass := rangeStart("minecraft:tall_grass")
+	for half := 0; half <= 1; half++ {
+		drops = instance.blockDrops(tallGrass+uint16(half), shears)
+		if len(drops) != 1 || drops[0].Item != "minecraft:short_grass" || drops[0].Count != 2 {
+			t.Fatalf("高草 half=%d 剪切 = %+v，want 2 矮草", half, drops)
 		}
 	}
 }
@@ -400,5 +470,64 @@ func TestSurvivalBlockBreakDrops(t *testing.T) {
 	instance.entityMu.Unlock()
 	if remaining != 1 {
 		t.Fatalf("创意模式破坏后掉落物数量 = %d，want 1（不应新增）", remaining)
+	}
+}
+
+// TestRemoveDoublePlantPair 验证破坏双格植物任一半会移除另一半（不掉落）。
+func TestRemoveDoublePlantPair(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+
+	w := instance.testWorld()
+	base, err := registry.BlockStateID("minecraft:tall_grass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := registry.BlockStateRangeOf(base)
+	if !ok {
+		t.Fatal("missing state range")
+	}
+	upper, lower := r.Start, r.Start+1
+	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	x, z := int(spawnX), int(spawnZ)
+	y := int(spawnY) + 3
+
+	placePair := func() {
+		t.Helper()
+		if !w.SetBlock(x, y, z, lower) || !w.SetBlock(x, y+1, z, upper) {
+			t.Fatal("无法放置双格植物")
+		}
+	}
+	// 破坏上半格 → 下半格也被移除。
+	placePair()
+	instance.removeDoublePlantPair(w, world.DimensionOverworld, x, y+1, z, upper)
+	if got := w.BlockAt(x, y, z); got != world.AirBlock {
+		t.Fatalf("破坏上半格后下半格 = %d, want air", got)
+	}
+	w.SetBlock(x, y, z, world.AirBlock)
+	w.SetBlock(x, y+1, z, world.AirBlock)
+	// 破坏下半格 → 上半格也被移除。
+	placePair()
+	instance.removeDoublePlantPair(w, world.DimensionOverworld, x, y, z, lower)
+	if got := w.BlockAt(x, y+1, z); got != world.AirBlock {
+		t.Fatalf("破坏下半格后上半格 = %d, want air", got)
+	}
+	// 单格方块不受影响（下方普通方块不会被误删）。
+	stone, err := registry.BlockStateID("minecraft:stone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.SetBlock(x, y, z, stone) || !w.SetBlock(x, y+1, z, upper) {
+		t.Fatal("无法布置方块")
+	}
+	instance.removeDoublePlantPair(w, world.DimensionOverworld, x, y+1, z, upper)
+	if got := w.BlockAt(x, y, z); got != stone {
+		t.Fatalf("单格方块被误删：%d", got)
 	}
 }

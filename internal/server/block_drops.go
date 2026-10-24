@@ -162,7 +162,8 @@ func (s *Server) cropDrops(name string, state uint16, fortune int32) ([]blockDro
 	switch name {
 	case "minecraft:wheat", "minecraft:beetroots", "minecraft:carrots",
 		"minecraft:potatoes", "minecraft:nether_wart", "minecraft:sweet_berry_bush",
-		"minecraft:torchflower_crop":
+		"minecraft:torchflower_crop", "minecraft:cocoa", "minecraft:pitcher_crop",
+		"minecraft:melon_stem", "minecraft:pumpkin_stem":
 	default:
 		return nil, false
 	}
@@ -219,6 +220,31 @@ func (s *Server) cropDrops(name string, state uint16, fortune int32) ([]blockDro
 	case "minecraft:torchflower_crop":
 		// 成熟与否都只掉 1 个火把花种子（官方表无 age 条件）。
 		return []blockDropSpec{{Item: "minecraft:torchflower_seeds", Count: 1}}, true
+	case "minecraft:cocoa":
+		// age 2 掉 3 个可可豆，其余掉 1 个。
+		count := int32(1)
+		if age >= 2 {
+			count = 3
+		}
+		return []blockDropSpec{{Item: "minecraft:cocoa_beans", Count: count}}, true
+	case "minecraft:pitcher_crop":
+		// 破坏任一半都按该年龄的下半格掉落（瓶子上半格由移除逻辑清理）。
+		itemName := "minecraft:pitcher_pod"
+		if age >= 4 {
+			itemName = "minecraft:pitcher_plant"
+		}
+		return []blockDropSpec{{Item: itemName, Count: 1}}, true
+	case "minecraft:melon_stem", "minecraft:pumpkin_stem":
+		// 官方表：Bin(3, (age+1)/15) 个种子（无时运加成）。
+		seedItem := "minecraft:melon_seeds"
+		if name == "minecraft:pumpkin_stem" {
+			seedItem = "minecraft:pumpkin_seeds"
+		}
+		count := s.binomialBonus(0, 3, 0, float64(age+1)/15)
+		if count <= 0 {
+			return nil, true
+		}
+		return []blockDropSpec{{Item: seedItem, Count: count}}, true
 	default: // minecraft:nether_wart
 		if age >= 3 {
 			count := s.randIntBetween(2, 4) + s.uniformBonus(fortune)
@@ -279,8 +305,7 @@ func leavesSapling(name string) string {
 }
 
 // doublePlants 是掉落只由下半格结算的双格植物。
-var doublePlants = map[string]bool{
-	"minecraft:tall_grass":    true,
+var doublePlants = map[string]bool{"minecraft:tall_grass": true,
 	"minecraft:large_fern":    true,
 	"minecraft:tall_seagrass": true,
 	"minecraft:sunflower":     true,
@@ -290,16 +315,64 @@ var doublePlants = map[string]bool{
 	"minecraft:pitcher_plant": true,
 }
 
+// removeDoublePlantPair 在破坏双格植物的一格后移除另一半（不掉落）。
+// 原版由 DoublePlantBlock 的邻居更新完成；gmcs 的方块更新模型不处理
+// “另一半缺失导致本格消失”，因此显式移除，避免留下悬空的半格。
+func (s *Server) removeDoublePlantPair(w *world.World, dim world.Dimension, x, y, z int, state uint16) {
+	name, ok := s.blockNameOf(state)
+	if !ok {
+		return
+	}
+	var upper, known bool
+	switch {
+	case doublePlants[name]:
+		upper, known = registry.BlockStateHalfUpper(state)
+	case name == "minecraft:pitcher_crop":
+		upper, known = registry.BlockStateCropUpperHalf(state)
+	}
+	if !known {
+		return
+	}
+	dy := 1
+	if upper {
+		dy = -1
+	}
+	ny := y + dy
+	other := w.BlockAt(x, ny, z)
+	if otherName, ok := s.blockNameOf(other); !ok || otherName != name {
+		return
+	}
+	var otherUpper bool
+	switch {
+	case doublePlants[name]:
+		otherUpper, known = registry.BlockStateHalfUpper(other)
+	case name == "minecraft:pitcher_crop":
+		otherUpper, known = registry.BlockStateCropUpperHalf(other)
+	}
+	if !known || otherUpper == upper {
+		return
+	}
+	if w.SetBlock(x, ny, z, world.AirBlock) {
+		s.broadcastBlockUpdate(dim, x, ny, z, int32(world.AirBlock))
+	}
+}
+
 // blockDrops 返回破坏方块后的全部掉落物。held 用于精准采集/时运/剪刀判定。
 func (s *Server) blockDrops(state uint16, held item.Stack) []blockDropSpec {
 	name, ok := s.blockNameOf(state)
 	if !ok {
 		return nil
 	}
-	// 原版双格植物只有下半格参与战利品表（upper half 不掉落）。
+	// 原版双格植物：破坏任一半都会移除另一半，掉落由“下半格”的战利品表
+	// 结算一次（例如破坏向日葵上半格时，下半格因邻居更新被移除并掉花）。
+	// 因此上半格改用下半格状态继续结算，避免双倍/零掉落。
 	if doublePlants[name] {
-		if _, props, ok := registry.StateProps(state); ok && props["half"] == "upper" {
+		r, ok := registry.BlockStateRangeOf(state)
+		if !ok || r.End-r.Start != 1 {
 			return nil
+		}
+		if upper, ok := registry.BlockStateHalfUpper(state); ok && upper {
+			state = r.Start + 1 // lower
 		}
 	}
 	if blocksNeverDropping(name) {
@@ -313,6 +386,12 @@ func (s *Server) blockDrops(state uint16, held item.Stack) []blockDropSpec {
 	// 原版作物战利品表没有精准采集条件）。
 	if drops, handled := s.cropDrops(name, state, fortune); handled {
 		return drops
+	}
+	// 海泡菜：掉落数量等于 pickles 属性（1–4），不受精准采集/时运影响。
+	if name == "minecraft:sea_pickle" {
+		if count, ok := registry.BlockStatePickleCount(state); ok {
+			return []blockDropSpec{{Item: name, Count: int32(count)}}
+		}
 	}
 
 	// 树叶：剪刀或精准采集掉树叶本身；否则按原版概率表掉树苗/木棍/苹果。

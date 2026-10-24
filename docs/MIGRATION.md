@@ -215,6 +215,7 @@ Tick 线程只读取快照后广播（新增 `BenchmarkPlayerEquipmentSnapshot` 
 | 本批（耐久原子化与快捷栏槽位持久化） | 物品栏耐久/经验修补改为锁内读-改-写（`Inventory.Damage`/`Inventory.Repair`）；选中快捷栏槽位改为原子字段并随 `players.json` 保存（新增可选字段 `selected_slot`，旧文件缺省为 0）；进入世界/跨维度传送/重生后发送 Clientbound `set_held_slot`（0x67，VarInt） | 行为变化：并发下的护甲/工具耐久不再偶尔丢失；重连后保持上次选中的快捷栏槽位（此前回到 0 号槽）；越界的 `set_carried_item` 被忽略而不是写入非法槽位；配置与区块格式不变，`players.json` 向后兼容 |
 | 本批（环境状态持久化） | `players.json` 新增可选字段 `air`/`fire_ticks`/`exhaustion`/`food_timer`（对应原版 `Air`/`Fire`/`foodExhaustionLevel`/`foodTickTimer`），带范围校验；`fireTicks`/`air` 改为原子字段以便后台自动保存读取 | 行为变化：重连后不再总是满氧气，着火与饥饿疲劳度继续保留；旧存档缺少 `air` 时按满氧气处理；配置与区块格式不变 |
 | 本批（作物掉落表） | 按官方方块战利品表实现小麦/胡萝卜/马铃薯/甜菜根/下界疣/甜浆果丛/火把花的成熟度（`age`）与作物时运公式；新增 `registry.BlockStateAge` 由状态区间反推年龄；精准采集不影响作物 | 行为变化：作物此前固定掉 1 个同名物品，现在按成熟度掉作物/种子并受时运影响（未成熟小麦/甜菜根只掉种子，马铃薯有 2% 毒马铃薯）；配置与区块格式不变 |
+| 本批（剩余植物掉落与双格植物修复） | 新增可可豆/海泡菜/瓜类茎/瓶子草掉落；`BlockStateAge` 支持 age 主序 + stride（可可豆 4、瓶子草 2）；新增 `BlockStateRangeOf`/`BlockStateHalfUpper`/`BlockStateCropUpperHalf`/`BlockStatePickleCount`；双格植物上半格判定改为状态区间推导，破坏任一半时按下半格战利品表结算一次并移除另一半 | 行为变化：双格植物此前上下半格各掉一次（双倍），现在只掉一次且不会留下悬空半格；上述植物掉落对齐官方表；配置与区块格式不变 |
 
 ## 3. 更换 / 升级 Minecraft 版本（开发向）
 

@@ -174,16 +174,35 @@ type stateCacheEntry struct {
 	ok bool
 }
 
-// cropAgeMax 是单一 age 属性作物方块的最大成熟度。这些方块的注册状态
-// 区间按 age 从 0 升序排列（每个年龄一个状态），因此 age = 状态 ID - 区间起点。
-var cropAgeMax = map[string]int{
-	"minecraft:wheat":            7,
-	"minecraft:carrots":          7,
-	"minecraft:potatoes":         7,
-	"minecraft:beetroots":        3,
-	"minecraft:nether_wart":      3,
-	"minecraft:sweet_berry_bush": 3,
-	"minecraft:torchflower_crop": 1,
+// cropAgeInfo 描述作物状态区间中 age 的排列：age 是主属性（从 0 升序），
+// 每个年龄对应 stride 个状态（其余属性在其后排列）。
+type cropAgeInfo struct {
+	maxAge int
+	stride int
+}
+
+// cropAges 是可由状态区间推导 age 的作物方块。
+// stride=1：只有 age 属性；cocoa 为 age×facing（4 个朝向）；
+// pitcher_crop 为 age×half（upper/lower）。顺序已按 blocks.json 核对。
+var cropAges = map[string]cropAgeInfo{
+	"minecraft:wheat":            {7, 1},
+	"minecraft:carrots":          {7, 1},
+	"minecraft:potatoes":         {7, 1},
+	"minecraft:beetroots":        {3, 1},
+	"minecraft:nether_wart":      {3, 1},
+	"minecraft:sweet_berry_bush": {3, 1},
+	"minecraft:torchflower_crop": {1, 1},
+	"minecraft:melon_stem":       {7, 1},
+	"minecraft:pumpkin_stem":     {7, 1},
+	"minecraft:cocoa":            {2, 4},
+	"minecraft:pitcher_crop":     {4, 2},
+}
+
+// BlockStateRangeOf 返回状态所属方块的连续状态 ID 区间。
+// 注意 BlockStateID 返回的是方块的默认状态，不一定是区间起点
+// （例如双格植物默认 half=lower）。
+func BlockStateRangeOf(state uint16) (BlockStateRange, bool) {
+	return blockStateRangeOf(state)
 }
 
 // blockStateRangeOf 返回状态所属方块的连续状态 ID 区间。
@@ -205,19 +224,54 @@ func blockStateRangeOf(state uint16) (BlockStateRange, bool) {
 }
 
 // BlockStateAge 返回作物方块状态的成熟度（0..最大值）。
-// 仅支持 wheat/carrots/potatoes/beetroots/nether_wart；其他方块返回 false。
-// 实现前提：这些方块只有 age 一个属性，状态区间内按 age 升序排列
-// （区间长度必须等于最大 age+1，否则返回 false 而不猜测）。
+// 仅支持本文件 cropAges 中列出的作物；其他方块返回 false。
+// 实现前提：状态区间按 age 主序排列，区间长度必须等于 (最大 age+1)×stride，
+// 否则返回 false 而不猜测。
 func BlockStateAge(state uint16) (int, bool) {
 	r, ok := blockStateRangeOf(state)
 	if !ok {
 		return 0, false
 	}
-	maxAge, ok := cropAgeMax[r.Name]
-	if !ok || int(r.End-r.Start) != maxAge {
+	info, ok := cropAges[r.Name]
+	if !ok || int(r.End-r.Start) != (info.maxAge+1)*info.stride-1 {
 		return 0, false
 	}
-	return int(state - r.Start), true
+	return int(state-r.Start) / info.stride, true
+}
+
+// BlockStateHalfUpper 报告双格植物状态是否为上半格。
+// 双格植物的状态区间只有两种状态，按 upper→lower 排列（blocks.json 已核对）。
+// ok=false 表示该状态不属于“只有 half 属性且两状态”的方块。
+func BlockStateHalfUpper(state uint16) (upper, ok bool) {
+	r, ok := blockStateRangeOf(state)
+	if !ok || r.End-r.Start != 1 {
+		return false, false
+	}
+	return state == r.Start, true
+}
+
+// BlockStateCropUpperHalf 报告作物状态是否为上半格（仅 pitcher_crop：
+// age 主序、half 次序，upper 在偶数偏移）。ok=false 表示该方块无 half 次序。
+func BlockStateCropUpperHalf(state uint16) (upper, ok bool) {
+	r, ok := blockStateRangeOf(state)
+	if !ok {
+		return false, false
+	}
+	info, ok := cropAges[r.Name]
+	if !ok || info.stride != 2 {
+		return false, false
+	}
+	return (state-r.Start)%2 == 0, true
+}
+
+// BlockStatePickleCount 返回海泡菜状态的 pickles 数量（1..4）。
+// 状态顺序为 pickles 主序、waterlogged 次序（blocks.json 已核对）。
+func BlockStatePickleCount(state uint16) (int, bool) {
+	r, ok := blockStateRangeOf(state)
+	if !ok || r.Name != "minecraft:sea_pickle" || int(r.End-r.Start) != 4*2-1 {
+		return 0, false
+	}
+	return int(state-r.Start)/2 + 1, true
 }
 
 var stateLookupCache sync.Map

@@ -259,14 +259,91 @@ func TestBlockStateAge(t *testing.T) {
 	if _, ok := BlockStateAge(stone); ok {
 		t.Fatal("石头不应有作物年龄")
 	}
-	// 只有 age 属性的作物都必须能完整推导（防止数据更新后区间长度变化）。
-	for name, maxAge := range cropAgeMax {
+	// 所有可推导年龄的作物都必须能完整推导（防止数据更新后区间长度变化）。
+	for name, info := range cropAges {
 		base, err := BlockStateID(name)
 		if err != nil {
 			t.Fatalf("%s 不在方块注册表：%v", name, err)
 		}
-		if got, ok := BlockStateAge(base + uint16(maxAge)); !ok || got != maxAge {
-			t.Fatalf("%s 最大年龄推导失败：got=(%d,%v)", name, got, ok)
+		for age := 0; age <= info.maxAge; age++ {
+			id := base + uint16(age*info.stride)
+			if got, ok := BlockStateAge(id); !ok || got != age {
+				t.Fatalf("%s age=%d 推导失败：got=(%d,%v)", name, age, got, ok)
+			}
 		}
+	}
+}
+
+// TestBlockStateHalfUpper 验证双格植物上半格判定（两状态、upper→lower）。
+func TestBlockStateHalfUpper(t *testing.T) {
+	base, err := BlockStateID("minecraft:tall_grass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// BlockStateID 返回默认状态（half=lower），上半格是区间起点。
+	r, ok := BlockStateRangeOf(base)
+	if !ok {
+		t.Fatal("missing state range")
+	}
+	if upper, ok := BlockStateHalfUpper(r.Start); !ok || !upper {
+		t.Fatalf("tall_grass start：upper=%v ok=%v，want true/true", upper, ok)
+	}
+	if upper, ok := BlockStateHalfUpper(r.Start + 1); !ok || upper {
+		t.Fatalf("tall_grass lower：upper=%v ok=%v，want false/true", upper, ok)
+	}
+	stone, err := BlockStateID("minecraft:stone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := BlockStateHalfUpper(stone); ok {
+		t.Fatal("石头不应被识别为双格植物")
+	}
+}
+
+// TestBlockStateCropUpperHalf 验证带 half 属性的作物（pitcher_crop）上下半格判定。
+func TestBlockStateCropUpperHalf(t *testing.T) {
+	base, err := BlockStateID("minecraft:pitcher_crop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := BlockStateRangeOf(base)
+	if !ok {
+		t.Fatal("missing state range")
+	}
+	// 10 个状态：age 0–4 × half（upper 在前）。
+	if got := r.End - r.Start + 1; got != 10 {
+		t.Fatalf("pitcher_crop 状态数 = %d，want 10", got)
+	}
+	for age := 0; age <= 4; age++ {
+		for half := 0; half <= 1; half++ {
+			upper, ok := BlockStateCropUpperHalf(r.Start + uint16(age*2+half))
+			if !ok || upper != (half == 0) {
+				t.Fatalf("age=%d half=%d：upper=%v ok=%v", age, half, upper, ok)
+			}
+		}
+	}
+	if _, ok := BlockStateCropUpperHalf(r.End + 1); ok {
+		t.Fatal("越过区间不应被识别")
+	}
+}
+
+// TestBlockStatePickleCount 验证海泡菜 pickles 数量（pickles 主序、waterlogged 次序）。
+func TestBlockStatePickleCount(t *testing.T) {
+	base, err := BlockStateID("minecraft:sea_pickle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := BlockStateRangeOf(base)
+	if !ok {
+		t.Fatal("missing state range")
+	}
+	for i := 0; i < 8; i++ {
+		want := i/2 + 1
+		if got, ok := BlockStatePickleCount(r.Start + uint16(i)); !ok || got != want {
+			t.Fatalf("offset=%d：got=(%d,%v)，want %d", i, got, ok, want)
+		}
+	}
+	if _, ok := BlockStatePickleCount(r.End + 1); ok {
+		t.Fatal("越过海泡菜状态区间的 ID 不应被识别")
 	}
 }

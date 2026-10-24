@@ -294,7 +294,12 @@ func (s *Server) finishBreakBlock(player *session, held item.Stack, dim world.Di
 	}
 	// 破坏粒子与音效（原版 Level.destroyBlock 的 2001 事件；流体不发送）。
 	s.broadcastWorldEvent(dim, [3]int{x, y, z}, worldEventBlockBreak, int32(state))
-	return s.removeBlockAndBroadcast(dim, w, x, y, z, state), false
+	if !s.removeBlockAndBroadcast(dim, w, x, y, z, state) {
+		return false, false
+	}
+	// 双格植物：同步移除另一半（不掉落，与 DoublePlantBlock 的邻居更新等价）。
+	s.removeDoublePlantPair(w, dim, x, y, z, state)
+	return true, false
 }
 
 // destroyBlockByPlayer 完成一次破坏的结算（破坏 + 掉落 + 耐久），
