@@ -960,10 +960,19 @@
     （LCG），世界生成使用的是 `XoroshiroRandomSource`，对拍必须直接构造后者。
     尚未完成：`ImprovedNoise`（Perlin）与 `NormalNoise`（DoublePerlinNoiseSampler）
     的 Go 实现（对照数据已含二者的官方取值，可直接用于逐值对拍）。
-  - [ ] **阶段 2b：Perlin/NormalNoise**：`ImprovedNoise` 的置换表初始化、
-    `fade`/`gradDot`/八点插值，`NormalNoise` 的双 Perlin（`INPUT_FACTOR`
-    1.0181268882175227）与 `valueFactor`/`maxValue` 归一化，均以
-    `testdata/noise_oracle.json` 的 `improvedNoise`/`normalNoise` 逐值校验；
+  - [x] **阶段 2b：ImprovedNoise（Perlin）已完成并逐值对拍**：`noise.go` 实现
+    `ImprovedNoise`（xo/yo/zo + 置换表 + 8 角梯度点积 + 三轴五次插值），
+    与原版一致的细节均已确认：`fkh` 的 16 项梯度表（末 4 项非顺序重复）、
+    点积无归一化、`fade = d*d*d*(d*(d*6-15)+10)`、三轴插值顺序为 x→y→z。
+    同时修正了 `NextInt`：原版用 **nextLong 的低 32 位** 做 32×32→64 乘法并取
+    高 32 位（Lemire 有界随机 + 无符号余数阈值重试），这与高位实现不同，
+    也是置换表不对的根因；`nextInt(0)` 与原版一样 panic。
+    测试：`TestImprovedNoiseStateMatchesVanilla`（xo/yo/zo 与 256 项置换表逐项
+    相等）、`TestImprovedNoiseMatchesVanilla`（4 种子 × 5 点逐值相等）。
+  - [ ] **阶段 2c：NormalNoise**：双 Perlin（`INPUT_FACTOR`
+    1.0181268882175227）、`PerlinNoise.create` 的八度因子与
+    `valueFactor`/`maxValue` 归一化，仍以 `testdata/noise_oracle.json` 的
+    `normalNoise`（continentalness / cave_cheese × 4 种子 × 5 点）逐值校验；
     已按 1.21.11 字节码确认的部分（可直接照抄，无需再猜）：
     `ImprovedNoise(random)` 的 `xo/yo/zo = nextDouble()*256`；置换表为
     `p[i]=i` 后对 i∈[0,256) 做 `j=nextInt(256-i)`、交换 `p[i]` 与 `p[i+j]`；
@@ -971,15 +980,6 @@
     8 个角的取值为 `p(p(i)+j +k)`、`p(p(i+1)+j +k)`、`p(p(i)+j+1 +k)`、
     `p(p(i+1)+j+1 +k)` 及各自 `k+1`（第三轴偏差 `f-1`），第三轴用 `f-1` 的两个角
     单独做一次 lerp 后再与 `k` 层结果合并。
-    本批又从 1.21.11 字节码确认了以下事实（可直接使用）：
-    梯度表是 16 项 int[16][3]：前 12 项为 12 个经典方向，第 12–15 项依次是
-    (1,1,0)、(0,-1,1)、(-1,1,0)、(0,-1,-1)——**不是**前 4 项的顺序重复
-    （这是之前对不上的原因之一）；梯度点积是纯点积、**没有**归一化系数；
-    fade 为 d*d*d*(d*(d*6-15)+10)；8 个角的配对与直觉相反
-    （d-1 对应 p(p(i)+j+1)、e-1 对应 p(p(i+1)+j)）。
-    **仍未确认（唯一阻塞项）**：Mth.a（11 个 double 参数）内部的三线性插值树。
-    本批按常见写法实现后仍与官方不符（(0,0,0) 处 -0.4913 vs 0.28487），
-    故未提交该实现；下一步用 javap 读出 Mth.a 与 Mth.d 后重试。
   - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
     `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
     `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；

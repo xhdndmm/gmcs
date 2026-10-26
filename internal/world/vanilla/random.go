@@ -60,26 +60,25 @@ func (r *Xoroshiro) NextDouble() float64 {
 	return float64(uint64(r.NextLong())>>11) * 0x1p-53
 }
 
-// NextInt 返回 [0, bound) 的随机整数；bound <= 0 时返回 0。
+// NextInt 返回 [0, bound) 的随机整数，与原版 XoroshiroRandomSource.nextInt(int)
+// 一致：取 nextLong 的高 32 位做 32×32→64 乘法，用高 32 位作为结果，低位不足时
+// 按无符号余数阈值重试（Lemire 有界随机，等价原版的 Integer.remainderUnsigned）。
 func (r *Xoroshiro) NextInt(bound int) int {
 	if bound <= 0 {
-		return 0
+		panic("vanilla: NextInt 的 bound 必须为正")
 	}
-	return int(r.nextLongInRange(int64(bound)))
-}
-
-// nextLongInRange 用拒绝采样把 nextLong 映射到 [0, max)（原版
-// RandomSupport.nextLongInRange：丢弃落在最高不完整区间的取值）。
-func (r *Xoroshiro) nextLongInRange(max int64) int64 {
-	if max <= 0 {
-		panic("vanilla: nextLongInRange 的 max 必须为正")
-	}
+	limit := uint64(bound)
 	for {
-		value := r.NextLong()
-		remainder := value % max
-		if value-remainder+max-1 >= 0 { // 无溢出：等价原版的溢出保护
-			return remainder
+		value := uint64(r.NextLong()) & 0xFFFFFFFF
+		product := value * limit
+		low := product & 0xFFFFFFFF
+		if low < limit {
+			threshold := (0xFFFFFFFF - limit + 1) % limit
+			if low < threshold {
+				continue
+			}
 		}
+		return int(product >> 32)
 	}
 }
 

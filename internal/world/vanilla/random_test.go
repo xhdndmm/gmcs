@@ -27,6 +27,13 @@ type oracleFile struct {
 		Seed   int64     `json:"seed"`
 		Values []float64 `json:"values"`
 	} `json:"normalNoise"`
+	ImprovedNoiseState []struct {
+		Seed int64   `json:"seed"`
+		XO   float64 `json:"xo"`
+		YO   float64 `json:"yo"`
+		ZO   float64 `json:"zo"`
+		P    []int   `json:"p"`
+	} `json:"improvedNoiseState"`
 }
 
 // loadOracle 读取对照数据文件。
@@ -108,7 +115,12 @@ func TestXoroshiroNextIntRange(t *testing.T) {
 			}
 		}
 	}
-	if got := random.NextInt(0); got != 0 {
-		t.Fatalf("NextInt(0) = %d, want 0", got)
-	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("NextInt(0) 应当 panic（原版对非正 bound 抛 IllegalArgumentException）")
+			}
+		}()
+		random.NextInt(0)
+	}()
 }
