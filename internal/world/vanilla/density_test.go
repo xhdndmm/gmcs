@@ -363,13 +363,14 @@ func TestOverworldRouterUnsupportedTypes(t *testing.T) {
 		}
 		walk(node)
 	}
-	for _, unsupported := range []string{"interpolated", "find_top_surface", "old_blended_noise", "end_islands"} {
-		if seen[unsupported] && unsupported == "end_islands" {
-			t.Fatalf("overworld 路由树不应出现 %q", unsupported)
+	for _, unsupported := range []string{"interpolated", "find_top_surface"} {
+		if !seen[unsupported] {
+			t.Fatalf("overworld 路由树应当仍需 %q（数据或解析可能出错）", unsupported)
 		}
-		if seen[unsupported] {
-			t.Logf("尚未实现求值的节点类型：%s", unsupported)
-		}
+		t.Logf("尚未实现求值的节点类型：%s", unsupported)
+	}
+	if !seen["old_blended_noise"] {
+		t.Fatal("overworld 路由树应当出现 old_blended_noise（base_3d_noise）")
 	}
 	if !seen["spline"] {
 		t.Fatal("overworld 路由树应当出现 spline（offset/factor/jaggedness 都在用）")

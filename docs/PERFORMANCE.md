@@ -56,6 +56,7 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkImprovedNoise`（单个 perlin 八度） | vanilla | ≈32.8 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkNormalNoiseValue`（continentalness，18 个八度） | vanilla | ≈948 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkNoiseRegistryLookup`（缓存命中） | vanilla | ≈10.5 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkBlendedNoiseValue`（old_blended_noise，24 个八度） | vanilla | ≈1.15 µs/op | 0 B/op | 0 allocs/op |
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
 增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
@@ -1369,8 +1370,27 @@ BenchmarkNoiseRegistryLookup-20      约 10.5 ns/op     0 B/op   0 allocs/op
 `TestNormalNoiseDetailMatchesVanilla`、`TestNormalNoiseLegacyStateMatchesVanilla`
 （2 种噪声 × 4 种子 × 5 点，误差 < 1e-12；并逐八度校验 xo/yo/zo 的派生链）。
 
-## 4. 尚未覆盖
-- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
+### 3.39 旧版混合噪声（old_blended_noise）采样开销（本批，实测）
+
+`minecraft:overworld/base_3d_noise` 用的就是 `BlendedNoise`：3 个 legacy
+`PerlinNoise`（2×16 个八度 + 8 个八度），单点采样最多做 8+16+16 = 40 次
+`ImprovedNoise`。这是目前单次调用最贵的密度函数。
+
+```text
+BenchmarkBlendedNoiseValue-20        约 1.15 µs/op     0 B/op   0 allocs/op
+```
+
+它位于 `final_density` 的上游，每个区块只在一个 4×8×4 的粗网格上采样一次
+（见 `interpolated`），因此单区块开销量级在百微秒以内；真正需要优化时，
+优先看 `interpolated` 的网格复用而不是单次采样。
+
+正确性验证：`TestOldBlendedNoiseParameters`（5 个参数落到正确字段）、
+`TestNoiseSmearedWithZeroScale`（yScale=0 退化为普通采样）、
+`TestBlendedNoiseDeterministic`（同种子逐点一致、不同种子不同、不超过上界）。
+未验证：尚未与原版逐值对拍（缺少该节点的官方真值），将在阶段 5 用官方
+服务端同种子区块对比覆盖。
+
+## 4. 尚未覆盖- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家、100 玩家 × 5 分钟与 100 玩家 × 3 分钟
   loopback 压测（见 3.7、3.13、3.18），真实网络 / 真实客户端渲染仍待验证
 - `go tool trace` 调度与阻塞分析

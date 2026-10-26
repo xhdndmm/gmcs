@@ -48,6 +48,30 @@ func (n *ImprovedNoise) Noise(x, y, z float64) float64 {
 	return n.sampleAndLerp(i, j, k, d-float64(i), e-float64(j), f-float64(k), blendXYZ)
 }
 
+// NoiseSmeared 等价原版 ImprovedNoise.noise(x, y, z, yScale, yMax)：
+// 沿 y 轴把采样点按 yScale 量化（OldBlendedNoise 用它抹平层间跳变）。
+// 量化后的偏移用于取 8 个角点，而 y 方向的插值系数仍用未量化的 h（原版 local 10）。
+func (n *ImprovedNoise) NoiseSmeared(x, y, z, yScale, yMax float64) float64 {
+	d := x + n.xo
+	e := y + n.yo
+	f := z + n.zo
+	i := int(math.Floor(d))
+	j := int(math.Floor(e))
+	k := int(math.Floor(f))
+	dx := d - float64(i)
+	hy := e - float64(j)
+	dz := f - float64(k)
+	smear := 0.0
+	if yScale != 0 {
+		bound := hy
+		if yMax >= 0 && yMax < hy {
+			bound = yMax
+		}
+		smear = math.Floor(bound/yScale+1.0000000116860974e-7) * yScale
+	}
+	return n.sampleAndLerpWithDeltas(i, j, k, dx, hy-smear, dz, [3]float64{fade(dx), fade(hy), fade(dz)}, blendXYZ)
+}
+
 // perm 返回置换表第 index & 255 项（0–255）。
 func (n *ImprovedNoise) perm(index int) int {
 	return n.p[index&255]
@@ -67,6 +91,11 @@ const (
 
 // sampleAndLerp 在立方体 8 个角上取梯度点积并按 order 做三轴插值。
 func (n *ImprovedNoise) sampleAndLerp(i, j, k int, d, e, f float64, order blendOrder) float64 {
+	return n.sampleAndLerpWithDeltas(i, j, k, d, e, f, [3]float64{fade(d), fade(e), fade(f)}, order)
+}
+
+// sampleAndLerpWithDeltas 同 sampleAndLerp，但插值系数由调用方给出（已做 fade）。
+func (n *ImprovedNoise) sampleAndLerpWithDeltas(i, j, k int, d, e, f float64, deltas [3]float64, order blendOrder) float64 {
 	var cube [2][2][2]float64
 	for ix := 0; ix < 2; ix++ {
 		for iy := 0; iy < 2; iy++ {
@@ -92,7 +121,6 @@ func (n *ImprovedNoise) sampleAndLerp(i, j, k int, d, e, f float64, order blendO
 	default:
 		order3 = [3]int{2, 1, 0}
 	}
-	deltas := [3]float64{fade(d), fade(e), fade(f)}
 	// at 按（内层, 中层, 外层）三轴的位取角点值。
 	at := func(inner, middle, outer int) float64 {
 		var bits [3]int
@@ -269,6 +297,12 @@ func (p *PerlinNoise) initFactors(firstOctave int) {
 // 用于 NormalNoise 归一化。
 func (p *PerlinNoise) MaxValue() float64 {
 	return p.maxValue
+}
+
+// OctaveNoise 返回第 i 个八度的 ImprovedNoise（原版 getOctaveNoise：
+// 下标从最高频开始，即 levels[len-1-i]；缺席的八度返回 nil）。
+func (p *PerlinNoise) OctaveNoise(i int) *ImprovedNoise {
+	return p.levels[len(p.levels)-1-i]
 }
 
 // Value 返回 (x, y, z) 处的叠加噪声（原版 PerlinNoise.getValue(x,y,z)）。

@@ -35,12 +35,13 @@ type Context struct {
 // interpolated（区块级 4×8×4 网格插值）、find_top_surface、old_blended_noise、
 // end_islands。这些是阶段 3 的后续部分。
 type Evaluator struct {
-	noises *NoiseRegistry
+	noises  *NoiseRegistry
+	blended map[*Node]*BlendedNoise
 }
 
 // NewEvaluator 为给定噪声注册表创建求值器。
 func NewEvaluator(noises *NoiseRegistry) *Evaluator {
-	return &Evaluator{noises: noises}
+	return &Evaluator{noises: noises, blended: make(map[*Node]*BlendedNoise)}
 }
 
 // NoiseRegistry 返回求值器使用的噪声注册表。
@@ -134,6 +135,8 @@ func (e *Evaluator) Evaluate(node *Node, ctx Context) float64 {
 		// 原版 Spline.compute 先把坐标密度函数求值成 double、再窄化成 float 参与
 		// CubicSpline 求值，最后 f2d 转回 double。
 		return float64(e.evaluateSpline(node.Spline, ctx))
+	case "old_blended_noise":
+		return e.blendedNoise(node).Value(ctx.X, ctx.Y, ctx.Z)
 	}
 	panic(fmt.Sprintf("vanilla: 密度函数节点类型 %q 尚未实现求值", node.Type))
 }
@@ -201,6 +204,24 @@ func linearExtendSpline(coordinate float32, point SplinePoint, value float32) fl
 // lerpFloat 是 Mth.lerp 的单精度版本：start + delta*(end-start)。
 func lerpFloat(delta, start, end float32) float32 {
 	return start + delta*(end-start)
+}
+
+// blendedNoise 按节点缓存 BlendedNoise 实例（参数固定，随机源由种子派生）。
+func (e *Evaluator) blendedNoise(node *Node) *BlendedNoise {
+	if noise, ok := e.blended[node]; ok {
+		return noise
+	}
+	// 解析时 xz_scale / y_scale 落在 XZScale / YScale，其余三项落在 Legacy[2..4]。
+	noise := NewBlendedNoise(
+		e.noises.FromHashOf("minecraft:terrain"),
+		node.XZScale,
+		node.YScale,
+		node.Legacy[2],
+		node.Legacy[3],
+		node.Legacy[4],
+	)
+	e.blended[node] = noise
+	return noise
 }
 
 // child 返回第 index 个子节点并求值。

@@ -1033,11 +1033,24 @@
     时直接报数据校验错误）——1.21.11 原版数据 54 个控制点全部显式给出。
     测试：`TestSplineSinglePoint`、`TestSplineInterpolation`（区间内插值 +
     两端线性外推）、`TestSplineNested`（嵌套子样条）。
-  - [ ] **阶段 3c：插值网格 / 旧版混合噪声 / 顶面搜索**：
-    `interpolated`（`NoiseChunk` 的 4×8×4 网格与三线性插值）、
-    `find_top_surface`、`old_blended_noise`（`minecraft:overworld/base_3d_noise`
-    实际在用）。这三个类型目前都在 overworld 路由树中可达
-    （`TestOverworldRouterUnsupportedTypes` 会列出）。
+  - [x] **阶段 3c：old_blended_noise（BlendedNoise）已完成**：`minecraft:overworld/
+    base_3d_noise` 用的就是它。按 `fkb` 字节码复刻：
+    - 三个 legacy `PerlinNoise`：`min_limit`/`max_limit` 为八度 `-15..0`（16 个振幅 1），
+      `main` 为 `-7..0`（8 个振幅 1）；随机源是 `RandomState` 给的
+      `positional.fromHashOf("minecraft:terrain")`（由 `eve$a` 的 visitor 重建），
+      所以**与世界种子相关**；
+    - 采样：先由 `main` 的 8 个八度算出 `mix=(v/10+1)/2`；再对 16 个八度分别累加
+      `min_limit`（`mix<1` 时）与 `max_limit`（`mix>0` 时），最后
+      `clampedLerp(mix, min/512, max/512)/128`；
+    - 新增 `ImprovedNoise.NoiseSmeared`（原版 5 参数 `noise(x,y,z,yScale,yMax)`）：
+      沿 y 按 `floor(bound/yScale + 1e-7)*yScale` 量化后取角点，但插值系数仍用未
+      量化的 y 小数部分；`yScale==0` 时退化为普通采样（有专门测试）。
+    字段 `o`（= `min_limit.valueFactor(k+2)`）就是 `maxValue()`，`minValue()` 是其相反数。
+    测试：`TestOldBlendedNoiseParameters`、`TestNoiseSmearedWithZeroScale`、
+    `TestBlendedNoiseDeterministic`（同种子逐点一致、不同种子不同、取值不超过上界）。
+  - [ ] **阶段 3d：插值网格 / 顶面搜索**：`interpolated`（`NoiseChunk` 的 4×8×4
+    网格与三线性插值）、`find_top_surface`。这两个是目前 overworld 路由树里
+    仅剩的未实现类型（`TestOverworldRouterUnsupportedTypes` 会列出）。
   - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
     `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
     `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；

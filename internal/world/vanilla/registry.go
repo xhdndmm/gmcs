@@ -53,3 +53,9 @@ func (r *NoiseRegistry) Noise(name string) *NormalNoise {
 	r.cache[key] = noise
 	return noise
 }
+
+// FromHashOf 按资源名派生一条独立的随机流（原版 PositionalRandomFactory.fromHashOf）。
+// 世界生成里 old_blended_noise 用的就是 fromHashOf("minecraft:terrain")。
+func (r *NoiseRegistry) FromHashOf(name string) *Xoroshiro {
+	return r.factory.FromHashOf(qualify(name))
+}
