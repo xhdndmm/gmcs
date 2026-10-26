@@ -58,10 +58,14 @@ type Spline struct {
 
 // SplinePoint 是 spline 的一个控制点；Value 与 Sub 互斥
 // （Sub 非空表示该点嵌套了子 spline）。
+//
+// Derivative 是原版控制点的 derivative（float 精度）。原版允许省略并自动补全，
+// 本包目前要求数据显式提供：1.21.11 的原版数据 54 个控制点全部带 derivative。
 type SplinePoint struct {
-	Location float64
-	Value    float64
-	Sub      *Spline
+	Location   float64
+	Value      float64
+	Derivative float64
+	Sub        *Spline
 }
 
 // nodeFields 描述每种节点类型需要的字段名。
@@ -299,6 +303,12 @@ func parseSpline(data *Data, where string, value any) (*Spline, []Problem) {
 			continue
 		}
 		out := SplinePoint{Location: location}
+		derivative, ok := point["derivative"].(float64)
+		if !ok {
+			problems = append(problems, Problem{Where: where, Detail: fmt.Sprintf("第 %d 个控制点缺少 derivative（本包未实现缺省导数补全）", i)})
+			continue
+		}
+		out.Derivative = derivative
 		switch typed := point["value"].(type) {
 		case float64:
 			out.Value = typed

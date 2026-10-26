@@ -1022,11 +1022,22 @@
     `TestWeirdScaledSampler`、`TestRangeChoiceUpperBoundExclusive`、
     `TestUnsupportedNodePanics`、`TestOverworldRouterUnsupportedTypes`
     （后者枚举 overworld 路由树里仍未覆盖的节点类型，作为下一批清单）。
-  - [ ] **阶段 3b：样条 / 插值网格 / 旧版混合噪声 / 顶面搜索**：
-    `spline`（`CubicSpline` 是 float 精度，还要复刻缺省导数的补全规则）、
+  - [x] **阶段 3b：spline（CubicSpline）已完成**：按 `bfe$e` 字节码复刻
+    `CubicSpline.Multipoint.apply`：区间外按端点导数线性外推
+    （`value + derivative*(f-location)`，导数为 0 时取端点值），区间内为
+    `lerp(t, y0, y1) + t*(1-t)*lerp(t, a, b)`，其中
+    `a = d0*(loc1-loc0) - (y1-y0)`、`b = -d1*(loc1-loc0) + (y1-y0)`。
+    整条链路保持**单精度**：坐标密度函数先求值成 double 再窄化成 float，
+    样条内部与嵌套子样条都用 float 运算，最后才转回 double（与 `euk$x` 一致）。
+    控制点解析新增 `derivative`；**未实现**原版的缺省导数补全（省略 derivative
+    时直接报数据校验错误）——1.21.11 原版数据 54 个控制点全部显式给出。
+    测试：`TestSplineSinglePoint`、`TestSplineInterpolation`（区间内插值 +
+    两端线性外推）、`TestSplineNested`（嵌套子样条）。
+  - [ ] **阶段 3c：插值网格 / 旧版混合噪声 / 顶面搜索**：
     `interpolated`（`NoiseChunk` 的 4×8×4 网格与三线性插值）、
     `find_top_surface`、`old_blended_noise`（`minecraft:overworld/base_3d_noise`
-    实际在用）。这四个类型目前都在 overworld 路由树中可达。
+    实际在用）。这三个类型目前都在 overworld 路由树中可达
+    （`TestOverworldRouterUnsupportedTypes` 会列出）。
   - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
     `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
     `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；

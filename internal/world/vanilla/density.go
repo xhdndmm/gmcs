@@ -127,8 +127,80 @@ func (e *Evaluator) Evaluate(node *Node, ctx Context) float64 {
 		// 缓存只影响重复求值的开销与「同一格内只算一次」的语义，
 		// 单点求值时等价于直接求值其子节点。
 		return e.child(node, 0, ctx)
+	case "spline":
+		if node.Spline == nil {
+			panic("vanilla: spline 节点缺少控制点表")
+		}
+		// 原版 Spline.compute 先把坐标密度函数求值成 double、再窄化成 float 参与
+		// CubicSpline 求值，最后 f2d 转回 double。
+		return float64(e.evaluateSpline(node.Spline, ctx))
 	}
 	panic(fmt.Sprintf("vanilla: 密度函数节点类型 %q 尚未实现求值", node.Type))
+}
+
+// evaluateSpline 求值原版 CubicSpline.Multipoint（float 精度）。
+//
+// 公式（按 bfe$e 字节码逐条复刻）：
+//
+//	if f < locations[0]  → linearExtend(f, ..., 0)
+//	if f >= locations[n-1] → linearExtend(f, ..., n-1)
+//	否则取区间 i，t = (f-loc[i])/(loc[i+1]-loc[i])，
+//	  a = d[i]*(loc[i+1]-loc[i]) - (y[i+1]-y[i])
+//	  b = -d[i+1]*(loc[i+1]-loc[i]) + (y[i+1]-y[i])
+//	  result = lerp(t, y[i], y[i+1]) + t*(1-t)*lerp(t, a, b)
+func (e *Evaluator) evaluateSpline(spline *Spline, ctx Context) float32 {
+	points := spline.Points
+	if len(points) == 0 {
+		panic("vanilla: spline 没有控制点")
+	}
+	coordinate := float32(e.Evaluate(spline.Coordinate, ctx))
+	last := len(points) - 1
+	index := len(points) - 1
+	for i := range points {
+		if coordinate < float32(points[i].Location) {
+			index = i - 1
+			break
+		}
+	}
+	switch {
+	case index < 0:
+		return linearExtendSpline(coordinate, points[0], e.splinePointValue(points[0], ctx))
+	case index == last:
+		return linearExtendSpline(coordinate, points[last], e.splinePointValue(points[last], ctx))
+	}
+	first, second := points[index], points[index+1]
+	start := float32(first.Location)
+	end := float32(second.Location)
+	t := (coordinate - start) / (end - start)
+	y0 := e.splinePointValue(first, ctx)
+	y1 := e.splinePointValue(second, ctx)
+	slope0 := float32(first.Derivative)
+	slope1 := float32(second.Derivative)
+	a := slope0*(end-start) - (y1 - y0)
+	b := -slope1*(end-start) + (y1 - y0)
+	return lerpFloat(t, y0, y1) + t*(1-t)*lerpFloat(t, a, b)
+}
+
+// splinePointValue 取控制点的值：嵌套子样条按同一上下文递归求值。
+func (e *Evaluator) splinePointValue(point SplinePoint, ctx Context) float32 {
+	if point.Sub != nil {
+		return e.evaluateSpline(point.Sub, ctx)
+	}
+	return float32(point.Value)
+}
+
+// linearExtendSpline 是 CubicSpline 在区间外的线性外推：导数为 0 时取端点值。
+func linearExtendSpline(coordinate float32, point SplinePoint, value float32) float32 {
+	derivative := float32(point.Derivative)
+	if derivative == 0 {
+		return value
+	}
+	return value + derivative*(coordinate-float32(point.Location))
+}
+
+// lerpFloat 是 Mth.lerp 的单精度版本：start + delta*(end-start)。
+func lerpFloat(delta, start, end float32) float32 {
+	return start + delta*(end-start)
 }
 
 // child 返回第 index 个子节点并求值。

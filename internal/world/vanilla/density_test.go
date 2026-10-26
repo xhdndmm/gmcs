@@ -242,14 +242,84 @@ func TestUnsupportedNodePanics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载数据失败：%v", err)
 	}
-	node := mustParseNode(t, data,
-		`{"type":"minecraft:spline","spline":{"coordinate":"minecraft:y","points":[{"location":0,"value":1}]}}`)
+	node := mustParseNode(t, data, `{"type":"minecraft:interpolated","argument":0}`)
 	defer func() {
 		if recover() == nil {
 			t.Fatal("未实现的节点类型应当 panic")
 		}
 	}()
 	evaluator.Evaluate(node, Context{})
+}
+
+// TestSplineSinglePoint 校验单点样条：导数与 0 时处处取该点值，
+// 导数非零时按原版 linearExtend 做线性外推。
+func TestSplineSinglePoint(t *testing.T) {
+	evaluator := mustEvaluator(t)
+	data, err := Load()
+	if err != nil {
+		t.Fatalf("加载数据失败：%v", err)
+	}
+	constant := mustParseNode(t, data,
+		`{"type":"minecraft:spline","spline":{"coordinate":"minecraft:y","points":[{"location":0,"value":0.25,"derivative":0}]}}`)
+	for _, y := range []int{-1000, -1, 0, 1, 1000} {
+		if got := evaluator.Evaluate(constant, Context{Y: y}); got != 0.25 {
+			t.Fatalf("y=%d 时取值 = %v, want 0.25", y, got)
+		}
+	}
+	linear := mustParseNode(t, data,
+		`{"type":"minecraft:spline","spline":{"coordinate":"minecraft:y","points":[{"location":0,"value":0.25,"derivative":5}]}}`)
+	if got := evaluator.Evaluate(linear, Context{Y: 2}); got != 10.25 {
+		t.Fatalf("单点外推取值 = %v, want 10.25", got)
+	}
+}
+
+// TestSplineInterpolation 校验区间内的三次插值与区间外的线性外推。
+func TestSplineInterpolation(t *testing.T) {
+	evaluator := mustEvaluator(t)
+	data, err := Load()
+	if err != nil {
+		t.Fatalf("加载数据失败：%v", err)
+	}
+	// 两个控制点，导数都为 0：中间点应恰为两端平均值，整体保持单调。
+	node := mustParseNode(t, data,
+		`{"type":"minecraft:spline","spline":{"coordinate":"minecraft:y","points":[`+
+			`{"location":0,"value":0,"derivative":0},`+
+			`{"location":10,"value":1,"derivative":0}]}}`)
+	cases := map[int]float64{-10: 0, 0: 0, 5: 0.5, 10: 1, 20: 1}
+	for y, want := range cases {
+		if got := evaluator.Evaluate(node, Context{Y: y}); got != want {
+			t.Fatalf("y=%d 时取值 = %v, want %v", y, got, want)
+		}
+	}
+
+	// 端点导数非零时区间外做线性外推：value + derivative*(y - location)。
+	extrapolate := mustParseNode(t, data,
+		`{"type":"minecraft:spline","spline":{"coordinate":"minecraft:y","points":[`+
+			`{"location":0,"value":1,"derivative":2},`+
+			`{"location":10,"value":3,"derivative":-0.5}]}}`)
+	if got := evaluator.Evaluate(extrapolate, Context{Y: -3}); got != -5 {
+		t.Fatalf("下界外推 = %v, want -5", got)
+	}
+	if got := evaluator.Evaluate(extrapolate, Context{Y: 20}); got != -2 {
+		t.Fatalf("上界外推 = %v, want -2", got)
+	}
+}
+
+// TestSplineNested 校验嵌套子样条按同一上下文递归求值。
+func TestSplineNested(t *testing.T) {
+	evaluator := mustEvaluator(t)
+	data, err := Load()
+	if err != nil {
+		t.Fatalf("加载数据失败：%v", err)
+	}
+	node := mustParseNode(t, data,
+		`{"type":"minecraft:spline","spline":{"coordinate":"minecraft:y","points":[`+
+			`{"location":0,"value":{"coordinate":"minecraft:y","points":[`+
+			`{"location":0,"value":10,"derivative":0}]},"derivative":0},`+
+			`{"location":10,"value":100,"derivative":0}]}}`)
+	if got, want := evaluator.Evaluate(node, Context{Y: 5}), 55.0; got != want {
+		t.Fatalf("嵌套样条 y=5 取值 = %v, want %v", got, want)
+	}
 }
 
 // TestOverworldRouterUnsupportedTypes 记录 overworld 路由树里仍未被
@@ -293,10 +363,16 @@ func TestOverworldRouterUnsupportedTypes(t *testing.T) {
 		}
 		walk(node)
 	}
-	for _, unsupported := range []string{"spline", "interpolated", "find_top_surface", "old_blended_noise", "end_islands"} {
+	for _, unsupported := range []string{"interpolated", "find_top_surface", "old_blended_noise", "end_islands"} {
+		if seen[unsupported] && unsupported == "end_islands" {
+			t.Fatalf("overworld 路由树不应出现 %q", unsupported)
+		}
 		if seen[unsupported] {
 			t.Logf("尚未实现求值的节点类型：%s", unsupported)
 		}
+	}
+	if !seen["spline"] {
+		t.Fatal("overworld 路由树应当出现 spline（offset/factor/jaggedness 都在用）")
 	}
 	for _, implemented := range []string{"shift_a", "noise", "weird_scaled_sampler", "y_clamped_gradient", "add"} {
 		if !seen[implemented] {
