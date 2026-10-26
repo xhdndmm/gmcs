@@ -368,6 +368,7 @@ func (s *Server) tick() {
 	s.tickCrops()
 	s.tickWorldTime(players)
 	s.tickWeather(players)
+	s.tickLightning(players)
 	s.tickFurnaces()
 	s.tickBrewingStands()
 	s.tickRedstone()
@@ -1544,6 +1545,9 @@ func (s *Server) damagePlayerWithMessage(player *session, amount float32, source
 		if deathTemplate != "" {
 			message = fmt.Sprintf(deathTemplate, player.name)
 		}
+		// 原版 ServerPlayer.die：先给自己发 Player Combat Kill（显示死亡界面），
+		// 再把死亡消息广播到聊天栏。只发 System Chat 时客户端不会进入死亡界面。
+		player.tryWrite(protocol.EncodePlayerCombatKill(player.entityID, message))
 		s.broadcastPacket(protocol.EncodeSystemChat(message))
 		slog.Info("player died", "name", player.name, "source", sourceName)
 		// 与原版一致：死亡时掉落全部物品与经验球（等级 × 7，上限 100）。

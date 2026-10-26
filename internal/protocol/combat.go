@@ -12,7 +12,24 @@ const (
 	PlayPacketIDExplosion = 0x24
 	// PlayPacketIDEntityVelocity 是 Set Entity Motion（设置实体速度）。
 	PlayPacketIDEntityVelocity = 0x63
+	// PlayPacketIDPlayerCombatKill 是 Player Combat Kill（官方名
+	// minecraft:player_combat_kill）：客户端收到后显示死亡界面。
+	PlayPacketIDPlayerCombatKill = 0x42
 )
+
+// EncodePlayerCombatKill 编码 Player Combat Kill 包：
+//
+//	playerID: VarInt（要显示死亡界面的玩家实体 ID）
+//	message:  Text Component（死亡消息，以网络 NBT String Tag 编码）
+//
+// 客户端只在收到本包后才显示“你死了”界面（原版
+// ServerPlayer.die → ClientboundPlayerCombatKillPacket），
+// 仅广播 System Chat 死亡消息不会触发该界面。
+func EncodePlayerCombatKill(playerID int32, message string) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDPlayerCombatKill))
+	packet = AppendVarInt(packet, playerID)
+	return AppendNBTString(packet, message)
+}
 
 // 爆炸粒子类型 ID（客户端内置 Particle 注册表的固定编号）。
 // 参考官方数据生成器：22 = explosion_emitter、23 = explosion。

@@ -914,6 +914,24 @@
     `TestAquaticMobsSpawnAndSwim`、`TestSpawnMobInOceanSpawnsAquatic`、
     `TestLevelStatePersistence`、`TestGhostRecipePacketEncoding`。
 
+- [x] 玩家死亡界面与雷暴闪电（本批，已实现并测试）：
+  - **Player Combat Kill（0x42）**：玩家死亡时先给自己下发该包（客户端据此
+    显示死亡界面），再把死亡消息广播到聊天栏；字段为 VarInt 玩家实体 ID +
+    死亡消息 Text Component（网络 NBT String Tag）；
+  - **雷暴闪电**：按原版 `ServerLevel.tickChunk` 的概率落雷（每区块每 tick
+    1/100000，gmcs 用“视距内 17×17 区块 / 100000”的等效单次掷骰，每名主世界
+    玩家一次），落雷点需 `isRainingAt`（下雨 + 可见天空）；生成 Lightning Bolt
+    实体（2 tick 后移除）、播放 `lightning_bolt.thunder`/`impact` 音效、
+    雷击点空气且下方为固体时点火、`AABB.inflate(3,6,3)` 内生物与玩家受到
+    5 点闪电伤害并点燃 8 秒（死亡消息 “%s was struck by lightning”）；
+  - 注册表缺少闪电实体/音效/伤害类型时只禁用闪电，不影响其它系统；
+  - 新增测试：`TestEncodePlayerCombatKillLayout`、
+    `TestEncodePlayerCombatKillEmptyMessage`、`TestDeathScreenPacketOnDeath`、
+    `TestDeathScreenUsesCustomTemplate`、`TestLightningStrikeEffects`、
+    `TestLightningRequiresRain`、`TestLightningChancePerTick`；
+    新增基准：`BenchmarkLightningTickClear`（≈ 20 ns/op、零分配）、
+    `BenchmarkLightningTickThunder`（4 名玩家 ≈ 75 ns/op）。
+
 ## 待完成
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
@@ -957,9 +975,9 @@
     `Set Entity Data`（0x61）、`Entity Position Sync`（0x23）、`Respawn`（0x50，
     含 1.21.9+ 新增的 `seaLevel` 字段）字段与 ID 均与客户端一致；
   - 未验证/待排查方向：需要客户端侧完整断线文本或服务器日志（是否是 tick
-    goroutine panic 导致连接被关闭、是否只在特定方块被炸毁时出现）。此外
-    gmcs 尚未发送 `Player Combat Kill`（0x42），死亡界面因此不显示，属于
-    已知的兼容性缺口（见“已知限制”）。
+    goroutine panic 导致连接被关闭、是否只在特定方块被炸毁时出现）。
+    （原先记录的 “未发送 Player Combat Kill（0x42）” 缺口已在本批补齐，
+    见下方“玩家死亡界面与雷暴闪电”条目。）
 
 ## 已知限制
 
@@ -1054,9 +1072,10 @@
   （原版可替换方块如草/雪层未覆盖）
 
 - 天气限制（见上“天气系统批次”）：无群系降水类型与温度建模（主世界所有群系按
-  降雨处理，没有雪原降雪/沙漠无雨）；雷暴不产生闪电（无 LightningBolt、不点燃
-  火焰、不劈中实体）；炼药锅不积水、雪层不堆积；天气状态不持久化
-  （`rainTime`/`thunderTime` 重启后归零，原版写入 level.dat）；天空暴露用
+  降雨处理，没有雪原降雪/沙漠无雨）；闪电已实现（雷暴按原版概率落雷、点火、
+  对范围内实体造成 5 点伤害并点燃 8 秒），但未实现避雷针引导、闪电使苦力怕
+  充能、雷击不破坏方块（原版也不破坏）、不把猪变僵尸猪灵；
+  炼药锅不积水、雪层不堆积；天空暴露用
   “有碰撞形状的方块”近似 `Heightmap.MOTION_BLOCKING`；无游戏规则
   `doWeatherCycle`（始终推进，需关闭时只能改代码/命令）；`/weather` 的
   duration 按整数秒解析（原版 TimeArgument 支持 `1d`/`30s` 等后缀）

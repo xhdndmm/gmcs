@@ -166,6 +166,15 @@ type Server struct {
 	xpOrbsEnabled bool
 	xpOrbs        map[int32]*xpOrb
 
+	// 雷暴闪电（注册表缺少闪电实体/音效/伤害类型时禁用）；
+	// lightningBolts 是仍在显示的闪电实体（受 entityMu 保护，见 lightning.go）。
+	lightningTypeID       int32
+	soundLightningThunder int32
+	soundLightningImpact  int32
+	lightningDamageTypeID int32
+	lightningEnabled      bool
+	lightningBolts        map[int32]*lightningBolt
+
 	// 漏斗传输：hoppers 是已注册的漏斗运行时状态（受 hopperMu 保护）；
 	// containerTransferMu 串行化“从方块实体载入容器内容”与漏斗搬运事务。
 	hopperMu            sync.Mutex
@@ -504,6 +513,7 @@ func New(cfg config.Config) (*Server, error) {
 	server.resolveXPOrbRegistryIDs()
 	server.resolveHopperRegistryIDs()
 	server.resolveTntRegistryIDs()
+	server.resolveLightningIDs()
 	server.resolvePlateSounds()
 	server.resolveOpenableSounds()
 	server.resolveFallDamageBlocks()

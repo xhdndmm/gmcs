@@ -51,6 +51,8 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkFindPathUnreachable`（512 节点耗尽） | world | ≈16.5 µs/op | 0 B/op | 0 allocs/op |
 | `BenchmarkCollides`（单盒相交检测） | world | ≈50.1 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkClipMove`（单轴扫掠裁剪） | world | ≈94.2 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkLightningTickClear`（非雷暴） | server | ≈20.7 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkLightningTickThunder`（4 玩家雷暴） | server | ≈74.7 ns/op | 0 B/op | 0 allocs/op |
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
 增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
@@ -1276,7 +1278,8 @@ BenchmarkCropTick256-20          28.2–29.4 µs/op          28.5–30.0 µs/op
 天气；`go test ./...`（`internal/server` 19.0 s）与
 `go test -race ./internal/server ./internal/world ./internal/registry` 通过。
 尚未验证：未与原版服务器逐 tick 对拍天气序列，也未在真实客户端观察降雨
-渲染；闪电/炼药锅/积雪未实现（见 docs/TODO.md 天气限制）。
+渲染；闪电已在后续批次实现（见 3.37），炼药锅/积雪仍未实现（见 docs/TODO.md
+天气限制）。
 
 ### 3.36 地形观感批次（本批，实测）
 
@@ -1309,6 +1312,35 @@ BenchmarkServerTickManyPlayers 332.0–334.3 µs/op          331.0–333.7 µs/o
 `go test -race ./internal/server ./internal/world`（202 s / 8 s）通过。
 未验证：未与真实客户端观察新地形观感（洞穴密度/河岸/树冠），也未与原版
 逐区块对拍地形。
+
+### 3.37 死亡界面与雷暴闪电（本批，实测）
+
+本批新增两条服务端路径：死亡时下发 `Player Combat Kill`（0x42，常量编码），
+以及每 tick 的闪电推进（`tickLightning`，仅在 `thundering` 时掷骰）。
+闪电的判定放在 `tickWeather` 之后、玩家写缓冲刷出之前，沿用同一帧的
+广播聚合。
+
+专用基准（`-count=3`，`-benchtime=1s`，`internal/server`）：
+
+```text
+BenchmarkLightningTickClear-20        约 20.7 ns/op     0 B/op   0 allocs/op
+   （非雷暴：一次 atomic 读取 + isThundering 的锁 + 空 map 检查）
+BenchmarkLightningTickThunder-20      约 74.7 ns/op     0 B/op   0 allocs/op
+   （雷暴：4 名玩家各掷一次骰子，无落雷时的常态开销）
+```
+
+按 50 ms tick 预算计算，4 名玩家 / 100 名玩家的雷暴常态开销分别约为
+0.00015% / 0.0037%；真正的落雷（平均每 200–500 tick 一次）才会发生
+实体广播、AABB 扫描与伤害结算，属于稀有事件。
+`Player Combat Kill` 只在玩家死亡时编码一次（≈ msg 长度 + 少量字节），
+不在热路径上。
+
+正确性验证：`internal/protocol/combat_test.go` 逐字段校验包布局；
+`internal/server/death_screen_test.go` 与 `internal/server/lightning_test.go`
+覆盖死亡界面下发（含自定义死亡模板）、落雷的完整效果（实体/点火/生物
+伤害与点燃/玩家伤害与点燃/2 tick 后移除）、非雷暴时掷骰频率量级。
+未验证：未在真实客户端观察死亡界面与闪电渲染，也未与原版逐 tick 对拍
+落雷序列（概率模型为等效近似，见 docs/TODO.md 天气限制）。
 
 ## 4. 尚未覆盖
 
