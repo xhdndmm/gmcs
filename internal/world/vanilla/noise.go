@@ -4,7 +4,10 @@
 
 package vanilla
 
-import "math"
+import (
+	"math"
+	"strconv"
+)
 
 // ImprovedNoise 是原版 perlin 噪声（net.minecraft.world.level.levelgen.synth.ImprovedNoise）。
 // 按 1.21.11 服务端字节码对齐：
@@ -221,10 +224,45 @@ func NewPerlinNoise(random *Xoroshiro, firstOctave int, amplitudes []float64) *P
 	if minOctave < size-1 {
 		panic("vanilla: PerlinNoise 暂不支持正八度")
 	}
-	perlin.lowestFreqInputFactor = math.Pow(2, float64(-minOctave))
-	perlin.lowestFreqValueFactor = math.Pow(2, float64(size-1)) / (math.Pow(2, float64(size)) - 1)
-	perlin.maxValue = perlin.valueFactor(2)
+	perlin.initFactors(firstOctave)
 	return perlin
+}
+
+// NewPerlinNoiseLegacy 等价原版 PerlinNoise.createLegacy(RandomSource, int, DoubleList)
+// （混淆名 b）。这是世界生成实际使用的路径：每个非零振幅八度的 ImprovedNoise
+// 都从 forkPositional() 派生的独立随机流取数，按 "octave_<n>" 的 MD5 命名，
+// 因此不依赖创建顺序，也不存在“跳过一个 ImprovedNoise”的随机数消耗。
+func NewPerlinNoiseLegacy(random *Xoroshiro, firstOctave int, amplitudes []float64) *PerlinNoise {
+	size := len(amplitudes)
+	if size == 0 {
+		panic("vanilla: PerlinNoise 至少需要一个八度振幅")
+	}
+	perlin := &PerlinNoise{
+		amplitudes: append([]float64(nil), amplitudes...),
+		levels:     make([]*ImprovedNoise, size),
+	}
+	positional := random.ForkPositional()
+	for i := 0; i < size; i++ {
+		if perlin.amplitudes[i] == 0 {
+			continue
+		}
+		octave := firstOctave + i
+		perlin.levels[i] = NewImprovedNoise(positional.FromHashOf("octave_" + strconv.Itoa(octave)))
+	}
+	perlin.initFactors(firstOctave)
+	return perlin
+}
+
+// initFactors 计算原版构造函数尾部的两个八度因子与理论上界：
+//
+//	lowestFreqInputFactor = 2^firstOctave
+//	lowestFreqValueFactor = 2^(n-1) / (2^n - 1)
+//	maxValue              = valueFactor(2)
+func (p *PerlinNoise) initFactors(firstOctave int) {
+	size := len(p.amplitudes)
+	p.lowestFreqInputFactor = math.Pow(2, float64(firstOctave))
+	p.lowestFreqValueFactor = math.Pow(2, float64(size-1)) / (math.Pow(2, float64(size)) - 1)
+	p.maxValue = p.valueFactor(2)
 }
 
 // MaxValue 返回该噪声在 |input|≤2 时可能达到的最大绝对值（原版 maxValue()），
@@ -282,9 +320,25 @@ type NormalNoise struct {
 }
 
 // NewNormalNoise 等价原版 NormalNoise.create(RandomSource, NoiseParameters)。
+//
+// 注意：原版世界生成实际用的是 NewNormalNoiseLegacy（Noises.createNormalNoise
+// 调的是 createLegacy）；这个非 legacy 版本仅用于对照测试。
 func NewNormalNoise(random *Xoroshiro, firstOctave int, amplitudes []float64) *NormalNoise {
 	first := NewPerlinNoise(random, firstOctave, amplitudes)
 	second := NewPerlinNoise(random, firstOctave, amplitudes)
+	return newNormalNoise(first, second, firstOctave, amplitudes)
+}
+
+// NewNormalNoiseLegacy 等价原版 NormalNoise.createLegacy(RandomSource, NoiseParameters)
+// （混淆名 b），即原版世界生成（Noises.createNormalNoise）真正使用的路径。
+func NewNormalNoiseLegacy(random *Xoroshiro, firstOctave int, amplitudes []float64) *NormalNoise {
+	first := NewPerlinNoiseLegacy(random, firstOctave, amplitudes)
+	second := NewPerlinNoiseLegacy(random, firstOctave, amplitudes)
+	return newNormalNoise(first, second, firstOctave, amplitudes)
+}
+
+// newNormalNoise 完成两份 PerlinNoise 的归一化（原版构造函数的尾部）。
+func newNormalNoise(first, second *PerlinNoise, firstOctave int, amplitudes []float64) *NormalNoise {
 	minIndex, maxIndex := math.MaxInt32, math.MinInt32
 	for i, amplitude := range amplitudes {
 		if amplitude != 0 {

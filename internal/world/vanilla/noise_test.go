@@ -125,6 +125,75 @@ func TestNormalNoiseMatchesVanilla(t *testing.T) {
 	}
 }
 
+// TestNormalNoiseLegacyMatchesVanilla 校验世界生成实际使用的 legacy 噪声
+// （forkPositional + fromHashOf("octave_n") 派生每个八度随机源）。
+func TestNormalNoiseLegacyMatchesVanilla(t *testing.T) {
+	oracle := loadOracle(t)
+	if len(oracle.NormalNoiseLegacy) == 0 {
+		t.Fatal("对照数据缺少 normalNoiseLegacy")
+	}
+	for _, group := range oracle.NormalNoiseLegacy {
+		params, ok := oracleNormalNoiseParams[group.Noise]
+		if !ok {
+			t.Fatalf("对拍数据中出现未登记的噪声 %q", group.Noise)
+		}
+		noise := NewNormalNoiseLegacy(NewXoroshiro(group.Seed), params.firstOctave, params.amplitudes)
+		if len(group.Values) != len(oracleSamplePoints) {
+			t.Fatalf("%s seed=%d 的采样点数 = %d, want %d", group.Noise, group.Seed, len(group.Values), len(oracleSamplePoints))
+		}
+		for i, want := range group.Values {
+			point := oracleSamplePoints[i]
+			got := noise.Value(point[0], point[1], point[2])
+			if diff := got - want; diff > 1e-12 || diff < -1e-12 {
+				t.Fatalf("%s seed=%d 点 %v 的取值 = %.17g, want %.17g（差 %g）",
+					group.Noise, group.Seed, point, got, want, diff)
+			}
+		}
+	}
+}
+
+// TestNormalNoiseLegacyStateMatchesVanilla 逐八度校验派生链：
+// forkPositional() 的两个 nextLong 与 MD5("octave_<n>") 的异或结果必须与原版一致。
+func TestNormalNoiseLegacyStateMatchesVanilla(t *testing.T) {
+	oracle := loadOracle(t)
+	if len(oracle.NormalNoiseLegacyState) == 0 {
+		t.Fatal("对照数据缺少 normalNoiseLegacyState")
+	}
+	for _, group := range oracle.NormalNoiseLegacyState {
+		params, ok := oracleNormalNoiseParams[group.Noise]
+		if !ok {
+			t.Fatalf("对拍数据中出现未登记的噪声 %q", group.Noise)
+		}
+		perlin := NewPerlinNoiseLegacy(NewXoroshiro(group.Seed), params.firstOctave, params.amplitudes)
+		expected := make(map[int]struct{ xo, yo, zo float64 }, len(group.Octaves))
+		for _, octave := range group.Octaves {
+			expected[octave.Octave] = struct{ xo, yo, zo float64 }{octave.XO, octave.YO, octave.ZO}
+		}
+		if len(expected) != len(group.Octaves) {
+			t.Fatalf("%s 的八度列表有重复项", group.Noise)
+		}
+		found := 0
+		for i, level := range perlin.levels {
+			if level == nil {
+				continue
+			}
+			octave := params.firstOctave + i
+			want, ok := expected[octave]
+			if !ok {
+				t.Fatalf("%s 多出了原版不存在的八度 %d", group.Noise, octave)
+			}
+			found++
+			if level.xo != want.xo || level.yo != want.yo || level.zo != want.zo {
+				t.Fatalf("%s 八度 %d 的偏移 = (%v,%v,%v), want (%v,%v,%v)",
+					group.Noise, octave, level.xo, level.yo, level.zo, want.xo, want.yo, want.zo)
+			}
+		}
+		if found != len(expected) {
+			t.Fatalf("%s 只生成了 %d 个八度，原版有 %d 个", group.Noise, found, len(expected))
+		}
+	}
+}
+
 // TestNormalNoisePerlinValueConsistency 校验 PerlinNoise.Value 与手工按八度
 // 叠加的结果一致，避免八度下标或振幅对应关系写错。
 func TestNormalNoisePerlinValueConsistency(t *testing.T) {
@@ -179,5 +248,23 @@ func TestNormalNoiseDetailMatchesVanilla(t *testing.T) {
 				t.Fatalf("%s seed=%d 第二份 Perlin 在点 %v = %.17g, want %.17g", group.Noise, group.Seed, point, got, want)
 			}
 		}
+	}
+}
+
+// BenchmarkNormalNoiseValue 衡量单次噪声采样开销（世界生成每区块要采集成千上万次）。
+func BenchmarkNormalNoiseValue(b *testing.B) {
+	noise := NewNormalNoiseLegacy(NewXoroshiro(0), -9, []float64{1, 1, 2, 2, 2, 1, 1, 1, 1})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = noise.Value(float64(i&1023), 64, float64(i>>10))
+	}
+}
+
+// BenchmarkImprovedNoise 衡量单个 perlin 八度的采样开销。
+func BenchmarkImprovedNoise(b *testing.B) {
+	noise := NewImprovedNoise(NewXoroshiro(0))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = noise.Noise(float64(i&1023)*0.01, 0.5, float64(i>>10)*0.01)
 	}
 }

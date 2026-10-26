@@ -990,6 +990,18 @@
     测试：`TestNormalNoiseMatchesVanilla`、`TestNormalNoiseDetailMatchesVanilla`、
     `TestNormalNoisePerlinValueConsistency`（continentalness / cave_cheese ×
     4 种子 × 5 点全部相等，误差 < 1e-12）。
+  - [x] **阶段 2d：世界生成真实的 legacy 噪声路径已完成并逐值对拍**：确认
+    `Noises.createNormalNoise` 调用的是 `NormalNoise.createLegacy`（混淆名 `b`），
+    其 `PerlinNoise` **不走**顺序消费随机数的路径，而是：
+    `random.forkPositional()`（连取两个 `nextLong`）→ 每个非零振幅八度用
+    `fromHashOf("octave_" + (firstOctave+i))` 派生独立随机流。`fromHashOf` 的
+    算法为 `MD5(name)` 前 16 字节按大端拆成两个 int64，再与工厂种子的 lo/hi
+    分别异或（`RandomSupport.seedFromHashOf` + `Hashing.md5()`）。
+    这意味着**噪声实例的创建顺序不影响结果**，可以安全地按需惰性构造。
+    新增 `NewPerlinNoiseLegacy` / `NewNormalNoiseLegacy` /
+    `Xoroshiro.ForkPositional` / `positionalRandomFactory.FromHashOf`。
+    测试：`TestNormalNoiseLegacyMatchesVanilla`（取值）、
+    `TestNormalNoiseLegacyStateMatchesVanilla`（逐八度 xo/yo/zo 派生链）。
   - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
     `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
     `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；

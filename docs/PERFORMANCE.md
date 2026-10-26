@@ -53,6 +53,9 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkClipMove`（单轴扫掠裁剪） | world | ≈94.2 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkLightningTickClear`（非雷暴） | server | ≈20.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkLightningTickThunder`（4 玩家雷暴） | server | ≈74.7 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkImprovedNoise`（单个 perlin 八度） | vanilla | ≈32.8 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkNormalNoiseValue`（continentalness，18 个八度） | vanilla | ≈948 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkNoiseRegistryLookup`（缓存命中） | vanilla | ≈10.5 ns/op | 0 B/op | 0 allocs/op |
 
 注：区块类基准的数据量随地形批次增长（洞穴/矿物/24 群系使单个区块从 ≈9.4 KB
 增至 ≈22.6 KB，编码输出从 ≈66 KB 增至 ≈160 KB），耗时上升主要是内容量而非算法退化；
@@ -1342,8 +1345,31 @@ BenchmarkLightningTickThunder-20      约 74.7 ns/op     0 B/op   0 allocs/op
 未验证：未在真实客户端观察死亡界面与闪电渲染，也未与原版逐 tick 对拍
 落雷序列（概率模型为等效近似，见 docs/TODO.md 天气限制）。
 
-## 4. 尚未覆盖
+### 3.38 原版噪声（Perlin/NormalNoise）采样开销基线（本批，实测）
 
+这是原版区块生成器的地基：`final_density` 及其上游全部密度函数最终都由
+`NormalNoise` 取值驱动，因此先把单次采样的成本量出来，作为后续地形采样的
+优化基线。
+
+```text
+BenchmarkImprovedNoise-20            约 32.8 ns/op     0 B/op   0 allocs/op
+   （单个八度：8 角梯度点积 + 三轴五次插值）
+BenchmarkNormalNoiseValue-20         约 948 ns/op      0 B/op   0 allocs/op
+   （continentalness：2 份 Perlin × 9 个八度 = 18 次 ImprovedNoise）
+BenchmarkNoiseRegistryLookup-20      约 10.5 ns/op     0 B/op   0 allocs/op
+   （噪声实例按资源名缓存，命中路径只是一次 map 读）
+```
+
+18 次 `ImprovedNoise` 的理论下限约 590 ns，实测 948 ns，差额来自
+`PerlinNoise.Value` 的八度循环与 `wrap` 调用。后续做区块级别的批量采样时
+（同一八度连着算很多点）可以在外层缓存八度偏移与因子，进一步压到接近下限；
+本批不提前优化，先保证与原版逐值一致。
+
+正确性验证：`TestNormalNoiseMatchesVanilla`、`TestNormalNoiseLegacyMatchesVanilla`、
+`TestNormalNoiseDetailMatchesVanilla`、`TestNormalNoiseLegacyStateMatchesVanilla`
+（2 种噪声 × 4 种子 × 5 点，误差 < 1e-12；并逐八度校验 xo/yo/zo 的派生链）。
+
+## 4. 尚未覆盖
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家、100 玩家 × 5 分钟与 100 玩家 × 3 分钟
   loopback 压测（见 3.7、3.13、3.18），真实网络 / 真实客户端渲染仍待验证

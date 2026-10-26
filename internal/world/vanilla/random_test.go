@@ -35,6 +35,21 @@ type oracleFile struct {
 		First       []float64 `json:"first"`
 		Second      []float64 `json:"second"`
 	} `json:"normalNoiseDetail"`
+	NormalNoiseLegacy []struct {
+		Noise  string    `json:"noise"`
+		Seed   int64     `json:"seed"`
+		Values []float64 `json:"values"`
+	} `json:"normalNoiseLegacy"`
+	NormalNoiseLegacyState []struct {
+		Noise   string `json:"noise"`
+		Seed    int64  `json:"seed"`
+		Octaves []struct {
+			Octave int     `json:"octave"`
+			XO     float64 `json:"xo"`
+			YO     float64 `json:"yo"`
+			ZO     float64 `json:"zo"`
+		} `json:"octaves"`
+	} `json:"normalNoiseLegacyState"`
 	ImprovedNoiseState []struct {
 		Seed int64   `json:"seed"`
 		XO   float64 `json:"xo"`

@@ -4,6 +4,11 @@
 
 package vanilla
 
+import (
+	"crypto/md5"
+	"encoding/binary"
+)
+
 // 随机源：NextLong 与原版 XoroshiroRandomSource 逐位一致（用 tools/vgoracle 从官方
 // jar 取到的 nextLong 序列校验，见 testdata/noise_oracle.json 与 random_test.go）。
 // NextDouble / NextInt 由 ImprovedNoise 的 xo/yo/zo 与 256 项置换表、以及
@@ -43,6 +48,12 @@ type Xoroshiro struct {
 // NewXoroshiro 用与 RandomSource.create(long) 相同的方式构造随机源。
 func NewXoroshiro(seed int64) *Xoroshiro {
 	lo, hi := seed128(seed)
+	return &Xoroshiro{lo: lo, hi: hi}
+}
+
+// newXoroshiroState 直接指定 128 位状态（原版 XoroshiroRandomSource(long,long) /
+// XoroshiroRandomSource(Seed128bit) 构造器不做额外混合）。
+func newXoroshiroState(lo, hi uint64) *Xoroshiro {
 	return &Xoroshiro{lo: lo, hi: hi}
 }
 
@@ -94,4 +105,37 @@ func rotateLeft64(value uint64, bits int) uint64 {
 // NextFloat 返回 [0, 1) 的单精度随机数。
 func (r *Xoroshiro) NextFloat() float32 {
 	return float32(r.NextDouble())
+}
+
+// positionalRandomFactory 等价原版
+// XoroshiroRandomSource.XoroshiroPositionalRandomFactory。
+//
+// 世界生成里的每个噪声都不直接从主随机源取数，而是用
+//
+//	random.forkPositional()                      // 连取两个 nextLong
+//	.fromHashOf("minecraft:continentalness")     // 名字的 MD5 前 16 字节再与之异或
+//
+// 派生出一条独立的随机流，因此噪声实例的创建顺序不影响结果。
+type positionalRandomFactory struct {
+	lo, hi uint64
+}
+
+// ForkPositional 等价原版 RandomSource.forkPositional()：
+// 连续取两个 nextLong 作为工厂的 128 位种子。
+func (r *Xoroshiro) ForkPositional() positionalRandomFactory {
+	return positionalRandomFactory{lo: uint64(r.NextLong()), hi: uint64(r.NextLong())}
+}
+
+// FromHashOf 等价原版 PositionalRandomFactory.fromHashOf(String)：
+// seed = MD5(name)[0..8) 与 MD5(name)[8..16) （大端）分别与工厂种子异或。
+func (f positionalRandomFactory) FromHashOf(name string) *Xoroshiro {
+	lo, hi := seedFromHashOf(name)
+	return newXoroshiroState(lo^f.lo, hi^f.hi)
+}
+
+// seedFromHashOf 等价原版 RandomSupport.seedFromHashOf(String)：
+// Hashing.md5() 的摘要前 16 字节按大端拆成两个 int64（Guava Longs.fromBytes）。
+func seedFromHashOf(name string) (uint64, uint64) {
+	sum := md5.Sum([]byte(name))
+	return binary.BigEndian.Uint64(sum[0:8]), binary.BigEndian.Uint64(sum[8:16])
 }

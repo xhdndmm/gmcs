@@ -164,6 +164,71 @@ public final class Oracle {
         }
         out.append("  ],\n");
 
+        // 3c) 世界生成真正使用的 legacy 噪声。
+        //     Noises.createNormalNoise 调用的是 NormalNoise.createLegacy（混淆名 b），
+        //     其 PerlinNoise 走 forkPositional + fromHashOf("octave_<n>") 派生每个八度
+        //     的随机源，与非 legacy 路径的随机数消耗顺序完全不同。
+        Method normalCreateLegacy = normal.getDeclaredMethod("b", randomSource, paramsClass);
+        normalCreateLegacy.setAccessible(true);
+        out.append("  \"normalNoiseLegacy\": [\n");
+        for (int c = 0; c < cases.length; c++) {
+            String name = (String) cases[c][0];
+            int firstOctave = (Integer) cases[c][1];
+            double[] amplitudes = (double[]) cases[c][2];
+            Object params = paramsCtor.newInstance(firstOctave, amplitudes[0], java.util.Arrays.copyOfRange(amplitudes, 1, amplitudes.length));
+            for (int i = 0; i < seeds.length; i++) {
+                Object random = xoroshiroFactory.newInstance(seeds[i]);
+                Object noise = normalCreateLegacy.invoke(null, random, params);
+                out.append("    {\"noise\": \"").append(name).append("\", \"seed\": ").append(seeds[i]).append(", \"values\": [");
+                for (int p = 0; p < points.length; p++) {
+                    if (p > 0) out.append(", ");
+                    double value = (Double) normalValue.invoke(noise, points[p][0], points[p][1], points[p][2]);
+                    out.append(dbl(value));
+                }
+                out.append("]}");
+                boolean last = (c == cases.length - 1) && (i + 1 == seeds.length);
+                out.append(last ? "\n" : ",\n");
+            }
+        }
+        out.append("  ],\n");
+
+        // 3d) legacy 噪声里第一份 PerlinNoise 每个八度的 ImprovedNoise 偏移，
+        //     用于逐项验证 forkPositional + seedFromHashOf 的派生链。
+        Field perlinLevels = perlin.getDeclaredField("b");
+        perlinLevels.setAccessible(true);
+        Field fxoOf = improved.getDeclaredField("a");
+        Field fyoOf = improved.getDeclaredField("b");
+        Field fzoOf = improved.getDeclaredField("c");
+        fxoOf.setAccessible(true);
+        fyoOf.setAccessible(true);
+        fzoOf.setAccessible(true);
+        out.append("  \"normalNoiseLegacyState\": [\n");
+        for (int c = 0; c < cases.length; c++) {
+            String name = (String) cases[c][0];
+            int firstOctave = (Integer) cases[c][1];
+            double[] amplitudes = (double[]) cases[c][2];
+            Object params = paramsCtor.newInstance(firstOctave, amplitudes[0], java.util.Arrays.copyOfRange(amplitudes, 1, amplitudes.length));
+            Object random = xoroshiroFactory.newInstance(seeds[0]);
+            Object noise = normalCreateLegacy.invoke(null, random, params);
+            Object[] levels = (Object[]) perlinLevels.get(fFirstNoise.get(noise));
+            out.append("    {\"noise\": \"").append(name).append("\", \"seed\": ").append(seeds[0]);
+            out.append(", \"octaves\": [");
+            boolean firstOctaveEntry = true;
+            for (int k = 0; k < levels.length; k++) {
+                if (levels[k] == null) continue;
+                if (!firstOctaveEntry) out.append(", ");
+                firstOctaveEntry = false;
+                out.append("{\"octave\": ").append(firstOctave + k);
+                out.append(", \"xo\": ").append(dbl((Double) fxoOf.get(levels[k])));
+                out.append(", \"yo\": ").append(dbl((Double) fyoOf.get(levels[k])));
+                out.append(", \"zo\": ").append(dbl((Double) fzoOf.get(levels[k])));
+                out.append("}");
+            }
+            out.append("]}");
+            out.append(c + 1 < cases.length ? ",\n" : "\n");
+        }
+        out.append("  ],\n");
+
         // 4) ImprovedNoise 的内部状态（xo/yo/zo 与 256 项置换表），
         //    用于校验 Go 侧的构造与 Fisher–Yates 洗牌是否与原版一致。
         Field fxo = improved.getDeclaredField("a");
