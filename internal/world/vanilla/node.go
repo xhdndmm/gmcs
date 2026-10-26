@@ -39,6 +39,11 @@ type Node struct {
 	RefName string
 	// CellHeight 是 find_top_surface 的网格高度。
 	CellHeight int
+	// FromY / ToY / FromValue / ToValue 是 y_clamped_gradient 的四个端点参数。
+	FromY     float64
+	ToY       float64
+	FromValue float64
+	ToValue   float64
 	// From 是 old_blended_noise 的遗留参数（按原版 JSON 顺序保存）。
 	Legacy [5]float64
 }
@@ -75,24 +80,26 @@ type nodeFields struct {
 
 // nodeSchemas 是原版 overworld 路由实际用到的节点类型表。
 var nodeSchemas = map[string]nodeFields{
-	"constant":             {numbers: []string{"argument"}},
-	"add":                  {nodes: []string{"argument1", "argument2"}},
-	"mul":                  {nodes: []string{"argument1", "argument2"}},
-	"min":                  {nodes: []string{"argument1", "argument2"}},
-	"max":                  {nodes: []string{"argument1", "argument2"}},
-	"abs":                  {nodes: []string{"argument"}},
-	"square":               {nodes: []string{"argument"}},
-	"cube":                 {nodes: []string{"argument"}},
-	"half_negative":        {nodes: []string{"argument"}},
-	"quarter_negative":     {nodes: []string{"argument"}},
-	"squeeze":              {nodes: []string{"argument"}},
-	"clamp":                {nodes: []string{"input"}, numbers: []string{"min", "max"}},
-	"y_clamped_gradient":   {numbers: []string{"from_y", "to_y", "from_value", "to_value"}},
-	"noise":                {refs: []string{"noise"}, numbers: []string{"xz_scale", "y_scale"}},
-	"shifted_noise":        {refs: []string{"noise"}, numbers: []string{"xz_scale", "y_scale"}, nodes: []string{"shift_x", "shift_y", "shift_z"}},
-	"shift_a":              {refs: []string{"argument"}},
-	"shift_b":              {refs: []string{"argument"}},
-	"shift":                {nodes: []string{"argument"}},
+	"constant":           {numbers: []string{"argument"}},
+	"add":                {nodes: []string{"argument1", "argument2"}},
+	"mul":                {nodes: []string{"argument1", "argument2"}},
+	"min":                {nodes: []string{"argument1", "argument2"}},
+	"max":                {nodes: []string{"argument1", "argument2"}},
+	"abs":                {nodes: []string{"argument"}},
+	"square":             {nodes: []string{"argument"}},
+	"cube":               {nodes: []string{"argument"}},
+	"half_negative":      {nodes: []string{"argument"}},
+	"quarter_negative":   {nodes: []string{"argument"}},
+	"squeeze":            {nodes: []string{"argument"}},
+	"clamp":              {nodes: []string{"input"}, numbers: []string{"min", "max"}},
+	"y_clamped_gradient": {numbers: []string{"from_y", "to_y", "from_value", "to_value"}},
+	"noise":              {refs: []string{"noise"}, numbers: []string{"xz_scale", "y_scale"}},
+	"shifted_noise":      {refs: []string{"noise"}, numbers: []string{"xz_scale", "y_scale"}, nodes: []string{"shift_x", "shift_y", "shift_z"}},
+	"shift_a":            {refs: []string{"argument"}},
+	"shift_b":            {refs: []string{"argument"}},
+	// shift 的参数和 shift_a/shift_b 一样是噪声参数名（原版 Shift 记录持有
+	// NoiseHolder，JSON 里就是噪声 ID 字符串），不是密度函数引用。
+	"shift":                {refs: []string{"argument"}},
 	"weird_scaled_sampler": {nodes: []string{"input"}, refs: []string{"noise"}, enums: []string{"rarity_value_mapper"}},
 	"old_blended_noise":    {numbers: []string{"xz_scale", "y_scale", "xz_factor", "y_factor", "smear_scale_multiplier"}},
 	"spline":               {spline: true},
@@ -208,6 +215,14 @@ func parseNode(data *Data, where string, raw json.RawMessage) (*Node, []Problem)
 			node.Legacy[indexOf(schema.numbers, key)] = value
 		case short == "find_top_surface" && key == "cell_height":
 			node.CellHeight = int(value)
+		case short == "y_clamped_gradient" && key == "from_y":
+			node.FromY = value
+		case short == "y_clamped_gradient" && key == "to_y":
+			node.ToY = value
+		case short == "y_clamped_gradient" && key == "from_value":
+			node.FromValue = value
+		case short == "y_clamped_gradient" && key == "to_value":
+			node.ToValue = value
 		}
 	}
 	for _, key := range schema.refs {

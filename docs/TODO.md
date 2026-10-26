@@ -1002,6 +1002,31 @@
     `Xoroshiro.ForkPositional` / `positionalRandomFactory.FromHashOf`。
     测试：`TestNormalNoiseLegacyMatchesVanilla`（取值）、
     `TestNormalNoiseLegacyStateMatchesVanilla`（逐八度 xo/yo/zo 派生链）。
+  - [x] **阶段 3a：密度函数求值器（标量子集）已完成**：新增
+    `internal/world/vanilla/density.go`，按 1.21.11 字节码逐类核对后实现
+    `constant`、内置坐标 `x/y/z`、`add`/`mul`/`min`/`max`、
+    `abs`/`square`/`cube`/`half_negative`/`quarter_negative`/`invert`/`squeeze`、
+    `clamp`、`y_clamped_gradient`（`Mth.clampedMap`）、`noise`（
+    `noise(x*xz, y*y, z*xz)`）、`shifted_noise`（坐标先乘缩放再加位移）、
+    `shift`/`shift_a`/`shift_b`（`noise(p*0.25)*4`，三种只差坐标取法：
+    `(x,y,z)`/`(x,0,z)`/`(z,x,0)`）、`weird_scaled_sampler`（
+    `scale*|noise(p/scale)|`，`type_1`/`type_2` 的分段映射按 `eux$a` 的
+    `a`/`b` 两个静态方法抄写）、`range_choice`（上界开区间）、
+    `blend_alpha`=1、`blend_offset`=0、`blend_density` 恒等、四种 cache 节点直通。
+    未实现的节点（`spline`/`interpolated`/`find_top_surface`/`old_blended_noise`/
+    `end_islands`）**显式 panic**，不静默返回 0。
+    顺带修正 `shift` 节点的参数类型：它与 `shift_a`/`shift_b` 一样是噪声参数名，
+    不是密度函数引用。
+    测试：`TestEvaluateArithmetic`、`TestEvaluateBuiltinCoordinates`、
+    `TestYClampedGradient`、`TestShiftNoiseNodes`、`TestNoiseAndShiftedNoise`、
+    `TestWeirdScaledSampler`、`TestRangeChoiceUpperBoundExclusive`、
+    `TestUnsupportedNodePanics`、`TestOverworldRouterUnsupportedTypes`
+    （后者枚举 overworld 路由树里仍未覆盖的节点类型，作为下一批清单）。
+  - [ ] **阶段 3b：样条 / 插值网格 / 旧版混合噪声 / 顶面搜索**：
+    `spline`（`CubicSpline` 是 float 精度，还要复刻缺省导数的补全规则）、
+    `interpolated`（`NoiseChunk` 的 4×8×4 网格与三线性插值）、
+    `find_top_surface`、`old_blended_noise`（`minecraft:overworld/base_3d_noise`
+    实际在用）。这四个类型目前都在 overworld 路由树中可达。
   - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
     `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
     `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；
