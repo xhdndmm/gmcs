@@ -559,6 +559,10 @@ go run ./tools/genregistries \
   -reports generated/reports/registries.json \
   -blocks generated/reports/blocks.json \
   -items generated/reports/items.json
+
+# 3. 从官方服务端（或客户端）jar 提取原版世界生成数据（噪声设置、密度函数、
+#    噪声参数、多噪声群系参数表），压缩为 internal/world/vanilla/data/worldgen.json.gz
+go run ./tools/genworldgen -jar <server.jar>
 ```
 
 ## 目录结构
@@ -570,10 +574,12 @@ internal/config     配置结构与 JSON 持久化
 internal/protocol   协议包编解码（握手/登录/配置/Play、NBT、Slot 等）
 internal/registry   生成的注册表、方块状态与物品 ID 数据
 internal/world      区块模型、地形/维度生成、区域文件存储、世界管理器
+internal/world/vanilla  原版算法区块生成的移植（当前仅阶段 1：世界生成数据加载与校验）
 internal/item       物品堆栈与玩家物品栏
 internal/logging    日志文件轮转与审计日志（JSONL）
 internal/server     服务器、会话生命周期、玩家列表与广播
 tools/genregistries 数据生成器
+tools/genworldgen   原版世界生成数据提取工具
 scripts             跨平台构建与测试脚本
 docs                文档（贡献指南、迁移指南、TODO、性能基准）
 ```

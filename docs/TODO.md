@@ -934,6 +934,35 @@
 
 ## 待完成
 
+- [ ] **原版区块生成器移植（分阶段，进行中）**：目标是把 `internal/world` 的
+  自研生成器换成按原版算法（Noise Router + 密度函数 + 含水层 + 表面规则 +
+  雕刻器 + 地物/结构）生成的区块。这是多批次工作，当前只完成第 1 阶段：
+  - [x] **阶段 1：数据管线与密度函数图校验**（本批）：新增
+    `tools/genworldgen` 从官方 jar 提取 overworld 的噪声设置、全部密度函数、
+    全部噪声参数与多噪声群系参数表，压缩为
+    `internal/world/vanilla/data/worldgen.json.gz`（约 7 KB，仓库不存放原始数据包
+    文件）；新增 `internal/world/vanilla` 包，把密度函数解析为带类型的节点图
+    （`Node`/`Spline`），对未知节点类型、缺少必需字段、引用缺失的密度函数
+    或噪声参数、引用内置坐标函数（`minecraft:x/y/z`、纯数字文件如
+    `minecraft:zero`）等情形一律 fail-fast 校验；
+    测试：`TestLoadData`、`TestOverworldRouterResolves`、
+    `TestNoiseParametersShape`、`TestUnsupportedNodeTypeIsRejected`、
+    `TestMissingNoiseReferenceIsRejected`。
+    当前 `internal/world` 的地形仍由自研生成器产生，服务器行为本批**未改变**。
+  - [ ] **阶段 2：噪声内核**：`XoroshiroRandomSource`（含 `forkPositional`）、
+    `ImprovedNoise`（Perlin）、`DoublePerlinNoiseSampler`/`NormalNoise`，
+    并用本机 Java 21 + 官方 jar 做逐值对拍（这是宣称“原版算法”的前提，
+    未对拍前不能声称与现版一致）；
+  - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
+    `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
+    `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；
+  - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、
+    cave/canyon 雕刻器、矿物/树木/植被/lakes 地物与噪声群系源
+    （`multi_noise_biome_source_parameter_list/overworld` 已随阶段 1 提取）；
+  - [ ] **阶段 5：接线与验证**：以配置开关切换生成器（保留旧生成器供回退）、
+    与官方服务端同种子区块逐方块对比（区域文件解码）、benchmark 与文档，
+    通过后才把 default 切到原版生成器。
+
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
   余下：服务端重力模拟与客户端预测回滚）
 
@@ -1143,7 +1172,9 @@
   边界无关，垂直方向不变），但没有原版噪声域扭曲、含水层、结构与地物
   （村庄/要塞/废弃矿坑等），树木形状是简化版（树冠层数与裁角近似原版）；
   三维度中下界/末地同样为简化生成器；海平面 62 为近似值；
-  更换 `world_seed` 不会重新生成已有存档中的区块（新旧地形交界处会有接缝）
+  更换 `world_seed` 不会重新生成已有存档中的区块（新旧地形交界处会有接缝）。
+  原版生成器的移植进度见“待完成”顶部的分阶段计划（当前仅完成阶段 1：
+  数据管线与密度函数图校验，地形仍由自研生成器产生）
 
 - 生物共十二种（僵尸/骷髅/苦力怕/蜘蛛/末影人；牛/猪/羊；鳕鱼/鲑鱼/热带鱼/鱿鱼），
   AI 为简化追击/游荡（敌对生物含 A* 地表寻路与直线追击、末影人瞬移为随机尝试；
