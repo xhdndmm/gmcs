@@ -949,10 +949,21 @@
     `TestNoiseParametersShape`、`TestUnsupportedNodeTypeIsRejected`、
     `TestMissingNoiseReferenceIsRejected`。
     当前 `internal/world` 的地形仍由自研生成器产生，服务器行为本批**未改变**。
-  - [ ] **阶段 2：噪声内核**：`XoroshiroRandomSource`（含 `forkPositional`）、
-    `ImprovedNoise`（Perlin）、`DoublePerlinNoiseSampler`/`NormalNoise`，
-    并用本机 Java 21 + 官方 jar 做逐值对拍（这是宣称“原版算法”的前提，
-    未对拍前不能声称与现版一致）；
+  - [x] **阶段 2a：随机源已与原版逐值对拍**（本批）：实现
+    `Xoroshiro`（`internal/world/vanilla/random.go`），种子扩展按 1.21.11 服务端
+    字节码核对（`RandomSupport.upgradeSeedTo128bit`：`low = seed ^ 0x6A09E667F3BCC909`、
+    `high = low + 0x9E3779B97F4A7C15`，再各做一次 mixStafford13），`NextLong`
+    为 xoroshiro128++；用 `tools/vgoracle`（反射调用官方 jar 的
+    `XoroshiroRandomSource`）导出的 4 个种子 × 8 个 `nextLong` 逐位一致
+    （`testdata/noise_oracle.json`、`TestXoroshiroMatchesVanilla`）。
+    踩坑记录：1.21.11 的 `RandomSource.create(long)` 返回 **LegacyRandomSource**
+    （LCG），世界生成使用的是 `XoroshiroRandomSource`，对拍必须直接构造后者。
+    尚未完成：`ImprovedNoise`（Perlin）与 `NormalNoise`（DoublePerlinNoiseSampler）
+    的 Go 实现（对照数据已含二者的官方取值，可直接用于逐值对拍）。
+  - [ ] **阶段 2b：Perlin/NormalNoise**：`ImprovedNoise` 的置换表初始化、
+    `fade`/`gradDot`/八点插值，`NormalNoise` 的双 Perlin（`INPUT_FACTOR`
+    1.0181268882175227）与 `valueFactor`/`maxValue` 归一化，均以
+    `testdata/noise_oracle.json` 的 `improvedNoise`/`normalNoise` 逐值校验；
   - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
     `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
     `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；
