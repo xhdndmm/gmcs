@@ -964,6 +964,19 @@
     `fade`/`gradDot`/八点插值，`NormalNoise` 的双 Perlin（`INPUT_FACTOR`
     1.0181268882175227）与 `valueFactor`/`maxValue` 归一化，均以
     `testdata/noise_oracle.json` 的 `improvedNoise`/`normalNoise` 逐值校验；
+    已按 1.21.11 字节码确认的部分（可直接照抄，无需再猜）：
+    `ImprovedNoise(random)` 的 `xo/yo/zo = nextDouble()*256`；置换表为
+    `p[i]=i` 后对 i∈[0,256) 做 `j=nextInt(256-i)`、交换 `p[i]` 与 `p[i+j]`；
+    `noise(x,y,z)` 等价于原版 `noise(x,y,z,0,0)`（y 夹取参数为 0 时 smearedY=0）；
+    8 个角的取值为 `p(p(i)+j +k)`、`p(p(i+1)+j +k)`、`p(p(i)+j+1 +k)`、
+    `p(p(i+1)+j+1 +k)` 及各自 `k+1`（第三轴偏差 `f-1`），第三轴用 `f-1` 的两个角
+    单独做一次 lerp 后再与 `k` 层结果合并。
+    **尚未确认（本阶段唯一阻塞项）**：`ImprovedNoise.gradDot` 调用的
+    `SimplexNoise.dot` 所用的 16 项梯度表（`fkh.a` 静态初始化）与归一化常数
+    （`fkh` 的静态 double e/f/g）。本批曾按 12 个经典梯度 + 两种重复项尝试，
+    在 (0,0,0) 处得到 0.00235 而官方为 0.28487，说明梯度表/归一化与猜测不符；
+    因此**未提交**该实现（避免把不确定的噪声当成原版），
+    下一步先用 `javap -p -c fkh` 读出静态初始化再实现。
   - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
     `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
     `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；
