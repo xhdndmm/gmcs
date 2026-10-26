@@ -84,11 +84,9 @@ public final class Oracle {
         Constructor<?> paramsCtor = paramsClass.getDeclaredConstructor(int.class, double.class, double[].class);
         paramsCtor.setAccessible(true);
         Class<?> normal = Class.forName("fke");                          // NormalNoise
-        Method normalCreate = null;
-        for (Method m : normal.getDeclaredMethods()) {
-            if (m.getParameterCount() == 2 && m.getParameterTypes()[0] == randomSource && m.getParameterTypes()[1] == paramsClass) { normalCreate = m; break; }
-        }
-        if (normalCreate == null) throw new IllegalStateException("create not found");
+        // 显式按混淆名 a 取 create：b 是 createLegacy，它会用 forkPositional 派生每个八度的
+        // 随机源，推进方式与非 legacy 路径完全不同，不能作为非 legacy 的对拍基准。
+        Method normalCreate = normal.getDeclaredMethod("a", randomSource, paramsClass);
         normalCreate.setAccessible(true);
         Method normalValue = null;
         for (Method m : normal.getDeclaredMethods()) {
@@ -114,6 +112,50 @@ public final class Oracle {
                     if (p > 0) out.append(", ");
                     double value = (Double) normalValue.invoke(noise, points[p][0], points[p][1], points[p][2]);
                     out.append(dbl(value));
+                }
+                out.append("]}");
+                boolean last = (c == cases.length - 1) && (i + 1 == seeds.length);
+                out.append(last ? "\n" : ",\n");
+            }
+        }
+        out.append("  ],\n");
+
+        // 3b) NormalNoise 的内部细节：valueFactor/maxValue 与两份 PerlinNoise 各自的取值，
+        //     对拍失败时用于判断问题出在随机源推进、八度振幅还是归一化因子。
+        Field fValueFactor = normal.getDeclaredField("c");
+        Field fFirstNoise = normal.getDeclaredField("d");
+        Field fSecondNoise = normal.getDeclaredField("e");
+        Field fMaxValue = normal.getDeclaredField("f");
+        fValueFactor.setAccessible(true);
+        fFirstNoise.setAccessible(true);
+        fSecondNoise.setAccessible(true);
+        fMaxValue.setAccessible(true);
+        Class<?> perlin = Class.forName("fkf");                           // PerlinNoise
+        Method perlinValue = perlin.getDeclaredMethod("a", double.class, double.class, double.class);
+        perlinValue.setAccessible(true);
+        out.append("  \"normalNoiseDetail\": [\n");
+        for (int c = 0; c < cases.length; c++) {
+            String name = (String) cases[c][0];
+            int firstOctave = (Integer) cases[c][1];
+            double[] amplitudes = (double[]) cases[c][2];
+            Object params = paramsCtor.newInstance(firstOctave, amplitudes[0], java.util.Arrays.copyOfRange(amplitudes, 1, amplitudes.length));
+            for (int i = 0; i < seeds.length; i++) {
+                Object random = xoroshiroFactory.newInstance(seeds[i]);
+                Object noise = normalCreate.invoke(null, random, params);
+                Object firstNoise = fFirstNoise.get(noise);
+                Object secondNoise = fSecondNoise.get(noise);
+                out.append("    {\"noise\": \"").append(name).append("\", \"seed\": ").append(seeds[i]);
+                out.append(", \"valueFactor\": ").append(dbl((Double) fValueFactor.get(noise)));
+                out.append(", \"maxValue\": ").append(dbl((Double) fMaxValue.get(noise)));
+                out.append(", \"first\": [");
+                for (int p = 0; p < points.length; p++) {
+                    if (p > 0) out.append(", ");
+                    out.append(dbl((Double) perlinValue.invoke(firstNoise, points[p][0], points[p][1], points[p][2])));
+                }
+                out.append("], \"second\": [");
+                for (int p = 0; p < points.length; p++) {
+                    if (p > 0) out.append(", ");
+                    out.append(dbl((Double) perlinValue.invoke(secondNoise, points[p][0], points[p][1], points[p][2])));
                 }
                 out.append("]}");
                 boolean last = (c == cases.length - 1) && (i + 1 == seeds.length);

@@ -958,8 +958,6 @@
     （`testdata/noise_oracle.json`、`TestXoroshiroMatchesVanilla`）。
     踩坑记录：1.21.11 的 `RandomSource.create(long)` 返回 **LegacyRandomSource**
     （LCG），世界生成使用的是 `XoroshiroRandomSource`，对拍必须直接构造后者。
-    尚未完成：`ImprovedNoise`（Perlin）与 `NormalNoise`（DoublePerlinNoiseSampler）
-    的 Go 实现（对照数据已含二者的官方取值，可直接用于逐值对拍）。
   - [x] **阶段 2b：ImprovedNoise（Perlin）已完成并逐值对拍**：`noise.go` 实现
     `ImprovedNoise`（xo/yo/zo + 置换表 + 8 角梯度点积 + 三轴五次插值），
     与原版一致的细节均已确认：`fkh` 的 16 项梯度表（末 4 项非顺序重复）、
@@ -969,17 +967,29 @@
     也是置换表不对的根因；`nextInt(0)` 与原版一样 panic。
     测试：`TestImprovedNoiseStateMatchesVanilla`（xo/yo/zo 与 256 项置换表逐项
     相等）、`TestImprovedNoiseMatchesVanilla`（4 种子 × 5 点逐值相等）。
-  - [ ] **阶段 2c：NormalNoise**：双 Perlin（`INPUT_FACTOR`
-    1.0181268882175227）、`PerlinNoise.create` 的八度因子与
-    `valueFactor`/`maxValue` 归一化，仍以 `testdata/noise_oracle.json` 的
-    `normalNoise`（continentalness / cave_cheese × 4 种子 × 5 点）逐值校验；
-    已按 1.21.11 字节码确认的部分（可直接照抄，无需再猜）：
-    `ImprovedNoise(random)` 的 `xo/yo/zo = nextDouble()*256`；置换表为
-    `p[i]=i` 后对 i∈[0,256) 做 `j=nextInt(256-i)`、交换 `p[i]` 与 `p[i+j]`；
-    `noise(x,y,z)` 等价于原版 `noise(x,y,z,0,0)`（y 夹取参数为 0 时 smearedY=0）；
-    8 个角的取值为 `p(p(i)+j +k)`、`p(p(i+1)+j +k)`、`p(p(i)+j+1 +k)`、
-    `p(p(i+1)+j+1 +k)` 及各自 `k+1`（第三轴偏差 `f-1`），第三轴用 `f-1` 的两个角
-    单独做一次 lerp 后再与 `k` 层结果合并。
+  - [x] **阶段 2c：NormalNoise 已完成并逐值对拍**：`noise.go` 增加
+    `PerlinNoise`（八度叠加）与 `NormalNoise`（双 Perlin + 归一化），按 1.21.11
+    字节码逐条复刻：
+    - `PerlinNoise.create`：先无条件构造一个 `ImprovedNoise`（作为最低频八度
+      复用），仅当最低频八度下标落在振幅表内且振幅非零时才使用它，否则这份
+      随机数被丢弃；随后从 `最低频八度-1` 递减到 0，振幅非零则新建
+      `ImprovedNoise`，振幅为零（或越界）则 `consumeCount(262)` 跳过
+      （`ImprovedNoise` 恰好消耗 3 个 double + 256 个 int，按 32 位 int 计为 262）；
+    - `lowestFreqInputFactor = 2^firstOctave`、
+      `lowestFreqValueFactor = 2^(n-1)/(2^n-1)`、
+      `valueFactor(v) = Σ amp_i · v · (lowestFreqValueFactor / 2^i)`；
+    - `getValue` 用 `wrap(x) = x - floor(x/33554432 + 0.5)·33554432` 折回坐标；
+    - `NormalNoise`：两份同参数 `PerlinNoise`，第二份按 `INPUT_FACTOR =
+      1.0181268882175227` 缩放坐标；`valueFactor = (1/6)/(0.1·(1+1/(span+1)))`，
+      `maxValue = (first.maxValue + second.maxValue)·valueFactor`。
+    踩坑记录：原 oracle 用“参数个数 + 类型”挑 `NormalNoise.create`，会随机命中
+    混淆名 `a`（非 legacy）或 `b`（`createLegacy`，走 `forkPositional` 派生每个
+    八度的随机源），此前导出的数据实际来自 legacy 路径，导致对拍必然失败。
+    现已改为**显式按名字取 `a`**，并新增 `normalNoiseDetail`（`valueFactor`、
+    `maxValue`、两份 Perlin 各自取值）以便区分“归一化因子错”与“随机源推进错”。
+    测试：`TestNormalNoiseMatchesVanilla`、`TestNormalNoiseDetailMatchesVanilla`、
+    `TestNormalNoisePerlinValueConsistency`（continentalness / cave_cheese ×
+    4 种子 × 5 点全部相等，误差 < 1e-12）。
   - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
     `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
     `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；

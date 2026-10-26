@@ -27,6 +27,14 @@ type oracleFile struct {
 		Seed   int64     `json:"seed"`
 		Values []float64 `json:"values"`
 	} `json:"normalNoise"`
+	NormalNoiseDetail []struct {
+		Noise       string    `json:"noise"`
+		Seed        int64     `json:"seed"`
+		ValueFactor float64   `json:"valueFactor"`
+		MaxValue    float64   `json:"maxValue"`
+		First       []float64 `json:"first"`
+		Second      []float64 `json:"second"`
+	} `json:"normalNoiseDetail"`
 	ImprovedNoiseState []struct {
 		Seed int64   `json:"seed"`
 		XO   float64 `json:"xo"`

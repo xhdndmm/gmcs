@@ -84,3 +84,100 @@ func TestImprovedNoiseMatchesVanilla(t *testing.T) {
 		t.Fatalf("原版轴顺序 = %v，实现使用的 blendXYZ 需要改为它", matches[0])
 	}
 }
+
+// oracleNormalNoiseParams 是对拍数据里出现的 NormalNoise 参数
+// （与 tools/vgoracle/Oracle.java 中的 cases 表一致）。
+var oracleNormalNoiseParams = map[string]struct {
+	firstOctave int
+	amplitudes  []float64
+}{
+	"continentalness": {-9, []float64{1, 1, 2, 2, 2, 1, 1, 1, 1}},
+	"cave_cheese":     {-8, []float64{0.5, 1, 2, 1, 2, 1, 0, 0, 0}},
+}
+
+// TestNormalNoiseMatchesVanilla 逐值比对 PerlinNoise 八度叠加与 NormalNoise
+// 双 Perlin 归一化，覆盖零振幅八度的随机数跳过与两份噪声的相位偏移。
+func TestNormalNoiseMatchesVanilla(t *testing.T) {
+	oracle := loadOracle(t)
+	if len(oracle.NormalNoise) == 0 {
+		t.Fatal("对照数据缺少 normalNoise")
+	}
+	for _, group := range oracle.NormalNoise {
+		params, ok := oracleNormalNoiseParams[group.Noise]
+		if !ok {
+			t.Fatalf("对拍数据中出现未登记的噪声 %q", group.Noise)
+		}
+		noise := NewNormalNoise(NewXoroshiro(group.Seed), params.firstOctave, params.amplitudes)
+		if maxValue := noise.MaxValue(); maxValue <= 0 || math.IsInf(maxValue, 0) || math.IsNaN(maxValue) {
+			t.Fatalf("%s seed=%d 的 maxValue = %v，应为有限正数", group.Noise, group.Seed, maxValue)
+		}
+		if len(group.Values) != len(oracleSamplePoints) {
+			t.Fatalf("%s seed=%d 的采样点数 = %d, want %d", group.Noise, group.Seed, len(group.Values), len(oracleSamplePoints))
+		}
+		for i, want := range group.Values {
+			point := oracleSamplePoints[i]
+			got := noise.Value(point[0], point[1], point[2])
+			if diff := got - want; diff > 1e-12 || diff < -1e-12 {
+				t.Fatalf("%s seed=%d 点 %v 的取值 = %.17g, want %.17g（差 %g）",
+					group.Noise, group.Seed, point, got, want, diff)
+			}
+		}
+	}
+}
+
+// TestNormalNoisePerlinValueConsistency 校验 PerlinNoise.Value 与手工按八度
+// 叠加的结果一致，避免八度下标或振幅对应关系写错。
+func TestNormalNoisePerlinValueConsistency(t *testing.T) {
+	amplitudes := []float64{0.5, 1, 2, 1, 2, 1, 0, 0, 0}
+	perlin := NewPerlinNoise(NewXoroshiro(7), -8, amplitudes)
+	inputFactor := perlin.lowestFreqInputFactor
+	valueFactor := perlin.lowestFreqValueFactor
+	want := 0.0
+	for i, level := range perlin.levels {
+		if level != nil {
+			want += amplitudes[i] * level.Noise(
+				wrap(3.5*inputFactor),
+				wrap(64*inputFactor),
+				wrap(-12.25*inputFactor),
+			) * valueFactor
+		}
+		inputFactor *= 2
+		valueFactor /= 2
+	}
+	if got := perlin.Value(3.5, 64, -12.25); got != want {
+		t.Fatalf("PerlinNoise.Value = %.17g, 手工叠加 = %.17g", got, want)
+	}
+}
+
+// TestNormalNoiseDetailMatchesVanilla 比对 NormalNoise 的内部组成：
+// valueFactor、maxValue，以及两份 PerlinNoise 各自的取值。
+// 这能区分“归一化因子错”和“随机源推进错”两类问题。
+func TestNormalNoiseDetailMatchesVanilla(t *testing.T) {
+	oracle := loadOracle(t)
+	if len(oracle.NormalNoiseDetail) == 0 {
+		t.Fatal("对照数据缺少 normalNoiseDetail")
+	}
+	const tolerance = 1e-12
+	for _, group := range oracle.NormalNoiseDetail {
+		params, ok := oracleNormalNoiseParams[group.Noise]
+		if !ok {
+			t.Fatalf("对拍数据中出现未登记的噪声 %q", group.Noise)
+		}
+		noise := NewNormalNoise(NewXoroshiro(group.Seed), params.firstOctave, params.amplitudes)
+		if diff := noise.valueFactor - group.ValueFactor; diff > tolerance || diff < -tolerance {
+			t.Fatalf("%s seed=%d 的 valueFactor = %.17g, want %.17g", group.Noise, group.Seed, noise.valueFactor, group.ValueFactor)
+		}
+		if diff := noise.MaxValue() - group.MaxValue; diff > tolerance || diff < -tolerance {
+			t.Fatalf("%s seed=%d 的 maxValue = %.17g, want %.17g", group.Noise, group.Seed, noise.MaxValue(), group.MaxValue)
+		}
+		for i := range group.First {
+			point := oracleSamplePoints[i]
+			if got, want := noise.first.Value(point[0], point[1], point[2]), group.First[i]; math.Abs(got-want) > tolerance {
+				t.Fatalf("%s seed=%d 第一份 Perlin 在点 %v = %.17g, want %.17g", group.Noise, group.Seed, point, got, want)
+			}
+			if got, want := noise.second.Value(point[0], point[1], point[2]), group.Second[i]; math.Abs(got-want) > tolerance {
+				t.Fatalf("%s seed=%d 第二份 Perlin 在点 %v = %.17g, want %.17g", group.Noise, group.Seed, point, got, want)
+			}
+		}
+	}
+}

@@ -6,7 +6,8 @@ package vanilla
 
 // 随机源：NextLong 与原版 XoroshiroRandomSource 逐位一致（用 tools/vgoracle 从官方
 // jar 取到的 nextLong 序列校验，见 testdata/noise_oracle.json 与 random_test.go）。
-// NextDouble/NextInt/NextFloat 是标准派生实现，尚未逐值对拍。
+// NextDouble / NextInt 由 ImprovedNoise 的 xo/yo/zo 与 256 项置换表、以及
+// NormalNoise 的逐值对拍间接校验（same file，见 noise_test.go）。
 //
 // 原版 RandomSource.create(long) 构造 XoroshiroRandomSource，内部状态由
 // RandomSupport.mixStafford13 生成（SplitMix64 的 mix13 变体）。
@@ -55,14 +56,17 @@ func (r *Xoroshiro) NextLong() int64 {
 	return int64(result)
 }
 
-// NextDouble 返回 [0, 1) 的双精度随机数（取高 53 位，标准做法；未逐值对拍）。
+// NextDouble 返回 [0, 1) 的双精度随机数：取 nextLong 高 53 位再乘 2^-53
+// （与原版 XoroshiroRandomSource.nextDouble 一致，已由 ImprovedNoise 的
+// xo/yo/zo 逐值对拍验证）。
 func (r *Xoroshiro) NextDouble() float64 {
 	return float64(uint64(r.NextLong())>>11) * 0x1p-53
 }
 
 // NextInt 返回 [0, bound) 的随机整数，与原版 XoroshiroRandomSource.nextInt(int)
-// 一致：取 nextLong 的高 32 位做 32×32→64 乘法，用高 32 位作为结果，低位不足时
-// 按无符号余数阈值重试（Lemire 有界随机，等价原版的 Integer.remainderUnsigned）。
+// 一致：取 nextLong 的**低 32 位**做 32×32→64 乘法，用乘积的高 32 位作为结果，
+// 低位不足时按无符号余数阈值重试（Lemire 有界随机，等价原版的
+// Integer.remainderUnsigned）。
 func (r *Xoroshiro) NextInt(bound int) int {
 	if bound <= 0 {
 		panic("vanilla: NextInt 的 bound 必须为正")
