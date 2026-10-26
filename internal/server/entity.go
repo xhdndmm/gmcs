@@ -135,6 +135,12 @@ const (
 	mobCow
 	mobPig
 	mobSheep
+	// 水生生物（海洋/河流）：鳕鱼、鲑鱼、热带鱼、鱿鱼。
+	// 追加在末尾，entities.json 按名称持久化，旧存档不受影响。
+	mobCod
+	mobSalmon
+	mobTropicalFish
+	mobSquid
 )
 
 // mobStats 描述一种生物的基础数值与音效名。
@@ -158,10 +164,12 @@ type mobStats struct {
 	spawnWeight int
 	// passive 为 true 表示被动生物（不索敌，仅游荡；白天生成）。
 	passive bool
+	// aquatic 为 true 表示水生生物（只在水中生成、在水里游动、不会走上陆地）。
+	aquatic bool
 }
 
 // mobKindCount 是支持的生物种类数量。
-const mobKindCount mobKind = mobSheep + 1
+const mobKindCount mobKind = mobSquid + 1
 
 // mobKinds 是全部生物的基础数值（生命 20、伤害 2–3，与原版普通难度接近）。
 // 用数组按 mobKind 直接索引：tick 热路径每生物每帧多次访问，避免 map 哈希。
@@ -206,6 +214,28 @@ var mobKinds = [mobKindCount]mobStats{
 		experience: 2, hurtSound: "minecraft:entity.sheep.hurt", deathSound: "minecraft:entity.sheep.death",
 		spawnWeight: 12, passive: true,
 	},
+	// 水生生物（原版海洋生物群系的水下生成）。鳕鱼/鲑鱼成群出现在海洋与河流，
+	// 热带鱼只在温暖海洋（gmcs 用同一套权重近似），鱿鱼在水下缓慢游动。
+	mobCod: {
+		name: "minecraft:cod", health: 3, walkSpeed: 0.04, followRange: 0, damage: 0,
+		experience: 1, hurtSound: "minecraft:entity.cod.hurt", deathSound: "minecraft:entity.cod.death",
+		spawnWeight: 20, passive: true, aquatic: true,
+	},
+	mobSalmon: {
+		name: "minecraft:salmon", health: 3, walkSpeed: 0.04, followRange: 0, damage: 0,
+		experience: 1, hurtSound: "minecraft:entity.salmon.hurt", deathSound: "minecraft:entity.salmon.death",
+		spawnWeight: 16, passive: true, aquatic: true,
+	},
+	mobTropicalFish: {
+		name: "minecraft:tropical_fish", health: 3, walkSpeed: 0.035, followRange: 0, damage: 0,
+		experience: 1, hurtSound: "minecraft:entity.tropical_fish.hurt", deathSound: "minecraft:entity.tropical_fish.death",
+		spawnWeight: 8, passive: true, aquatic: true,
+	},
+	mobSquid: {
+		name: "minecraft:squid", health: 10, walkSpeed: 0.03, followRange: 0, damage: 0,
+		experience: 1, hurtSound: "minecraft:entity.squid.hurt", deathSound: "minecraft:entity.squid.death",
+		spawnWeight: 10, passive: true, aquatic: true,
+	},
 }
 
 // mob 是一只服务器控制的生物。字段由 Server.entityMu 保护，
@@ -243,9 +273,18 @@ type mob struct {
 	PathGoalZ float64
 	// PathCooldown 是 A* 搜索失败后的重试冷却（避免对不可达目标每 tick 搜索）。
 	PathCooldown int
-	// WanderX/WanderZ 是游荡目标；WanderTicks 归零时重新选择。
-	WanderX, WanderZ float64
-	WanderTicks      int
+	// WanderX/WanderY/WanderZ 是游荡目标；WanderTicks 归零时重新选择。
+	// WanderY 只被水生生物使用（水下三维游动）。
+	WanderX, WanderY, WanderZ float64
+	WanderTicks               int
+	// PanicTicks 是受击后逃跑的剩余 tick（原版 PanicGoal：
+	// getLastHurtByMobTimestamp 起 100 tick 内逃跑）；PanicX/PanicZ 是
+	// 逃跑时远离的威胁位置（攻击者）。
+	PanicTicks int
+	PanicX     float64
+	PanicZ     float64
+	// SwimTicks 是水生生物重新选择游动方向的倒计时（见 swimMob）。
+	SwimTicks int
 	// Fuse 是苦力怕引信剩余 tick（>0 表示已点燃）。
 	Fuse int
 	// ShootCooldown 是骷髅的射击冷却（tick）。
@@ -561,20 +600,37 @@ func (s *Server) tickMobs(players []*session) {
 				}
 			}
 		} else {
-			m.WanderTicks--
-			if m.WanderTicks <= 0 {
-				m.WanderTicks = 40 + int(s.nextRandom()%80)
-				angle := float64(s.nextRandom()%6283185) / 1000000
-				m.WanderX = m.X + math.Cos(angle)*6
-				m.WanderZ = m.Z + math.Sin(angle)*6
+			switch {
+			case stats.aquatic:
+				// 水生生物：在水体内三维游动（受击后加速游动）。
+				swimSpeed := stats.walkSpeed
+				if m.PanicTicks > 0 {
+					m.PanicTicks--
+					swimSpeed *= mobPanicSpeed
+				}
+				attemptedMove = true
+				moved = s.swimMob(mobWorld, m, swimSpeed)
+			case stats.passive && m.PanicTicks > 0:
+				// 受击逃跑（原版 PanicGoal）：受伤后 100 tick 内远离攻击者。
+				m.PanicTicks--
+				attemptedMove = true
+				moved = s.fleeMob(mobWorld, m, stats.walkSpeed*mobPanicSpeed)
+			default:
+				m.WanderTicks--
+				if m.WanderTicks <= 0 {
+					m.WanderTicks = 40 + int(s.nextRandom()%80)
+					angle := float64(s.nextRandom()%6283185) / 1000000
+					m.WanderX = m.X + math.Cos(angle)*6
+					m.WanderZ = m.Z + math.Sin(angle)*6
+				}
+				attemptedMove = true
+				moved = s.navigateMob(mobWorld, m, m.WanderX, m.Y, m.WanderZ, mobWanderSpeed)
 			}
-			attemptedMove = true
-			moved = s.navigateMob(mobWorld, m, m.WanderX, m.Y, m.WanderZ, mobWanderSpeed)
 		}
 
 		if moved {
 			m.StuckTicks = 0
-		} else if attemptedMove {
+		} else if attemptedMove && !stats.aquatic {
 			// 被挡住：积累一段时间后随机侧移一步（简单避障，无寻路）。
 			m.StuckTicks++
 			if m.StuckTicks >= mobStuckTicks {
@@ -833,6 +889,82 @@ func (s *Server) trySideStep(w *world.World, m *mob) bool {
 	return false
 }
 
+// mobPanicSpeed 是受击逃跑时的速度倍率（原版 PanicGoal 的速度修正 1.25）。
+const mobPanicSpeed = 1.25
+
+// mobPanicTicks 是受击后逃跑的持续时间（原版 PanicGoal 判定
+// tickCount - lastHurtByMobTimestamp < 100）。
+const mobPanicTicks = 100
+
+// fleeMob 让受击的被动生物远离威胁位置（原版 PanicGoal）。
+// 威胁位置与自身重合时随机选一个方向。
+// 调用方必须持有 entityMu。
+func (s *Server) fleeMob(w *world.World, m *mob, speed float64) bool {
+	dx, dz := m.X-m.PanicX, m.Z-m.PanicZ
+	distance := math.Hypot(dx, dz)
+	if distance < 0.5 {
+		angle := float64(s.nextRandom()%6283185) / 1000000
+		dx, dz = math.Cos(angle), math.Sin(angle)
+	} else {
+		dx, dz = dx/distance, dz/distance
+	}
+	return s.navigateMob(w, m, m.X+dx*8, m.Y, m.Z+dz*8, speed)
+}
+
+// swimMob 让水生生物在水体内游动：每 2–6 秒选一个新的三维目标点
+// （限制在同一水体：海平面以下、海底以上），每 tick 朝目标点前进一小步。
+// 目标点离开水体或到达时重新选择。调用方必须持有 entityMu。
+func (s *Server) swimMob(w *world.World, m *mob, speed float64) bool {
+	if m.SwimTicks <= 0 || !s.waterBodyAt(w, m.WanderX, m.WanderY, m.WanderZ) {
+		m.SwimTicks = 40 + int(s.nextRandom()%80)
+		angle := float64(s.nextRandom()%6283185) / 1000000
+		distance := 2 + float64(s.nextRandom()%400)/100
+		m.WanderX = m.X + math.Cos(angle)*distance
+		m.WanderZ = m.Z + math.Sin(angle)*distance
+		m.WanderY = m.Y + float64(s.nextRandom()%300)/100 - 1.5
+		// 目标高度夹到水体范围内（原版水生生物不会游出水面或钻进海底）。
+		if column, ok := w.ColumnAt(int(math.Floor(m.WanderX)), int(math.Floor(m.WanderZ))); ok {
+			if !column.HasTop {
+				return false
+			}
+			if top := float64(column.TopY) - 1; m.WanderY > top {
+				m.WanderY = top
+			}
+			if bottom := float64(column.SolidY) + 1; m.WanderY < bottom {
+				m.WanderY = bottom
+			}
+		}
+	}
+	m.SwimTicks--
+	dx, dy, dz := m.WanderX-m.X, m.WanderY-m.Y, m.WanderZ-m.Z
+	distance := math.Sqrt(dx*dx + dy*dy + dz*dz)
+	if distance < 0.1 {
+		m.SwimTicks = 0
+		return false
+	}
+	step := min(speed, distance)
+	nx := m.X + dx/distance*step
+	ny := m.Y + dy/distance*step
+	nz := m.Z + dz/distance*step
+	if !s.waterBodyAt(w, nx, ny, nz) {
+		m.SwimTicks = 0
+		return false
+	}
+	m.X, m.Y, m.Z = nx, ny, nz
+	m.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+	return true
+}
+
+// waterBodyAt 报告 (x, y, z) 是否在水体内：脚部与身体中部两处都是水。
+func (s *Server) waterBodyAt(w *world.World, x, y, z float64) bool {
+	if w == nil {
+		return false
+	}
+	bx, bz := int(math.Floor(x)), int(math.Floor(z))
+	return isWaterState(w.BlockAt(bx, int(math.Floor(y)), bz)) &&
+		isWaterState(w.BlockAt(bx, int(math.Floor(y+0.5)), bz))
+}
+
 // attackPathClear 粗略检查两点（眼睛高度）之间是否被方块挡住：
 // 采样 35% 与 70% 处的方块，空气与水视为可穿过。
 // 用于避免隔墙攻击（生物打玩家与玩家打生物共用）。
@@ -935,6 +1067,12 @@ func (s *Server) trySpawnMob(players []*session) {
 	}
 	s.entityMu.Lock()
 	count := len(s.mobs)
+	aquaticCount := 0
+	for _, m := range s.mobs {
+		if mobKinds[m.Kind].aquatic {
+			aquaticCount++
+		}
+	}
 	s.entityMu.Unlock()
 	if count >= s.config.MaxMobs {
 		return
@@ -942,22 +1080,6 @@ func (s *Server) trySpawnMob(players []*session) {
 
 	player := players[s.nextRandom()%uint64(len(players))]
 	dim := player.dimensionID()
-	var (
-		kind mobKind
-		ok   bool
-	)
-	if dim == world.DimensionEnd {
-		// 末地只生成末影人（近似原版）。
-		if _, exists := s.mobTypeIDs[mobEnderman]; exists {
-			kind, ok = mobEnderman, true
-		}
-	} else {
-		hostile := s.isNight() || dim == world.DimensionNether
-		kind, ok = s.pickSpawnKind(hostile)
-	}
-	if !ok {
-		return
-	}
 	px, _, pz, _, _ := player.playerPosition()
 	angle := float64(s.nextRandom()%6283185) / 1000000
 	// 与原版一致：距玩家 24 格外生成。
@@ -970,10 +1092,46 @@ func (s *Server) trySpawnMob(players []*session) {
 
 	w := s.worldFor(dim)
 	column, ok := w.ColumnAt(blockX, blockZ)
-	if !ok || !column.HasTop || isWaterState(column.TopState) || !column.HasSolid {
+	if !ok || !column.HasTop {
+		return
+	}
+	// 水域（海洋/河流/湖泊）：生成水生生物（原版鱼群与鱿鱼只在水下生成），
+	// 白天与夜晚都可以。只取水面以下 2 格起、海平面以下的位置。
+	if dim != world.DimensionEnd && dim != world.DimensionNether && isWaterState(column.TopState) {
+		// 水生生物使用独立配额（原版 water 类生物上限远低于敌对/被动生物），
+		// 避免鱼群占满总上限导致陆地夜间不刷怪。
+		if aquaticCount >= max(1, s.config.MaxMobs/3) {
+			return
+		}
+		aquatic, aquaticOK := s.pickAquaticKind()
+		if !aquaticOK || column.SolidY+2 >= column.TopY {
+			return // 水太浅，放不下一条鱼
+		}
+		y := float64(column.SolidY + 2)
+		if limit := float64(column.TopY) - 1; y > limit {
+			y = limit
+		}
+		s.addMob(dim, aquatic, float64(blockX)+0.5, y, float64(blockZ)+0.5)
+		return
+	}
+	if !column.HasSolid {
 		return
 	}
 	if isLavaState(column.TopState) || column.TopState == world.MagmaBlock {
+		return
+	}
+	var kind mobKind
+	ok = false
+	if dim == world.DimensionEnd {
+		// 末地只生成末影人（近似原版）。
+		if _, exists := s.mobTypeIDs[mobEnderman]; exists {
+			kind, ok = mobEnderman, true
+		}
+	} else {
+		hostile := s.isNight() || dim == world.DimensionNether
+		kind, ok = s.pickSpawnKind(hostile)
+	}
+	if !ok {
 		return
 	}
 	// 被动生物只在主世界的草方块上生成（近似原版）。
@@ -1013,6 +1171,34 @@ func (s *Server) pickSpawnKind(hostile bool) (mobKind, bool) {
 		roll -= weight
 	}
 	return mobZombie, false
+}
+
+// pickAquaticKind 按权重挑选一种水生生物（鳕鱼/鲑鱼/热带鱼/鱿鱼）。
+// 无可用种类（注册表缺失）时返回 false。
+func (s *Server) pickAquaticKind() (mobKind, bool) {
+	kinds := [4]mobKind{mobCod, mobSalmon, mobTropicalFish, mobSquid}
+	total := 0
+	for _, kind := range kinds {
+		if _, ok := s.mobTypeIDs[kind]; !ok {
+			continue
+		}
+		total += mobKinds[kind].spawnWeight
+	}
+	if total <= 0 {
+		return mobCod, false
+	}
+	roll := int(s.nextRandom() % uint64(total))
+	for _, kind := range kinds {
+		if _, ok := s.mobTypeIDs[kind]; !ok {
+			continue
+		}
+		weight := mobKinds[kind].spawnWeight
+		if roll < weight {
+			return kind, true
+		}
+		roll -= weight
+	}
+	return mobCod, false
 }
 
 // addMob 生成一只指定种类的生物并把 Add Entity 广播给同维度的附近玩家。
@@ -1179,6 +1365,11 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 	damage += s.meleeEnchantDamage(held, m)
 	m.Health -= damage
 	kind := m.Kind
+	// 被动生物受击后逃跑（原版 PanicGoal 由 getLastHurtByMob 触发）。
+	if mobKinds[kind].passive {
+		m.PanicTicks = mobPanicTicks
+		m.PanicX, m.PanicZ = px, pz
+	}
 	m.Yaw = float32(math.Atan2(-(px-m.X), pz-m.Z) * 180 / math.Pi)
 	position := [3]float64{m.X, m.Y + 1, m.Z}
 	packets := [][]byte{
@@ -1308,6 +1499,15 @@ func (s *Server) dropMobLoot(kind mobKind, dim world.Dimension, x, y, z float64,
 	case mobSheep:
 		spawn("minecraft:white_wool", 1)
 		spawn("minecraft:mutton", 1+int32(s.nextRandom()%2)+s.lootingExtra(looting))
+	case mobCod:
+		// 原版鳕鱼掉落 1 个生鳕鱼（着火死亡时掉落熟鳕鱼，未建模）。
+		spawn("minecraft:cod", 1+s.lootingExtra(looting))
+	case mobSalmon:
+		spawn("minecraft:salmon", 1+s.lootingExtra(looting))
+	case mobTropicalFish:
+		spawn("minecraft:tropical_fish", 1+s.lootingExtra(looting))
+	case mobSquid:
+		spawn("minecraft:ink_sac", 1+int32(s.nextRandom()%3)+s.lootingExtra(looting))
 	}
 }
 
@@ -1529,6 +1729,7 @@ func (s *Server) resolveMobRegistryIDs() {
 		{"minecraft:damage_type", "minecraft:on_fire", &s.fireDamageTypeID},
 		{"minecraft:damage_type", "minecraft:drown", &s.drownDamageTypeID},
 		{"minecraft:damage_type", "minecraft:hot_floor", &s.hotFloorDamageTypeID},
+		{"minecraft:damage_type", "minecraft:cactus", &s.cactusDamageTypeID},
 	} {
 		id, ok := syncLookup(item.registry, item.entry)
 		if !ok {

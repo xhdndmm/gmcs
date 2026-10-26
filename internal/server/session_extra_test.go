@@ -179,6 +179,9 @@ func TestMobSideStepAvoidance(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Blocked")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 
 	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	mob := instance.addMob(world.DimensionOverworld, mobZombie, spawnX, spawnY, spawnZ+1.9)
@@ -191,7 +194,8 @@ func TestMobSideStepAvoidance(t *testing.T) {
 	for dx := -2; dx <= 2; dx++ {
 		for dz := -2; dz <= 3; dz++ {
 			instance.testWorld().SetBlock(blockX+dx, baseY, blockZ+dz, world.StoneBlock)
-			for dy := 1; dy <= 3; dy++ {
+			// 清空到远高于地表（出生点可能紧邻树冠/山坡）。
+			for dy := 1; dy <= 12; dy++ {
 				instance.testWorld().SetBlock(blockX+dx, baseY+dy, blockZ+dz, world.AirBlock)
 			}
 		}

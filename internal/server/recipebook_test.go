@@ -139,18 +139,74 @@ func TestRecipeBookPlaceCraft(t *testing.T) {
 		t.Fatalf("结果槽 = %+v, want 橡木木板 x4", result)
 	}
 
-	// makeAll：3 个原木应全部合成为 12 个木板（合成格清空）。
+	// Shift 点击（useMaxItems）：原版 1.21.2+ 的行为是把背包里可用的原料
+	// 尽可能多地放进合成格（不自动合成）。此时背包有 2 个原木、合成格 1 个，
+	// 可合成 3 次 → 合成格放入 3 个原木堆叠，背包原木清零。
 	sendPlaceRecipe(t, conn, protocol.PlayerInventoryWindowID, displayID, true)
 	processBarrier(t, conn)
-	if planks := countInventoryItems(player, plankID); planks != 12 {
-		t.Fatalf("makeAll 后木板 = %d, want 12", planks)
+	grid = player.invCraftState().gridSnapshot()
+	placed = 0
+	for _, stack := range grid {
+		if !stack.IsEmpty() {
+			if stack.ItemID != logID || stack.Count != 3 {
+				t.Fatalf("Shift 放置后合成格 = %+v, want 原木 x3", stack)
+			}
+			placed++
+		}
+	}
+	if placed != 1 {
+		t.Fatalf("Shift 放置后合成格占用数量 = %d, want 1", placed)
 	}
 	if logs := countInventoryItems(player, logID); logs != 0 {
-		t.Fatalf("makeAll 后原木 = %d, want 0", logs)
+		t.Fatalf("Shift 放置后背包原木 = %d, want 0", logs)
+	}
+	if planks := countInventoryItems(player, plankID); planks != 0 {
+		t.Fatalf("Shift 放置不应自动合成：背包木板 = %d, want 0", planks)
+	}
+
+	// Shift 取走结果槽：3 个原木全部合成 → 背包 12 个木板、合成格清空。
+	sendContainerClick(t, conn, protocol.PlayerInventoryWindowID, 0, 0, 0, protocol.ClickModeQuickMove)
+	processBarrier(t, conn)
+	if planks := countInventoryItems(player, plankID); planks != 12 {
+		t.Fatalf("取走产物后木板 = %d, want 12", planks)
 	}
 	for _, stack := range player.invCraftState().gridSnapshot() {
 		if !stack.IsEmpty() {
-			t.Fatalf("makeAll 后合成格残留 %+v", stack)
+			t.Fatalf("取走产物后合成格残留 %+v", stack)
+		}
+	}
+}
+
+// TestRecipeBookGhostRecipeWhenInsufficient 验证原料不足时：合成格被清空
+// （物品退回背包）并发送 Place Ghost Recipe（原版 clearGrid + 幽灵配方）。
+func TestRecipeBookGhostRecipeWhenInsufficient(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "GhostBook")
+	displayID := findBookDisplayID(t, instance.recipeBook, "minecraft:oak_planks")
+
+	// 没有原木：点击配方应发送 Place Ghost Recipe（0x3D），合成格保持为空。
+	sendPlaceRecipe(t, conn, protocol.PlayerInventoryWindowID, displayID, false)
+	payload := expectPlayPacket(t, conn, protocol.PlayPacketIDPlaceGhostRecipe)
+	_, offset, err := protocol.DecodeVarInt(payload) // 跳过包 ID
+	if err != nil {
+		t.Fatalf("解析 ghost 包 ID：%v", err)
+	}
+	windowID, size, err := protocol.DecodeVarInt(payload[offset:])
+	if err != nil {
+		t.Fatalf("解析 ghost 窗口 ID：%v", err)
+	}
+	if windowID != protocol.PlayerInventoryWindowID {
+		t.Fatalf("ghost 窗口 ID = %d, want %d", windowID, protocol.PlayerInventoryWindowID)
+	}
+	if got, _, err := protocol.DecodeVarInt(payload[offset+size:]); err != nil || got != displayID {
+		t.Fatalf("ghost 配方编号 = %d（%v），want %d", got, err, displayID)
+	}
+	player := activeSession(t, instance, "GhostBook")
+	for _, stack := range player.invCraftState().gridSnapshot() {
+		if !stack.IsEmpty() {
+			t.Fatalf("幽灵配方不应放入物品，合成格残留 %+v", stack)
 		}
 	}
 }

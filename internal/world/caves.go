@@ -50,7 +50,9 @@ func (g SeededGenerator) carveCaves(chunk *Chunk, columns *[SectionSize * Sectio
 // 全部低于阈值时整格（4×8×4 = 128 个方块）直接跳过，避免逐块插值；
 // 只有“可能含洞”的单元格才逐块三线性插值。
 func (g SeededGenerator) carveCheeseCaves(chunk *Chunk, columns *[SectionSize * SectionSize]columnData, sampler *caveSampler) {
-	const threshold = 0.66
+	// 阈值越高洞穴越少。0.66 时洞穴占地下体积约 20–25%（"挖开三格就能掉进大洞"），
+	// 与实测的原版观感差距很大；0.76 约为 3–7%，接近原版噪声洞穴的比例。
+	const threshold = 0.76
 	for cellX := 0; cellX < SectionSize; cellX += caveGridStep {
 		for cellZ := 0; cellZ < SectionSize; cellZ += caveGridStep {
 			// 单元格覆盖的最大地表高度（用于提前跳过近地表/天空部分）。
@@ -86,10 +88,10 @@ func (g SeededGenerator) carveCheeseCaves(chunk *Chunk, columns *[SectionSize * 
 // 起点、方向与长度都是确定性的；隧道被约束在本区块内（边界反弹）。
 func (g SeededGenerator) carveWormTunnels(chunk *Chunk, columns *[SectionSize * SectionSize]columnData) {
 	worms := 0
-	if hashUnit(g.Seed^caveWormSalt, chunk.X, chunk.Z) < 0.55 {
+	if hashUnit(g.Seed^caveWormSalt, chunk.X, chunk.Z) < 0.35 {
 		worms = 1
 	}
-	if hashUnit(g.Seed^caveWormSalt^0x5555, chunk.X, chunk.Z) < 0.22 {
+	if hashUnit(g.Seed^caveWormSalt^0x5555, chunk.X, chunk.Z) < 0.08 {
 		worms++
 	}
 	for i := 0; i < worms; i++ {
@@ -112,8 +114,8 @@ func (g SeededGenerator) carveWorm(chunk *Chunk, columns *[SectionSize * Section
 
 	angle := sequence.nextFloat() * 2 * math.Pi
 	pitch := (sequence.nextFloat() - 0.5) * 0.6
-	length := 60 + sequence.nextInt(60)
-	radius := 1.4 + sequence.nextFloat()*0.9
+	length := 40 + sequence.nextInt(40)
+	radius := 1.2 + sequence.nextFloat()*0.6
 
 	for step := 0; step < length; step++ {
 		// 方向随机扰动 + 前进。

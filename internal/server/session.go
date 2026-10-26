@@ -417,7 +417,25 @@ func (s *session) handleMove(x, y, z float64, yaw, pitch float32, rotate bool, n
 		yaw, pitch = prevYaw, prevPitch
 	}
 	w := s.playerWorld()
-	if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, now) || !positionClear(w, x, y, z) {
+	if !s.server.insideBorder(x, z) || !s.acceptMove(x, y, z, now) {
+		s.resyncPosition()
+		return
+	}
+	// 旁观者可以穿过方块（原版 Player.isSpectator 时 noPhysics，服务端不做
+	// 穿墙校验）：否则切换旁观者后无法下潜观察地下。
+	spectator := s.gameModeID() == uint8(config.GameModeSpectator)
+	if !spectator && !positionClear(w, x, y, z) {
+		// 目标位置嵌在方块里：正常情况下是穿墙作弊；但如果服务器记录的
+		// 当前位置本身已经嵌在方块内（活塞推入、门/活板门关闭、方块生长、
+		// 恢复存档等），继续拒绝会让玩家永远无法移动。此时把玩家推出到
+		// 最近的空位并同步，而不是无限回拉。
+		if !positionClear(w, prevX, prevY, prevZ) {
+			if ux, uy, uz, ok := unstickPlayerPosition(w, prevX, prevY, prevZ); ok {
+				s.setPlayerPosition(ux, uy, uz, prevYaw, prevPitch)
+				s.resetFallState()
+				s.updateChunks(ux, uz)
+			}
+		}
 		s.resyncPosition()
 		return
 	}
@@ -549,12 +567,25 @@ func playerBox(x, y, z float64) world.Box {
 	}
 }
 
+// moveClearance 是位置校验的容差（方块）。客户端位置是 float64，站在
+// 方块顶面/侧面对齐时可能因浮点误差产生 1e-9 级别的重叠；不设容差会出现
+// “明明站在地上却被判定穿墙、反复回拉”的偶发无法移动。
+const moveClearance = 1e-3
+
 // positionClear 报告玩家碰撞盒是否未嵌入方块碰撞形状。
 // 用于检测穿墙（no-clip）式移动：客户端自身的碰撞不允许进入方块形状，
 // 因此“终点嵌在形状里”只可能来自作弊或状态错乱。查询为形状级 AABB
 // （支持半砖/台阶/栅栏/门等非完整碰撞体），相触不算相交。
+// 碰撞盒按 moveClearance 内缩，容忍浮点误差。
 func positionClear(w *world.World, x, y, z float64) bool {
-	return !w.Collides(playerBox(x, y, z))
+	box := playerBox(x, y, z)
+	box.MinX += moveClearance
+	box.MinY += moveClearance
+	box.MinZ += moveClearance
+	box.MaxX -= moveClearance
+	box.MaxY -= moveClearance
+	box.MaxZ -= moveClearance
+	return !w.Collides(box)
 }
 
 // supportedAt 报告玩家脚下是否有可站立的碰撞面（服务器端重力模拟）。

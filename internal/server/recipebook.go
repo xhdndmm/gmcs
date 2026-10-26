@@ -179,15 +179,23 @@ func (s *Server) buildRecipeBook() {
 		"propertySets", len(propertySets), "stonecutter", len(stonecutter), "bookEntries", len(addList))
 }
 
-// handlePlaceRecipe 处理 Place Recipe（配方书点击）：把原料放入当前合成格。
-// 仅支持合成配方（有序/无序）；烹饪/锻造条目不属于合成格放置流程。
+// handlePlaceRecipe 处理 Place Recipe（配方书点击）。
+//
+// 对齐原版 1.21.2+ 语义（1.21.11 ServerPlaceRecipe / AbstractCraftingMenu 字节码）：
+//   - 现有合成格物品必须先能全部退回背包（原版 testClearGrid），否则不执行任何操作；
+//   - 原料不足（无法合成一次）时清空合成格并发送 Place Ghost Recipe，
+//     客户端会把配方以“幽灵”形式显示在合成格中；
+//   - 原料足够时清空合成格，再把原料放进合成格：
+//     useMaxItems（Shift）→ 每格放入尽可能多的原料（最多可合成次数）；
+//     否则若合成格原本已摆成该配方 → 每格再补 1 个；否则每格放 1 个。
+//
+// 与原版一致，本函数不自动合成：原料留在合成格，玩家自行取走产物
+// （旧实现“Shift 立即全部合成并把产物塞进背包”是 1.21.2 之前的旧行为）。
+// 仅支持合成配方（有序/无序）；烹饪/锻造/切石条目不属于合成格放置流程。
 // 由会话读循环调用。
-func (s *Server) handlePlaceRecipe(player *session, windowID, displayID int32, makeAll bool) {
+func (s *Server) handlePlaceRecipe(player *session, windowID, displayID int32, useMaxItems bool) {
 	book := s.recipeBook
-	if book == nil {
-		return
-	}
-	if displayID < 0 || int(displayID) >= len(book.entries) {
+	if book == nil || displayID < 0 || int(displayID) >= len(book.entries) {
 		return
 	}
 	var backing craftSlotBacking
@@ -200,20 +208,20 @@ func (s *Server) handlePlaceRecipe(player *session, windowID, displayID int32, m
 		return
 	}
 	ref := book.entries[displayID]
-	gridWidth := int32(backing.state.width)
+	gridWidth := int(backing.state.width)
 	gridCount := backing.gridCount()
 
-	// 计算每个格子的候选物品集合（空 = 不放置）。
+	// 配方原料：targets[合成格下标] = 候选物品集合（空 = 该格留空）。
 	targets := make([][]int32, gridCount)
 	switch ref.kind {
 	case bookShaped:
 		recipe := registry.ShapedRecipes[ref.index]
-		if recipe.Width > gridWidth || recipe.Height > gridWidth {
+		if int(recipe.Width) > gridWidth || int(recipe.Height) > gridWidth {
 			return // 配方放不进当前合成格
 		}
-		for y := int32(0); y < recipe.Height; y++ {
-			for x := int32(0); x < recipe.Width; x++ {
-				cell := recipe.Cells[y*recipe.Width+x]
+		for y := 0; y < int(recipe.Height); y++ {
+			for x := 0; x < int(recipe.Width); x++ {
+				cell := recipe.Cells[y*int(recipe.Width)+x]
 				if cell < 0 {
 					continue
 				}
@@ -222,7 +230,7 @@ func (s *Server) handlePlaceRecipe(player *session, windowID, displayID int32, m
 		}
 	case bookShapeless:
 		recipe := registry.ShapelessRecipes[ref.index]
-		if int32(len(recipe.Ingredients)) > gridWidth*gridWidth {
+		if len(recipe.Ingredients) > gridCount {
 			return
 		}
 		for i, ingredient := range recipe.Ingredients {
@@ -240,59 +248,168 @@ func (s *Server) handlePlaceRecipe(player *session, windowID, displayID int32, m
 	ranges := backing.invRanges()
 	invStart, invEnd := ranges[0][0], ranges[len(ranges)-1][1]
 
+	// 合成格当前是否已摆成该配方，以及占据格的最小数量
+	// （原版 CraftingMenuAccess.matches 与 calculateAmountToCraft）。
+	gridMatches := true
+	gridMinCount := 0
+	for slot := 0; slot < gridCount; slot++ {
+		stack := working[1+slot]
+		candidates := targets[slot]
+		if len(candidates) == 0 {
+			if !stack.IsEmpty() {
+				gridMatches = false
+			}
+			continue
+		}
+		if stack.IsEmpty() || !itemIDIn(stack.ItemID, candidates) {
+			gridMatches = false
+			continue
+		}
+		if gridMinCount == 0 || int(stack.Count) < gridMinCount {
+			gridMinCount = int(stack.Count)
+		}
+	}
+	if !gridMatches {
+		gridMinCount = 0
+	}
+
+	// 最多可合成次数（原版 StackedItemContents.getMaxCraftable 的等价贪心：
+	// 每次合成按格子顺序取一种可用原料，取不满即停止）。
+	maxCrafts := recipeMaxCrafts(working, invStart, invEnd, gridCount, targets)
+	if maxCrafts <= 0 {
+		// 原料不足：清空合成格并显示幽灵配方（原版 clearGrid + Place Ghost Recipe）。
+		if !clearCraftGrid(working, gridCount, invStart, invEnd) {
+			return // 合成格物品退不回背包：保持原样（原版 testClearGrid 失败）
+		}
+		s.writeBackCraft(player, backing, working, gridCount)
+		_ = player.writePacket(protocol.EncodePlaceGhostRecipe(windowID, displayID))
+		return
+	}
+
 	// 现有合成格物品退回背包；放不下则中止（快照丢弃，不产生任何变更）。
+	if !clearCraftGrid(working, gridCount, invStart, invEnd) {
+		return
+	}
+
+	// 每格放置数量（原版 calculateAmountToCraft）。
+	amount := 1
+	if useMaxItems {
+		amount = maxCrafts
+	} else if gridMinCount > 0 {
+		amount = gridMinCount + 1
+	}
+	for slot, candidates := range targets {
+		if len(candidates) == 0 {
+			continue
+		}
+		placeUpTo(working, invStart, invEnd, candidates, 1+slot, amount)
+	}
+
+	s.writeBackCraft(player, backing, working, gridCount)
+}
+
+// itemIDIn 报告物品 ID 是否在候选集合中。
+func itemIDIn(id int32, candidates []int32) bool {
+	for _, candidate := range candidates {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
+}
+
+// clearCraftGrid 把合成格内容退回背包（区间 [invStart, invEnd)）。
+// 任一格放不下时返回 false，调用方须放弃本次操作。
+func clearCraftGrid(working []item.Stack, gridCount, invStart, invEnd int) bool {
 	for slot := 1; slot <= gridCount; slot++ {
 		stack := working[slot]
 		if stack.IsEmpty() {
 			continue
 		}
-		stack = mergeIntoArea(backing, working, stack, invStart, invEnd)
-		if !stack.IsEmpty() {
-			return
+		// 合成格物品退回背包时不受槽位限制（原版 placeItemBackInInventory）。
+		remaining := mergeIntoArea(craftSlotBacking{}, working, stack, invStart, invEnd)
+		if !remaining.IsEmpty() {
+			return false
 		}
 		working[slot] = item.Empty()
 	}
+	return true
+}
 
-	// 放置一轮原料；缺少原料时保留已有部分（与原版幽灵配方一致）。
-	placeOnce := func() (complete bool) {
-		complete = true
-		for slot, candidates := range targets {
-			if len(candidates) == 0 || !working[1+slot].IsEmpty() {
+// recipeMaxCrafts 返回用背包（[invStart, invEnd)）与合成格现有物品最多能
+// 完成多少次该配方。targets 为空（无原料格）时返回 0。
+func recipeMaxCrafts(working []item.Stack, invStart, invEnd, gridCount int, targets [][]int32) int {
+	counts := make(map[int32]int, 16)
+	add := func(stack item.Stack) {
+		if !stack.IsEmpty() {
+			counts[stack.ItemID] += int(stack.Count)
+		}
+	}
+	for _, stack := range working[invStart:invEnd] {
+		add(stack)
+	}
+	for slot := 1; slot <= gridCount; slot++ {
+		add(working[slot])
+	}
+	crafts := 0
+	for {
+		cells := 0
+		for _, candidates := range targets {
+			if len(candidates) == 0 {
 				continue
 			}
-			if !placeFromWorking(working, invStart, invEnd, candidates, 1+slot) {
-				complete = false
-			}
-		}
-		return complete
-	}
-	placeOnce()
-
-	// makeAll：循环取走产物（直接放入背包）并重新放置原料，直到原料不足或背包已满。
-	if makeAll {
-		for iter := 0; iter < 64; iter++ {
-			result := backing.resultOf(working)
-			if result.IsEmpty() {
-				break
-			}
-			stack := result
-			for _, target := range ranges {
-				stack = mergeIntoArea(backing, working, stack, target[0], target[1])
-				if stack.IsEmpty() {
+			picked := false
+			for _, id := range candidates {
+				if counts[id] > 0 {
+					counts[id]--
+					picked = true
 					break
 				}
 			}
-			if !stack.IsEmpty() {
-				break // 背包已满
+			if !picked {
+				return crafts
 			}
-			backing.consumeGrid(working)
-			if !placeOnce() {
-				break
-			}
+			cells++
+		}
+		if cells == 0 {
+			return 0
+		}
+		crafts++
+		if crafts > 4096 {
+			return crafts
 		}
 	}
+}
 
-	// 写回：合成格状态与玩家物品栏槽位。
+// placeUpTo 从背包区间取出至多 max 个符合候选集合的物品放入 gridSlot
+// （原版 ServerPlaceRecipe.moveItemToGrid：按来源槽位逐个搬运）。
+func placeUpTo(working []item.Stack, start, end int, candidates []int32, gridSlot, max int) {
+	placed := 0
+	for slot := start; slot < end && placed < max; slot++ {
+		stack := working[slot]
+		if stack.IsEmpty() || !itemIDIn(stack.ItemID, candidates) {
+			continue
+		}
+		take := min(int(stack.Count), max-placed)
+		current := working[gridSlot]
+		if current.IsEmpty() {
+			current = stack
+			current.Count = int32(take)
+		} else {
+			current.Count += int32(take)
+		}
+		working[gridSlot] = current
+		stack.Count -= int32(take)
+		if stack.Count <= 0 {
+			stack = item.Empty()
+		}
+		working[slot] = stack
+		placed += take
+	}
+}
+
+// writeBackCraft 把窗口快照写回合成格状态与玩家物品栏，并重新发送窗口内容。
+func (s *Server) writeBackCraft(player *session, backing craftSlotBacking, working []item.Stack, gridCount int) {
 	backing.state.mu.Lock()
 	for i := 0; i < gridCount; i++ {
 		backing.state.grid[i] = working[1+i]
@@ -301,44 +418,12 @@ func (s *Server) handlePlaceRecipe(player *session, windowID, displayID int32, m
 	for i := 1 + gridCount; i < len(working); i++ {
 		backing.Set(i, working[i])
 	}
-
 	// 重新发送完整窗口内容（合成格、结果槽与玩家物品栏）。
 	if backing.windowZero {
 		_ = player.writePacket(s.inventoryContentPacketFor(player, backing))
 	} else {
 		s.sendCraftContent(player, backing)
 	}
-}
-
-// placeFromWorking 从窗口快照的背包槽位区间取出 1 个符合候选集合的物品，
-// 放入 gridSlot；成功返回 true。
-func placeFromWorking(working []item.Stack, start, end int, candidates []int32, gridSlot int) bool {
-	for slot := start; slot < end; slot++ {
-		stack := working[slot]
-		if stack.IsEmpty() {
-			continue
-		}
-		matched := false
-		for _, id := range candidates {
-			if stack.ItemID == id {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			continue
-		}
-		taken := stack
-		taken.Count = 1
-		stack.Count--
-		if stack.Count <= 0 {
-			stack = item.Empty()
-		}
-		working[slot] = stack
-		working[gridSlot] = taken
-		return true
-	}
-	return false
 }
 
 // inventoryContentPacketFor 与 inventoryContentPacket 相同，但使用给定的

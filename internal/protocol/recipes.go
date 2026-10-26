@@ -20,6 +20,9 @@ const (
 	PlayPacketIDUpdateRecipes = 0x83
 	// PlayPacketIDRecipeBookAdd 是 Recipe Book Add（0x48）。
 	PlayPacketIDRecipeBookAdd = 0x48
+	// PlayPacketIDPlaceGhostRecipe 是 Place Ghost Recipe（0x3D）：
+	// 原料不足时把配方以“幽灵”形式显示在合成格（不消耗物品）。
+	PlayPacketIDPlaceGhostRecipe = 0x3D
 	// PlayPacketIDRecipeBookRemove 是 Recipe Book Remove（0x49）。
 	PlayPacketIDRecipeBookRemove = 0x49
 	// PlayPacketIDRecipeBookSettings 是 Recipe Book Settings（0x4A）。
@@ -355,6 +358,15 @@ func ParseRecipeBookChangeSettings(packet []byte) (bookID int32, open, filtering
 		return 0, false, false, fmt.Errorf("配方书设置字段缺失")
 	}
 	return bookID, packet[offset] != 0, packet[offset+1] != 0, nil
+}
+
+// EncodePlaceGhostRecipe 编码 Place Ghost Recipe（0x3D）：
+// VarInt 窗口 ID + VarInt 配方显示编号（1.21.11 字段类型经客户端类核对：
+// containerId 为 CONTAINER_ID=VarInt，RecipeDisplayId 为 VarInt）。
+func EncodePlaceGhostRecipe(windowID, displayID int32) []byte {
+	packet := AppendVarInt(nil, PlayPacketIDPlaceGhostRecipe)
+	packet = AppendVarInt(packet, windowID)
+	return AppendVarInt(packet, displayID)
 }
 
 // ParseRecipeBookSeenRecipe 解析配方书查看记录（0x2E）：配方显示编号。

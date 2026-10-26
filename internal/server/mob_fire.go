@@ -5,6 +5,8 @@
 package server
 
 import (
+	"math"
+
 	"gmcs/internal/protocol"
 	"gmcs/internal/world"
 )
@@ -44,6 +46,12 @@ type mobEnvironment struct {
 	lootZ   float64
 }
 
+// burnsInDaylight 报告该生物是否会在阳光下燃烧（原版 #burn_in_daylight
+// 实体标签：僵尸/骷髅/尸壳/溺尸等亡灵；苦力怕/蜘蛛/末影人不会）。
+func burnsInDaylight(kind mobKind) bool {
+	return kind == mobZombie || kind == mobSkeleton
+}
+
 // tickMobEnvironment 结算单个生物一帧的环境燃烧。调用方必须持有 entityMu；
 // ok 为 false 时无需广播（不分配结果结构）。
 func (s *Server) tickMobEnvironment(w *world.World, m *mob) (env mobEnvironment, ok bool) {
@@ -51,7 +59,8 @@ func (s *Server) tickMobEnvironment(w *world.World, m *mob) (env mobEnvironment,
 		return mobEnvironment{}, false
 	}
 	// 扫描碰撞盒覆盖的方块（按列批量读取；盒最多 2×2 列、每列 1–3 层）。
-	inFire, inWater, inLava := environmentInBox(w, mobBox(m.X, m.Y, m.Z))
+	blocks := environmentInBox(w, mobBox(m.X, m.Y, m.Z))
+	inFire, inWater, inLava := blocks.fire, blocks.water, blocks.lava
 
 	env = mobEnvironment{dim: m.Dim, kind: m.Kind, x: m.X, z: m.Z}
 
@@ -62,6 +71,11 @@ func (s *Server) tickMobEnvironment(w *world.World, m *mob) (env mobEnvironment,
 	// 岩浆：结算岩浆伤害（原版 lavaHurt；点燃在下方，只有伤害生效才点燃）。
 	if inLava {
 		s.damageMob(m, envLavaDamage, s.lavaDamageTypeID, &env)
+	}
+	// 仙人掌：接触时受到 1 点伤害（原版 CactusBlock.entityInside；
+	// 0.5 秒受击无敌帧由 damageMob 的 HurtCooldown 提供）。
+	if blocks.cactus {
+		s.damageMob(m, envCactusDamage, s.cactusDamageTypeID, &env)
 	}
 	// 着火：每秒 1 点火焰伤害并递减；岩浆中由岩浆伤害取代（与玩家环境效果一致）。
 	if m.FireTicks > 0 {
@@ -80,6 +94,17 @@ func (s *Server) tickMobEnvironment(w *world.World, m *mob) (env mobEnvironment,
 			m.FireTicks = lavaFireTicks
 		}
 		if inFire && m.FireTicks < mobFireBlockTicks {
+			m.FireTicks = mobFireBlockTicks
+		}
+	}
+	// 白天阳光燃烧（原版 Mob.isSunBurnTick + Zombie/Skeleton aiStep 的
+	// igniteForSeconds(8)）：只有僵尸与骷髅属于 burn_in_daylight 的亡灵；
+	// 需要主世界、白天、头顶可见天空，且不在水/雨中。
+	if !m.Dead && burnsInDaylight(m.Kind) && m.Dim == world.DimensionOverworld &&
+		!inWater && !s.isNight() &&
+		!s.entityInRain(m.Dim, m.X, m.Y, m.Z, mobBox(m.X, m.Y, m.Z).MaxY) &&
+		skyExposedAt(w, int(math.Floor(m.X)), int(math.Floor(m.Y)), int(math.Floor(m.Z))) {
+		if m.FireTicks < mobFireBlockTicks {
 			m.FireTicks = mobFireBlockTicks
 		}
 	}

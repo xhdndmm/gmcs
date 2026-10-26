@@ -21,9 +21,13 @@ const (
 	// detailAmplitude 是细节起伏幅度（小尺度）。
 	detailAmplitude = 5
 	// riverWidth 是河流噪声带宽度（|2n-1| 小于该值处开始下切）。
-	riverWidth = 0.045
+	// 噪声在 x 方向的变化率约 2/232 ≈ 0.0086/格，0.09 对应单侧约 10 格，
+	// 加上二次衰减的缓坡，河道总宽约 20 格（接近原版河流）。
+	riverWidth = 0.09
 	// riverBottomDepth 是河床相对海平面的深度。
 	riverBottomDepth = 4
+	// hillDetailAmplitude 是第二层丘陵噪声的起伏幅度（打破低多边形感）。
+	hillDetailAmplitude = 3.5
 	// deepslateTop 是深板岩层的顶部 Y（该高度以下用深板岩）。
 	deepslateTop = 0
 )
@@ -38,6 +42,7 @@ const (
 	noiseSaltHumid   = 0x53F9EE8D2B2A6F31 // 湿度
 	noiseSaltRiver   = 0x0FEDCBA987654321 // 河流
 	noiseSaltVariant = 0x7C15E5D26B3A9011 // 群系变体（向日葵平原/繁花森林/恶地）
+	noiseSaltHills2  = 0x3A6F1C4D8E2B5709 // 丘陵细节（中频）
 
 	treeSalt   = 0x5DEECE66D
 	trunkSalt  = 0x2545F4914F6CDD1D
@@ -402,6 +407,7 @@ func (g SeededGenerator) biomeAt(x, z, height int) uint16 {
 func terrainHeight(seed int64, x, z int) int {
 	cont := valueNoise(seed^noiseSaltCont, x, z, 256)
 	hills := valueNoise(seed^noiseSaltHills, x, z, 64)
+	hills2 := valueNoise(seed^noiseSaltHills2, x, z, 21)
 	detail := valueNoise(seed^noiseSaltDetail, x, z, 12)
 	ridge := valueNoise(seed^noiseSaltRidge, x, z, 96)
 
@@ -413,17 +419,27 @@ func terrainHeight(seed int64, x, z int) int {
 	ridgeV := 1 - math.Abs(2*ridge-1)
 	height := base +
 		(hills-0.5)*hillAmplitude*land +
+		(hills2-0.5)*hillDetailAmplitude*land +
 		(detail-0.5)*detailAmplitude +
 		mtnMask*ridgeV*ridgeV*mountainAmplitude
 
 	// 河流：把陆地压低到海平面之下（高处山地不受影响）。
-	if height > float64(SeaLevel-4) && height <= 98 {
+	// 河岸用二次衰减：河心附近下切最深，向外平缓过渡；河床叠加上细节噪声
+	// 形成自然起伏。旧实现用 smoothstep + 很窄的带宽，会在噪声等值线处
+	// 留下 4 格宽、十余格深的笔直峡谷。
+	//
+	// 高处渐隐：下切强度在 88–108 之间线性降到 0，而不是按高度硬性截断。
+	// 硬截断会在阈值两侧产生一格 20 格深的断崖（山脊被河道切穿处）。
+	if height > float64(SeaLevel-2) {
 		river := valueNoise(seed^noiseSaltRiver, x, z, 232)
 		distance := math.Abs(2*river - 1)
 		if distance < riverWidth {
-			factor := smoothstep(1 - distance/riverWidth)
-			target := float64(SeaLevel - riverBottomDepth)
-			height -= (height - target) * factor
+			t := 1 - distance/riverWidth // 0=河岸外缘，1=河心
+			factor := t * t * clamp01((108-height)/20)
+			if factor > 0 {
+				target := float64(SeaLevel-riverBottomDepth) + (detail-0.5)*2
+				height -= (height - target) * factor
+			}
 		}
 	}
 	return int(math.Floor(height))

@@ -299,6 +299,9 @@ func TestMeleeFireAspectAndKnockback(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, _ := joinServer(t, cfg, "Pyro")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 	player := findSession(t, instance, "Pyro")
 	fireID, ok := registry.EnchantmentID("minecraft:fire_aspect")
 	if !ok {
@@ -312,6 +315,17 @@ func TestMeleeFireAspectAndKnockback(t *testing.T) {
 	weapon = weapon.WithEnchantment(fireID, 2).WithEnchantment(knockbackID, 3)
 	player.inventory.Set(player.selectedHotbarSlot(), weapon)
 	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
+	// 清出一块平地：出生点附近可能有树木/坡地，击退要求目标列有可站立地面。
+	baseX, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))
+	baseY := int(math.Floor(spawnY)) - 1
+	for dx := -3; dx <= 3; dx++ {
+		for dz := -1; dz <= 4; dz++ {
+			instance.testWorld().SetBlock(baseX+dx, baseY, baseZ+dz, world.StoneBlock)
+			for dy := 1; dy <= 8; dy++ {
+				instance.testWorld().SetBlock(baseX+dx, baseY+dy, baseZ+dz, world.AirBlock)
+			}
+		}
+	}
 	zombie := instance.addMob(world.DimensionOverworld, mobZombie, spawnX, spawnY, spawnZ+1)
 	instance.handleAttack(player, zombie.ID)
 

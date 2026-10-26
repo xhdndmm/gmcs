@@ -31,7 +31,7 @@ go test -run=^$ -bench=. -benchmem ./...
 
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | world | ≈466 µs/op | 22,615 B/op | 46 allocs/op |
+| `BenchmarkGenerateChunk` | world | ≈446 µs/op | 25,900 B/op | 52 allocs/op |
 | `BenchmarkEncodeChunkDataPacket` | world | ≈81.9 µs/op | 159,676 B/op | 2 allocs/op |
 | `BenchmarkAppendChunkDataPacketReuse` | world | ≈49.0 µs/op | 6 B/op | 0 allocs/op |
 | `BenchmarkEncodeChunkPayload` | world | ≈65.1 µs/op | 98,304 B/op | 1 allocs/op |
@@ -39,8 +39,8 @@ go test -run=^$ -bench=. -benchmem ./...
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈6.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈53.7 ns/op | 80 B/op | 1 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈70–75 µs/op | 17–250 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈17.2 µs/op | 52 B/op | 1 allocs/op |
-| `BenchmarkServerTickManyPlayers`（32 生物 + 100 玩家） | server | ≈325 µs/op | ≈3.6 KB/op | ≈23 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈18.5 µs/op | 48 B/op | 1 allocs/op |
+| `BenchmarkServerTickManyPlayers`（32 生物 + 100 玩家） | server | ≈332 µs/op | ≈3.8 KB/op | 32 allocs/op |
 | `BenchmarkItemTick`（128 掉落物） | server | ≈30.9 µs/op | 92 B/op | 2 allocs/op |
 | `BenchmarkItemMergeScan`（256 掉落物） | server | ≈208 µs/op | 14.7 KB/op | 229 allocs/op |
 | `BenchmarkEntityInsideBlocks`（32 包围盒） | server | ≈1.35 µs/op | 0 B/op | 0 allocs/op |
@@ -63,7 +63,7 @@ go test -run=^$ -bench=. -benchmem ./...
 各基准覆盖的内容：
 
 - `BenchmarkGenerateChunk`：用固定种子生成一个区块（高度图 + 层次 + 水域/沙滩 + 植被），
-  覆盖地形生成热路径。
+  覆盖地形生成热路径（含跨区块树冠扫描与洞穴雕刻）。
 - `BenchmarkEncodeChunkDataPacket`：把已生成区块编码为 1.21.11 Chunk Data and Update
   Light 包（调色板容器 + heightmap + 全亮天空光）。
 - `BenchmarkAppendChunkDataPacketReuse`：复用输出缓冲连续编码（进入世界/移动时
@@ -74,11 +74,13 @@ go test -run=^$ -bench=. -benchmem ./...
   （长度前缀 + zlib + 帧写出）。
 - `BenchmarkEncodeEntityPositionSync` / `BenchmarkEncodeAddEntity`：高频实体包的编码成本
   （含 LpVec3）。
-- `BenchmarkServerTick`：`Server.tick()` 一次，含 32 只僵尸的游荡移动、受阻时的
+- `BenchmarkServerTick`：`Server.tick()` 一次，含 32 只生物的游荡移动、受阻时的
   A* 寻路（4 邻接地表网格，512 节点上限，复用搜索工作区）与广播筛选，以及实体
   进入方块（压力板）扫描与经验球 Tick；场景中无玩家（走游荡分支、无经验球）。
+  基准使用**蜘蛛**并固定为夜晚：僵尸/骷騷在白天阳光下会持续着火并死亡（原版行为），
+  长时间基准的剩余生物数会漂移。
   开阔地形走直线（与寻路引入前同量级成本），每帧仅 1 次分配（寻路返回的路径）；
-  按 20 TPS 折算 32 生物约 0.23 ms/s。**不覆盖**追击/攻击分支、区块加载/保存、
+  按 20 TPS 折算 32 生物约 0.24 ms/s。**不覆盖**追击/攻击分支、区块加载/保存、
   玩家会话与网络发送。
 - `BenchmarkItemTick`：`Server.tick()` 一次，含 128 个掉落物的年龄/拾取延迟、
   重力与摩擦、合并扫描（每 4 tick 一轮，空间索引）与拾取判定；场景中无玩家
@@ -1275,6 +1277,38 @@ BenchmarkCropTick256-20          28.2–29.4 µs/op          28.5–30.0 µs/op
 `go test -race ./internal/server ./internal/world ./internal/registry` 通过。
 尚未验证：未与原版服务器逐 tick 对拍天气序列，也未在真实客户端观察降雨
 渲染；闪电/炼药锅/积雪未实现（见 docs/TODO.md 天气限制）。
+
+### 3.36 地形观感批次（本批，实测）
+
+本批修改地形生成（洞穴阈值/隧道规模、河流带宽与河岸曲线、第二层丘陵噪声、
+跨区块树冠）与 Tick 路径（仙人掌状态位表、日光燃烧判定、海洋生物）。
+基准在同一台机器上用 `git worktree add /tmp/gmcs-base HEAD` 做 A/B
+（`-count=3`，`-benchtime=2s`）：
+
+```text
+                              父提交（059e4b6）           本批
+BenchmarkGenerateChunk        527–600 µs/op               443–450 µs/op
+                              24,651–24,665 B/op          25,574–25,916 B/op
+                              51 allocs/op                52–53 allocs/op
+BenchmarkServerTick           18.51–18.89 µs/op           18.52–19.15 µs/op
+BenchmarkServerTickManyPlayers 332.0–334.3 µs/op          331.0–333.7 µs/op
+```
+
+- `GenerateChunk` 反而快了约 15%：洞穴噪声阈值提高后粗网格“整格跳过”的比例
+  大幅上升、蠕虫隧道减半，抵消了新增的丘陵噪声与区块外扩 3 格的树冠扫描；
+  分配字节 +1.2 KB（树冠扫描的临时状态，未新增堆对象之外的规模变化）。
+- `ServerTick` / `ManyPlayers` 在相同地形与相同基准（蜘蛛、夜晚）下无回归；
+  日光燃烧只在僵尸/骷髅且**白天**时查询一次天空暴露（`ColumnAt` + 列读取），
+  夜晚/其他生物直接跳过。
+
+**基准口径变化**：`BenchmarkServerTick`/`ManyPlayers` 改用**蜘蛛**并把世界时间
+固定为夜晚——僵尸/骷髅在白天阳光下会持续着火并死亡（原版行为），长时间基准
+的剩余生物数会漂移，导致新旧数值不可比（同一提交在不同 benchtime 下可相差 2 倍以上）。
+
+正确性验证：`go test ./...`（server 19.6 s、world 1.2 s）与
+`go test -race ./internal/server ./internal/world`（202 s / 8 s）通过。
+未验证：未与真实客户端观察新地形观感（洞穴密度/河岸/树冠），也未与原版
+逐区块对拍地形。
 
 ## 4. 尚未覆盖
 

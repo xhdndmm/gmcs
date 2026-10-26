@@ -253,6 +253,11 @@ func (s *Server) tickArrows(players []*session) {
 			}
 			env := mobEnvironment{dim: a.Dim, kind: m.Kind, x: m.X, z: m.Z}
 			if s.damageMob(m, a.Damage, s.arrowDamageTypeID, &env) {
+				// 被动生物中箭后逃跑（原版 PanicGoal 由 hurt 设置 hurtBy）。
+				if mobKinds[m.Kind].passive && !m.Dead {
+					m.PanicTicks = mobPanicTicks
+					m.PanicX, m.PanicZ = a.X, a.Z
+				}
 				if a.Flame && !m.Dead {
 					if m.FireTicks < arrowFlameTicks {
 						m.FireTicks = arrowFlameTicks

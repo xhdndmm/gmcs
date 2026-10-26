@@ -246,6 +246,9 @@ func TestMobCombatFlow(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Fighter")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 	player := findSession(t, instance, "Fighter")
 
 	// 在玩家旁边生成僵尸（1 格距离，在攻击范围内）。
@@ -331,16 +334,20 @@ func TestMobAttackBlockedByWall(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Walled")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 	player := findSession(t, instance, "Walled")
 
 	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	// 铺平玩家与生物之间的通道（新地形可能起伏/有植被），保证视线判定确定性。
 	baseX, baseZ := int(math.Floor(spawnX)), int(math.Floor(spawnZ))
 	floorY := int(math.Floor(spawnY)) - 1
-	for dx := -1; dx <= 1; dx++ {
-		for dz := -1; dz <= 3; dz++ {
+	for dx := -2; dx <= 2; dx++ {
+		for dz := -2; dz <= 4; dz++ {
 			instance.testWorld().SetBlock(baseX+dx, floorY, baseZ+dz, world.StoneBlock)
-			for dy := 1; dy <= 3; dy++ {
+			// 清空到远高于地表：出生点可能紧邻山坡/树冠。
+			for dy := 1; dy <= 12; dy++ {
 				instance.testWorld().SetBlock(baseX+dx, floorY+dy, baseZ+dz, world.AirBlock)
 			}
 		}

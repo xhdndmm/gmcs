@@ -323,12 +323,19 @@ func TestSurvivalBlockPlaceConsumesItem(t *testing.T) {
 	expectPlayPacket(t, conn, protocol.PlayPacketIDSetPlayerInventory)
 
 	// 第二个目标列：物品已耗尽，放置不应生效。
+	// 取生成器地表高度（而不是 TopBlock）：出生点附近可能有树冠，
+	// TopBlock 会返回够不着的树叶/原木，导致挖掘被距离校验拒绝。
 	x2, y2, z2 := 0, 0, 0
 	for _, cx := range []int{x + 1, x + 2, x + 3} {
-		if state, cy, ok := instance.testWorld().TopBlock(cx, z); ok && state != world.WaterBlock {
-			x2, y2, z2 = cx, cy, z
-			break
+		surface := instance.testWorld().SurfaceY(cx, z)
+		if surface <= world.SeaLevel {
+			continue
 		}
+		if state := instance.testWorld().BlockAt(cx, surface, z); state == world.WaterBlock || state == world.AirBlock {
+			continue
+		}
+		x2, y2, z2 = cx, surface, z
+		break
 	}
 	if x2 == 0 && y2 == 0 && z2 == 0 {
 		t.Fatal("找不到第二个测试目标")

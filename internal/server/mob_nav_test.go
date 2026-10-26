@@ -19,17 +19,21 @@ func TestZombiePathsAroundWall(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, _ := joinServer(t, cfg, "Walled")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 	player := findSession(t, instance, "Walled")
 
 	px, py, pz, _, _ := player.playerPosition()
 	baseX, baseZ := int(math.Floor(px)), int(math.Floor(pz))
 	floorY := int(math.Floor(py)) - 1
 
-	// 平整玩家周围 17×17 的地面（上方 4 格空气）。
-	for dx := -8; dx <= 8; dx++ {
-		for dz := -8; dz <= 8; dz++ {
+	// 平整玩家周围 25×25 的地面（上方清空到远高于地表，出生点可能紧邻树冠/山坡；
+	// 绕墙的缺口在平台北侧，必须留有可绕行的平地）。
+	for dx := -12; dx <= 12; dx++ {
+		for dz := -12; dz <= 12; dz++ {
 			instance.testWorld().SetBlock(baseX+dx, floorY, baseZ+dz, world.StoneBlock)
-			for dy := 1; dy <= 4; dy++ {
+			for dy := 1; dy <= 12; dy++ {
 				instance.testWorld().SetBlock(baseX+dx, floorY+dy, baseZ+dz, world.AirBlock)
 			}
 		}
@@ -73,6 +77,9 @@ func TestMobFallsOffLedge(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, _ := joinServer(t, cfg, "Ledge")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 	player := findSession(t, instance, "Ledge")
 
 	px, py, pz, _, _ := player.playerPosition()

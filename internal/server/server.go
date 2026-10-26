@@ -120,11 +120,12 @@ type Server struct {
 	fallDamageTypeID         int32
 	arrowDamageTypeID        int32
 	explosionDamageTypeID    int32
-	// 环境伤害（岩浆/着火/溺水/岩浆块）。
+	// 环境伤害（岩浆/着火/溺水/岩浆块/仙人掌）。
 	lavaDamageTypeID     int32
 	fireDamageTypeID     int32
 	drownDamageTypeID    int32
 	hotFloorDamageTypeID int32
+	cactusDamageTypeID   int32
 	soundMobHurt         int32
 	soundMobDeath        int32
 	soundPlayerHurt      int32
@@ -433,6 +434,10 @@ func (s *Server) autosaveLoop(ctx context.Context, interval time.Duration) {
 					slog.Error("autosave failed", "error", err)
 				}
 			}
+			// 世界时间与天气（原版写入主世界 level.dat）。
+			if err := s.saveLevelState(); err != nil {
+				slog.Error("保存世界级别状态失败", "error", err)
+			}
 		}
 	}
 }
@@ -528,6 +533,10 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	if !server.hoppersEnabled {
 		slog.Warn("漏斗传输已禁用：注册表数据缺失")
+	}
+	// 恢复世界时间与天气（level.json；不存在时从 0 开始，与原版新世界一致）。
+	if err := server.loadLevelState(); err != nil {
+		slog.Error("加载世界级别状态失败", "error", err)
 	}
 	// 恢复上次保存的生物与掉落物（各维度的 entities.json；不存在时不做任何事）。
 	// 下界/末地在对应维度第一次被访问时加载（见 worldFor/ensureEntitiesLoaded）。
@@ -677,6 +686,10 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		if err := s.saveEntities(); err != nil {
 			slog.Error("failed to save entities", "error", err)
 		}
+	}
+	// 保存世界时间与天气（最后一次，保证时间不因重启回退）。
+	if err := s.saveLevelState(); err != nil {
+		slog.Error("failed to save level state", "error", err)
 	}
 	return serveErr
 }

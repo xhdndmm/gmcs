@@ -39,6 +39,9 @@ const (
 	envDrownDamage = 2
 	// envMagmaDamage 是岩浆块每 0.5 秒的伤害（1 点）。
 	envMagmaDamage = 1
+	// envCactusDamage 是接触仙人掌每次结算的伤害（原版 CactusBlock.entityInside
+	// 造成 1 点，频率由 0.5 秒受伤无敌帧限制）。
+	envCactusDamage = 1
 )
 
 // tickPlayerEnvironment 推进所有在线玩家的环境效果（由服务器 Tick 调用）。
@@ -59,10 +62,11 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 		return
 	}
 	x, y, z, _, _ := s.playerPosition()
-	// 火/水/岩浆判定：扫描玩家碰撞盒覆盖的方块（收缩 1e-7，与原版
+	// 火/水/岩浆/仙人掌判定：扫描玩家碰撞盒覆盖的方块（收缩 1e-7，与原版
 	// Entity.checkInsideBlocks 的“与方块立方体严格重叠”一致），
 	// 而不是只看脚部与上方一格。
-	inFire, inWater, inLava := environmentInBox(w, playerBox(x, y, z))
+	blocks := environmentInBox(w, playerBox(x, y, z))
+	inFire, inWater, inLava := blocks.fire, blocks.water, blocks.lava
 
 	// 岩浆：点燃 15 秒 + 结算岩浆伤害（无敌帧限制频率）。
 	if inLava {
@@ -71,6 +75,12 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 		}
 		server.damagePlayerWithMessage(s, envLavaDamage, "lava", 0, server.lavaDamageTypeID, nil,
 			"%s tried to swim in lava")
+	}
+	// 仙人掌：接触时受到 1 点伤害（原版 CactusBlock.entityInside 的
+	// entity.hurt(damageSources().cactus(), 1.0F)；频率由 0.5 秒无敌帧限制）。
+	if blocks.cactus {
+		server.damagePlayerWithMessage(s, envCactusDamage, "cactus", 0, server.cactusDamageTypeID, nil,
+			"%s was pricked to death")
 	}
 	// 入水/降雨熄灭（原版 Entity.baseTick：入水、雨中或气泡柱时 clearFire；
 	// 雨中判定为脚部方块与包围盒顶部方块各一次，见 entityInRain）。
@@ -175,12 +185,18 @@ func entityBlockSpan(box world.Box) (x0, y0, z0, x1, y1, z1 int) {
 	return x0, y0, z0, x1, y1, z1
 }
 
+// environmentBlocks 是实体盒覆盖方块中包含的环境危害类别。
+type environmentBlocks struct {
+	fire, water, lava, cactus bool
+}
+
 // environmentInBox 扫描实体盒覆盖的方块，报告是否包含火/灵魂火、
-// 水或岩浆（任意等级）。每 (x,z) 列做一次按列批量读取
+// 水、岩浆（任意等级）或仙人掌。每 (x,z) 列做一次按列批量读取
 // （玩家/生物盒最多覆盖 2×2 列、每列 1–3 层）。
-func environmentInBox(w *world.World, box world.Box) (inFire, inWater, inLava bool) {
+func environmentInBox(w *world.World, box world.Box) environmentBlocks {
+	var blocks environmentBlocks
 	if w == nil {
-		return false, false, false
+		return blocks
 	}
 	x0, y0, z0, x1, y1, z1 := entityBlockSpan(box)
 	var buf [8]uint16
@@ -193,21 +209,23 @@ func environmentInBox(w *world.World, box world.Box) (inFire, inWater, inLava bo
 				}
 				n := w.LoadedColumn(x, y, to, z, buf[:to-y+1])
 				for i := 0; i < n; i++ {
-					// 一次位表查询判定火/水/岩浆三类（消息热路径每格一次）。
+					// 一次位表查询判定各类别（消息热路径每格一次）。
 					kind := registry.StateKindOf(buf[i])
 					switch {
 					case kind&registry.StateKindFire != 0:
-						inFire = true
+						blocks.fire = true
 					case kind&registry.StateKindWater != 0:
-						inWater = true
+						blocks.water = true
 					case kind&registry.StateKindLava != 0:
-						inLava = true
+						blocks.lava = true
+					case kind&registry.StateKindCactus != 0:
+						blocks.cactus = true
 					}
 				}
 			}
 		}
 	}
-	return inFire, inWater, inLava
+	return blocks
 }
 
 // headInWater 报告玩家眼睛位置浸水（原版溺水判定按眼睛；任意等级的水）。

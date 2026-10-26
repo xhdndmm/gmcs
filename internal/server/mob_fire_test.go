@@ -21,6 +21,9 @@ func mobFireTestSetup(t *testing.T, name string) (*Server, *world.World, world.D
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, _ := joinServer(t, cfg, name)
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 会干扰“入火点燃/离开火熄灭”的断言。
+	instance.worldAge.Store(worldNightStart + 1000)
 	w := instance.testWorld()
 	baseX, floorY, baseZ := fluidBase(t, instance)
 	m := instance.addMob(world.DimensionOverworld, mobZombie, float64(baseX)+0.5, float64(floorY), float64(baseZ)+0.5)

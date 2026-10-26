@@ -117,7 +117,8 @@ func TestSeededGeneratorStructure(t *testing.T) {
 	}
 }
 
-// TestSeededGeneratorTrees 验证树木存在、树干立在可生长方块上且遵守区块边缘留白。
+// TestSeededGeneratorTrees 验证树木存在且树干立在可生长方块上。
+// 树干可以落在区块边缘（树冠由相邻区块补齐，见 decorate 的跨区块树冠说明）。
 // 种子 42 的原点区域为陆地且树木茂密（见 docs/TODO.md：地形为确定性纯函数）。
 func TestSeededGeneratorTrees(t *testing.T) {
 	generator := SeededGenerator{Seed: 42}
@@ -133,10 +134,6 @@ func TestSeededGeneratorTrees(t *testing.T) {
 							continue
 						}
 						logs++
-						// 树只在距边缘 2 格以内的列生长（黑橡树为 3 格，更严格）。
-						if x < 2 || x > SectionSize-3 || z < 2 || z > SectionSize-3 {
-							t.Fatalf("tree trunk at (%d,%d) in chunk (%d,%d) too close to the border", x, z, cx, cz)
-						}
 						below := chunk.GetBlockState(x, y-1, z)
 						if below != state && !isTreeGround(below) {
 							t.Fatalf("log at (%d,%d,%d) in chunk (%d,%d) stands on block %d",
@@ -202,5 +199,107 @@ func TestWorldGroundY(t *testing.T) {
 	}
 	if got := instance.SurfaceY(5, -7); got != FlatGroundLevel {
 		t.Fatalf("SurfaceY = %d, want %d", got, FlatGroundLevel)
+	}
+}
+
+// TestTreeCanopyCrossesChunkBorder 验证跨区块树冠：树干位于区块边缘列时，
+// 相邻区块会补上该树的树叶（旧实现要求树干距边界至少 2 格，导致森林沿每个
+// 区块边界出现 4 格宽的无树走廊，树冠也会被切掉一半）。
+func TestTreeCanopyCrossesChunkBorder(t *testing.T) {
+	generator := SeededGenerator{Seed: 42}
+	isLeaf := func(state uint16) bool {
+		return state == OakLeavesBlock || state == BirchLeavesBlock || state == SpruceLeavesBlock ||
+			state == JungleLeavesBlock || state == AcaciaLeavesBlock || state == DarkOakLeavesBlock
+	}
+	found := false
+	for cz := -4; cz <= 4 && !found; cz++ {
+		for cx := -4; cx <= 4 && !found; cx++ {
+			chunk := generator.GenerateChunk(cx, cz)
+			next := generator.GenerateChunk(cx+1, cz)
+			for localZ := 0; localZ < SectionSize && !found; localZ++ {
+				for y := WorldMinY; y < 140 && !found; y++ {
+					if !isLogBlock(chunk.GetBlockState(SectionSize-1, y, localZ)) {
+						continue
+					}
+					// 树干在最东列：树冠（半径 2–3）必须出现在东侧区块的前两列。
+					for dy := -3; dy <= 2 && !found; dy++ {
+						for dz := -2; dz <= 2 && !found; dz++ {
+							z := localZ + dz
+							if z < 0 || z >= SectionSize {
+								continue
+							}
+							for dx := 0; dx <= 1; dx++ {
+								if isLeaf(next.GetBlockState(dx, y+dy, z)) {
+									found = true
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("未找到跨区块的树冠（相邻区块缺少边缘列树的树叶）")
+	}
+}
+
+// TestUndergroundIsMostlySolid 验证洞穴密度接近原版观感。
+// 旧实现（噪声阈值 0.66 + 密集蠕虫隧道）地下空腔约占 20–25%，
+// 表现为“挖开三格就掉进大洞”的镂空世界。
+func TestUndergroundIsMostlySolid(t *testing.T) {
+	for _, seed := range []int64{42, 12345} {
+		generator := SeededGenerator{Seed: seed}
+		air, total := 0, 0
+		for cx := 0; cx < 6; cx++ {
+			for cz := 0; cz < 6; cz++ {
+				chunk := generator.GenerateChunk(cx, cz)
+				for x := 0; x < SectionSize; x++ {
+					for z := 0; z < SectionSize; z++ {
+						height := generator.SurfaceY(cx*SectionSize+x, cz*SectionSize+z)
+						if height <= SeaLevel+1 {
+							continue
+						}
+						for y := WorldMinY + 1; y < height-1; y++ {
+							total++
+							if chunk.GetBlockState(x, y, z) == AirBlock {
+								air++
+							}
+						}
+					}
+				}
+			}
+		}
+		if total == 0 {
+			t.Fatalf("seed %d：没有陆地样本", seed)
+		}
+		if ratio := float64(air) / float64(total); ratio > 0.15 {
+			t.Fatalf("seed %d：地下空腔占比 %.1f%%，洞穴过密（应 < 15%%）", seed, ratio*100)
+		}
+	}
+}
+
+// TestRiverBanksAreSmooth 验证河流两侧没有 1 格宽的垂直峡谷。
+// 旧实现对很窄的噪声带直接做 smoothstep 下切，会在等值线处留下 4 格宽、
+// 十余格深的笔直峭壁。
+func TestRiverBanksAreSmooth(t *testing.T) {
+	generator := SeededGenerator{Seed: 42}
+	samples := 0
+	for z := -256; z <= 256; z += 8 {
+		for x := -320; x < 320; x++ {
+			factor := generator.riverFactor(x, z)
+			if factor < 0.2 {
+				continue
+			}
+			samples++
+			delta := abs(generator.SurfaceY(x+1, z) - generator.SurfaceY(x, z))
+			if delta > 6 {
+				t.Fatalf("河流谷地出现 %d 格落差（x=%d,z=%d, river=%.2f）", delta, x, z, factor)
+			}
+		}
+	}
+	if samples == 0 {
+		t.Fatal("采样范围内没有河流")
 	}
 }

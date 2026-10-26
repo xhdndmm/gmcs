@@ -58,6 +58,9 @@ const (
 	StateKindLava
 	// StateKindFire 表示火或灵魂火。
 	StateKindFire
+	// StateKindCactus 表示仙人掌（任意 age；原版 CactusBlock 的方块内效果
+	// 对所有 age 生效）。
+	StateKindCactus
 )
 
 // stateKindFlags 是按方块状态 ID 索引的类别位表。实体环境判定与流体逻辑
@@ -86,6 +89,15 @@ func buildStateKindFlags() []uint8 {
 	mark("minecraft:lava", StateKindLava)
 	mark("minecraft:fire", StateKindFire)
 	mark("minecraft:soul_fire", StateKindFire)
+	// 仙人掌不在属性方块表（BlockPropertyStates）中，按全量状态区间表标记。
+	for _, r := range blockStateNameRanges {
+		if r.Name != "minecraft:cactus" {
+			continue
+		}
+		for id := int(r.Start); id <= int(r.End) && id < len(table); id++ {
+			table[id] |= uint8(StateKindCactus)
+		}
+	}
 	return table
 }
 
@@ -96,6 +108,9 @@ func StateKindOf(id uint16) StateKind {
 	}
 	return 0
 }
+
+// IsCactusState 报告方块状态是否为仙人掌（任意 age）。
+func IsCactusState(id uint16) bool { return StateKindOf(id)&StateKindCactus != 0 }
 
 // IsWaterState 报告方块状态是否为任意等级的水（源与流动）。
 func IsWaterState(id uint16) bool { return StateKindOf(id)&StateKindWater != 0 }

@@ -29,6 +29,9 @@ func BenchmarkServerTick(b *testing.B) {
 	}
 	defer instance.worldFor(world.DimensionOverworld).Close()
 
+	// 固定为夜晚并使用蜘蛛（非亡灵，白天也不会被阳光点燃），避免长时间基准
+	// 中途天亮后生物死亡导致口径漂移。
+	instance.worldAge.Store(worldNightStart)
 	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	_ = spawnY
 	gameWorld := instance.worldFor(world.DimensionOverworld)
@@ -39,7 +42,7 @@ func BenchmarkServerTick(b *testing.B) {
 		if !ok {
 			b.Fatal("no ground at spawn area")
 		}
-		instance.addMob(world.DimensionOverworld, mobZombie, float64(x)+0.5, groundY, float64(z)+0.5)
+		instance.addMob(world.DimensionOverworld, mobSpider, float64(x)+0.5, groundY, float64(z)+0.5)
 	}
 
 	b.ReportAllocs()
@@ -71,6 +74,8 @@ func BenchmarkServerTickManyPlayers(b *testing.B) {
 	}
 	defer instance.worldFor(world.DimensionOverworld).Close()
 
+	// 固定为夜晚并使用蜘蛛：白天阳光会烧死僵尸，长时间基准口径会漂移。
+	instance.worldAge.Store(worldNightStart)
 	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
 	gameWorld := instance.worldFor(world.DimensionOverworld)
 	for i := 0; i < 32; i++ {
@@ -80,7 +85,7 @@ func BenchmarkServerTickManyPlayers(b *testing.B) {
 		if !ok {
 			b.Fatal("no ground at spawn area")
 		}
-		instance.addMob(world.DimensionOverworld, mobZombie, float64(x)+0.5, groundY, float64(z)+0.5)
+		instance.addMob(world.DimensionOverworld, mobSpider, float64(x)+0.5, groundY, float64(z)+0.5)
 	}
 	// 100 名轻量玩家围绕出生点铺开（部分位于生物广播半径内）。
 	instance.mu.Lock()
@@ -220,7 +225,7 @@ func BenchmarkEntityTracking(b *testing.B) {
 		if !ok {
 			b.Fatal("no ground at spawn area")
 		}
-		instance.addMob(world.DimensionOverworld, mobZombie, float64(x)+0.5, groundY, float64(z)+0.5)
+		instance.addMob(world.DimensionOverworld, mobSpider, float64(x)+0.5, groundY, float64(z)+0.5)
 	}
 	// 一名已加入的测试玩家（跟踪集的归属者）；写入丢弃（首帧登记会产生
 	// Add Entity 包，基准无需真实连接）。

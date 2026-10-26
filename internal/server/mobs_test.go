@@ -35,6 +35,9 @@ func TestSkeletonFiresArrowAtPlayer(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Arrowed")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 	player := findSession(t, instance, "Arrowed")
 	if !instance.arrowsEnabled {
 		t.Fatal("arrows disabled: registry data missing")
@@ -98,6 +101,9 @@ func TestCreeperExplodesNearPlayer(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Boomed")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 	player := findSession(t, instance, "Boomed")
 
 	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
@@ -148,6 +154,9 @@ func TestSpiderMeleeAttack(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, conn := joinServer(t, cfg, "Spidered")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 	player := findSession(t, instance, "Spidered")
 
 	spawnX, spawnY, spawnZ := instance.spawnPositionFor(world.DimensionOverworld)
@@ -181,6 +190,9 @@ func TestMobSpawnKindWeights(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	instance, _ := joinServer(t, cfg, "Weigher")
+	// 固定为夜晚：白天阳光下亡灵会持续被点燃（原版行为），
+	// 避免日光燃烧干扰本用例的断言。
+	instance.worldAge.Store(worldNightStart)
 
 	counts := map[mobKind]int{}
 	for i := 0; i < 400; i++ {
@@ -239,8 +251,8 @@ func TestMobKindsTableValid(t *testing.T) {
 			t.Errorf("hostile mob %v needs a follow range", stats.name)
 		}
 	}
-	if mobKindCount != 8 {
-		t.Fatalf("expected 8 mob kinds, got %d", mobKindCount)
+	if mobKindCount != 12 {
+		t.Fatalf("expected 12 mob kinds, got %d", mobKindCount)
 	}
 }
 

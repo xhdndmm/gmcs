@@ -148,6 +148,18 @@ func TestLeavesDecayAfterLogRemoved(t *testing.T) {
 	logState := logTestState(t, "minecraft:oak_log")
 	leafState := leafTestState(t, "minecraft:oak_leaves")
 	x, y, z := buildSpotNearSpawn(t, instance)
+	// 清空判定范围内的天然树木：衰减判定看 6 格内是否存在任何原木，
+	// 出生点附近恰好有天然树时会让本用例的“已无原木”前提不成立。
+	for dx := -leafDecayRadius; dx <= leafDecayRadius; dx++ {
+		for dy := -leafDecayRadius; dy <= leafDecayRadius; dy++ {
+			for dz := -leafDecayRadius; dz <= leafDecayRadius; dz++ {
+				state := w.BlockAt(x+dx, y+dy, z+dz)
+				if isLogState(state) || isLeafState(state) {
+					w.SetBlock(x+dx, y+dy, z+dz, world.AirBlock)
+				}
+			}
+		}
+	}
 
 	// 树干 + 树干上方的树叶（距离 ≤ 6，仍有原木，不应衰减）。
 	if !w.SetBlock(x, y, z, logState) || !w.SetBlock(x, y+1, z, logState) {
