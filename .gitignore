@@ -44,3 +44,7 @@ dist/
 
 # 服务器运行日志（默认 logs/；测试在包目录下也会创建）
 logs/
+
+# 官方混淆映射（Mojang 许可禁止再分发，只用于本地反编译核对）
+/server.txt
+/tools/mappings/
