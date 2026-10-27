@@ -1079,10 +1079,15 @@
       `TestRouterSolidMatchesDensitySign`、`TestRouterHasSurface`（典型地形存在
       上实下空的过渡，证明 spline/offset/factor/jaggedness 链路在工作）、
       `TestInterpolationCacheReducesWork`、`TestResetInterpolationCacheKeepsResults`。
-    - [ ] **已知性能问题**：`BenchmarkRouterFillChunk` 实测 ≈ 83 ms/区块
-      （≈1.7 MB 分配），远慢于原版（数毫秒）。瓶颈是每方块 5 次 map 查表 +
-      每个 lattice 角点独立求值。需要改成"每节点一次性把整块 lattice 算进
-      密集数组、再按索引取值"的专用填充器（原版 NoiseChunk 的做法）。
+    - [x] 区块级 dense lattice 填充器（`chunk.go`）：每个 `interpolated` 节点按后序
+      顺序一次性算出整块 lattice（x/z 各 5 点、y 49 点），之后逐方块只做索引取值 +
+      三线性插值。`TestChunkSamplerMatchesPointwise` / `TestChunkSamplerAcrossCells`
+      验证它与逐点求值**逐位相同**（含单元格边界）。
+    - [ ] **已知性能问题**：`BenchmarkChunkSamplerFillChunk` 实测 ≈ 67 ms/区块
+      （≈158 KB）。剩余瓶颈不在插值，而在 `cache_once`/`cache_all_in_cell`/
+      `flat_cache`/`cache_2d` 目前是**直通**实现：洞穴等昂贵噪声（
+      `weird_scaled_sampler` + NormalNoise）被逐方块重算。需要按 `euu$d..g`
+      的字节码实现按格/按列的缓存语义。
     - [ ] 含水层（aquifer barrier/floodedness/spread/lava）、`sloped_cheese`
       压缩与逐方块 stone/deepslate/water/air 判定。
   - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、

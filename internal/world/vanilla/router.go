@@ -44,6 +44,11 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		}
 		router.nodes[key] = node
 	}
+	finalDensity, ok := router.nodes["final_density"]
+	if !ok {
+		return nil, fmt.Errorf("%s 缺少 final_density", settingName)
+	}
+	router.evaluator.finalDensity = finalDensity
 	return router, nil
 }
 

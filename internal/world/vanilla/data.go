@@ -192,6 +192,9 @@ func qualify(ref string) string {
 type NoiseSetting struct {
 	Name     string
 	SeaLevel int
+	// MinY / Height 是维度高度范围（noise.min_y 与 noise.height）。
+	MinY   int
+	Height int
 	// CellWidth / CellHeight 是区块内插值网格的单元格尺寸：
 	// 原版 NoiseChunk 用 4*size_horizontal 与 4*size_vertical。
 	CellWidth  int
@@ -209,6 +212,8 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 	var parsed struct {
 		SeaLevel int `json:"sea_level"`
 		Noise    struct {
+			MinY           int `json:"min_y"`
+			Height         int `json:"height"`
 			SizeHorizontal int `json:"size_horizontal"`
 			SizeVertical   int `json:"size_vertical"`
 		} `json:"noise"`
@@ -232,6 +237,8 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 	return NoiseSetting{
 		Name:       name,
 		SeaLevel:   parsed.SeaLevel,
+		MinY:       parsed.Noise.MinY,
+		Height:     parsed.Noise.Height,
 		CellWidth:  4 * sizeHorizontal,
 		CellHeight: 4 * sizeVertical,
 		Router:     parsed.Router,

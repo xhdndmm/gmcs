@@ -35,12 +35,14 @@ type Context struct {
 // interpolated（区块级 4×8×4 网格插值）、find_top_surface、old_blended_noise、
 // end_islands。这些是阶段 3 的后续部分。
 type Evaluator struct {
-	noises     *NoiseRegistry
-	blended    map[*Node]*BlendedNoise
-	corners    map[cornerKey]float64
-	cells      map[cellKey][2][2][2]float64
-	cellWidth  int
-	cellHeight int
+	noises       *NoiseRegistry
+	blended      map[*Node]*BlendedNoise
+	corners      map[cornerKey]float64
+	cells        map[cellKey][2][2][2]float64
+	grids        map[*Node]*denseGrid
+	finalDensity *Node
+	cellWidth    int
+	cellHeight   int
 }
 
 // cornerKey 是 interpolated 角点缓存的键：节点 + 格点坐标。
@@ -77,6 +79,7 @@ func NewEvaluatorWithCells(noises *NoiseRegistry, cellWidth, cellHeight int) *Ev
 		blended:    make(map[*Node]*BlendedNoise),
 		corners:    make(map[cornerKey]float64),
 		cells:      make(map[cellKey][2][2][2]float64),
+		grids:      make(map[*Node]*denseGrid),
 		cellWidth:  cellWidth,
 		cellHeight: cellHeight,
 	}
@@ -263,6 +266,11 @@ func lerpFloat(delta, start, end float32) float32 {
 // 相邻格共享的 lattice 角点也只算一次。区块生成时每区块调用
 // ResetInterpolationCache 释放缓存。
 func (e *Evaluator) evaluateInterpolated(node *Node, ctx Context) float64 {
+	if grid, ok := e.grids[node]; ok {
+		if value, ok := grid.sample(ctx); ok {
+			return value
+		}
+	}
 	cellX := floorDiv(ctx.X, e.cellWidth) * e.cellWidth
 	cellY := floorDiv(ctx.Y, e.cellHeight) * e.cellHeight
 	cellZ := floorDiv(ctx.Z, e.cellWidth) * e.cellWidth
