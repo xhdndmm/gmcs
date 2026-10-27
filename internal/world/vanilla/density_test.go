@@ -242,7 +242,7 @@ func TestUnsupportedNodePanics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载数据失败：%v", err)
 	}
-	node := mustParseNode(t, data, `{"type":"minecraft:interpolated","argument":0}`)
+	node := mustParseNode(t, data, `{"type":"minecraft:end_islands"}`)
 	defer func() {
 		if recover() == nil {
 			t.Fatal("未实现的节点类型应当 panic")
@@ -363,17 +363,14 @@ func TestOverworldRouterUnsupportedTypes(t *testing.T) {
 		}
 		walk(node)
 	}
-	for _, unsupported := range []string{"interpolated", "find_top_surface"} {
-		if !seen[unsupported] {
-			t.Fatalf("overworld 路由树应当仍需 %q（数据或解析可能出错）", unsupported)
+	if seen["end_islands"] {
+		t.Fatal("overworld 路由树不应出现 end_islands")
+	}
+	// 下列类型都已实现求值，它们都应当能在 overworld 路由树中找到。
+	for _, implemented := range []string{"spline", "old_blended_noise", "interpolated", "find_top_surface"} {
+		if !seen[implemented] {
+			t.Fatalf("overworld 路由树应当出现 %q（数据或解析可能出错）", implemented)
 		}
-		t.Logf("尚未实现求值的节点类型：%s", unsupported)
-	}
-	if !seen["old_blended_noise"] {
-		t.Fatal("overworld 路由树应当出现 old_blended_noise（base_3d_noise）")
-	}
-	if !seen["spline"] {
-		t.Fatal("overworld 路由树应当出现 spline（offset/factor/jaggedness 都在用）")
 	}
 	for _, implemented := range []string{"shift_a", "noise", "weird_scaled_sampler", "y_clamped_gradient", "add"} {
 		if !seen[implemented] {

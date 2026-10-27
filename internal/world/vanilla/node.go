@@ -39,6 +39,8 @@ type Node struct {
 	RefName string
 	// CellHeight 是 find_top_surface 的网格高度。
 	CellHeight int
+	// LowerBound 是 find_top_surface 的搜索下界。
+	LowerBound int
 	// FromY / ToY / FromValue / ToValue 是 y_clamped_gradient 的四个端点参数。
 	FromY     float64
 	ToY       float64
@@ -118,7 +120,7 @@ var nodeSchemas = map[string]nodeFields{
 	"blend_offset":         {},
 	"end_islands":          {},
 	"invert":               {nodes: []string{"argument"}},
-	"find_top_surface":     {nodes: []string{"density", "upper_bound", "lower_bound"}, numbers: []string{"cell_height"}},
+	"find_top_surface":     {nodes: []string{"density", "upper_bound"}, numbers: []string{"lower_bound", "cell_height"}},
 }
 
 // parseNode 解析一个密度函数节点（raw 可以是字符串引用或对象）。
@@ -219,6 +221,8 @@ func parseNode(data *Data, where string, raw json.RawMessage) (*Node, []Problem)
 			node.Legacy[indexOf(schema.numbers, key)] = value
 		case short == "find_top_surface" && key == "cell_height":
 			node.CellHeight = int(value)
+		case short == "find_top_surface" && key == "lower_bound":
+			node.LowerBound = int(value)
 		case short == "y_clamped_gradient" && key == "from_y":
 			node.FromY = value
 		case short == "y_clamped_gradient" && key == "to_y":

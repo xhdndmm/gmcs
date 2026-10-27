@@ -35,13 +35,30 @@ type Context struct {
 // interpolated（区块级 4×8×4 网格插值）、find_top_surface、old_blended_noise、
 // end_islands。这些是阶段 3 的后续部分。
 type Evaluator struct {
-	noises  *NoiseRegistry
-	blended map[*Node]*BlendedNoise
+	noises     *NoiseRegistry
+	blended    map[*Node]*BlendedNoise
+	cellWidth  int
+	cellHeight int
 }
 
-// NewEvaluator 为给定噪声注册表创建求值器。
+// NewEvaluator 为给定噪声注册表创建求值器，内插值网格默认按 overworld 的
+// 4×8 单元格（noise.size_horizontal=1、size_vertical=2）。
 func NewEvaluator(noises *NoiseRegistry) *Evaluator {
-	return &Evaluator{noises: noises, blended: make(map[*Node]*BlendedNoise)}
+	return NewEvaluatorWithCells(noises, 4, 8)
+}
+
+// NewEvaluatorWithCells 指定 interpolated 的单元格尺寸
+// （原版 NoiseChunk：4*size_horizontal 与 4*size_vertical）。
+func NewEvaluatorWithCells(noises *NoiseRegistry, cellWidth, cellHeight int) *Evaluator {
+	if cellWidth <= 0 || cellHeight <= 0 {
+		panic("vanilla: 内插值单元格尺寸必须为正")
+	}
+	return &Evaluator{
+		noises:     noises,
+		blended:    make(map[*Node]*BlendedNoise),
+		cellWidth:  cellWidth,
+		cellHeight: cellHeight,
+	}
 }
 
 // NoiseRegistry 返回求值器使用的噪声注册表。
@@ -137,6 +154,10 @@ func (e *Evaluator) Evaluate(node *Node, ctx Context) float64 {
 		return float64(e.evaluateSpline(node.Spline, ctx))
 	case "old_blended_noise":
 		return e.blendedNoise(node).Value(ctx.X, ctx.Y, ctx.Z)
+	case "interpolated":
+		return e.evaluateInterpolated(node, ctx)
+	case "find_top_surface":
+		return e.evaluateFindTopSurface(node, ctx)
 	}
 	panic(fmt.Sprintf("vanilla: 密度函数节点类型 %q 尚未实现求值", node.Type))
 }
@@ -204,6 +225,71 @@ func linearExtendSpline(coordinate float32, point SplinePoint, value float32) fl
 // lerpFloat 是 Mth.lerp 的单精度版本：start + delta*(end-start)。
 func lerpFloat(delta, start, end float32) float32 {
 	return start + delta*(end-start)
+}
+
+// evaluateInterpolated 求值原版 NoiseChunk.NoiseInterpolator：
+// 把子节点在 4×8×4（cellWidth × cellHeight × cellWidth）的单元格角点上采样，
+// 再用方块在单元格内的相对偏移做三线性插值（线性，不是 smoothstep）。
+//
+// 注意：这里的实现是逐点重算 8 个角点，语义与原版一致但开销高于原版的网格复用；
+// 区块级填充会另外实现一次算一整格的采样器。
+func (e *Evaluator) evaluateInterpolated(node *Node, ctx Context) float64 {
+	cellX := floorDiv(ctx.X, e.cellWidth) * e.cellWidth
+	cellY := floorDiv(ctx.Y, e.cellHeight) * e.cellHeight
+	cellZ := floorDiv(ctx.Z, e.cellWidth) * e.cellWidth
+	deltaX := float64(ctx.X-cellX) / float64(e.cellWidth)
+	deltaY := float64(ctx.Y-cellY) / float64(e.cellHeight)
+	deltaZ := float64(ctx.Z-cellZ) / float64(e.cellWidth)
+
+	var corners [2][2][2]float64
+	for ix := 0; ix < 2; ix++ {
+		for iy := 0; iy < 2; iy++ {
+			for iz := 0; iz < 2; iz++ {
+				corners[ix][iy][iz] = e.child(node, 0, Context{
+					X: cellX + ix*e.cellWidth,
+					Y: cellY + iy*e.cellHeight,
+					Z: cellZ + iz*e.cellWidth,
+				})
+			}
+		}
+	}
+	// 与原版 11 参数 Mth.lerp2 相同的嵌套顺序：x 最内，其次 y，最后 z。
+	plane := func(z int) float64 {
+		return lerp(deltaY,
+			lerp(deltaX, corners[0][0][z], corners[1][0][z]),
+			lerp(deltaX, corners[0][1][z], corners[1][1][z]))
+	}
+	return lerp(deltaZ, plane(0), plane(1))
+}
+
+// evaluateFindTopSurface 求值原版 DensityFunctions.FindTopSurface：
+// 从 upperBound 按 cell_height 对齐后的高度开始，按 cell_height 步长向下找
+// 第一个密度 > 0 的高度；找到不到则返回 lower_bound。
+func (e *Evaluator) evaluateFindTopSurface(node *Node, ctx Context) float64 {
+	cellHeight := node.CellHeight
+	if cellHeight <= 0 {
+		panic("vanilla: find_top_surface 的 cell_height 必须为正")
+	}
+	upper := e.child(node, 1, ctx)
+	top := int(math.Floor(upper/float64(cellHeight))) * cellHeight
+	if top <= node.LowerBound {
+		return float64(node.LowerBound)
+	}
+	for y := top; y >= node.LowerBound; y -= cellHeight {
+		if e.child(node, 0, Context{X: ctx.X, Y: y, Z: ctx.Z}) > 0 {
+			return float64(y)
+		}
+	}
+	return float64(node.LowerBound)
+}
+
+// floorDiv 是向下取整的整数除法（原版 Mth.floorDiv）。
+func floorDiv(value, divisor int) int {
+	quotient := value / divisor
+	if value%divisor != 0 && (value < 0) != (divisor < 0) {
+		quotient--
+	}
+	return quotient
 }
 
 // blendedNoise 按节点缓存 BlendedNoise 实例（参数固定，随机源由种子派生）。

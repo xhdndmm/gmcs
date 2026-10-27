@@ -1051,9 +1051,27 @@
   - [ ] **阶段 3d：插值网格 / 顶面搜索**：`interpolated`（`NoiseChunk` 的 4×8×4
     网格与三线性插值）、`find_top_surface`。这两个是目前 overworld 路由树里
     仅剩的未实现类型（`TestOverworldRouterUnsupportedTypes` 会列出）。
-  - [ ] **阶段 3：地形采样**：`interpolated` 的 4×8×4 网格与插值、
-    `find_top_surface`、含水层（aquifer barrier/floodedness/spread/lava）、
-    `sloped_cheese` 压缩，产出逐方块 stone/deepslate/water/air；
+  - [x] **阶段 3d：interpolated 与 find_top_surface 已完成**：
+    - `interpolated` 按 `NoiseChunk.NoiseInterpolator` 语义实现：把子节点在
+      `cellWidth×cellHeight×cellWidth` 的单元格角点上采样，再用方块在单元格内的
+      相对偏移做**线性**三线性插值（`Mth.lerp2` 的嵌套顺序：x 最内、y 次之、z 最外）。
+      单元格尺寸取自噪声设置的 `noise.size_horizontal/size_vertical` × 4
+      （overworld 为 4×8），新增 `NewEvaluatorWithCells`；
+    - `find_top_surface` 按 `euk$j` 实现：先 `floor(upper_bound/cell_height)*cell_height`
+      对齐，再按 `cell_height` 步长向下找第一个 `density > 0` 的高度，找不到返回
+      `lower_bound`；
+    - 顺带修正 `find_top_surface` 的 `lower_bound`：它在 JSON 里是**整数**参数，
+      原先被当成密度函数子节点。
+    测试：`TestOverworldCellSize`、`TestInterpolatedReproducesLinearFunctions`
+    （对 x/y/z 线性函数逐点还原）、`TestInterpolatedConstant`、
+    `TestFindTopSurface`（正常/全实心/全空/上界低于下界）、`TestFloorDiv`。
+    **`TestOverworldRouterEvaluatesEndToEnd` 现已通过**：overworld 路由表的每一项
+    都能在多个坐标上求值且结果有限——密度函数这一层（阶段 3 求值部分）全部完成。
+    已知限制：`interpolated` 目前是逐点重算 8 个角点（语义正确但比原版的网格复用慢），
+    区块级填充时会另做一个"一次算一整格"的采样器。
+  - [ ] **阶段 3e：区块级地形填充**：一次性算整格的 `interpolated` 采样器、
+    含水层（aquifer barrier/floodedness/spread/lava）、`sloped_cheese` 压缩，
+    产出逐方块 stone/deepslate/water/air。
   - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、
     cave/canyon 雕刻器、矿物/树木/植被/lakes 地物与噪声群系源
     （`multi_noise_biome_source_parameter_list/overworld` 已随阶段 1 提取）；

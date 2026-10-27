@@ -192,8 +192,12 @@ func qualify(ref string) string {
 type NoiseSetting struct {
 	Name     string
 	SeaLevel int
-	Router   map[string]json.RawMessage
-	Raw      json.RawMessage
+	// CellWidth / CellHeight 是区块内插值网格的单元格尺寸：
+	// 原版 NoiseChunk 用 4*size_horizontal 与 4*size_vertical。
+	CellWidth  int
+	CellHeight int
+	Router     map[string]json.RawMessage
+	Raw        json.RawMessage
 }
 
 // NoiseSetting 返回指定名称的噪声设置。
@@ -203,8 +207,12 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 		return NoiseSetting{}, fmt.Errorf("缺少噪声设置 %s", name)
 	}
 	var parsed struct {
-		SeaLevel int                        `json:"sea_level"`
-		Router   map[string]json.RawMessage `json:"noise_router"`
+		SeaLevel int `json:"sea_level"`
+		Noise    struct {
+			SizeHorizontal int `json:"size_horizontal"`
+			SizeVertical   int `json:"size_vertical"`
+		} `json:"noise"`
+		Router map[string]json.RawMessage `json:"noise_router"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return NoiseSetting{}, fmt.Errorf("解析噪声设置 %s 失败：%w", name, err)
@@ -212,7 +220,23 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 	if len(parsed.Router) == 0 {
 		return NoiseSetting{}, fmt.Errorf("噪声设置 %s 缺少 noise_router", name)
 	}
-	return NoiseSetting{Name: name, SeaLevel: parsed.SeaLevel, Router: parsed.Router, Raw: raw}, nil
+	// 原版的 size_horizontal / size_vertical 可以缺省（缺省视为 1 / 1）。
+	sizeHorizontal := parsed.Noise.SizeHorizontal
+	if sizeHorizontal <= 0 {
+		sizeHorizontal = 1
+	}
+	sizeVertical := parsed.Noise.SizeVertical
+	if sizeVertical <= 0 {
+		sizeVertical = 1
+	}
+	return NoiseSetting{
+		Name:       name,
+		SeaLevel:   parsed.SeaLevel,
+		CellWidth:  4 * sizeHorizontal,
+		CellHeight: 4 * sizeVertical,
+		Router:     parsed.Router,
+		Raw:        raw,
+	}, nil
 }
 
 // Function 返回指定名称的密度函数原始 JSON。
