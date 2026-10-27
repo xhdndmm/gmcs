@@ -13,6 +13,9 @@ package vanilla
 //	maxLimit = PerlinNoise.createLegacy(random, rangeClosed(-15, 0))
 //	main     = PerlinNoise.createLegacy(random, rangeClosed(-7, 0))   // 8 个振幅 1
 //
+// 注意：`fkf.a(RandomSource, IntStream)` 传给 PerlinNoise 构造器的 legacy 标志是
+// **false**，因此这里走的是"顺序消耗同一个随机源"的非 legacy 路径
+// （NewPerlinNoise），而不是按 "octave_n" 派生独立随机流的 legacy 路径。
 // 随机源由 RandomState 给出：positional.fromHashOf("minecraft:terrain")。
 type BlendedNoise struct {
 	minLimit             *PerlinNoise
@@ -31,9 +34,9 @@ type BlendedNoise struct {
 // NewBlendedNoise 等价原版 BlendedNoise(RandomSource, xzScale, yScale,
 // xzFactor, yFactor, smearScaleMultiplier)。
 func NewBlendedNoise(random *Xoroshiro, xzScale, yScale, xzFactor, yFactor, smearScaleMultiplier float64) *BlendedNoise {
-	minLimit := NewPerlinNoiseLegacy(random, -15, octaveOnes(16))
-	maxLimit := NewPerlinNoiseLegacy(random, -15, octaveOnes(16))
-	main := NewPerlinNoiseLegacy(random, -7, octaveOnes(8))
+	minLimit := NewPerlinNoise(random, -15, octaveOnes(16))
+	maxLimit := NewPerlinNoise(random, -15, octaveOnes(16))
+	main := NewPerlinNoise(random, -7, octaveOnes(8))
 	noise := &BlendedNoise{
 		minLimit:             minLimit,
 		maxLimit:             maxLimit,

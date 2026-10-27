@@ -1164,12 +1164,36 @@
       `TestGenerateChunkDeterministic`、`TestBiomeSourceMatchesTerrain`
       （陆地区块群系=plains、海洋区块群系=deep_lukewarm_ocean）、
       `TestBiomeSourceCoversAllBiomes`、`BenchmarkGenerateChunk`（≈38 ms/区块）。
+    - [x] **阶段 4a-验证：与官方服务端逐方块对拍**（新增）。
+      - 工具：`tools/vancmp`。直接读取官方 Anvil 区域文件（NBT/sections/
+        paletted container 解码），与 `Router.GenerateChunk` 逐方块比较。
+      - 参考世界：官方 1.21.11 服务端，种子 4321，配合"纯地形"数据包——
+        全部群系 `features=[]`（11 步）、`carvers=[]`、
+        `noise_settings.overworld` 关闭 `ore_veins_enabled`，
+        从而官方区块只剩 **密度 + 含水层 + 表面规则** 的结果。
+      - 另有"密度探针"数据包：`default_block=stone`、`default_fluid=air`、
+        `sea_level=-65`、关闭含水层、`surface_rule` 恒为石头——
+        此时官方方块等于 `final_density` 的**符号**，可单独校验整条密度图。
+        配合 `y_clamped_gradient` 还能把某个子节点的数值放大若干倍后
+        "编码成地形高度"，用于按节点定位误差。
+      - **修复的 bug**：`BlendedNoise`（`old_blended_noise`）此前误用
+        `PerlinNoise` 的 legacy 路径（按 `octave_n` 派生独立随机流）。
+        官方 `fkf.a(RandomSource, IntStream)` 传给 `PerlinNoise` 构造器的
+        legacy 标志是 **false**，因此三个 `PerlinNoise` 是**顺序消耗同一个
+        随机源**建出来的。修复后 `base_3d_noise` 与官方完全一致。
+      - **结果（种子 4321，区块 (0,0)）**：
+        - 密度符号：`0 / 98304` 不一致（完全一致）；
+        - 端到端（密度+含水层+表面规则）：`5 / 98304` 不一致（99.995%）。
+      - 回归测试：`TestDensityMatchesOfficialSnapshot`
+        （`testdata/official_density_0_0.bin.gz` 为官方密度符号位图）。
     - [ ] **已知限制**：`temperature` 条件尚未完全等价原版——原版这里用
       `FROZEN_TEMPERATURE_NOISE` 与 `TEMPERATURE_NOISE`（`PerlinSimplexNoise`）
       修正温度，本实现只用群系基础温度。影响面：冰冻海洋的结冰范围比原版偏大
       （该条件在 overworld 规则树里只用于冰冻海洋分支）。补齐需要先实现
       `SimplexNoise` / `PerlinSimplexNoise` / `LegacyRandomSource`。
-    - [ ] **未验证**：仍缺与官方服务端同种子的逐方块对比。
+    - [ ] **未验证**：区块 (0,0) 之外仍有约 0~450 个方块的残差（洞穴/含水层
+      边界、表面规则边缘），尚未逐个定位；只对拍了种子 4321、坐标
+      (-4..3, -4..3) 范围内的区块。
   - [ ] **阶段 4b：雕刻器（cave / canyon）**；
   - [ ] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
   - [ ] **阶段 5：接线与验证**：以配置开关切换生成器（保留旧生成器供回退）、

@@ -20,6 +20,7 @@ type Router struct {
 	nodes     map[string]*Node
 	keys      []string
 	biomes    *BiomeSource
+	named     map[string]*Node
 }
 
 // NewRouter 解析指定噪声设置的全部路由项。
@@ -33,6 +34,7 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		setting:   setting,
 		evaluator: NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
 		nodes:     make(map[string]*Node, len(setting.Router)),
+		named:     make(map[string]*Node),
 	}
 	for key := range setting.Router {
 		router.keys = append(router.keys, key)
@@ -84,6 +86,37 @@ func (r *Router) Field(name string, ctx Context) float64 {
 		panic("vanilla: 路由表中没有 " + name)
 	}
 	return r.evaluator.Evaluate(node, ctx)
+}
+
+// Node 按注册名返回可求值的密度函数节点（如 "minecraft:overworld/sloped_cheese"）。
+// 仅用于诊断与测试：正常区块生成只走路由表的固定几项。
+func (r *Router) Node(name string) (*Node, error) {
+	if node, ok := r.named[name]; ok {
+		return node, nil
+	}
+	data, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := data.Functions[name]
+	if !ok {
+		return nil, fmt.Errorf("没有密度函数 %s", name)
+	}
+	node, problems := parseNode(data, name, raw)
+	if len(problems) > 0 {
+		return nil, fmt.Errorf("%s 解析失败：%s", problems[0].Where, problems[0].Detail)
+	}
+	r.named[name] = node
+	return node, nil
+}
+
+// EvaluateNamed 按注册名求值一个密度函数。
+func (r *Router) EvaluateNamed(name string, ctx Context) (float64, error) {
+	node, err := r.Node(name)
+	if err != nil {
+		return 0, err
+	}
+	return r.evaluator.Evaluate(node, ctx), nil
 }
 
 // FinalDensity 返回 final_density 的取值（> 0 表示实心）。

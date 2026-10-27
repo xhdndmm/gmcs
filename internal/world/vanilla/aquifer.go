@@ -289,6 +289,10 @@ type Aquifer struct {
 	preliminaryCache map[preliminaryColumn]int
 
 	shouldScheduleFluidUpdate bool
+
+	// disabled 对应原版 Aquifer.createDisabled()：aquifers_enabled=false 时
+	// 不做含水层插值，密度为正放默认方块，否则直接用全局流体选择器。
+	disabled bool
 }
 
 // newAquifer 按原版 NoiseBasedAquifer 构造函数建立某个区块的含水层。
@@ -338,6 +342,9 @@ func newAquifer(s *ChunkSampler) *Aquifer {
 	) + 8
 	gridY := floorDiv(preliminary+12, 12) - 1
 	aquifer.maxGridY = aquiferGridToBlockY(gridY, 11) - 1
+	// aquifers_enabled=false 时原版用 Aquifer.createDisabled：不做插值，但仍
+	// 需要 preliminary_surface_level 供表面系统使用。
+	aquifer.disabled = !setting.AquifersEnabled
 	return aquifer
 }
 
@@ -501,6 +508,13 @@ func (a *Aquifer) computeFluidType(x, y, z int, global fluidStatus, level int) f
 //
 // y 必须与 density 对应的方块高度一致。
 func (a *Aquifer) ComputeSubstance(x, y, z int, density float64) (kind fluidKind, defaultBlock bool) {
+	if a.disabled {
+		a.shouldScheduleFluidUpdate = false
+		if density > 0 {
+			return fluidAir, true
+		}
+		return a.picker.computeFluid(x, y, z).at(y), false
+	}
 	if density > 0 {
 		a.shouldScheduleFluidUpdate = false
 		return fluidAir, true

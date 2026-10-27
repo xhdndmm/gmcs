@@ -130,9 +130,6 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 	}
 	chunk.RecalculateHeights()
 
-	if !setting.AquifersEnabled {
-		return chunk, nil
-	}
 	biomes, err := r.Biomes()
 	if err != nil {
 		return nil, err
