@@ -19,6 +19,7 @@ type Router struct {
 	evaluator *Evaluator
 	nodes     map[string]*Node
 	keys      []string
+	biomes    *BiomeSource
 }
 
 // NewRouter 解析指定噪声设置的全部路由项。
@@ -60,6 +61,19 @@ func (r *Router) Setting() NoiseSetting {
 // Evaluator 返回底层求值器（供诊断与基准使用）。
 func (r *Router) Evaluator() *Evaluator {
 	return r.evaluator
+}
+
+// Biomes 返回缓存的群系源（首次调用时构造）。参数表解析成本较高，
+// 区块生成时不应每次重建。
+func (r *Router) Biomes() (*BiomeSource, error) {
+	if r.biomes == nil {
+		source, err := NewBiomeSource(r)
+		if err != nil {
+			return nil, err
+		}
+		r.biomes = source
+	}
+	return r.biomes, nil
 }
 
 // Field 返回路由表中某一项的取值。name 必须是最终密度函数图（如 final_density、

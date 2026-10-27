@@ -1431,6 +1431,27 @@ BenchmarkAquiferFillChunk-20         22.7 ms/区块   1295 KB    154 allocs
 首个密度 > 0 的高度。这与原版 `NoiseChunk.preliminarySurfaceLevel` 的按列缓存
 行为一致，目前没有 profile 证据支持引入额外近似（AGENTS §4.1）。
 
+### 3.42 完整区块生成（密度 + 含水层 + 表面规则）
+
+`Router.GenerateChunk` 把三个阶段串起来。同机同种子（区块 62,62）：
+
+```text
+BenchmarkGenerateChunk-20    38.3 ms/区块    7.99 MB/op    10517 allocs/op
+```
+
+分解（前两节实测）：密度 lattice ≈ 20.2 ms、含水层 ≈ +2.5 ms，
+剩余 ≈ 15 ms 是表面规则（逐方块条件求值 + 群系查询 + 恶地/冰山扩展）。
+
+内存主要来自 `GeneratedChunk` 的方块数组：98304 个 `SurfaceBlock`
+（注册名 string + 属性 map，24 B/个 ≈ 2.4 MB），其余是求值器的按列/按格缓存
+（区块生命周期内复用）。
+
+一次优化已做：`BiomeSource` 原本每次生成区块都重新解析 7593 点的参数表
+（+8 MB / +15 ms），改为缓存在 `Router` 上后降到 38 ms / 8 MB。
+
+未做（暂无证据支持）：表面规则的条件求值没有像原版那样按"上下文更新计数"
+缓存 `temperature`/`steep`/`hole`；这些条件是纯函数，缓存只影响性能不影响结果。
+
 ## 4. 尚未覆盖- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家、100 玩家 × 5 分钟与 100 玩家 × 3 分钟
   loopback 压测（见 3.7、3.13、3.18），真实网络 / 真实客户端渲染仍待验证

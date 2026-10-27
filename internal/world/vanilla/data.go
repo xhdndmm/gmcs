@@ -6,13 +6,15 @@
 //
 // 当前进度（见 docs/TODO.md 的分阶段计划）：原版世界生成数据提取与校验、
 // Xoroshiro 随机源、ImprovedNoise/PerlinNoise/NormalNoise、密度函数图求值、
-// 区块级密度 lattice 采样，以及**含水层逐方块判定**
-// （密度 + 水/岩浆/空气）均已实现并有测试。
-// 表面规则、雕刻器、地物、结构尚未实现；服务器仍使用 internal/world 中的
-// 自研生成器。
+// 区块级密度 lattice 采样、含水层逐方块判定（密度 + 水/岩浆/空气）、
+// 多噪声群系源，以及**表面规则**都已经实现并有测试；
+// Router.GenerateChunk 可以产出带方块注册名的完整区块。
+// 雕刻器、地物、结构尚未实现；服务器仍使用 internal/world 中的自研生成器。
 //
 // 数据由 tools/genworldgen 从官方 jar 提取并压缩为 data/worldgen.json.gz
-// （只含 overworld 相关条目，压缩后约 7 KB），仓库里不保存原始数据包文件。
+// （overworld 的噪声设置/密度函数/噪声参数/群系气候）；overworld 的多噪声
+// 群系参数表是代码内建的，由 tools/vgoracle/BiomeParameters.java 反射导出为
+// data/biome_parameters.json.gz。仓库里不保存原始数据包文件。
 package vanilla
 
 import (
@@ -26,7 +28,7 @@ import (
 	"strings"
 )
 
-//go:embed data/worldgen.json.gz
+//go:embed data/worldgen.json.gz data/biome_parameters.json.gz
 var dataFiles embed.FS
 
 // DataFileName 是嵌入的数据包文件名。
@@ -51,6 +53,9 @@ type Data struct {
 	Noises map[string]NoiseParameters
 	// BiomeSources 是多噪声群系源的参数范围表（原始 JSON）。
 	BiomeSources map[string]json.RawMessage
+	// Biomes 是群系气候数据（只保留 temperature/downfall/has_precipitation/
+	// temperature_modifier，原始 JSON）。
+	Biomes map[string]json.RawMessage
 }
 
 // Problem 描述一条数据一致性问题。
@@ -93,6 +98,7 @@ type rawBundle struct {
 	Functions     map[string]json.RawMessage `json:"density_functions"`
 	Noises        map[string]json.RawMessage `json:"noises"`
 	BiomeSources  map[string]json.RawMessage `json:"multi_noise_biome_sources"`
+	Biomes        map[string]json.RawMessage `json:"biomes"`
 }
 
 // loadFrom 从文件系统读取并解析数据包。
@@ -120,6 +126,7 @@ func loadFrom(fs embed.FS, name string) (*Data, error) {
 		Functions:     raw.Functions,
 		Noises:        make(map[string]NoiseParameters, len(raw.Noises)),
 		BiomeSources:  raw.BiomeSources,
+		Biomes:        raw.Biomes,
 	}
 	for name, payload := range raw.Noises {
 		var params struct {
@@ -285,4 +292,30 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 func (d *Data) Function(name string) (json.RawMessage, bool) {
 	raw, ok := d.Functions[name]
 	return raw, ok
+}
+
+// BiomeClimates 解析群系气候数据（温度、降水量、降水标记、温度修正器）。
+func (d *Data) BiomeClimates() map[string]biomeClimate {
+	climates := make(map[string]biomeClimate, len(d.Biomes))
+	for name, raw := range d.Biomes {
+		var parsed struct {
+			Temperature      float32 `json:"temperature"`
+			Downfall         float32 `json:"downfall"`
+			HasPrecipitation *bool   `json:"has_precipitation"`
+			Modifier         string  `json:"temperature_modifier"`
+		}
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			continue
+		}
+		climate := biomeClimate{
+			temperature: parsed.Temperature,
+			downfall:    parsed.Downfall,
+			frozen:      parsed.Modifier == "frozen",
+		}
+		if parsed.HasPrecipitation != nil {
+			climate.hasPrecipitation = *parsed.HasPrecipitation
+		}
+		climates[name] = climate
+	}
+	return climates
 }

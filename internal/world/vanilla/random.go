@@ -107,6 +107,17 @@ func (r *Xoroshiro) NextFloat() float32 {
 	return float32(r.NextDouble())
 }
 
+// NextBoolean 等价原版 RandomSource.nextBoolean()：取 nextLong 的最低位。
+func (r *Xoroshiro) NextBoolean() bool {
+	return r.NextLong()&1 != 0
+}
+
+// NextIntBetween 等价原版 RandomSource.nextInt(int origin, int bound)：
+// 半开区间 [origin, bound)，实现为 origin + nextInt(bound - origin)。
+func (r *Xoroshiro) NextIntBetween(origin, bound int) int {
+	return origin + r.NextInt(bound-origin)
+}
+
 // positionalRandomFactory 等价原版
 // XoroshiroRandomSource.XoroshiroPositionalRandomFactory。
 //

@@ -1137,11 +1137,41 @@
         （纯密度填充 ≈ 20.2 ms），即含水层额外开销约 2.5 ms（12%）。
       - **未验证**：尚未与官方服务端同种子逐方块对比（阶段 5），因此
         “与原版完全一致”目前只在**算法/常量层面**成立，缺少端到端证据。
-      - **下一步**：表面规则（`surface_rule` 树）决定草/沙/深板岩/基岩等最终方块，
-        之后才能输出真正的方块 id。
-  - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、
-    cave/canyon 雕刻器、矿物/树木/植被/lakes 地物与噪声群系源
-    （`multi_noise_biome_source_parameter_list/overworld` 已随阶段 1 提取）；
+  - [x] **阶段 4a：表面规则（`surface_rule`）与多噪声群系源**：
+    - [x] `surface.go`：解析并实现 overworld 规则树里的**全部 15 种节点**
+      （4 种规则 `block`/`sequence`/`condition`/`bandlands`，11 种条件
+      `above_preliminary_surface`/`biome`/`hole`/`noise_threshold`/`not`/`steep`/
+      `stone_depth`/`temperature`/`vertical_gradient`/`water`/`y_above`）。
+      未知类型/未知字段会显式报错，不会静默当成 false。
+    - [x] `surfacesystem.go`：`SurfaceSystem`（`getMinSurfaceLevel`、
+      `getSurfaceDepth`、粘土带 `getBand`、`vertical_gradient` 的按名随机流），
+      以及 `SurfaceRules.Context` 的字段语义（`minSurfaceLevel` / `surfaceDepth` /
+      `stoneDepthAbove` / `stoneDepthBelow` / 初步地表插值 `- 8`）。
+    - [x] `surfacebuild.go`：`buildSurface` 主循环 + 侵蚀恶地柱状扩展 +
+      冰冻海洋冰山扩展（`erodedBadlandsExtension` / `icebergExtension`）。
+    - [x] `biome.go`：多噪声群系源。参数表是**代码内建**的，由
+      `tools/vgoracle/BiomeParameters.java` 反射导出为
+      `data/biome_parameters.json.gz`（7593 个参数点 / 54 个群系，33 KB）；
+      采样语义按字节码：气候函数在 quart 坐标左移 2 后的**方块坐标**上求值，
+      量化为 long 后按"六维距离之和 + |offset|"取最近点。
+    - [x] `chunkgen.go`：`Router.GenerateChunk` 串起
+      密度 → 含水层 → 表面规则，产出 `GeneratedChunk`（注册名 + 方块状态属性）。
+    - [x] 数据：`tools/genworldgen` 新增群系气候提取
+      （`temperature`/`downfall`/`has_precipitation`/`temperature_modifier`，65 个群系）。
+    - [x] 测试：`TestOverworldSurfaceRuleParses`（15 种类型全覆盖）、
+      `TestGenerateChunkTerrainLayers`（草→土→石、底部基岩）、
+      `TestGenerateChunkOcean`（海平面以下是水、无草方块）、
+      `TestGenerateChunkDeterministic`、`TestBiomeSourceMatchesTerrain`
+      （陆地区块群系=plains、海洋区块群系=deep_lukewarm_ocean）、
+      `TestBiomeSourceCoversAllBiomes`、`BenchmarkGenerateChunk`（≈38 ms/区块）。
+    - [ ] **已知限制**：`temperature` 条件尚未完全等价原版——原版这里用
+      `FROZEN_TEMPERATURE_NOISE` 与 `TEMPERATURE_NOISE`（`PerlinSimplexNoise`）
+      修正温度，本实现只用群系基础温度。影响面：冰冻海洋的结冰范围比原版偏大
+      （该条件在 overworld 规则树里只用于冰冻海洋分支）。补齐需要先实现
+      `SimplexNoise` / `PerlinSimplexNoise` / `LegacyRandomSource`。
+    - [ ] **未验证**：仍缺与官方服务端同种子的逐方块对比。
+  - [ ] **阶段 4b：雕刻器（cave / canyon）**；
+  - [ ] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
   - [ ] **阶段 5：接线与验证**：以配置开关切换生成器（保留旧生成器供回退）、
     与官方服务端同种子区块逐方块对比（区域文件解码）、benchmark 与文档，
     通过后才把 default 切到原版生成器。

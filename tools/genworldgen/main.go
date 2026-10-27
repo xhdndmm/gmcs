@@ -43,6 +43,9 @@ type bundle struct {
 	Functions     map[string]json.RawMessage `json:"density_functions"`
 	Noises        map[string]json.RawMessage `json:"noises"`
 	BiomeSources  map[string]json.RawMessage `json:"multi_noise_biome_sources"`
+	// Biomes 只保留气候相关字段（temperature/downfall/has_precipitation/
+	// temperature_modifier），地表规则的 temperature 条件与降雪判定需要它们。
+	Biomes map[string]json.RawMessage `json:"biomes"`
 }
 
 func main() {
@@ -98,6 +101,7 @@ func main() {
 		Functions:     map[string]json.RawMessage{},
 		Noises:        map[string]json.RawMessage{},
 		BiomeSources:  map[string]json.RawMessage{},
+		Biomes:        map[string]json.RawMessage{},
 	}
 	if result.Version == "" {
 		if file, ok := files[dataPrefix+"version.json"]; ok {
@@ -165,6 +169,32 @@ func main() {
 		fmt.Fprintf(os.Stderr, "提取群系参数表失败: %v\n", err)
 		os.Exit(1)
 	}
+	// 群系只保留气候字段：完整群系 JSON 含特征列表/生成设置，体积大且与地形无关。
+	climateOnly := map[string]json.RawMessage{}
+	if err := collect("biome", nil, climateOnly); err != nil {
+		fmt.Fprintf(os.Stderr, "提取群系失败: %v\n", err)
+		os.Exit(1)
+	}
+	climateKeys := []string{"temperature", "downfall", "has_precipitation", "temperature_modifier"}
+	for name, raw := range climateOnly {
+		var full map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &full); err != nil {
+			fmt.Fprintf(os.Stderr, "解析群系 %s 失败: %v\n", name, err)
+			os.Exit(1)
+		}
+		trimmed := map[string]json.RawMessage{}
+		for _, key := range climateKeys {
+			if value, ok := full[key]; ok {
+				trimmed[key] = value
+			}
+		}
+		compact, err := json.Marshal(trimmed)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "序列化群系 %s 失败: %v\n", name, err)
+			os.Exit(1)
+		}
+		result.Biomes[name] = compact
+	}
 
 	payload, err := json.Marshal(result)
 	if err != nil {
@@ -193,8 +223,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "写入 %s 失败: %v\n", *out, err)
 		os.Exit(1)
 	}
-	fmt.Printf("完成：%s（%d 条噪声设置 / %d 条密度函数 / %d 条噪声参数 / %d 条群系参数表，原始 %d 字节、压缩后 %d 字节）\n",
-		*out, len(result.NoiseSettings), len(result.Functions), len(result.Noises), len(result.BiomeSources),
+	fmt.Printf("完成：%s（%d 条噪声设置 / %d 条密度函数 / %d 条噪声参数 / %d 条群系参数表 / %d 条群系气候，原始 %d 字节、压缩后 %d 字节）\n",
+		*out, len(result.NoiseSettings), len(result.Functions), len(result.Noises), len(result.BiomeSources), len(result.Biomes),
 		len(payload), buf.Len())
 }
 
