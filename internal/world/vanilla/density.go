@@ -37,8 +37,27 @@ type Context struct {
 type Evaluator struct {
 	noises     *NoiseRegistry
 	blended    map[*Node]*BlendedNoise
+	corners    map[cornerKey]float64
+	cells      map[cellKey][2][2][2]float64
 	cellWidth  int
 	cellHeight int
+}
+
+// cornerKey 是 interpolated 角点缓存的键：节点 + 格点坐标。
+// 相邻单元格共享角点，所以每个区块实际只算一次 lattice。
+type cornerKey struct {
+	node *Node
+	x    int
+	y    int
+	z    int
+}
+
+// cellKey 是整格 8 角点缓存的键：节点 + 单元格原点。
+type cellKey struct {
+	node *Node
+	x    int
+	y    int
+	z    int
 }
 
 // NewEvaluator 为给定噪声注册表创建求值器，内插值网格默认按 overworld 的
@@ -56,9 +75,18 @@ func NewEvaluatorWithCells(noises *NoiseRegistry, cellWidth, cellHeight int) *Ev
 	return &Evaluator{
 		noises:     noises,
 		blended:    make(map[*Node]*BlendedNoise),
+		corners:    make(map[cornerKey]float64),
+		cells:      make(map[cellKey][2][2][2]float64),
 		cellWidth:  cellWidth,
 		cellHeight: cellHeight,
 	}
+}
+
+// ResetInterpolationCache 清空 interpolated 的角点与单元格缓存。区块生成时应当
+// 每区块调用一次，否则缓存会随生成范围无限增长（值本身可重算，清空不影响结果）。
+func (e *Evaluator) ResetInterpolationCache() {
+	e.corners = make(map[cornerKey]float64)
+	e.cells = make(map[cellKey][2][2][2]float64)
 }
 
 // NoiseRegistry 返回求值器使用的噪声注册表。
@@ -228,11 +256,12 @@ func lerpFloat(delta, start, end float32) float32 {
 }
 
 // evaluateInterpolated 求值原版 NoiseChunk.NoiseInterpolator：
-// 把子节点在 4×8×4（cellWidth × cellHeight × cellWidth）的单元格角点上采样，
+// 把子节点在 cellWidth×cellHeight×cellWidth 的单元格角点上采样，
 // 再用方块在单元格内的相对偏移做三线性插值（线性，不是 smoothstep）。
 //
-// 注意：这里的实现是逐点重算 8 个角点，语义与原版一致但开销高于原版的网格复用；
-// 区块级填充会另外实现一次算一整格的采样器。
+// 性能：角点与整格 8 角点都做了缓存，所以同一格内的 128 个方块只会查一次表，
+// 相邻格共享的 lattice 角点也只算一次。区块生成时每区块调用
+// ResetInterpolationCache 释放缓存。
 func (e *Evaluator) evaluateInterpolated(node *Node, ctx Context) float64 {
 	cellX := floorDiv(ctx.X, e.cellWidth) * e.cellWidth
 	cellY := floorDiv(ctx.Y, e.cellHeight) * e.cellHeight
@@ -241,25 +270,44 @@ func (e *Evaluator) evaluateInterpolated(node *Node, ctx Context) float64 {
 	deltaY := float64(ctx.Y-cellY) / float64(e.cellHeight)
 	deltaZ := float64(ctx.Z-cellZ) / float64(e.cellWidth)
 
+	corners := e.cellCorners(node, cellX, cellY, cellZ)
+	// 与原版 11 参数 Mth.lerp2 相同的嵌套顺序：x 最内，其次 y，最后 z。
+	plane := func(iz int) float64 {
+		return lerp(deltaY,
+			lerp(deltaX, corners[0][0][iz], corners[1][0][iz]),
+			lerp(deltaX, corners[0][1][iz], corners[1][1][iz]))
+	}
+	return lerp(deltaZ, plane(0), plane(1))
+}
+
+// cellCorners 返回某个单元格 8 个角点的值（按单元格缓存）。
+func (e *Evaluator) cellCorners(node *Node, cellX, cellY, cellZ int) [2][2][2]float64 {
+	key := cellKey{node: node, x: cellX, y: cellY, z: cellZ}
+	if corners, ok := e.cells[key]; ok {
+		return corners
+	}
 	var corners [2][2][2]float64
 	for ix := 0; ix < 2; ix++ {
 		for iy := 0; iy < 2; iy++ {
 			for iz := 0; iz < 2; iz++ {
-				corners[ix][iy][iz] = e.child(node, 0, Context{
-					X: cellX + ix*e.cellWidth,
-					Y: cellY + iy*e.cellHeight,
-					Z: cellZ + iz*e.cellWidth,
-				})
+				corners[ix][iy][iz] = e.cornerValue(node, cellX+ix*e.cellWidth, cellY+iy*e.cellHeight, cellZ+iz*e.cellWidth)
 			}
 		}
 	}
-	// 与原版 11 参数 Mth.lerp2 相同的嵌套顺序：x 最内，其次 y，最后 z。
-	plane := func(z int) float64 {
-		return lerp(deltaY,
-			lerp(deltaX, corners[0][0][z], corners[1][0][z]),
-			lerp(deltaX, corners[0][1][z], corners[1][1][z]))
+	e.cells[key] = corners
+	return corners
+}
+
+// cornerValue 取 interpolated 子节点在某个格点上的值，并按（节点, 坐标）缓存。
+// 相邻单元格共享角点，缓存后每区块每个节点的 lattice 只算一次。
+func (e *Evaluator) cornerValue(node *Node, x, y, z int) float64 {
+	key := cornerKey{node: node, x: x, y: y, z: z}
+	if value, ok := e.corners[key]; ok {
+		return value
 	}
-	return lerp(deltaZ, plane(0), plane(1))
+	value := e.child(node, 0, Context{X: x, Y: y, Z: z})
+	e.corners[key] = value
+	return value
 }
 
 // evaluateFindTopSurface 求值原版 DensityFunctions.FindTopSurface：

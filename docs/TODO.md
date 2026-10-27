@@ -1069,9 +1069,22 @@
     都能在多个坐标上求值且结果有限——密度函数这一层（阶段 3 求值部分）全部完成。
     已知限制：`interpolated` 目前是逐点重算 8 个角点（语义正确但比原版的网格复用慢），
     区块级填充时会另做一个"一次算一整格"的采样器。
-  - [ ] **阶段 3e：区块级地形填充**：一次性算整格的 `interpolated` 采样器、
-    含水层（aquifer barrier/floodedness/spread/lava）、`sloped_cheese` 压缩，
-    产出逐方块 stone/deepslate/water/air。
+  - [~] **阶段 3e：区块级地形填充（进行中）**：
+    - [x] 新增 `Router`（`router.go`）：把 `noise_router` 的每一项解析成密度函数图，
+      并按世界种子绑定求值器；提供 `Field(name, ctx)`、`FinalDensity(ctx)`、
+      `Solid(x,y,z)`（= `final_density > 0`）。
+    - [x] `interpolated` 加了两级缓存（lattice 角点 + 整格 8 角点），
+      同一格内 128 个方块只查一次表；`ResetInterpolationCache()` 每区块调用。
+    - [x] 测试：`TestRouterFieldsEvaluable`、`TestRouterSeedAffectsFinalDensity`、
+      `TestRouterSolidMatchesDensitySign`、`TestRouterHasSurface`（典型地形存在
+      上实下空的过渡，证明 spline/offset/factor/jaggedness 链路在工作）、
+      `TestInterpolationCacheReducesWork`、`TestResetInterpolationCacheKeepsResults`。
+    - [ ] **已知性能问题**：`BenchmarkRouterFillChunk` 实测 ≈ 83 ms/区块
+      （≈1.7 MB 分配），远慢于原版（数毫秒）。瓶颈是每方块 5 次 map 查表 +
+      每个 lattice 角点独立求值。需要改成"每节点一次性把整块 lattice 算进
+      密集数组、再按索引取值"的专用填充器（原版 NoiseChunk 的做法）。
+    - [ ] 含水层（aquifer barrier/floodedness/spread/lava）、`sloped_cheese`
+      压缩与逐方块 stone/deepslate/water/air 判定。
   - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、
     cave/canyon 雕刻器、矿物/树木/植被/lakes 地物与噪声群系源
     （`multi_noise_biome_source_parameter_list/overworld` 已随阶段 1 提取）；
