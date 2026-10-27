@@ -1106,9 +1106,28 @@
       `((y-K)*sizeZ + (z-L))*sizeX + (x-J)`、压力函数
       `1 - (toY-fromY)/25`、方块↔格坐标换算，均有单元测试
       （`TestAquiferGridForChunk`/`TestAquiferGridIndex`/`TestAquiferPressure`/
-      `TestAquiferGridRoundTrip`）。**未完成**：`computeSubstance`、
-      `getFluidStatus`（`b(int,int,int)`，含 barrier 噪声与格缓存）、
-      全局 `FluidPicker`、以及与 `ChunkSampler` 的接线。
+      `TestAquiferGridRoundTrip`）。
+      **已读出的算法规格（`euc$c`，下一步照此实现）**：
+      - `computeSubstance(ctx, density)`：`density > 0` → 清 `H` 并返回 `null`
+        （由调用方用 `default_block` 石头）；否则取 `picker.computeFluid(x,y,z)`，
+        `y > I`（该字段在构造函数末尾由初步地表高度算出）时直接返回该流体状态；
+        若该处是水，再按 `Blocks.WATER`/`Blocks.LAVA` 分支返回；
+        否则在 `(x,z)+{-5,-4}×{x,z}`、`y+{-1,0,1}` 的 2×3×2 邻域里按
+        “最近流体格”挑选，格位置由 `positionalRandomFactory.at(gx,gy,gz)` 的
+        `nextInt(10)/nextInt(9)/nextInt(10)` 决定并缓存进 `FluidStatus[]`/`long[]`，
+        距离用平方欧氏距离比较，最终用压力函数在相邻格之间插值液面。
+      - `getFluidStatus(x,y,z)`：遍历 `SURFACE_SAMPLING_OFFSETS`（静态字段 `O`），
+        用 `noiseChunk.getPreliminarySurfaceLevel(x,z)` 与 `+8` 偏移判断是否露出地表，
+        选最近的流体格后调 `computeFluidLevel`/`computeFluidState`。
+      - 液面选择用 `fluidLevelFloodedness` 噪声（`bgj.b(DDDDD)` = clampedMap）
+        与 `fluidLevelSpread` 噪声（`z` 字段）+ `bgj.a(DI)I`；
+        环境检查调用 `dye.a(depth, jaggedness, ctx)`（生物群系/地表判定）。
+      **剩余阻塞点（必须先确认语义，不能猜）**：
+      `esh.g`（空气/哨兵 fluid level 常量）、`dzs.K`/`dzs.a`（`Blocks.WATER` 等）、
+      `jw.c(int)`（`roundToward`?）、`bgj.a(DI)I`、`dye.a(...)`、
+      以及 `NoiseChunk.getPreliminarySurfaceLevel` 的入口签名。
+      **未实现**：`FluidPicker`（全局流体：海平面 + `lava` 噪声 + `barrier` 噪声）、
+      上述 `computeSubstance`/`getFluidStatus`、与 `ChunkSampler` 的接线。
   - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、
     cave/canyon 雕刻器、矿物/树木/植被/lakes 地物与噪声群系源
     （`multi_noise_biome_source_parameter_list/overworld` 已随阶段 1 提取）；
