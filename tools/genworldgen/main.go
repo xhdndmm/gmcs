@@ -11,6 +11,7 @@
 //   - data/minecraft/worldgen/noise/*.json（噪声参数：firstOctave/amplitudes）
 //   - data/minecraft/worldgen/multi_noise_biome_source_parameter_list/*.json
 //     （多噪声群系源的参数范围表）
+//   - data/minecraft/worldgen/configured_carver/*.json 与群系 carvers 引用
 //
 // 只保留原版 overworld 相关条目，避免把整个数据包塞进仓库；条目以
 // “minecraft:<相对路径去扩展名>” 作为键（如 minecraft:overworld/continents）。
@@ -37,12 +38,15 @@ import (
 
 // bundle 是打包后的数据文件结构。
 type bundle struct {
-	Version       string                     `json:"version"`
-	Source        string                     `json:"source"`
-	NoiseSettings map[string]json.RawMessage `json:"noise_settings"`
-	Functions     map[string]json.RawMessage `json:"density_functions"`
-	Noises        map[string]json.RawMessage `json:"noises"`
-	BiomeSources  map[string]json.RawMessage `json:"multi_noise_biome_sources"`
+	Version            string                     `json:"version"`
+	Source             string                     `json:"source"`
+	NoiseSettings      map[string]json.RawMessage `json:"noise_settings"`
+	Functions          map[string]json.RawMessage `json:"density_functions"`
+	Noises             map[string]json.RawMessage `json:"noises"`
+	BiomeSources       map[string]json.RawMessage `json:"multi_noise_biome_sources"`
+	ConfiguredCarvers  map[string]json.RawMessage `json:"configured_carvers"`
+	BiomeCarvers       map[string]json.RawMessage `json:"biome_carvers"`
+	CarverReplaceables []string                   `json:"carver_replaceables"`
 	// Biomes 只保留气候相关字段（temperature/downfall/has_precipitation/
 	// temperature_modifier），地表规则的 temperature 条件与降雪判定需要它们。
 	Biomes map[string]json.RawMessage `json:"biomes"`
@@ -95,13 +99,15 @@ func main() {
 	}
 
 	result := bundle{
-		Version:       *version,
-		Source:        path.Base(*jarPath),
-		NoiseSettings: map[string]json.RawMessage{},
-		Functions:     map[string]json.RawMessage{},
-		Noises:        map[string]json.RawMessage{},
-		BiomeSources:  map[string]json.RawMessage{},
-		Biomes:        map[string]json.RawMessage{},
+		Version:           *version,
+		Source:            path.Base(*jarPath),
+		NoiseSettings:     map[string]json.RawMessage{},
+		Functions:         map[string]json.RawMessage{},
+		Noises:            map[string]json.RawMessage{},
+		BiomeSources:      map[string]json.RawMessage{},
+		ConfiguredCarvers: map[string]json.RawMessage{},
+		BiomeCarvers:      map[string]json.RawMessage{},
+		Biomes:            map[string]json.RawMessage{},
 	}
 	if result.Version == "" {
 		if file, ok := files[dataPrefix+"version.json"]; ok {
@@ -169,14 +175,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "提取群系参数表失败: %v\n", err)
 		os.Exit(1)
 	}
+	if err := collect("configured_carver", nil, result.ConfiguredCarvers); err != nil {
+		fmt.Fprintf(os.Stderr, "提取 configured_carver 失败: %v\n", err)
+		os.Exit(1)
+	}
+	result.CarverReplaceables, err = extractCarverReplaceables(files, dataPrefix)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "提取 overworld_carver_replaceables 失败: %v\n", err)
+		os.Exit(1)
+	}
 	// 群系只保留气候字段：完整群系 JSON 含特征列表/生成设置，体积大且与地形无关。
-	climateOnly := map[string]json.RawMessage{}
-	if err := collect("biome", nil, climateOnly); err != nil {
+	biomeData := map[string]json.RawMessage{}
+	if err := collect("biome", nil, biomeData); err != nil {
 		fmt.Fprintf(os.Stderr, "提取群系失败: %v\n", err)
 		os.Exit(1)
 	}
 	climateKeys := []string{"temperature", "downfall", "has_precipitation", "temperature_modifier"}
-	for name, raw := range climateOnly {
+	for name, raw := range biomeData {
 		var full map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &full); err != nil {
 			fmt.Fprintf(os.Stderr, "解析群系 %s 失败: %v\n", name, err)
@@ -194,6 +209,14 @@ func main() {
 			os.Exit(1)
 		}
 		result.Biomes[name] = compact
+		if carvers, ok := full["carvers"]; ok {
+			var names []string
+			if err := json.Unmarshal(carvers, &names); err == nil {
+				// Overworld biomes use the carver list format. Nether biomes use a
+				// single string reference and are outside this extraction stage.
+				result.BiomeCarvers[name] = carvers
+			}
+		}
 	}
 
 	payload, err := json.Marshal(result)
@@ -223,8 +246,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "写入 %s 失败: %v\n", *out, err)
 		os.Exit(1)
 	}
-	fmt.Printf("完成：%s（%d 条噪声设置 / %d 条密度函数 / %d 条噪声参数 / %d 条群系参数表 / %d 条群系气候，原始 %d 字节、压缩后 %d 字节）\n",
-		*out, len(result.NoiseSettings), len(result.Functions), len(result.Noises), len(result.BiomeSources), len(result.Biomes),
+	fmt.Printf("完成：%s（%d 条噪声设置 / %d 条密度函数 / %d 条噪声参数 / %d 条群系参数表 / %d 条配置雕刻器 / %d 条群系雕刻器 / %d 条群系气候，原始 %d 字节、压缩后 %d 字节）\n",
+		*out, len(result.NoiseSettings), len(result.Functions), len(result.Noises), len(result.BiomeSources), len(result.ConfiguredCarvers), len(result.BiomeCarvers), len(result.Biomes),
 		len(payload), buf.Len())
 }
 
@@ -236,4 +259,62 @@ func readFile(file *zip.File) ([]byte, error) {
 	}
 	defer reader.Close()
 	return io.ReadAll(reader)
+}
+
+func extractCarverReplaceables(files map[string]*zip.File, dataPrefix string) ([]string, error) {
+	const rootTag = "minecraft:overworld_carver_replaceables"
+	base := strings.TrimSuffix(dataPrefix, "minecraft/")
+	pending := []string{rootTag}
+	seenTags := make(map[string]bool)
+	blocks := make(map[string]bool)
+	for len(pending) > 0 {
+		tagName := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if seenTags[tagName] {
+			continue
+		}
+		seenTags[tagName] = true
+		namespace, pathName, found := strings.Cut(tagName, ":")
+		if !found {
+			namespace, pathName = "minecraft", namespace
+		}
+		fileName := base + namespace + "/tags/block/" + pathName + ".json"
+		file, ok := files[fileName]
+		if !ok {
+			return nil, fmt.Errorf("缺少标签文件 %s", fileName)
+		}
+		payload, err := readFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("读取 %s 失败：%w", fileName, err)
+		}
+		var tag struct {
+			Values []json.RawMessage `json:"values"`
+		}
+		if err := json.Unmarshal(payload, &tag); err != nil {
+			return nil, fmt.Errorf("解析 %s 失败：%w", fileName, err)
+		}
+		for _, rawValue := range tag.Values {
+			var value string
+			if err := json.Unmarshal(rawValue, &value); err != nil {
+				var entry struct {
+					ID string `json:"id"`
+				}
+				if err := json.Unmarshal(rawValue, &entry); err != nil || entry.ID == "" {
+					return nil, fmt.Errorf("%s 含无效标签值 %s", fileName, rawValue)
+				}
+				value = entry.ID
+			}
+			if strings.HasPrefix(value, "#") {
+				pending = append(pending, strings.TrimPrefix(value, "#"))
+			} else {
+				blocks[value] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(blocks))
+	for name := range blocks {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result, nil
 }

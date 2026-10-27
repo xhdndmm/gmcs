@@ -45,6 +45,85 @@ type Xoroshiro struct {
 	lo, hi uint64
 }
 
+const (
+	legacyRandomMask       = (uint64(1) << 48) - 1
+	legacyRandomMultiplier = uint64(0x5DEECE66D)
+	legacyRandomIncrement  = uint64(0xB)
+)
+
+// legacyRandom 是原版 LegacyRandomSource。地物和雕刻器的 WorldgenRandom
+// 仍使用这条 48 位 LCG 随机流，而密度噪声使用 Xoroshiro。
+type legacyRandom struct {
+	seed uint64
+}
+
+func newLegacyRandom(seed int64) *legacyRandom {
+	random := &legacyRandom{}
+	random.setSeed(seed)
+	return random
+}
+
+func (r *legacyRandom) setSeed(seed int64) {
+	r.seed = (uint64(seed) ^ legacyRandomMultiplier) & legacyRandomMask
+}
+
+func (r *legacyRandom) next(bits uint) uint32 {
+	r.seed = (r.seed*legacyRandomMultiplier + legacyRandomIncrement) & legacyRandomMask
+	return uint32(r.seed >> (48 - bits))
+}
+
+func (r *legacyRandom) nextInt() int32 {
+	return int32(r.next(32))
+}
+
+func (r *legacyRandom) nextIntBounded(bound int) int {
+	if bound <= 0 {
+		panic("vanilla: nextIntBounded 的 bound 必须为正")
+	}
+	if bound&(bound-1) == 0 {
+		return int((int64(bound) * int64(r.next(31))) >> 31)
+	}
+	for {
+		bits := int64(r.next(31))
+		value := bits % int64(bound)
+		if bits-value+int64(bound-1) <= int64(1<<31-1) {
+			return int(value)
+		}
+	}
+}
+
+func (r *legacyRandom) nextLong() int64 {
+	return int64(r.nextInt())<<32 + int64(r.nextInt())
+}
+
+func (r *legacyRandom) nextFloat() float32 {
+	return float32(r.next(24)) / (1 << 24)
+}
+
+func (r *legacyRandom) nextDouble() float64 {
+	value := uint64(r.next(26))<<27 | uint64(r.next(27))
+	return float64(value) / (1 << 53)
+}
+
+// worldgenRandom wraps LegacyRandomSource and implements the feature/carver seed
+// derivation used by WorldgenRandom.setLargeFeatureSeed.
+type worldgenRandom struct {
+	*legacyRandom
+}
+
+func newWorldgenRandom() *worldgenRandom {
+	return &worldgenRandom{legacyRandom: newLegacyRandom(0)}
+}
+
+func (r *worldgenRandom) setLargeFeatureSeed(seed int64, chunkX, chunkZ int) int64 {
+	r.setSeed(seed)
+	xMultiplier := r.nextLong()
+	zMultiplier := r.nextLong()
+	largeFeatureSeed := int64(chunkX)*xMultiplier ^ int64(chunkZ)*zMultiplier ^ seed
+	r.setSeed(largeFeatureSeed)
+	return largeFeatureSeed
+}
+
 // NewXoroshiro 用与 RandomSource.create(long) 相同的方式构造随机源。
 func NewXoroshiro(seed int64) *Xoroshiro {
 	lo, hi := seed128(seed)

@@ -1224,6 +1224,16 @@
       边界、表面规则边缘），尚未逐个定位；只对拍了种子 4321、坐标
       (-4..3, -4..3) 范围内的区块。
   - [ ] **阶段 4b：雕刻器（cave / canyon）**；
+    - [x] 数据提取：保存 configured_carver 定义与 overworld 群系 carver 引用；
+      加载时校验引用完整，确认 cave/canyon 配置均存在。
+    - [x] 随机基础：实现 LegacyRandomSource 与 WorldgenRandom 的
+      setLargeFeatureSeed，并以 Java Random 序列和固定 seed 向量回归验证。
+    - [x] 运行时初版：按 17×17 源区块遍历，接入 cave/canyon、共用 mask、
+      含水层流体选择与 surface rules 前置顺序。
+    - [ ] 官方兼容尚未收敛：种子 4321、carvers-only 官方区块 (0,0)
+      当前仍有 1,551 / 98,304 方块不一致；需继续核对 carve skip、随机序列和流体替换。
+      当前 BenchmarkGenerateChunk 单次测量约 78.2 ms / 17.7 MB / 15,541 allocs，
+      尚未做稳定基线对比，不作为性能结论。
   - [ ] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
   - [ ] **阶段 5：接线与验证**：以配置开关切换生成器（保留旧生成器供回退）、
     与官方服务端同种子区块逐方块对比（区域文件解码）、benchmark 与文档，

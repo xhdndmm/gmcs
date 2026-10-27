@@ -134,6 +134,10 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := r.carveChunk(chunk, sampler, biomes); err != nil {
+		return nil, err
+	}
+	chunk.RecalculateHeights()
 	system, err := NewSurfaceSystem(sampler)
 	if err != nil {
 		return nil, err

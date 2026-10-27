@@ -29,7 +29,14 @@ type SurfaceBlock struct {
 }
 
 // IsAir 等价 BlockState.isAir()。
-func (b SurfaceBlock) IsAir() bool { return b.Name == "minecraft:air" }
+func (b SurfaceBlock) IsAir() bool {
+	switch b.Name {
+	case "minecraft:air", "minecraft:cave_air", "minecraft:void_air":
+		return true
+	default:
+		return false
+	}
+}
 
 // IsWater 等价 BlockState.is(Blocks.WATER)。
 func (b SurfaceBlock) IsWater() bool { return b.Name == "minecraft:water" }

@@ -147,3 +147,32 @@ func TestXoroshiroNextIntRange(t *testing.T) {
 		random.NextInt(0)
 	}()
 }
+
+func TestLegacyRandomMatchesJavaRandom(t *testing.T) {
+	random := newLegacyRandom(0)
+	if got, want := random.nextInt(), int32(-1155484576); got != want {
+		t.Fatalf("nextInt() = %d, want %d", got, want)
+	}
+	if got, want := random.nextInt(), int32(-723955400); got != want {
+		t.Fatalf("second nextInt() = %d, want %d", got, want)
+	}
+	random = newLegacyRandom(0)
+	if got, want := random.nextLong(), int64(-4962768465676381896); got != want {
+		t.Fatalf("nextLong() = %d, want %d", got, want)
+	}
+	for _, value := range []float64{float64(random.nextFloat()), random.nextDouble()} {
+		if value < 0 || value >= 1 {
+			t.Fatalf("random value %v outside [0,1)", value)
+		}
+	}
+}
+
+func TestWorldgenLargeFeatureSeed(t *testing.T) {
+	random := newWorldgenRandom()
+	if got, want := random.setLargeFeatureSeed(123456789, -17, 29), int64(-687970767463851510); got != want {
+		t.Fatalf("setLargeFeatureSeed() = %d, want %d", got, want)
+	}
+	if got, want := random.nextInt(), int32(1976988644); got != want {
+		t.Fatalf("nextInt after setLargeFeatureSeed() = %d, want %d", got, want)
+	}
+}

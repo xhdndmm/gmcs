@@ -8,8 +8,8 @@
 // Xoroshiro 随机源、ImprovedNoise/PerlinNoise/NormalNoise、密度函数图求值、
 // 区块级密度 lattice 采样、含水层逐方块判定（密度 + 水/岩浆/空气）、
 // 多噪声群系源，以及**表面规则**都已经实现并有测试；
-// Router.GenerateChunk 可以产出带方块注册名的完整区块。
-// 雕刻器、地物、结构尚未实现；服务器仍使用 internal/world 中的自研生成器。
+// Router.GenerateChunk 已接入 cave/canyon 雕刻器初版，但官方逐方块差异尚未收敛；
+// 地物与结构尚未实现，服务器仍使用 internal/world 中的自研生成器。
 //
 // 数据由 tools/genworldgen 从官方 jar 提取并压缩为 data/worldgen.json.gz
 // （overworld 的噪声设置/密度函数/噪声参数/群系气候）；overworld 的多噪声
@@ -53,6 +53,12 @@ type Data struct {
 	Noises map[string]NoiseParameters
 	// BiomeSources 是多噪声群系源的参数范围表（原始 JSON）。
 	BiomeSources map[string]json.RawMessage
+	// ConfiguredCarvers 是配置雕刻器定义，按注册名索引。
+	ConfiguredCarvers map[string]json.RawMessage
+	// BiomeCarvers 是群系的雕刻器引用列表，按群系注册名索引。
+	BiomeCarvers map[string]json.RawMessage
+	// CarverReplaceables 是原版 overworld_carver_replaceables 标签递归展开结果。
+	CarverReplaceables []string
 	// Biomes 是群系气候数据（只保留 temperature/downfall/has_precipitation/
 	// temperature_modifier，原始 JSON）。
 	Biomes map[string]json.RawMessage
@@ -92,13 +98,16 @@ func Load() (*Data, error) {
 
 // rawBundle 是数据文件的序列化结构（字段名与 tools/genworldgen 一致）。
 type rawBundle struct {
-	Version       string                     `json:"version"`
-	Source        string                     `json:"source"`
-	NoiseSettings map[string]json.RawMessage `json:"noise_settings"`
-	Functions     map[string]json.RawMessage `json:"density_functions"`
-	Noises        map[string]json.RawMessage `json:"noises"`
-	BiomeSources  map[string]json.RawMessage `json:"multi_noise_biome_sources"`
-	Biomes        map[string]json.RawMessage `json:"biomes"`
+	Version            string                     `json:"version"`
+	Source             string                     `json:"source"`
+	NoiseSettings      map[string]json.RawMessage `json:"noise_settings"`
+	Functions          map[string]json.RawMessage `json:"density_functions"`
+	Noises             map[string]json.RawMessage `json:"noises"`
+	BiomeSources       map[string]json.RawMessage `json:"multi_noise_biome_sources"`
+	ConfiguredCarvers  map[string]json.RawMessage `json:"configured_carvers"`
+	BiomeCarvers       map[string]json.RawMessage `json:"biome_carvers"`
+	CarverReplaceables []string                   `json:"carver_replaceables"`
+	Biomes             map[string]json.RawMessage `json:"biomes"`
 }
 
 // loadFrom 从文件系统读取并解析数据包。
@@ -121,12 +130,15 @@ func loadFrom(fs embed.FS, name string) (*Data, error) {
 		return nil, fmt.Errorf("解析 %s 失败：%w", name, err)
 	}
 	data := &Data{
-		Version:       raw.Version,
-		NoiseSettings: raw.NoiseSettings,
-		Functions:     raw.Functions,
-		Noises:        make(map[string]NoiseParameters, len(raw.Noises)),
-		BiomeSources:  raw.BiomeSources,
-		Biomes:        raw.Biomes,
+		Version:            raw.Version,
+		NoiseSettings:      raw.NoiseSettings,
+		Functions:          raw.Functions,
+		Noises:             make(map[string]NoiseParameters, len(raw.Noises)),
+		BiomeSources:       raw.BiomeSources,
+		ConfiguredCarvers:  raw.ConfiguredCarvers,
+		BiomeCarvers:       raw.BiomeCarvers,
+		CarverReplaceables: raw.CarverReplaceables,
+		Biomes:             raw.Biomes,
 	}
 	for name, payload := range raw.Noises {
 		var params struct {
@@ -150,6 +162,19 @@ func loadFrom(fs embed.FS, name string) (*Data, error) {
 // 必须显式报错：静默地把未知节点当成 0 计算会产出错误地形。
 func (d *Data) Validate() []Problem {
 	var problems []Problem
+	for biome, raw := range d.BiomeCarvers {
+		var names []string
+		if err := json.Unmarshal(raw, &names); err != nil {
+			problems = append(problems, Problem{Where: biome, Detail: fmt.Sprintf("解析群系雕刻器失败：%v", err)})
+			continue
+		}
+		for _, name := range names {
+			name = qualify(name)
+			if _, ok := d.ConfiguredCarvers[name]; !ok {
+				problems = append(problems, Problem{Where: biome, Detail: "缺少配置雕刻器 " + name})
+			}
+		}
+	}
 	noiseSettings, err := d.NoiseSetting("minecraft:overworld")
 	if err != nil {
 		return append(problems, Problem{Where: "minecraft:overworld", Detail: err.Error()})

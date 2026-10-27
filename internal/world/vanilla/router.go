@@ -5,6 +5,7 @@
 package vanilla
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 )
@@ -15,12 +16,16 @@ import (
 // 求值器。提供密度值层面的能力（final_density / Solid）；含水层的逐方块判定见
 // aquifer.go（ChunkSampler.Substance），表面规则、雕刻器与地物属于后续阶段。
 type Router struct {
-	setting   NoiseSetting
-	evaluator *Evaluator
-	nodes     map[string]*Node
-	keys      []string
-	biomes    *BiomeSource
-	named     map[string]*Node
+	setting            NoiseSetting
+	seed               int64
+	evaluator          *Evaluator
+	nodes              map[string]*Node
+	keys               []string
+	biomes             *BiomeSource
+	named              map[string]*Node
+	carvers            map[string]carverDefinition
+	biomeCarvers       map[string][]string
+	carverReplaceables map[string]struct{}
 }
 
 // NewRouter 解析指定噪声设置的全部路由项。
@@ -32,9 +37,27 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 	registry := NewNoiseRegistry(data, seed)
 	router := &Router{
 		setting:   setting,
+		seed:      seed,
 		evaluator: NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
 		nodes:     make(map[string]*Node, len(setting.Router)),
 		named:     make(map[string]*Node),
+	}
+	carvers, err := parseCarverDefinitions(data)
+	if err != nil {
+		return nil, err
+	}
+	router.carvers = carvers
+	router.biomeCarvers = make(map[string][]string, len(data.BiomeCarvers))
+	for biome, raw := range data.BiomeCarvers {
+		var names []string
+		if err := json.Unmarshal(raw, &names); err != nil {
+			return nil, fmt.Errorf("解析群系 %s 的雕刻器失败：%w", biome, err)
+		}
+		router.biomeCarvers[biome] = names
+	}
+	router.carverReplaceables = make(map[string]struct{}, len(data.CarverReplaceables))
+	for _, name := range data.CarverReplaceables {
+		router.carverReplaceables[name] = struct{}{}
 	}
 	for key := range setting.Router {
 		router.keys = append(router.keys, key)

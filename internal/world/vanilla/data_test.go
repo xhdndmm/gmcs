@@ -89,6 +89,86 @@ func TestNoiseParametersShape(t *testing.T) {
 	}
 }
 
+func TestOverworldCarverData(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, biome := range []string{"minecraft:plains", "minecraft:deep_ocean"} {
+		if _, ok := data.BiomeCarvers[biome]; !ok {
+			t.Fatalf("缺少群系 %s 的雕刻器引用", biome)
+		}
+	}
+	wantTypes := map[string]bool{"minecraft:cave": false, "minecraft:canyon": false}
+	for name, raw := range data.ConfiguredCarvers {
+		var configured struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &configured); err != nil {
+			t.Fatalf("解析配置雕刻器 %s 失败：%v", name, err)
+		}
+		if _, ok := wantTypes[configured.Type]; ok {
+			wantTypes[configured.Type] = true
+		}
+	}
+	for name, found := range wantTypes {
+		if !found {
+			t.Errorf("配置雕刻器中缺少类型 %s", name)
+		}
+	}
+	for _, problem := range data.Validate() {
+		if strings.Contains(problem.Detail, "配置雕刻器") {
+			t.Errorf("群系雕刻器引用无法解析：%s", problem)
+		}
+	}
+}
+
+func TestParseCarverDefinitions(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions, err := parseCarverDefinitions(data)
+	if err != nil {
+		t.Fatalf("解析 carver 配置失败：%v", err)
+	}
+	if len(definitions) != 4 {
+		t.Fatalf("解析到 %d 个 carver 配置，want 4", len(definitions))
+	}
+	cave := definitions["minecraft:cave"]
+	if cave.kind != "minecraft:cave" || cave.probability != 0.15 || cave.y.minimum.kind != "above_bottom" || cave.y.maximum.value != 180 {
+		t.Fatalf("cave 配置解析错误：%+v", cave)
+	}
+	canyon := definitions["minecraft:canyon"]
+	if canyon.kind != "minecraft:canyon" || canyon.probability != 0.01 || canyon.shape.widthSmoothness != 3 {
+		t.Fatalf("canyon 配置解析错误：%+v", canyon)
+	}
+	replaceable := make(map[string]bool, len(data.CarverReplaceables))
+	for _, name := range data.CarverReplaceables {
+		replaceable[name] = true
+	}
+	for _, name := range []string{"minecraft:stone", "minecraft:deepslate", "minecraft:grass_block", "minecraft:iron_ore", "minecraft:water"} {
+		if !replaceable[name] {
+			t.Errorf("carver replaceable 列表缺少 %s", name)
+		}
+	}
+	randomA := newLegacyRandom(9)
+	randomB := newLegacyRandom(9)
+	for _, provider := range []floatProvider{cave.yScale, canyon.shape.thickness} {
+		first := provider.sample(randomA)
+		second := provider.sample(randomB)
+		if first != second {
+			t.Fatalf("float provider 不确定：%v != %v", first, second)
+		}
+		if first < provider.minimum || first > provider.maximum {
+			t.Fatalf("float provider %v 超出 [%v,%v]", first, provider.minimum, provider.maximum)
+		}
+	}
+	if got := cave.y.sample(newLegacyRandom(12), NoiseSetting{MinY: -64, Height: 384}); got < -56 || got > 180 {
+		t.Fatalf("height provider 采样 %d 超出 [-56,180]", got)
+	}
+}
+
 // TestUnsupportedNodeTypeIsRejected 验证未知节点类型会让校验失败
 // （避免将来升级数据包后静默地把新节点当成 0）。
 func TestUnsupportedNodeTypeIsRejected(t *testing.T) {

@@ -121,6 +121,29 @@ func TestGenerateChunkTerrainLayers(t *testing.T) {
 	}
 }
 
+func TestCaveAndVoidAirAreAir(t *testing.T) {
+	for _, name := range []string{"minecraft:air", "minecraft:cave_air", "minecraft:void_air"} {
+		if !(SurfaceBlock{Name: name}).IsAir() {
+			t.Errorf("%s.IsAir() = false, want true", name)
+		}
+	}
+	for _, name := range []string{"minecraft:stone", "minecraft:water"} {
+		if (SurfaceBlock{Name: name}).IsAir() {
+			t.Errorf("%s.IsAir() = true, want false", name)
+		}
+	}
+}
+
+func TestCanyonVerticalRadiusProgress(t *testing.T) {
+	definition := carverDefinition{shape: canyonShape{verticalRadiusDefaultFactor: 1}}
+	start := canyonVerticalScale(definition, newLegacyRandom(1), 100, 0)
+	middle := canyonVerticalScale(definition, newLegacyRandom(1), 100, 50)
+	end := canyonVerticalScale(definition, newLegacyRandom(1), 100, 100)
+	if start != 0 || middle < 0.75 || middle >= 1 || end < 0.75 || end >= 1 {
+		t.Fatalf("canyon vertical scales = start:%v middle:%v end:%v", start, middle, end)
+	}
+}
+
 // TestGenerateChunkOcean 校验海洋区块：海平面处是水、没有草方块、海底不是空气。
 func TestGenerateChunkOcean(t *testing.T) {
 	router := mustRouter(t, 4321)
@@ -150,6 +173,28 @@ func TestGenerateChunkOcean(t *testing.T) {
 	}
 	if water == 0 {
 		t.Fatalf("海洋区块在海平面以下没有水")
+	}
+}
+
+func TestGenerateChunkCarvesPositiveDensityBlocks(t *testing.T) {
+	router := mustRouter(t, 4321)
+	chunk, err := router.GenerateChunk(0, 0)
+	if err != nil {
+		t.Fatalf("生成失败：%v", err)
+	}
+	sampler := router.NewChunkSampler(0, 0)
+	carvedAir := 0
+	for x := chunk.MinX; x < chunk.MinX+16; x++ {
+		for z := chunk.MinZ; z < chunk.MinZ+16; z++ {
+			for y := chunk.MinY; y < chunk.MinY+chunk.Height; y++ {
+				if sampler.Density(x, y, z) > 0 && chunk.BlockAt(x, y, z).IsAir() {
+					carvedAir++
+				}
+			}
+		}
+	}
+	if carvedAir == 0 {
+		t.Fatal("没有正密度方块被雕刻为空气，overworld cave carver 可能未执行")
 	}
 }
 
