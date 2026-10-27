@@ -1390,6 +1390,24 @@ BenchmarkBlendedNoiseValue-20        约 1.15 µs/op     0 B/op   0 allocs/op
 未验证：尚未与原版逐值对拍（缺少该节点的官方真值），将在阶段 5 用官方
 服务端同种子区块对比覆盖。
 
+### 3.40 区块级密度填充（本批，实测 + profile）
+
+新增 `ChunkSampler`：每个 `interpolated` 节点一次算出整块 lattice，逐方块只做
+索引取值 + 三线性插值（与逐点求值逐位相同，有测试保证）。
+
+```text
+BenchmarkChunkSamplerFillChunk-20     约 20.3 ms/区块   788 KB   107 allocs
+   （16×384×16 = 98304 格，含 lattice 预计算）
+```
+
+过程记录：第一版四种 cache 节点全是直通，实测 67 ms/区块。`-cpuprofile` 显示
+`PerlinNoise.Value` 累计占 35%、`evaluateSpline` 占 37%，原因是 `flat_cache`
+包着的 `shift_a`/`shift_b`/`offset` 被**逐方块**重算。按 `euu$g`/`euu$d` 的字节码
+把它们改成按 (x, z) 缓存后降到 20.3 ms（约 3.3×）。
+
+剩余开销主要是每区块的 lattice 计算（5 个 `interpolated` 节点 × 1225 点），
+以及 `cache_once`/`cache_all_in_cell` 仍是直通（语义待确认）。
+
 ## 4. 尚未覆盖- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家、100 玩家 × 5 分钟与 100 玩家 × 3 分钟
   loopback 压测（见 3.7、3.13、3.18），真实网络 / 真实客户端渲染仍待验证

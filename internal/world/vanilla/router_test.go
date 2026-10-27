@@ -202,3 +202,41 @@ func BenchmarkRouterSolidColumn(b *testing.B) {
 		_ = solid
 	}
 }
+
+// TestFlatCacheIsColumnConstant 校验 flat_cache 的子节点确实与 y 无关：
+// 按列缓存后，同一 (x, z) 在不同高度必须得到相同值（否则说明缓存语义用错，
+// 或数据里 flat_cache 包了三维函数）。
+func TestFlatCacheIsColumnConstant(t *testing.T) {
+	router := mustRouter(t, 5)
+	var flat *Node
+	var walk func(*Node)
+	walk = func(node *Node) {
+		if node == nil || flat != nil {
+			return
+		}
+		if node.Type == "flat_cache" {
+			flat = node
+			return
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	for _, key := range router.keys {
+		walk(router.nodes[key])
+	}
+	if flat == nil {
+		t.Fatal("overworld 路由树中没有 flat_cache 节点")
+	}
+	evaluator := router.Evaluator()
+	heights := []int{-64, -40, 0, 64, 200, 319}
+	for _, column := range [][2]int{{0, 0}, {5, -3}, {-100, 64}, {1023, -2047}} {
+		first := evaluator.Evaluate(flat, Context{X: column[0], Y: heights[0], Z: column[1]})
+		for _, y := range heights[1:] {
+			if got := evaluator.Evaluate(flat, Context{X: column[0], Y: y, Z: column[1]}); got != first {
+				t.Fatalf("flat_cache 在列 %v 的 y=%d 取值 = %v, 与 y=%d 的 %v 不同",
+					column, y, got, heights[0], first)
+			}
+		}
+	}
+}

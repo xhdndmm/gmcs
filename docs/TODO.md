@@ -1083,11 +1083,14 @@
       顺序一次性算出整块 lattice（x/z 各 5 点、y 49 点），之后逐方块只做索引取值 +
       三线性插值。`TestChunkSamplerMatchesPointwise` / `TestChunkSamplerAcrossCells`
       验证它与逐点求值**逐位相同**（含单元格边界）。
-    - [ ] **已知性能问题**：`BenchmarkChunkSamplerFillChunk` 实测 ≈ 67 ms/区块
-      （≈158 KB）。剩余瓶颈不在插值，而在 `cache_once`/`cache_all_in_cell`/
-      `flat_cache`/`cache_2d` 目前是**直通**实现：洞穴等昂贵噪声（
-      `weird_scaled_sampler` + NormalNoise）被逐方块重算。需要按 `euu$d..g`
-      的字节码实现按格/按列的缓存语义。
+    - [x] `flat_cache` / `cache_2d` 按原版语义实现为**按列缓存**（`euu$g` 用 (x,z) 索引数组、
+      `euu$d` 缓存最后一次 (x,z)），同一列 384 个方块只算一次；
+      `TestFlatCacheIsColumnConstant` 验证子节点确实与 y 无关。
+    - [ ] **已知性能问题**：`BenchmarkChunkSamplerFillChunk` 实测 ≈ 20 ms/区块
+      （≈788 KB）。按接列缓存后的 profile，剩余开销主要是每区块的 lattice 计算
+      （5 个 interpolated 节点 × 1225 点 × 子树求值，其中 `PerlinNoise.Value`
+      与 `evaluateSpline` 占大头），以及 `cache_once`/`cache_all_in_cell` 目前
+      仍是直通（其粒度绑在 `NoiseChunk` 的欧值格 `euu.F` 上，语义待字节码确认）。
     - [ ] 含水层（aquifer barrier/floodedness/spread/lava）、`sloped_cheese`
       压缩与逐方块 stone/deepslate/water/air 判定。
   - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、

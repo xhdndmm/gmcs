@@ -41,8 +41,16 @@ type Evaluator struct {
 	cells        map[cellKey][2][2][2]float64
 	grids        map[*Node]*denseGrid
 	finalDensity *Node
+	columns      map[columnKey]float64
 	cellWidth    int
 	cellHeight   int
+}
+
+// columnKey 是 flat_cache / cache_2d 的按列缓存键：节点 + (x, z)。
+type columnKey struct {
+	node *Node
+	x    int
+	z    int
 }
 
 // cornerKey 是 interpolated 角点缓存的键：节点 + 格点坐标。
@@ -79,6 +87,7 @@ func NewEvaluatorWithCells(noises *NoiseRegistry, cellWidth, cellHeight int) *Ev
 		blended:    make(map[*Node]*BlendedNoise),
 		corners:    make(map[cornerKey]float64),
 		cells:      make(map[cellKey][2][2][2]float64),
+		columns:    make(map[columnKey]float64),
 		grids:      make(map[*Node]*denseGrid),
 		cellWidth:  cellWidth,
 		cellHeight: cellHeight,
@@ -90,6 +99,7 @@ func NewEvaluatorWithCells(noises *NoiseRegistry, cellWidth, cellHeight int) *Ev
 func (e *Evaluator) ResetInterpolationCache() {
 	e.corners = make(map[cornerKey]float64)
 	e.cells = make(map[cellKey][2][2][2]float64)
+	e.columns = make(map[columnKey]float64)
 }
 
 // NoiseRegistry 返回求值器使用的噪声注册表。
@@ -172,9 +182,14 @@ func (e *Evaluator) Evaluate(node *Node, ctx Context) float64 {
 		return 1
 	case "blend_offset":
 		return 0
-	case "flat_cache", "cache_2d", "cache_once", "cache_all_in_cell":
-		// 缓存只影响重复求值的开销与「同一格内只算一次」的语义，
-		// 单点求值时等价于直接求值其子节点。
+	case "flat_cache", "cache_2d":
+		// 原版 euu$g(FlatCache) 用 (x, z) 索引的数组、euu$d(Cache2D) 缓存
+		// 最后一次 (x, z) 的结果，两者都是“每个 (x, z) 只算一次、与 y 无关”。
+		return e.columnValue(node, ctx)
+	case "cache_once", "cache_all_in_cell":
+		// 原版这两种缓存的粒度绑在 NoiseChunk 的插值格上（euu.F 计数器 /
+		// 格内数组）。当前按逐点直通处理：语义上等价于“每个方块算一次”，
+		// 但比原版多算了同格内其余方块——已在 docs/TODO.md 记为待优化项。
 		return e.child(node, 0, ctx)
 	case "spline":
 		if node.Spline == nil {
@@ -286,6 +301,18 @@ func (e *Evaluator) evaluateInterpolated(node *Node, ctx Context) float64 {
 			lerp(deltaX, corners[0][1][iz], corners[1][1][iz]))
 	}
 	return lerp(deltaZ, plane(0), plane(1))
+}
+
+// columnValue 取 flat_cache / cache_2d 子节点在某个 (x, z) 的值并缓存
+// （同一列的 384 个方块只算一次）。
+func (e *Evaluator) columnValue(node *Node, ctx Context) float64 {
+	key := columnKey{node: node, x: ctx.X, z: ctx.Z}
+	if value, ok := e.columns[key]; ok {
+		return value
+	}
+	value := e.child(node, 0, ctx)
+	e.columns[key] = value
+	return value
 }
 
 // cellCorners 返回某个单元格 8 个角点的值（按单元格缓存）。
