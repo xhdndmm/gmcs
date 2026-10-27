@@ -1092,7 +1092,15 @@
       与 `evaluateSpline` 占大头），以及 `cache_once`/`cache_all_in_cell` 目前
       仍是直通（其粒度绑在 `NoiseChunk` 的欧值格 `euu.F` 上，语义待字节码确认）。
     - [ ] 含水层（aquifer barrier/floodedness/spread/lava）、`sloped_cheese`
-      压缩与逐方块 stone/deepslate/water/air 判定。
+      压缩与逐方块 stone/deepslate/water/air 判定。**类映射已定位**（官方映射文件
+      丢失后按结构特征重新找到）：`euc` = `Aquifer` 接口
+      （`create(NoiseChunk, ChunkPos, NoiseRouter, PositionalRandomFactory, minY, height,
+      FluidPicker)`、`computeSubstance(FunctionContext, double) -> BlockState`、
+      `shouldScheduleFluidUpdate()`）；`euc$c` = `NoiseBasedAquifer`
+      （流体格网格 `FluidStatus[]` + `long[]` 键、压力插值、`getAquiferStatus`）；
+      `euc$1` = 禁用版；`euc$a` = `FluidPicker`；`euc$b` = `FluidStatus`。
+      下一步要读 `euc$c.a(euj$b, double)`（computeSubstance）与
+      `a(int,int)`（压力插值）、`b(int,int,int)`（取格状态）等约 15 个私有方法。
   - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、
     cave/canyon 雕刻器、矿物/树木/植被/lakes 地物与噪声群系源
     （`multi_noise_biome_source_parameter_list/overworld` 已随阶段 1 提取）；
