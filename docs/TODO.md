@@ -1101,6 +1101,14 @@
       `euc$1` = 禁用版；`euc$a` = `FluidPicker`；`euc$b` = `FluidStatus`。
       下一步要读 `euc$c.a(euj$b, double)`（computeSubstance）与
       `a(int,int)`（压力插值）、`b(int,int,int)`（取格状态）等约 15 个私有方法。
+      **已完成网格几何部分**（`aquifer.go`）：格尺寸
+      （区块 → 3×35×3 = 315 格）、索引公式
+      `((y-K)*sizeZ + (z-L))*sizeX + (x-J)`、压力函数
+      `1 - (toY-fromY)/25`、方块↔格坐标换算，均有单元测试
+      （`TestAquiferGridForChunk`/`TestAquiferGridIndex`/`TestAquiferPressure`/
+      `TestAquiferGridRoundTrip`）。**未完成**：`computeSubstance`、
+      `getFluidStatus`（`b(int,int,int)`，含 barrier 噪声与格缓存）、
+      全局 `FluidPicker`、以及与 `ChunkSampler` 的接线。
   - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、
     cave/canyon 雕刻器、矿物/树木/植被/lakes 地物与噪声群系源
     （`multi_noise_biome_source_parameter_list/overworld` 已随阶段 1 提取）；
