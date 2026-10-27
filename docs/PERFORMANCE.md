@@ -1408,6 +1408,29 @@ BenchmarkChunkSamplerFillChunk-20     约 20.3 ms/区块   788 KB   107 allocs
 剩余开销主要是每区块的 lattice 计算（5 个 `interpolated` 节点 × 1225 点），
 以及 `cache_once`/`cache_all_in_cell` 仍是直通（语义待确认）。
 
+### 3.41 含水层逐方块判定（本批，实测）
+
+`Aquifer.ComputeSubstance` 在密度采样之上补齐原版 `NoiseBasedAquifer` 的
+流体格判定（315 个格、最近 4 格压力插值、barrier 噪声），`ChunkSampler.Substance`
+把两者串起来。基准同机同种子（`-count=1`，16×384×16 = 98304 格）：
+
+```text
+BenchmarkChunkSamplerFillChunk-20    20.2 ms/区块    788 KB    109 allocs
+BenchmarkAquiferFillChunk-20         22.7 ms/区块   1295 KB    154 allocs
+```
+
+即含水层额外开销约 2.5 ms/区块（+12%），分配增加约 500 KB（未逐项归因，
+已知其中约 5 KB 是 315 项 `FluidStatus`/`bool`/`int64` 格缓存，
+其余主要落在求值器按列缓存随 `preliminary_surface_level` 扫描产生的条目上）。
+
+`-cpuprofile`（120 次迭代，总样本 3.09 s）里含水层自身的累计占比：
+`preliminarySurfaceLevel` + `preliminarySurfaceLevelRange` ≈ 6.8%
+（其中 `evaluateFindTopSurface` 6.8%，`newAquifer` 4.85%），
+`ComputeSubstance` ≈ 2.6%、`computeFluid` ≈ 2.3%。也就是说额外开销主要来自
+**每区块 121 列的 `find_top_surface` 扫描**：每列要用步长 8 从粗上界向下扫到
+首个密度 > 0 的高度。这与原版 `NoiseChunk.preliminarySurfaceLevel` 的按列缓存
+行为一致，目前没有 profile 证据支持引入额外近似（AGENTS §4.1）。
+
 ## 4. 尚未覆盖- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家、100 玩家 × 5 分钟与 100 玩家 × 3 分钟
   loopback 压测（见 3.7、3.13、3.18），真实网络 / 真实客户端渲染仍待验证

@@ -139,3 +139,22 @@ func seedFromHashOf(name string) (uint64, uint64) {
 	sum := md5.Sum([]byte(name))
 	return binary.BigEndian.Uint64(sum[0:8]), binary.BigEndian.Uint64(sum[8:16])
 }
+
+// At 等价原版 PositionalRandomFactory.at(int, int, int)：
+// 用 Mth.getSeed(x, y, z) 与工厂低位种子异或，高位种子保持不变。
+func (f positionalRandomFactory) At(x, y, z int) *Xoroshiro {
+	return newXoroshiroState(uint64(mthGetSeed(x, y, z))^f.lo, f.hi)
+}
+
+// mthGetSeed 等价原版 Mth.getSeed(int, int, int)：
+//
+//	l = (x * 3129871) ^ (z * 116129781) ^ y
+//	l = l * l * 42317861 + l * 11
+//	return l >> 16
+//
+// 注意乘法在 int 上完成后才扩展为 long（与原版字节码一致）。
+func mthGetSeed(x, y, z int) int64 {
+	value := int64(int32(x)*3129871) ^ (int64(z) * 116129781) ^ int64(y)
+	value = value*value*42317861 + value*11
+	return value >> 16
+}

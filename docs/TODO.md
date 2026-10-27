@@ -1091,9 +1091,8 @@
       （5 个 interpolated 节点 × 1225 点 × 子树求值，其中 `PerlinNoise.Value`
       与 `evaluateSpline` 占大头），以及 `cache_once`/`cache_all_in_cell` 目前
       仍是直通（其粒度绑在 `NoiseChunk` 的欧值格 `euu.F` 上，语义待字节码确认）。
-    - [ ] 含水层（aquifer barrier/floodedness/spread/lava）、`sloped_cheese`
-      压缩与逐方块 stone/deepslate/water/air 判定。**类映射已定位**（官方映射文件
-      丢失后按结构特征重新找到）：`euc` = `Aquifer` 接口
+    - [x] 含水层（aquifer barrier/floodedness/spread/lava）与逐方块
+      stone/water/lava/air 判定。**类映射**：`euc` = `Aquifer` 接口
       （`create(NoiseChunk, ChunkPos, NoiseRouter, PositionalRandomFactory, minY, height,
       FluidPicker)`、`computeSubstance(FunctionContext, double) -> BlockState`、
       `shouldScheduleFluidUpdate()`）；`euc$c` = `NoiseBasedAquifer`
@@ -1107,27 +1106,39 @@
       `1 - (toY-fromY)/25`、方块↔格坐标换算，均有单元测试
       （`TestAquiferGridForChunk`/`TestAquiferGridIndex`/`TestAquiferPressure`/
       `TestAquiferGridRoundTrip`）。
-      **已读出的算法规格（`euc$c`，下一步照此实现）**：
-      - `computeSubstance(ctx, density)`：`density > 0` → 清 `H` 并返回 `null`
-        （由调用方用 `default_block` 石头）；否则取 `picker.computeFluid(x,y,z)`，
-        `y > I`（该字段在构造函数末尾由初步地表高度算出）时直接返回该流体状态；
-        若该处是水，再按 `Blocks.WATER`/`Blocks.LAVA` 分支返回；
-        否则在 `(x,z)+{-5,-4}×{x,z}`、`y+{-1,0,1}` 的 2×3×2 邻域里按
-        “最近流体格”挑选，格位置由 `positionalRandomFactory.at(gx,gy,gz)` 的
-        `nextInt(10)/nextInt(9)/nextInt(10)` 决定并缓存进 `FluidStatus[]`/`long[]`，
-        距离用平方欧氏距离比较，最终用压力函数在相邻格之间插值液面。
-      - `getFluidStatus(x,y,z)`：遍历 `SURFACE_SAMPLING_OFFSETS`（静态字段 `O`），
-        用 `noiseChunk.getPreliminarySurfaceLevel(x,z)` 与 `+8` 偏移判断是否露出地表，
-        选最近的流体格后调 `computeFluidLevel`/`computeFluidState`。
-      - 液面选择用 `fluidLevelFloodedness` 噪声（`bgj.b(DDDDD)` = clampedMap）
-        与 `fluidLevelSpread` 噪声（`z` 字段）+ `bgj.a(DI)I`；
-        环境检查调用 `dye.a(depth, jaggedness, ctx)`（生物群系/地表判定）。
-      **剩余阻塞点（必须先确认语义，不能猜）**：
-      `esh.g`（空气/哨兵 fluid level 常量）、`dzs.K`/`dzs.a`（`Blocks.WATER` 等）、
-      `jw.c(int)`（`roundToward`?）、`bgj.a(DI)I`、`dye.a(...)`、
-      以及 `NoiseChunk.getPreliminarySurfaceLevel` 的入口签名。
-      **未实现**：`FluidPicker`（全局流体：海平面 + `lava` 噪声 + `barrier` 噪声）、
-      上述 `computeSubstance`/`getFluidStatus`、与 `ChunkSampler` 的接线。
+      **已完成（`aquifer.go`，逐条对照 `euc$c` 字节码）**：
+      - 全局流体选择器（`euv`/`eut.a(euv)`）：`lava = FluidStatus(-54, LAVA)`、
+        `water = FluidStatus(sea_level, default_fluid)`，
+        `y < min(-54, sea_level) ? lava : water`；IDE 调试分支不实现。
+      - 静态常量 `m = aquiferPressure(100, 144) = -0.76`。
+      - 表面采样偏移表 `O`（13 项，首项为 (0,0)）。
+      - `preliminarySurfaceLevel(x,z)`：取 4 格对齐的列，求
+        `preliminary_surface_level` 密度函数（`find_top_surface`，其返回值本身就是
+        方块高度）并 `floor`，按列缓存；另有四参数重载（步长 4、取最大值）。
+      - `computeFluid(x,y,z)`：保留状态缓存 `FluidStatus[]` + 位置缓存 `long[]`
+        （`BlockPos.asLong` 打包），格位置由
+        `positionalRandomFactory.at(gx,gy,gz)` 的 `nextInt(10)/nextInt(9)/nextInt(10)` 抖动。
+      - `computeSurfaceLevel`（深暗之域判定 + `fluid_level_floodedness` +
+        `Mth.lerp(Mth.inverseLerp(...))`）、`computeRandomizedFluidSurfaceLevel`
+        （`fluid_level_spread` + `Mth.roundToward(d, 3)`）、
+        `computeFluidType`（`|lava| > 0.3` 改为岩浆）。
+      - `ComputeSubstance(x,y,z,density)`：密度为正 → 默认方块；高于 `maxGridY` →
+        全局流体；否则在 2×3×2 邻域取最近 4 格、按 `aquiferPressure` 与
+        `calculatePressure`（barrier 噪声 + NaN 缓存）插值，并维护
+        `ShouldScheduleFluidUpdate()`。
+      - `ChunkSampler.Aquifer()` / `ChunkSampler.Substance(x,y,z)` 完成接线，
+        与 `Density` 共用同一个求值器（因此共享内插值网格）。
+      - 测试：`TestMthGetSeedMatchesVanilla`、`TestMthRoundTowardMatchesVanilla`
+        （参考值取自官方字节码反射调用）、`TestAquiferFluidPickerGlobal`、
+        `TestAquiferSamplingOffsets`、`TestAquiferPreliminarySurfaceLevel`、
+        `TestAquiferSubstanceFollowsDensity`、`TestAquiferSubstanceMarksFluidUpdate`、
+        `TestAquiferDeterministic`、`BenchmarkAquiferFillChunk`。
+      - **性能**：`BenchmarkAquiferFillChunk` ≈ 22.7 ms/区块
+        （纯密度填充 ≈ 20.2 ms），即含水层额外开销约 2.5 ms（12%）。
+      - **未验证**：尚未与官方服务端同种子逐方块对比（阶段 5），因此
+        “与原版完全一致”目前只在**算法/常量层面**成立，缺少端到端证据。
+      - **下一步**：表面规则（`surface_rule` 树）决定草/沙/深板岩/基岩等最终方块，
+        之后才能输出真正的方块 id。
   - [ ] **阶段 4：表面规则、雕刻器与地物**：overworld `surface_rule` 树、
     cave/canyon 雕刻器、矿物/树木/植被/lakes 地物与噪声群系源
     （`multi_noise_biome_source_parameter_list/overworld` 已随阶段 1 提取）；

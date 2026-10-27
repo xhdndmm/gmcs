@@ -493,3 +493,15 @@ func clampedLerp(delta, from, to float64) float64 {
 	}
 	return from + delta*(to-from)
 }
+
+// lerpUnclamped 是 Mth.lerp：不做夹取的线性插值。
+// 原版 NoiseBasedAquifer 用的是 Mth.b(DDDDD)，即
+// lerp(inverseLerp(value, from, to), newFrom, newTo)，delta 可能超出 [0,1]。
+func lerpUnclamped(delta, from, to float64) float64 {
+	return from + delta*(to-from)
+}
+
+// roundToward 是 Mth.roundToward(double, int)：向下取整到 interval 的倍数。
+func roundToward(value float64, interval int) int {
+	return int(math.Floor(value/float64(interval))) * interval
+}

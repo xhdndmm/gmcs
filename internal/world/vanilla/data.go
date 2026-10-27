@@ -4,10 +4,12 @@
 
 // Package vanilla 承载“按原版算法生成区块”的实现。
 //
-// 目前只完成第 1 阶段：原版世界生成数据（噪声设置、密度函数图、噪声参数、
-// 多噪声群系参数表）的提取、加载与结构校验（见 docs/TODO.md 的分阶段计划）。
-// 地形采样、含水层、表面规则、雕刻器、地物与结构尚未实现；当前服务器仍使用
-// internal/world 中的自研生成器。
+// 当前进度（见 docs/TODO.md 的分阶段计划）：原版世界生成数据提取与校验、
+// Xoroshiro 随机源、ImprovedNoise/PerlinNoise/NormalNoise、密度函数图求值、
+// 区块级密度 lattice 采样，以及**含水层逐方块判定**
+// （密度 + 水/岩浆/空气）均已实现并有测试。
+// 表面规则、雕刻器、地物、结构尚未实现；服务器仍使用 internal/world 中的
+// 自研生成器。
 //
 // 数据由 tools/genworldgen 从官方 jar 提取并压缩为 data/worldgen.json.gz
 // （只含 overworld 相关条目，压缩后约 7 KB），仓库里不保存原始数据包文件。
@@ -199,8 +201,33 @@ type NoiseSetting struct {
 	// 原版 NoiseChunk 用 4*size_horizontal 与 4*size_vertical。
 	CellWidth  int
 	CellHeight int
-	Router     map[string]json.RawMessage
-	Raw        json.RawMessage
+	// DefaultBlock / DefaultFluid 是密度为正与含水层判定为流体时使用的方块注册名
+	// （原版 NoiseGeneratorSettings.defaultBlock / defaultFluid）。
+	DefaultBlock string
+	DefaultFluid string
+	// AquifersEnabled 对应原版 NoiseGeneratorSettings.isAquifersEnabled()。
+	AquifersEnabled bool
+	Router          map[string]json.RawMessage
+	Raw             json.RawMessage
+}
+
+// blockStateName 从原版方块状态 JSON 中取出注册名。
+// 数据包里的写法可能是 {"Name": "minecraft:stone"} 或纯字符串。
+func blockStateName(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var name string
+	if err := json.Unmarshal(raw, &name); err == nil {
+		return name
+	}
+	var state struct {
+		Name string `json:"Name"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return ""
+	}
+	return state.Name
 }
 
 // NoiseSetting 返回指定名称的噪声设置。
@@ -218,6 +245,11 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 			SizeVertical   int `json:"size_vertical"`
 		} `json:"noise"`
 		Router map[string]json.RawMessage `json:"noise_router"`
+		// DefaultBlock / DefaultFluid 是方块状态 JSON，AquifersEnabled 决定是否
+		// 启用含水层（原版 NoiseGeneratorSettings 的对应字段）。
+		DefaultBlock    json.RawMessage `json:"default_block"`
+		DefaultFluid    json.RawMessage `json:"default_fluid"`
+		AquifersEnabled bool            `json:"aquifers_enabled"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return NoiseSetting{}, fmt.Errorf("解析噪声设置 %s 失败：%w", name, err)
@@ -235,14 +267,17 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 		sizeVertical = 1
 	}
 	return NoiseSetting{
-		Name:       name,
-		SeaLevel:   parsed.SeaLevel,
-		MinY:       parsed.Noise.MinY,
-		Height:     parsed.Noise.Height,
-		CellWidth:  4 * sizeHorizontal,
-		CellHeight: 4 * sizeVertical,
-		Router:     parsed.Router,
-		Raw:        raw,
+		Name:            name,
+		SeaLevel:        parsed.SeaLevel,
+		MinY:            parsed.Noise.MinY,
+		Height:          parsed.Noise.Height,
+		CellWidth:       4 * sizeHorizontal,
+		CellHeight:      4 * sizeVertical,
+		DefaultBlock:    blockStateName(parsed.DefaultBlock),
+		DefaultFluid:    blockStateName(parsed.DefaultFluid),
+		AquifersEnabled: parsed.AquifersEnabled,
+		Router:          parsed.Router,
+		Raw:             raw,
 	}, nil
 }
 

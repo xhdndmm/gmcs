@@ -56,11 +56,13 @@ func (g *denseGrid) sample(ctx Context) (float64, bool) {
 //
 // 同一 Router 上的 ChunkSampler 不可并发使用（共享底层求值器）。
 type ChunkSampler struct {
+	router    *Router
 	evaluator *Evaluator
 	setting   NoiseSetting
 	originX   int
 	originZ   int
 	interp    []*Node
+	aquifer   *Aquifer
 }
 
 // NewChunkSampler 为指定区块预计算 lattice。返回后该 sampler 即为可用的
@@ -68,6 +70,7 @@ type ChunkSampler struct {
 func (r *Router) NewChunkSampler(chunkX, chunkZ int) *ChunkSampler {
 	setting := r.setting
 	sampler := &ChunkSampler{
+		router:    r,
 		evaluator: r.evaluator,
 		setting:   setting,
 		originX:   chunkX * 16,
@@ -160,4 +163,24 @@ func (s *ChunkSampler) Density(x, y, z int) float64 {
 // Solid 返回该坐标是否实心（final_density > 0）。
 func (s *ChunkSampler) Solid(x, y, z int) bool {
 	return s.Density(x, y, z) > 0
+}
+
+// Aquifer 返回该区块的含水层判定器（首次调用时构造并缓存）。
+// 含水层与密度采样共享同一个求值器，因此必须先通过该 sampler 求密度，
+// 二者才会看到一致的内插值网格。
+func (s *ChunkSampler) Aquifer() *Aquifer {
+	if s.aquifer == nil {
+		s.aquifer = newAquifer(s)
+	}
+	return s.aquifer
+}
+
+// Substance 返回该方块在"密度 + 含水层"阶段的判定结果：
+//
+//   - defaultBlock 为 true 时表示密度为正，调用方应放置 noise_settings.default_block；
+//   - 否则 kind 为该处原本的流体类别（空气 / 水 / 岩浆）。
+//
+// 这仍不是最终方块：表面规则（草方块、深板岩、基岩等）属于后续阶段。
+func (s *ChunkSampler) Substance(x, y, z int) (kind fluidKind, defaultBlock bool) {
+	return s.Aquifer().ComputeSubstance(x, y, z, s.Density(x, y, z))
 }

@@ -12,8 +12,8 @@ import (
 // Router 是某个噪声设置（维度）的路由表求值入口。
 //
 // 它把 noise_router 里的每一项解析成密度函数图，并绑定一个按世界种子构造的
-// 求值器。当前提供的是**密度值**层面的能力（final_density / Solid）：
-// 含水层、表面规则、雕刻器与地物属于后续阶段。
+// 求值器。提供密度值层面的能力（final_density / Solid）；含水层的逐方块判定见
+// aquifer.go（ChunkSampler.Substance），表面规则、雕刻器与地物属于后续阶段。
 type Router struct {
 	setting   NoiseSetting
 	evaluator *Evaluator
@@ -78,8 +78,8 @@ func (r *Router) FinalDensity(ctx Context) float64 {
 }
 
 // Solid 报告该坐标是否实心：final_density > 0。
-// 注意：这与原版"是否生成石头"还不完全等价——低于海平面时原版还要经过含水层
-// 判定（水/空气），那部分属于阶段 3e 的后续工作。
+// 这还不是最终的方块判定：原版在密度不为正时还要经过含水层
+// （见 ChunkSampler.Substance），表面规则也会改写最终方块。
 func (r *Router) Solid(x, y, z int) bool {
 	return r.FinalDensity(Context{X: x, Y: y, Z: z}) > 0
 }
