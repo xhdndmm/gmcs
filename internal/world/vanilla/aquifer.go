@@ -4,6 +4,8 @@
 
 package vanilla
 
+import "math"
+
 // 本文件是原版含水层（net.minecraft.world.level.levelgen.NoiseBasedAquifer，
 // 1.21.11 混淆名 euc$c）的**网格几何**部分：格尺寸、索引换算与压力插值。
 // 这些数值与公式逐条取自 euc$c 的构造函数与静态辅助方法：
@@ -88,4 +90,89 @@ func aquiferGridToBlockXZ(cell, offset int) int {
 // aquiferGridToBlockY 由竖向格坐标与格内偏移得到方块高度（原版 c(int,int)）。
 func aquiferGridToBlockY(cell, offset int) int {
 	return cell*12 + offset
+}
+
+// fluidKind 是含水层关心的方块类别（原版用 BlockState 比较 Blocks.WATER/LAVA/AIR）。
+type fluidKind uint8
+
+const (
+	fluidAir fluidKind = iota
+	fluidWater
+	fluidLava
+)
+
+// fluidStatus 等价原版 Aquifer.FluidStatus（euc$b）：
+// 记录液面高度与流体类型，at(y) 在液面以下返回流体、否则返回空气。
+type fluidStatus struct {
+	level int
+	kind  fluidKind
+}
+
+// at 返回高度 y 处的流体类别（原版 FluidStatus.at：y < fluidLevel ? fluidType : AIR）。
+func (s fluidStatus) at(y int) fluidKind {
+	if y < s.level {
+		return s.kind
+	}
+	return fluidAir
+}
+
+// aquiferBlockPosKey 等价原版 BlockPos.asLong：
+// x 低 26 位 << 38 | z 低 26 位 << 12 | y 低 12 位，用于含水层位置缓存。
+func aquiferBlockPosKey(x, y, z int) int64 {
+	const mask26 = int64(0x3FFFFFF)
+	return (int64(x)&mask26)<<38 | (int64(z)&mask26)<<12 | (int64(y) & 0xFFF)
+}
+
+// aquiferBlockPosX/Y/Z 是 BlockPos.asLong 的逆运算（含符号扩展）。
+func aquiferBlockPosX(key int64) int { return int(key << 0 >> 38) }
+func aquiferBlockPosY(key int64) int { return int(key << 52 >> 52) }
+func aquiferBlockPosZ(key int64) int { return int(key << 26 >> 38) }
+
+// aquiferCalculatePressure 等价原版 NoiseBasedAquifer.calculatePressure：
+// 两个相邻流体格在高度 y 处的水/岩浆交界返回 2，液面相同返回 0，
+// 其余按液面差与竖直距离给出 [-2,2] 内的压力，再叠加 barrier 噪声。
+// barrier 只在需要时求值并缓存到 *cached（原版用 MutableDouble 承载 NaN 哨兵）。
+func aquiferCalculatePressure(y int, first, second fluidStatus, cached *float64, barrier func() float64) float64 {
+	kindA := first.at(y)
+	kindB := second.at(y)
+	if (kindA == fluidLava && kindB == fluidWater) || (kindA == fluidWater && kindB == fluidLava) {
+		return 2
+	}
+	levelDiff := first.level - second.level
+	if levelDiff < 0 {
+		levelDiff = -levelDiff
+	}
+	if levelDiff == 0 {
+		return 0
+	}
+	mid := 0.5 * float64(first.level+second.level)
+	distance := float64(y) + 0.5 - mid
+	half := float64(levelDiff) / 2
+	remaining := half - math.Abs(distance)
+	var slope float64
+	if distance > 0 {
+		value := 0 + remaining
+		if value > 0 {
+			slope = value / 1.5
+		} else {
+			slope = value / 2.5
+		}
+	} else {
+		value := 3 + remaining
+		if value > 0 {
+			slope = value / 3
+		} else {
+			slope = value / 10
+		}
+	}
+	var noiseValue float64
+	if slope < -2 || slope > 2 {
+		noiseValue = 0
+	} else if math.IsNaN(*cached) {
+		*cached = barrier()
+		noiseValue = *cached
+	} else {
+		noiseValue = *cached
+	}
+	return 2 * (noiseValue + slope)
 }

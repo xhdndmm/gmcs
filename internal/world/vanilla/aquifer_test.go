@@ -4,7 +4,10 @@
 
 package vanilla
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // TestAquiferGridForChunk 校验含水层格网格尺寸与索引布局。
 // 对 0..15 的区块、minY=-64、height=384，原版得到 3×35×3 = 315 个格。
@@ -108,5 +111,88 @@ func TestAquiferGridRoundTrip(t *testing.T) {
 				t.Fatalf("水平格往返失败：block=%d offset=%d got=%d", block, offset, got)
 			}
 		}
+	}
+}
+
+// TestFluidStatusAt 校验液面以下的判定（原版 FluidStatus.at）。
+func TestFluidStatusAt(t *testing.T) {
+	status := fluidStatus{level: 63, kind: fluidWater}
+	if got := status.at(62); got != fluidWater {
+		t.Fatalf("液面下 1 格 = %v, want water", got)
+	}
+	if got := status.at(63); got != fluidAir {
+		t.Fatalf("液面处 = %v, want air", got)
+	}
+	if got := status.at(200); got != fluidAir {
+		t.Fatalf("液面上方 = %v, want air", got)
+	}
+}
+
+// TestAquiferBlockPosKeyRoundTrip 校验 BlockPos.asLong 的打包/解包（含负坐标）。
+func TestAquiferBlockPosKeyRoundTrip(t *testing.T) {
+	for _, point := range [][3]int{
+		{0, 0, 0}, {1, -64, -1}, {-33554432, -2048, 33554431},
+		{12345, 320, -54321}, {-1, 0, 1},
+	} {
+		key := aquiferBlockPosKey(point[0], point[1], point[2])
+		if got := aquiferBlockPosX(key); got != point[0] {
+			t.Fatalf("x 往返失败：%d → %d", point[0], got)
+		}
+		if got := aquiferBlockPosY(key); got != point[1] {
+			t.Fatalf("y 往返失败：%d → %d", point[1], got)
+		}
+		if got := aquiferBlockPosZ(key); got != point[2] {
+			t.Fatalf("z 往返失败：%d → %d", point[2], got)
+		}
+	}
+}
+
+// TestAquiferCalculatePressure 校验压力函数的各分支。
+func TestAquiferCalculatePressure(t *testing.T) {
+	noop := func() float64 { return 0 }
+
+	// 水/岩浆在 y 处相邻 → 直接返回 2。
+	cached := math.NaN()
+	if got := aquiferCalculatePressure(10,
+		fluidStatus{level: 20, kind: fluidWater},
+		fluidStatus{level: 20, kind: fluidLava}, &cached, noop); got != 2 {
+		t.Fatalf("水岩浆交界 = %v, want 2", got)
+	}
+
+	// 液面相同 → 0。
+	cached = math.NaN()
+	if got := aquiferCalculatePressure(10,
+		fluidStatus{level: 20, kind: fluidWater},
+		fluidStatus{level: 20, kind: fluidWater}, &cached, noop); got != 0 {
+		t.Fatalf("液面相同 = %v, want 0", got)
+	}
+
+	// 上方分支且斜率超界 → barrier 噪声取 0，结果为 2*(0+3)。
+	cached = math.NaN()
+	if got := aquiferCalculatePressure(15,
+		fluidStatus{level: 20, kind: fluidWater},
+		fluidStatus{level: 0, kind: fluidWater}, &cached, noop); got != 6 {
+		t.Fatalf("上方分支 = %v, want 6", got)
+	}
+
+	// 下方分支：slope = -1.5/10 = -0.15，barrier = 0.25 → 2*(0.25-0.15) = 0.2。
+	calls := 0
+	cached = math.NaN()
+	barrier := func() float64 { calls++; return 0.25 }
+	got := aquiferCalculatePressure(-5,
+		fluidStatus{level: 20, kind: fluidWater},
+		fluidStatus{level: 0, kind: fluidWater}, &cached, barrier)
+	if diff := got - 0.2; diff > 1e-12 || diff < -1e-12 {
+		t.Fatalf("下方分支 = %v, want 0.2", got)
+	}
+	if calls != 1 {
+		t.Fatalf("barrier 调用次数 = %d, want 1", calls)
+	}
+	// 再算一次应当命中缓存，不再调用 barrier。
+	_ = aquiferCalculatePressure(-5,
+		fluidStatus{level: 20, kind: fluidWater},
+		fluidStatus{level: 0, kind: fluidWater}, &cached, barrier)
+	if calls != 1 {
+		t.Fatalf("barrier 调用次数 = %d, want 1（应当命中缓存）", calls)
 	}
 }
