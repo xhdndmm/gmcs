@@ -369,6 +369,7 @@ func (s *Server) tick() {
 	s.tickWorldTime(players)
 	s.tickWeather(players)
 	s.tickLightning(players)
+	s.tickPrecipitation(players)
 	s.tickFurnaces()
 	s.tickBrewingStands()
 	s.tickRedstone()

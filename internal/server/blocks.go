@@ -282,6 +282,12 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 		s.placeDoor(player, w, dim, use, name)
 		return
 	}
+	// 床：占两格（脚格在点击位置、头格在 facing 方向）。
+	if _, isBed := registry.PlacementBeds[name]; isBed {
+		_, _, _, bedYaw, _ := player.playerPosition()
+		s.placeBed(player, w, dim, placeX, placeY, placeZ, name, bedYaw)
+		return
+	}
 	existing := w.BlockAt(placeX, placeY, placeZ)
 	if existing != world.AirBlock && !isWaterState(existing) && !isLavaState(existing) {
 		return // 目标位置不可替换
@@ -330,6 +336,8 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	s.broadcastBlockUpdate(dim, placeX, placeY, placeZ, int32(state))
 	s.updateRedstoneAround(dim, placeX, placeY, placeZ)
 	s.updateFluidsAround(dim, placeX, placeY, placeZ)
+	// 台阶：新方块可能改变相邻台阶的 shape（原版 StairsBlock.updateShape）。
+	s.updateStairsAround(dim, w, placeX, placeY, placeZ)
 	if blockName, hasName := s.blockNameOf(state); hasName && blockName == hopperBlockName {
 		// 新放置的漏斗立即注册（无需等待周期扫描）。
 		s.registerHopper(dim, placeX, placeY, placeZ)

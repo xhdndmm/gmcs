@@ -785,6 +785,25 @@
     `TestRedstoneOpensFenceGate`；
     registry 侧 `TestPlacementTablesConsistent`（状态 ID 必须属于对应方块）。
 
+- [x] 台阶形状 / 床 / 告示牌批次：
+  - 台阶邻居形状（`StairsBlock.getStairsShape`）：前方（facing 方向）垂直
+    台阶 → outer_left/outer_right，后方 → inner_left/outer_right，否则
+    straight；`canTakeShape` 与 `Direction.getCounterClockWise` 按字节码顺序
+    判定；方块变化后在同层 3×3 邻域统一刷新（原版由 `updateShape` 逐邻居触发），
+    接入放置与破坏路径；
+  - 床（`BedBlock`）：占两格，脚格放在放置位置、头格在 facing 方向；两格都要
+    可替换且下方有支撑；破坏任一半同步移除另一半（掉落由被破坏格结算，
+    因此只掉 1 张床）；
+  - 告示牌（`StandingSignBlock` / `WallSignBlock`）：立式 rotation 按
+    `floor((180+yaw)*16/360+0.5) & 15`，点击侧面时改用
+    `*_wall_sign` / `*_wall_hanging_sign` 变体并按点击面取 facing；
+  - 生成器新增 `PlacementStairsShape`（58 个台阶 × 2 half × 4 facing × 5 shape）、
+    `PlacementBeds`（16 张床）、`PlacementStandingSigns`（rotation 0–15）、
+    `PlacementWallSigns`；`propStateBlocks` 增加 `minecraft:snow`
+    （供降落雪层按 layers 查状态）；
+  - 新增测试：`TestOrientPlacementStandingSign`、`TestOrientPlacementWallSign`、
+    `TestPlaceBedTwoHalves`、`TestRemoveBedPair`、`TestStairsShapeRefresh`。
+
 - [x] 天气系统批次：
   - 周期推进（对照 `ServerLevel.advanceWeatherCycle` 字节码）：
     `clearWeatherTime` 强制放晴倒计时；`rainTime`/`thunderTime` 递减到 0 时
@@ -795,8 +814,15 @@
     Game Event 1（开始）/2（停止）并补发一次强度；进入世界时额外同步一次
     当前天气（原版只在变化时广播，差异见 MIGRATION）；
   - `isRainingAt`（`Level.getPrecipitationAt`）：未下雨、维度不是主世界、
-    区块未加载、上方有阻挡方块时为否；天空暴露用“有碰撞形状”近似
-    `Heightmap.MOTION_BLOCKING`（水/火/草/花不阻挡降水）；
+    区块未加载、**群系不降水**（沙漠/热带草原/恶地）、上方有阻挡方块时为否；
+    天空暴露用“有碰撞形状”近似 `Heightmap.MOTION_BLOCKING`（水/火/草/花不阻挡降水）；
+  - **群系降水类型**（`world.PrecipitationAt`，对照原版 `Biome.hasPrecipitation` +
+    `coldEnoughToSnow`）：沙漠/热带草原/恶地为 NONE，积雪群系（雪原/积雪针叶林/
+    积雪沙滩）为 SNOW，其余为 RAIN；降雪群系在 `isRainingAt` 里同样算“在下”；
+    新增 `Server.tickPrecipitation`（对照 `ServerLevel.tickChunk → tickPrecipitation`）：
+    每名玩家每 tick 在视距内抽样 64 列，雪原群系把表层水冻成冰、或在最高方块
+    上方放一层雪；抽样率约为原版（每区块每 tick 一列）的 15%，因此积雪/结冰比
+    原版慢；
   - 联动：雨天滋润耕地（`FarmBlock.randomTick` 的 `isRainingAt(pos.above())`）、
     浇灭火焰（`FireBlock.tick`：自身 + 四个水平邻居任一降雨时按
     0.2 + age × 0.03 概率熄灭）、雨天阻止火焰蔓延、雨中清除玩家与生物着火
@@ -811,6 +837,9 @@
     `TestWeatherRainHydratesFarmland`、`TestWeatherExtinguishesFire`、
     `TestWeatherExtinguishesPlayerFire`、`TestWeatherCommand`、
     `TestWeatherSkyExposure`、`TestWeatherDisabled`；
+    群系降水：`TestPrecipitationAtBiomes`、`TestTryPrecipitationSnow`、
+    `TestTryPrecipitationFreezesWater`、`TestTryPrecipitationDesertNoSnow`、
+    `TestIsRainingAtRespectsBiomePrecipitation`；
   - 新增基准 `BenchmarkWeatherTick`（稳态）与 `BenchmarkWeatherTickTransition`
     （状态翻转 + 3 个包编码），实测见 [PERFORMANCE.md](PERFORMANCE.md) 3.35。
 
@@ -1278,12 +1307,18 @@
   极少见掉落，爆炸仍无掉落；
   无出生点保护（mayInteract）与冒险模式 mayBuild；
   放置仅支持普通方块物品（带数据组件的物品不支持）；
-  放置形态（台阶/半砖/柱状/朝向方块/活板门/梯子/火把/拉杆/按钮/门/栅栏门）
-  已按原版实现（见上“方块放置形态批次”），但仍存差异：台阶不做邻居形状更新
-  （shape 恒为 straight，拐角台阶客户端显示为直台阶）、含水状态一律 false；
+  放置形态（台阶/半砖/柱状/朝向方块/活板门/梯子/火把/拉杆/按钮/门/栅栏门/
+  告示牌/床）已按原版实现（见上“方块放置形态批次”），但仍存差异：
+  台阶的邻居形状更新已实现（straight/inner_left/inner_right/outer_left/
+  outer_right，按 `StairsBlock.getStairsShape` 在 3×3 同层邻域刷新），
+  含水状态一律 false；水管/含水台阶的流体联动未实现；
   门的铰链已按原版 `DoorBlock.getHinge` 实现（邻居坚固面/相邻下半格门 + 点击
   位置回退），放置位置（或上方一格）有红石信号时直接以 open=true、powered=true
-  放置；床/告示牌的放置朝向尚未实现；
+  放置；床占两格（脚格=放置位置、头格在 facing 方向），破坏任一半同步移除
+  另一半、只掉落一张床；告示牌立式按 yaw 取 rotation（0–15）、贴墙时改用
+  `*_wall_sign` / `*_wall_hanging_sign` 变体并按点击面取 facing；
+  悬挂告示牌的 attached 恒为 false（未实现“连在上方方块”的模型）；
+  床的 occupied 恒为 false（未实现睡觉/设置重生点）；
   可开合方块已响应红石信号（门/活板门/栅栏门，铁门只能由红石开合）
 
 - 容器限制：窗口距离已按原版实现（眼睛位置到方块碰撞盒 < 方块交互距离属性
@@ -1337,11 +1372,12 @@
   可可豆（需丛林原木面）未实现；种植只接受“目标位置为空气”
   （原版可替换方块如草/雪层未覆盖）
 
-- 天气限制（见上“天气系统批次”）：无群系降水类型与温度建模（主世界所有群系按
-  降雨处理，没有雪原降雪/沙漠无雨）；闪电已实现（雷暴按原版概率落雷、点火、
+- 天气限制（见上“天气系统批次”）：群系降水类型已实现（沙漠/热带草原/恶地
+  不下雨、积雪群系降雪并缓慢积雪/结冰，抽样率约为原版 15%，无温度随高度
+  变化的修正）；闪电已实现（雷暴按原版概率落雷、点火、
   对范围内实体造成 5 点伤害并点燃 8 秒），但未实现避雷针引导、闪电使苦力怕
   充能、雷击不破坏方块（原版也不破坏）、不把猪变僵尸猪灵；
-  炼药锅不积水、雪层不堆积；天空暴露用
+  炼药锅不积水、雪层不随随机刻增厚（只会在空位放 1 层）；天空暴露用
   “有碰撞形状的方块”近似 `Heightmap.MOTION_BLOCKING`；无游戏规则
   `doWeatherCycle`（始终推进，需关闭时只能改代码/命令）；`/weather` 的
   duration 按整数秒解析（原版 TimeArgument 支持 `1d`/`30s` 等后缀）

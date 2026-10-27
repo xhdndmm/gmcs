@@ -282,14 +282,18 @@ func (s *Server) weatherJoinPackets() [][]byte {
 }
 
 // isRainingAt 报告指定方块位置是否会下雨（原版 Level.isRainingAt →
-// getPrecipitationAt：未下雨 / 看不到天空 / 上方有阻挡方块时为否）。
-// 群系降水类型未建模，主世界一律按下雨处理。
+// getPrecipitationAt：群系不降水 / 未下雨 / 看不到天空 / 上方有阻挡方块时为否）。
+// 降雪群系同样返回 true（原版只判断降水类型不是 NONE，雪也算“在下”）。
 func (s *Server) isRainingAt(dim world.Dimension, x, y, z int) bool {
 	if dim != world.DimensionOverworld || !s.isRaining() {
 		return false
 	}
 	w := s.worldFor(dim)
 	if w == nil || !w.ChunkLoaded(x, z) {
+		return false
+	}
+	// 沙漠/热带草原/恶地等群系 has_precipitation=false，永远不下雨。
+	if biome, ok := w.BiomeAt(x, z); ok && world.PrecipitationAt(biome) == world.PrecipitationNone {
 		return false
 	}
 	return skyExposedAt(w, x, y, z)

@@ -1477,6 +1477,21 @@ BenchmarkGenerateChunk-20    38.3 ms/区块    7.99 MB/op    10517 allocs/op
 
 剩余残差（每区块 0~450 个方块）集中在洞穴/含水层边界与表面规则边缘，尚未逐个定位。
 
+### 3.44 群系降水抽样（本批，实测）
+
+`Server.tickPrecipitation` 每 tick 固定抽样 64 个方块列（跨玩家轮转，与在线
+人数无关），只在降雨时工作：
+
+```text
+BenchmarkTickPrecipitationClear-20        2.75 ns/op     0 B/op   0 allocs/op   （晴天早退）
+BenchmarkTryPrecipitationNoSnow-20       51.14 ns/op     0 B/op   0 allocs/op   （单列：不降水的群系）
+```
+
+降雨时每 tick 的固定开销约 64 × 51 ns ≈ 3.3 µs（全部落在不降水的群系；
+落雪/结冰的单列开销更高，包含一次 SetBlock 与广播，但每列最多堆积到 8 层
+后不再变化）。与原版“每区块每 tick 一列（视距 10 约 441 列/tick）”相比，
+抽样量为 1/7，因此积雪/结冰更慢——这是刻意的性能取舍，不是遗漏。
+
 ## 4. 尚未覆盖- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
   ——已用 `cmd/gmcsload` 做单机 50 玩家、100 玩家 × 5 分钟与 100 玩家 × 3 分钟
   loopback 压测（见 3.7、3.13、3.18），真实网络 / 真实客户端渲染仍待验证

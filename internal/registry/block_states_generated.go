@@ -2538,6 +2538,16 @@ var BlockPropertyStates = map[string][]PropertyState{
 		{ID: 20558, Props: map[string]string{"facing": "east", "lit": "true"}},
 		{ID: 20559, Props: map[string]string{"facing": "east", "lit": "false"}},
 	},
+	"minecraft:snow": {
+		{ID: 6718, Props: map[string]string{"layers": "1"}},
+		{ID: 6719, Props: map[string]string{"layers": "2"}},
+		{ID: 6720, Props: map[string]string{"layers": "3"}},
+		{ID: 6721, Props: map[string]string{"layers": "4"}},
+		{ID: 6722, Props: map[string]string{"layers": "5"}},
+		{ID: 6723, Props: map[string]string{"layers": "6"}},
+		{ID: 6724, Props: map[string]string{"layers": "7"}},
+		{ID: 6725, Props: map[string]string{"layers": "8"}},
+	},
 	"minecraft:soul_fire": {
 		{ID: 3686, Props: map[string]string{}},
 	},

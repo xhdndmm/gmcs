@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -89,6 +90,11 @@ var placementFacingValues = []string{"down", "up", "north", "south", "west", "ea
 // placementHorizontalFacingValues 是水平四向的取值（north/south/west/east）。
 var placementHorizontalFacingValues = []string{"north", "south", "west", "east"}
 
+// placementStairsShapeValues 是台阶 shape 属性的取值，顺序与原版
+// BlockState.Shape 枚举一致（0=straight、1=inner_left、2=inner_right、
+// 3=outer_left、4=outer_right）。
+var placementStairsShapeValues = []string{"straight", "inner_left", "inner_right", "outer_left", "outer_right"}
+
 // writePlacementStates 生成放置形态状态表。
 func writePlacementStates(outDir, version string, blocks map[string]blockShapeData) error {
 	stairs := make(map[string][2][4]uint16)
@@ -109,6 +115,14 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 	ladders := make(map[string][4]uint16)
 	// leaves：树叶方块 → 玩家放置状态（persistent=true、distance=7、waterlogged=false）。
 	leaves := make(map[string]uint16)
+	// stairsShapes：台阶方块 → [half][facing][shape]，用于邻居形状更新。
+	stairsShapes := make(map[string][2][4][5]uint16)
+	// beds：床 → [facing][part]（part：0=foot、1=head，occupied=false）。
+	beds := make(map[string][4][2]uint16)
+	// standingSigns：立式告示牌 → [rotation]（0–15）。
+	standingSigns := make(map[string][16]uint16)
+	// wallSigns：墙式告示牌 → [facing]。
+	wallSigns := make(map[string][4]uint16)
 
 	names := make([]string, 0, len(blocks))
 	for name := range blocks {
@@ -134,18 +148,71 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 			leaves[name] = id
 		case strings.HasSuffix(name, "_stairs"):
 			var table [2][4]uint16
+			var shapeTable [2][4][5]uint16
 			for half, halfValue := range []string{"bottom", "top"} {
 				for facingIndex, facingValue := range placementHorizontalFacingValues {
+					for shapeIndex, shapeValue := range placementStairsShapeValues {
+						id, err := placementStateID(data, map[string]string{
+							"half": halfValue, "facing": facingValue, "shape": shapeValue,
+						})
+						if err != nil {
+							return fmt.Errorf("%s: %w", name, err)
+						}
+						shapeTable[half][facingIndex][shapeIndex] = id
+					}
+					table[half][facingIndex] = shapeTable[half][facingIndex][0]
+				}
+			}
+			stairs[name] = table
+			stairsShapes[name] = shapeTable
+		case strings.HasSuffix(name, "_bed"):
+			// 床：facing = 玩家水平朝向，part 由放置逻辑决定（foot/head）。
+			var table [4][2]uint16
+			for facingIndex, facingValue := range placementHorizontalFacingValues {
+				for partIndex, partValue := range []string{"foot", "head"} {
 					id, err := placementStateID(data, map[string]string{
-						"half": halfValue, "facing": facingValue, "shape": "straight",
+						"facing": facingValue, "part": partValue, "occupied": "false",
 					})
 					if err != nil {
 						return fmt.Errorf("%s: %w", name, err)
 					}
-					table[half][facingIndex] = id
+					table[facingIndex][partIndex] = id
 				}
 			}
-			stairs[name] = table
+			beds[name] = table
+		case strings.HasSuffix(name, "_wall_hanging_sign"), strings.HasSuffix(name, "_wall_sign"):
+			// 墙式告示牌：facing = 被贴附面的方向。
+			var table [4]uint16
+			for facingIndex, facingValue := range placementHorizontalFacingValues {
+				id, err := placementStateID(data, map[string]string{"facing": facingValue})
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				table[facingIndex] = id
+			}
+			wallSigns[name] = table
+		case strings.HasSuffix(name, "_hanging_sign"), strings.HasSuffix(name, "_sign"):
+			// 立式告示牌：rotation 0–15（每 22.5° 一档）。
+			extraProps := map[string]string{}
+			if _, ok := data.states[0].props["attached"]; ok {
+				// 悬挂告示牌的 attached 表示是否连在上方方块上，
+				// 独立放置时恒为 false。
+				extraProps["attached"] = "false"
+			}
+			var table [16]uint16
+			for rotation := 0; rotation < 16; rotation++ {
+				props := make(map[string]string, len(extraProps)+1)
+				for k, v := range extraProps {
+					props[k] = v
+				}
+				props["rotation"] = strconv.Itoa(rotation)
+				id, err := placementStateID(data, props)
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+				table[rotation] = id
+			}
+			standingSigns[name] = table
 		case strings.HasSuffix(name, "_slab"):
 			var table [3]uint16
 			for i, typeValue := range []string{"bottom", "top", "double"} {
@@ -365,6 +432,10 @@ func writePlacementStates(outDir, version string, blocks map[string]blockShapeDa
 	writeSimpleUint16Table(&b, "LeafPersistentStates",
 		"树叶的玩家放置状态", "persistent=true、distance=7、waterlogged=false（原版放置不衰减）",
 		leaves)
+	writeStairsShapeTable(&b, stairsShapes)
+	writeBedsTable(&b, beds)
+	writeStandingSignsTable(&b, standingSigns)
+	writeWallSignsTable(&b, wallSigns)
 
 	source := []byte(b.String())
 	formatted, err := format.Source(source)
@@ -591,4 +662,75 @@ func sortedNames[T any](m map[string]T) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// writeStairsShapeTable 生成台阶的“全部 shape”状态表，供邻居形状更新使用。
+func writeStairsShapeTable(b *strings.Builder, table map[string][2][4][5]uint16) {
+	b.WriteString("// PlacementStairsShape 是台阶的完整形态状态：map[方块名][half][facing][shape]。\n")
+	b.WriteString("// half：0=bottom、1=top；facing：0=north、1=south、2=west、3=east；\n")
+	b.WriteString("// shape：0=straight、1=inner_left、2=inner_right、3=outer_left、4=outer_right。\n")
+	b.WriteString("var PlacementStairsShape = map[string][2][4][5]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {\n", name)
+		for half := 0; half < 2; half++ {
+			b.WriteString("\t\t{")
+			for facing := 0; facing < 4; facing++ {
+				if facing > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(b, "{%d, %d, %d, %d, %d}",
+					states[half][facing][0], states[half][facing][1], states[half][facing][2],
+					states[half][facing][3], states[half][facing][4])
+			}
+			b.WriteString("},\n")
+		}
+		b.WriteString("\t},\n")
+	}
+	b.WriteString("}\n\n")
+}
+
+// writeBedsTable 生成床的放置状态表。
+func writeBedsTable(b *strings.Builder, table map[string][4][2]uint16) {
+	b.WriteString("// PlacementBeds 是床的放置状态：map[方块名][facing][part]。\n")
+	b.WriteString("// facing：0=north、1=south、2=west、3=east；part：0=foot、1=head；occupied=false。\n")
+	b.WriteString("var PlacementBeds = map[string][4][2]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {{%d, %d}, {%d, %d}, {%d, %d}, {%d, %d}},\n", name,
+			states[0][0], states[0][1], states[1][0], states[1][1],
+			states[2][0], states[2][1], states[3][0], states[3][1])
+	}
+	b.WriteString("}\n\n")
+}
+
+// writeStandingSignsTable 生成立式告示牌的放置状态表（rotation 0–15）。
+func writeStandingSignsTable(b *strings.Builder, table map[string][16]uint16) {
+	b.WriteString("// PlacementStandingSigns 是立式告示牌的放置状态：map[方块名][rotation]。\n")
+	b.WriteString("// rotation：0–15，每档 22.5°（0 朝南，顺时针递增）。\n")
+	b.WriteString("var PlacementStandingSigns = map[string][16]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {", name)
+		for i := 0; i < 16; i++ {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%d", states[i])
+		}
+		b.WriteString("},\n")
+	}
+	b.WriteString("}\n\n")
+}
+
+// writeWallSignsTable 生成墙式告示牌的放置状态表。
+func writeWallSignsTable(b *strings.Builder, table map[string][4]uint16) {
+	b.WriteString("// PlacementWallSigns 是墙式告示牌的放置状态：map[方块名][facing]。\n")
+	b.WriteString("// facing：0=north、1=south、2=west、3=east（被贴附面的方向）。\n")
+	b.WriteString("var PlacementWallSigns = map[string][4]uint16{\n")
+	for _, name := range sortedNames(table) {
+		states := table[name]
+		fmt.Fprintf(b, "\t%q: {%d, %d, %d, %d},\n", name, states[0], states[1], states[2], states[3])
+	}
+	b.WriteString("}\n\n")
 }

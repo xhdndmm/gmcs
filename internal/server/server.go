@@ -175,6 +175,10 @@ type Server struct {
 	lightningEnabled      bool
 	lightningBolts        map[int32]*lightningBolt
 
+	// precipitationCursor 是群系降水抽样的玩家轮转游标（只由主 tick 线程访问，
+	// 见 precipitation.go）。
+	precipitationCursor int
+
 	// 漏斗传输：hoppers 是已注册的漏斗运行时状态（受 hopperMu 保护）；
 	// containerTransferMu 串行化“从方块实体载入容器内容”与漏斗搬运事务。
 	hopperMu            sync.Mutex

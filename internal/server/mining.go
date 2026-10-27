@@ -269,6 +269,8 @@ func (s *Server) removeBlockAndBroadcast(dim world.Dimension, w *world.World, x,
 	s.broadcastBlockUpdate(dim, x, y, z, int32(world.AirBlock))
 	s.updateRedstoneAround(dim, x, y, z)
 	s.updateFluidsAround(dim, x, y, z)
+	// 台阶：邻居变化后重算形状（原版 StairsBlock.updateShape）。
+	s.updateStairsAround(dim, w, x, y, z)
 	// 树叶衰减：失去原木支撑的自然树叶掉落消失（原版 LeavesBlock 的 distance）。
 	s.decayLeavesAround(dim, w, x, y, z, current)
 	if current == world.ObsidianBlock {
@@ -304,6 +306,8 @@ func (s *Server) finishBreakBlock(player *session, held item.Stack, dim world.Di
 	s.removeDoublePlantPair(w, dim, x, y, z, state)
 	// 门：同步移除另一半（掉落由被破坏格的战利品表结算）。
 	s.removeDoorPair(w, dim, x, y, z, state)
+	// 床：同步移除另一半。
+	s.removeBedPair(w, dim, x, y, z, state)
 	return true, false
 }
 

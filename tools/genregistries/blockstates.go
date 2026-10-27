@@ -79,6 +79,7 @@ var propStateBlocks = []string{
 	"minecraft:repeater",
 	"minecraft:rose_bush",
 	"minecraft:smoker",
+	"minecraft:snow",
 	"minecraft:soul_fire",
 	"minecraft:spruce_button",
 	"minecraft:spruce_pressure_plate",

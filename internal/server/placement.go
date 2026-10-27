@@ -158,6 +158,10 @@ func orientPlacement(name string, state uint16, yaw, pitch float32, use protocol
 		facing := horizontalFacingIndex(yawToFacing(yaw))
 		return table[placementHalfIndex(use)][facing], name, true
 	}
+	if _, ok := registry.PlacementStandingSigns[name]; ok {
+		// 告示牌：贴墙时改用墙式变体（见 placement_extra.go）。
+		return signPlacement(name, yaw, use)
+	}
 	if table, ok := registry.PlacementSlabs[name]; ok {
 		return table[placementHalfIndex(use)], name, true
 	}
