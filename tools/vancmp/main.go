@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -186,6 +187,11 @@ func main() {
 		os.Exit(1)
 	}
 	setting := router.Setting()
+	if setting.Height <= 0 || setting.Height > math.MaxInt/(16*16) {
+		fmt.Fprintf(os.Stderr, "无效世界高度: %d\n", setting.Height)
+		os.Exit(1)
+	}
+	blocksPerChunk := 16 * 16 * setting.Height
 
 	if *density && *column == "" {
 		total, bad := 0, 0
@@ -219,9 +225,9 @@ func main() {
 					}
 				}
 			}
-			fmt.Printf("chunk (%d,%d): 密度符号不一致 %d / %d\n", pos.x, pos.z, badChunk, 16*16*setting.Height)
+			fmt.Printf("chunk (%d,%d): 密度符号不一致 %d / %d\n", pos.x, pos.z, badChunk, blocksPerChunk)
 			if *export != "" && i == 0 {
-				bits := make([]byte, (16*16*setting.Height+7)/8)
+				bits := make([]byte, (blocksPerChunk+7)/8)
 				for y := setting.MinY; y < setting.MinY+setting.Height; y++ {
 					for z := 0; z < 16; z++ {
 						for x := 0; x < 16; x++ {
