@@ -192,6 +192,11 @@ func main() {
 		os.Exit(1)
 	}
 	blocksPerChunk := 16 * 16 * setting.Height
+	if blocksPerChunk > math.MaxInt-7 {
+		fmt.Fprintf(os.Stderr, "区块体素数量过大: %d\n", blocksPerChunk)
+		os.Exit(1)
+	}
+	bitsLen := (blocksPerChunk + 7) / 8
 
 	if *density && *column == "" {
 		total, bad := 0, 0
@@ -227,7 +232,7 @@ func main() {
 			}
 			fmt.Printf("chunk (%d,%d): 密度符号不一致 %d / %d\n", pos.x, pos.z, badChunk, blocksPerChunk)
 			if *export != "" && i == 0 {
-				bits := make([]byte, (blocksPerChunk+7)/8)
+				bits := make([]byte, bitsLen)
 				for y := setting.MinY; y < setting.MinY+setting.Height; y++ {
 					for z := 0; z < 16; z++ {
 						for x := 0; x < 16; x++ {
