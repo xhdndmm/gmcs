@@ -4,6 +4,11 @@
 
 package vanilla
 
+import (
+	"fmt"
+	"math"
+)
+
 // denseGrid 是某个 interpolated 节点在一个区块范围内的密集 lattice。
 // 相邻格点间距为 (cellWidth, cellHeight, cellWidth)，与点采样使用同一套坐标，
 // 因此插值结果与逐点求值逐位一致（见 TestChunkSamplerMatchesPointwise）。
@@ -119,9 +124,19 @@ func (r *Router) NewChunkSampler(chunkX, chunkZ int) *ChunkSampler {
 func (s *ChunkSampler) buildGrid(node *Node) *denseGrid {
 	cellWidth := s.setting.CellWidth
 	cellHeight := s.setting.CellHeight
+	if cellWidth <= 0 || cellHeight <= 0 {
+		panic(fmt.Sprintf("invalid cell size: width=%d height=%d", cellWidth, cellHeight))
+	}
 	countX := 16/cellWidth + 1
 	countZ := 16/cellWidth + 1
 	countY := s.setting.Height/cellHeight + 1
+	if countX <= 0 || countY <= 0 || countZ <= 0 {
+		panic(fmt.Sprintf("invalid grid size: countX=%d countY=%d countZ=%d", countX, countY, countZ))
+	}
+	if countX > math.MaxInt/countY || countX*countY > math.MaxInt/countZ {
+		panic(fmt.Sprintf("grid allocation size overflows int: countX=%d countY=%d countZ=%d", countX, countY, countZ))
+	}
+	size := countX * countY * countZ
 	grid := &denseGrid{
 		originX:    s.originX,
 		originY:    s.setting.MinY,
@@ -131,7 +146,7 @@ func (s *ChunkSampler) buildGrid(node *Node) *denseGrid {
 		countZ:     countZ,
 		cellWidth:  cellWidth,
 		cellHeight: cellHeight,
-		data:       make([]float64, countX*countY*countZ),
+		data:       make([]float64, size),
 	}
 	for iy := 0; iy < countY; iy++ {
 		y := s.setting.MinY + iy*cellHeight
