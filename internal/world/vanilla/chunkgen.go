@@ -4,7 +4,10 @@
 
 package vanilla
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 // GeneratedChunk 是按原版算法生成出来的区块：每个方块保存注册名与方块状态属性。
 //
@@ -24,6 +27,11 @@ type GeneratedChunk struct {
 
 // NewGeneratedChunk 创建一个全空气的区块。
 func NewGeneratedChunk(chunkX, chunkZ, minY, height int) *GeneratedChunk {
+	const chunkArea = 16 * 16
+	if height <= 0 || height > math.MaxInt/chunkArea {
+		panic(fmt.Sprintf("invalid chunk height: %d", height))
+	}
+	blockCount := height * chunkArea
 	chunk := &GeneratedChunk{
 		ChunkX: chunkX,
 		ChunkZ: chunkZ,
@@ -31,7 +39,7 @@ func NewGeneratedChunk(chunkX, chunkZ, minY, height int) *GeneratedChunk {
 		MinZ:   chunkZ * 16,
 		MinY:   minY,
 		Height: height,
-		blocks: make([]SurfaceBlock, 16*height*16),
+		blocks: make([]SurfaceBlock, blockCount),
 	}
 	for i := range chunk.blocks {
 		chunk.blocks[i] = SurfaceBlock{Name: "minecraft:air"}
