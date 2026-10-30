@@ -133,10 +133,14 @@ func (s *ChunkSampler) buildGrid(node *Node) *denseGrid {
 	if countX <= 0 || countY <= 0 || countZ <= 0 {
 		panic(fmt.Sprintf("invalid grid size: countX=%d countY=%d countZ=%d", countX, countY, countZ))
 	}
-	if countX > math.MaxInt/countY || countX*countY > math.MaxInt/countZ {
+	if countX > math.MaxInt/countY {
 		panic(fmt.Sprintf("grid allocation size overflows int: countX=%d countY=%d countZ=%d", countX, countY, countZ))
 	}
-	size := countX * countY * countZ
+	xy := countX * countY
+	if xy > math.MaxInt/countZ {
+		panic(fmt.Sprintf("grid allocation size overflows int: countX=%d countY=%d countZ=%d", countX, countY, countZ))
+	}
+	size := xy * countZ
 	grid := &denseGrid{
 		originX:    s.originX,
 		originY:    s.setting.MinY,
