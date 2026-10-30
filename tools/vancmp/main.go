@@ -187,11 +187,13 @@ func main() {
 		os.Exit(1)
 	}
 	setting := router.Setting()
-	if setting.Height <= 0 || setting.Height > math.MaxInt/(16*16) {
+	cellsPerLayer := 16 * 16
+	maxHeightForChunk := math.MaxInt / cellsPerLayer
+	if setting.Height <= 0 || setting.Height > maxHeightForChunk {
 		fmt.Fprintf(os.Stderr, "无效世界高度: %d\n", setting.Height)
 		os.Exit(1)
 	}
-	blocksPerChunk := 16 * 16 * setting.Height
+	blocksPerChunk := setting.Height * cellsPerLayer
 	if blocksPerChunk > math.MaxInt-7 {
 		fmt.Fprintf(os.Stderr, "区块体素数量过大: %d\n", blocksPerChunk)
 		os.Exit(1)
