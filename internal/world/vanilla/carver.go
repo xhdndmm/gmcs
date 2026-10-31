@@ -432,7 +432,7 @@ func (c *carvingContext) carveEllipsoid(centerX, centerY, centerZ, radiusX, radi
 				continue
 			}
 			for y := maxY; y >= minY; y-- {
-				ny := (float64(y) - 0.5 - centerY) / radiusY
+				ny := (float64(y) + 0.5 - centerY) / radiusY
 				if shouldSkip(nx, ny, nz, y) {
 					continue
 				}

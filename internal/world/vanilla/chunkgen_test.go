@@ -144,6 +144,27 @@ func TestCanyonVerticalRadiusProgress(t *testing.T) {
 	}
 }
 
+func TestCarveEllipsoidUsesBlockCenters(t *testing.T) {
+	setting := NoiseSetting{MinY: 0, Height: 32, SeaLevel: 0, DefaultFluid: "minecraft:water"}
+	chunk := NewGeneratedChunk(0, 0, setting.MinY, setting.Height)
+	chunk.SetBlock(8, 10, 8, SurfaceBlock{Name: "minecraft:stone"})
+	chunk.SetBlock(8, 11, 8, SurfaceBlock{Name: "minecraft:stone"})
+	context := &carvingContext{
+		router:  &Router{setting: setting, carverReplaceables: map[string]struct{}{"minecraft:stone": {}}},
+		chunk:   chunk,
+		aquifer: &Aquifer{setting: setting, picker: newAquiferFluidPicker(0, fluidWater), disabled: true},
+		mask:    make([]bool, len(chunk.blocks)),
+	}
+	context.carveEllipsoid(8.5, 10.5, 8.5, 1, 0.4, 1, carverDefinition{lavaLevel: heightAnchor{kind: "absolute", value: 0}},
+		func(nx, ny, nz float64, _ int) bool { return nx*nx+ny*ny+nz*nz >= 1 })
+	if got := chunk.BlockAt(8, 10, 8).Name; got != "minecraft:air" {
+		t.Fatalf("center block = %s, want air", got)
+	}
+	if got := chunk.BlockAt(8, 11, 8).Name; got != "minecraft:stone" {
+		t.Fatalf("block above center = %s, want stone", got)
+	}
+}
+
 // TestGenerateChunkOcean 校验海洋区块：海平面处是水、没有草方块、海底不是空气。
 func TestGenerateChunkOcean(t *testing.T) {
 	router := mustRouter(t, 4321)

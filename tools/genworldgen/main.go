@@ -12,6 +12,7 @@
 //   - data/minecraft/worldgen/multi_noise_biome_source_parameter_list/*.json
 //     （多噪声群系源的参数范围表）
 //   - data/minecraft/worldgen/configured_carver/*.json 与群系 carvers 引用
+//   - configured_feature / placed_feature 定义与群系 features 阶段引用
 //
 // 只保留原版 overworld 相关条目，避免把整个数据包塞进仓库；条目以
 // “minecraft:<相对路径去扩展名>” 作为键（如 minecraft:overworld/continents）。
@@ -46,6 +47,9 @@ type bundle struct {
 	BiomeSources       map[string]json.RawMessage `json:"multi_noise_biome_sources"`
 	ConfiguredCarvers  map[string]json.RawMessage `json:"configured_carvers"`
 	BiomeCarvers       map[string]json.RawMessage `json:"biome_carvers"`
+	ConfiguredFeatures map[string]json.RawMessage `json:"configured_features"`
+	PlacedFeatures     map[string]json.RawMessage `json:"placed_features"`
+	BiomeFeatures      map[string]json.RawMessage `json:"biome_features"`
 	CarverReplaceables []string                   `json:"carver_replaceables"`
 	// Biomes 只保留气候相关字段（temperature/downfall/has_precipitation/
 	// temperature_modifier），地表规则的 temperature 条件与降雪判定需要它们。
@@ -99,15 +103,18 @@ func main() {
 	}
 
 	result := bundle{
-		Version:           *version,
-		Source:            path.Base(*jarPath),
-		NoiseSettings:     map[string]json.RawMessage{},
-		Functions:         map[string]json.RawMessage{},
-		Noises:            map[string]json.RawMessage{},
-		BiomeSources:      map[string]json.RawMessage{},
-		ConfiguredCarvers: map[string]json.RawMessage{},
-		BiomeCarvers:      map[string]json.RawMessage{},
-		Biomes:            map[string]json.RawMessage{},
+		Version:            *version,
+		Source:             path.Base(*jarPath),
+		NoiseSettings:      map[string]json.RawMessage{},
+		Functions:          map[string]json.RawMessage{},
+		Noises:             map[string]json.RawMessage{},
+		BiomeSources:       map[string]json.RawMessage{},
+		ConfiguredCarvers:  map[string]json.RawMessage{},
+		BiomeCarvers:       map[string]json.RawMessage{},
+		ConfiguredFeatures: map[string]json.RawMessage{},
+		PlacedFeatures:     map[string]json.RawMessage{},
+		BiomeFeatures:      map[string]json.RawMessage{},
+		Biomes:             map[string]json.RawMessage{},
 	}
 	if result.Version == "" {
 		if file, ok := files[dataPrefix+"version.json"]; ok {
@@ -179,6 +186,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "提取 configured_carver 失败: %v\n", err)
 		os.Exit(1)
 	}
+	if err := collect("configured_feature", nil, result.ConfiguredFeatures); err != nil {
+		fmt.Fprintf(os.Stderr, "提取 configured_feature 失败: %v\n", err)
+		os.Exit(1)
+	}
+	if err := collect("placed_feature", nil, result.PlacedFeatures); err != nil {
+		fmt.Fprintf(os.Stderr, "提取 placed_feature 失败: %v\n", err)
+		os.Exit(1)
+	}
 	result.CarverReplaceables, err = extractCarverReplaceables(files, dataPrefix)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "提取 overworld_carver_replaceables 失败: %v\n", err)
@@ -209,6 +224,9 @@ func main() {
 			os.Exit(1)
 		}
 		result.Biomes[name] = compact
+		if features, ok := full["features"]; ok {
+			result.BiomeFeatures[name] = features
+		}
 		if carvers, ok := full["carvers"]; ok {
 			var names []string
 			if err := json.Unmarshal(carvers, &names); err == nil {
@@ -246,8 +264,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "写入 %s 失败: %v\n", *out, err)
 		os.Exit(1)
 	}
-	fmt.Printf("完成：%s（%d 条噪声设置 / %d 条密度函数 / %d 条噪声参数 / %d 条群系参数表 / %d 条配置雕刻器 / %d 条群系雕刻器 / %d 条群系气候，原始 %d 字节、压缩后 %d 字节）\n",
-		*out, len(result.NoiseSettings), len(result.Functions), len(result.Noises), len(result.BiomeSources), len(result.ConfiguredCarvers), len(result.BiomeCarvers), len(result.Biomes),
+	fmt.Printf("完成：%s（%d 条噪声设置 / %d 条密度函数 / %d 条噪声参数 / %d 条群系参数表 / %d 条配置雕刻器 / %d 条群系雕刻器 / %d 条配置地物 / %d 条放置地物 / %d 条群系地物 / %d 条群系气候，原始 %d 字节、压缩后 %d 字节）\n",
+		*out, len(result.NoiseSettings), len(result.Functions), len(result.Noises), len(result.BiomeSources), len(result.ConfiguredCarvers), len(result.BiomeCarvers), len(result.ConfiguredFeatures), len(result.PlacedFeatures), len(result.BiomeFeatures), len(result.Biomes),
 		len(payload), buf.Len())
 }
 

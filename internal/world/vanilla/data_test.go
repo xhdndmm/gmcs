@@ -123,6 +123,68 @@ func TestOverworldCarverData(t *testing.T) {
 	}
 }
 
+func TestOverworldFeatureReferences(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.ConfiguredFeatures) == 0 || len(data.PlacedFeatures) == 0 {
+		t.Fatal("缺少原版 configured_feature 或 placed_feature 数据")
+	}
+	for _, biome := range []string{"minecraft:plains", "minecraft:deep_ocean", "minecraft:cherry_grove"} {
+		raw, ok := data.BiomeFeatures[biome]
+		if !ok {
+			t.Fatalf("缺少群系 %s 的地物列表", biome)
+		}
+		var steps [][]string
+		if err := json.Unmarshal(raw, &steps); err != nil {
+			t.Fatalf("解析群系 %s 地物列表失败：%v", biome, err)
+		}
+		if len(steps) != 11 {
+			t.Fatalf("群系 %s 有 %d 个地物阶段，want 11", biome, len(steps))
+		}
+	}
+	for _, problem := range data.Validate() {
+		if strings.Contains(problem.Detail, "缺少放置地物") || strings.Contains(problem.Detail, "缺少配置地物") {
+			t.Errorf("地物引用缺失：%s", problem)
+		}
+	}
+}
+
+func TestValidateRejectsMissingPlacedFeatureTarget(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *data
+	var steps [][]string
+	if err := json.Unmarshal(data.BiomeFeatures["minecraft:plains"], &steps); err != nil {
+		t.Fatal(err)
+	}
+	var removed string
+	for _, step := range steps {
+		if len(step) > 0 {
+			removed = qualify(step[0])
+			break
+		}
+	}
+	if removed == "" {
+		t.Fatal("平原群系没有可用于测试的 placed_feature")
+	}
+	clone.PlacedFeatures = make(map[string]json.RawMessage, len(data.PlacedFeatures)-1)
+	for name, raw := range data.PlacedFeatures {
+		if name != removed {
+			clone.PlacedFeatures[name] = raw
+		}
+	}
+	for _, problem := range clone.Validate() {
+		if problem.Where == "minecraft:plains" && strings.Contains(problem.Detail, "缺少放置地物 "+removed) {
+			return
+		}
+	}
+	t.Fatalf("删除 %s 后 Validate 未报告引用缺失", removed)
+}
+
 func TestParseCarverDefinitions(t *testing.T) {
 	data, err := Load()
 	if err != nil {

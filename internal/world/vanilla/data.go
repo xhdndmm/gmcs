@@ -2,7 +2,7 @@
 //MIT License
 //Copyright (c) 2026 喜欢电脑的猫咪
 
-// Package vanilla 承载“按原版算法生成区块”的实现。
+// Package vanilla 承载“按原版算法生成区块”的实现与原版 worldgen 数据。
 //
 // 当前进度（见 docs/TODO.md 的分阶段计划）：原版世界生成数据提取与校验、
 // Xoroshiro 随机源、ImprovedNoise/PerlinNoise/NormalNoise、密度函数图求值、
@@ -12,7 +12,7 @@
 // 地物与结构尚未实现，服务器仍使用 internal/world 中的自研生成器。
 //
 // 数据由 tools/genworldgen 从官方 jar 提取并压缩为 data/worldgen.json.gz
-// （overworld 的噪声设置/密度函数/噪声参数/群系气候）；overworld 的多噪声
+// （overworld 的噪声设置/密度函数/噪声参数/群系气候/雕刻器/地物定义与引用）；overworld 的多噪声
 // 群系参数表是代码内建的，由 tools/vgoracle/BiomeParameters.java 反射导出为
 // data/biome_parameters.json.gz。仓库里不保存原始数据包文件。
 package vanilla
@@ -41,7 +41,8 @@ type NoiseParameters struct {
 	Amplitudes  []float64
 }
 
-// Data 是加载后的原版世界生成数据。
+// Data 是加载后的原版世界生成数据。特征数据当前仅完成提取与引用校验，
+// 尚未由 Router.GenerateChunk 执行。
 type Data struct {
 	// Version 是数据来源版本（如 "1.21.11"）。
 	Version string
@@ -57,6 +58,11 @@ type Data struct {
 	ConfiguredCarvers map[string]json.RawMessage
 	// BiomeCarvers 是群系的雕刻器引用列表，按群系注册名索引。
 	BiomeCarvers map[string]json.RawMessage
+	// ConfiguredFeatures / PlacedFeatures 是原版两级地物定义。
+	ConfiguredFeatures map[string]json.RawMessage
+	PlacedFeatures     map[string]json.RawMessage
+	// BiomeFeatures 是群系按 generation step 分组的 placed_feature 引用。
+	BiomeFeatures map[string]json.RawMessage
 	// CarverReplaceables 是原版 overworld_carver_replaceables 标签递归展开结果。
 	CarverReplaceables []string
 	// Biomes 是群系气候数据（只保留 temperature/downfall/has_precipitation/
@@ -106,6 +112,9 @@ type rawBundle struct {
 	BiomeSources       map[string]json.RawMessage `json:"multi_noise_biome_sources"`
 	ConfiguredCarvers  map[string]json.RawMessage `json:"configured_carvers"`
 	BiomeCarvers       map[string]json.RawMessage `json:"biome_carvers"`
+	ConfiguredFeatures map[string]json.RawMessage `json:"configured_features"`
+	PlacedFeatures     map[string]json.RawMessage `json:"placed_features"`
+	BiomeFeatures      map[string]json.RawMessage `json:"biome_features"`
 	CarverReplaceables []string                   `json:"carver_replaceables"`
 	Biomes             map[string]json.RawMessage `json:"biomes"`
 }
@@ -137,6 +146,9 @@ func loadFrom(fs embed.FS, name string) (*Data, error) {
 		BiomeSources:       raw.BiomeSources,
 		ConfiguredCarvers:  raw.ConfiguredCarvers,
 		BiomeCarvers:       raw.BiomeCarvers,
+		ConfiguredFeatures: raw.ConfiguredFeatures,
+		PlacedFeatures:     raw.PlacedFeatures,
+		BiomeFeatures:      raw.BiomeFeatures,
 		CarverReplaceables: raw.CarverReplaceables,
 		Biomes:             raw.Biomes,
 	}
@@ -156,7 +168,8 @@ func loadFrom(fs embed.FS, name string) (*Data, error) {
 // Validate 检查数据包的结构一致性：
 //   - 每个密度函数都能解析（类型受支持、必需字段齐全、引用存在）；
 //   - 噪声参数的 amplitudes 非空且没有 0 振幅；
-//   - overworld 噪声设置的路由表每一项都能解析。
+//   - overworld 噪声设置的路由表每一项都能解析；
+//   - 群系地物、placed_feature 和 configured_feature 引用完整。
 //
 // 校验失败意味着数据文件与实现不匹配（例如升级数据包后出现新节点类型），
 // 必须显式报错：静默地把未知节点当成 0 计算会产出错误地形。
@@ -173,6 +186,38 @@ func (d *Data) Validate() []Problem {
 			if _, ok := d.ConfiguredCarvers[name]; !ok {
 				problems = append(problems, Problem{Where: biome, Detail: "缺少配置雕刻器 " + name})
 			}
+		}
+	}
+	for biome, raw := range d.BiomeFeatures {
+		var steps [][]string
+		if err := json.Unmarshal(raw, &steps); err != nil {
+			problems = append(problems, Problem{Where: biome, Detail: fmt.Sprintf("解析群系地物失败：%v", err)})
+			continue
+		}
+		for _, step := range steps {
+			for _, name := range step {
+				name = qualify(name)
+				if _, ok := d.PlacedFeatures[name]; !ok {
+					problems = append(problems, Problem{Where: biome, Detail: "缺少放置地物 " + name})
+				}
+			}
+		}
+	}
+	for name, raw := range d.PlacedFeatures {
+		var placed struct {
+			Feature string `json:"feature"`
+		}
+		if err := json.Unmarshal(raw, &placed); err != nil {
+			problems = append(problems, Problem{Where: name, Detail: fmt.Sprintf("解析放置地物失败：%v", err)})
+			continue
+		}
+		feature := qualify(placed.Feature)
+		if feature == "" {
+			problems = append(problems, Problem{Where: name, Detail: "缺少 configured_feature 引用"})
+			continue
+		}
+		if _, ok := d.ConfiguredFeatures[feature]; !ok {
+			problems = append(problems, Problem{Where: name, Detail: "缺少配置地物 " + feature})
 		}
 	}
 	noiseSettings, err := d.NoiseSetting("minecraft:overworld")
