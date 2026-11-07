@@ -16,6 +16,8 @@ import (
 // 求值器。提供密度值层面的能力（final_density / Solid）；含水层的逐方块判定见
 // aquifer.go（ChunkSampler.Substance），表面规则、雕刻器与地物属于后续阶段。
 type Router struct {
+	data               *Data
+	registry           *NoiseRegistry
 	setting            NoiseSetting
 	seed               int64
 	evaluator          *Evaluator
@@ -36,6 +38,8 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 	}
 	registry := NewNoiseRegistry(data, seed)
 	router := &Router{
+		data:      data,
+		registry:  registry,
 		setting:   setting,
 		seed:      seed,
 		evaluator: NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
@@ -76,6 +80,27 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 	}
 	router.evaluator.finalDensity = finalDensity
 	return router, nil
+}
+
+// NewSession 创建一个独立的求值会话：复用只读的解析结果与噪声注册表，
+// 但拥有自己的 Evaluator / BiomeSource 缓存，因此可以在不同 goroutine 中
+// 并行生成区块。Router 本身（NewRouter 的返回值）不应跨 goroutine 使用。
+func (r *Router) NewSession() *Router {
+	session := &Router{
+		data:               r.data,
+		registry:           r.registry,
+		setting:            r.setting,
+		seed:               r.seed,
+		nodes:              r.nodes,
+		keys:               r.keys,
+		named:              make(map[string]*Node),
+		carvers:            r.carvers,
+		biomeCarvers:       r.biomeCarvers,
+		carverReplaceables: r.carverReplaceables,
+	}
+	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
+	session.evaluator.finalDensity = session.nodes["final_density"]
+	return session
 }
 
 // Setting 返回该路由表对应的噪声设置。

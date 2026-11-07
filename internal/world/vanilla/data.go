@@ -8,8 +8,10 @@
 // Xoroshiro 随机源、ImprovedNoise/PerlinNoise/NormalNoise、密度函数图求值、
 // 区块级密度 lattice 采样、含水层逐方块判定（密度 + 水/岩浆/空气）、
 // 多噪声群系源，以及**表面规则**都已经实现并有测试；
-// Router.GenerateChunk 已接入 cave/canyon 雕刻器初版，但官方逐方块差异尚未收敛；
-// 地物与结构尚未实现，服务器仍使用 internal/world 中的自研生成器。
+// Router.GenerateChunk 已接入 cave/canyon 雕刻器（算法按反编译源码校正，
+// 官方逐方块差异尚未完全收敛）；地物与结构尚未实现。
+// 服务器可通过配置 world_generator=vanilla 选择该生成器（默认仍是 legacy，
+// 见 internal/world/vanilla_generator.go）。
 //
 // 数据由 tools/genworldgen 从官方 jar 提取并压缩为 data/worldgen.json.gz
 // （overworld 的噪声设置/密度函数/噪声参数/群系气候/雕刻器/地物定义与引用）；overworld 的多噪声

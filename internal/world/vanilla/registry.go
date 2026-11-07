@@ -4,7 +4,10 @@
 
 package vanilla
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // NoiseRegistry 按种子构造与原版一致的 NormalNoise 实例。
 //
@@ -19,6 +22,7 @@ type NoiseRegistry struct {
 	data    *Data
 	seed    int64
 	factory positionalRandomFactory
+	mu      sync.Mutex
 	cache   map[string]*NormalNoise
 }
 
@@ -42,6 +46,8 @@ func (r *NoiseRegistry) Seed() int64 {
 // 不匹配是编程错误，不应静默产出 0 噪声）。
 func (r *NoiseRegistry) Noise(name string) *NormalNoise {
 	key := qualify(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if noise, ok := r.cache[key]; ok {
 		return noise
 	}

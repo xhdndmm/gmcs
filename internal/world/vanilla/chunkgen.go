@@ -90,6 +90,17 @@ func (c *GeneratedChunk) HeightAt(x, z int) int {
 	return c.heights[(z-c.MinZ)*16+(x-c.MinX)]
 }
 
+// ForEachBlock 按 y→z→x 顺序遍历区块内全部方块。
+func (c *GeneratedChunk) ForEachBlock(fn func(x, y, z int, block SurfaceBlock)) {
+	for y := c.MinY; y < c.MinY+c.Height; y++ {
+		for z := c.MinZ; z < c.MinZ+16; z++ {
+			for x := c.MinX; x < c.MinX+16; x++ {
+				fn(x, y, z, c.blocks[c.index(x, y, z)])
+			}
+		}
+	}
+}
+
 // RecalculateHeights 按当前方块重新计算高度图。
 func (c *GeneratedChunk) RecalculateHeights() {
 	for x := 0; x < 16; x++ {
@@ -142,10 +153,8 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := r.carveChunk(chunk, sampler, biomes); err != nil {
-		return nil, err
-	}
-	chunk.RecalculateHeights()
+	// 原版 ChunkStatus 顺序为 NOISE → SURFACE → CARVERS：
+	// 表面规则先于雕刻器执行，雕刻出的洞穴/峡谷不会被重新铺上草/沙/水。
 	system, err := NewSurfaceSystem(sampler)
 	if err != nil {
 		return nil, err
@@ -154,6 +163,10 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 		system.BuildSurface(chunk, biomes)
 		chunk.RecalculateHeights()
 	}
+	if err := r.carveChunk(chunk, sampler, biomes); err != nil {
+		return nil, err
+	}
+	chunk.RecalculateHeights()
 	return chunk, nil
 }
 

@@ -373,7 +373,8 @@ func (s *Server) worldForLocked(dim world.Dimension) *world.World {
 	if sub := world.DimensionDir(dim); sub != "" {
 		dir = filepath.Join(dir, sub)
 	}
-	gameWorld, err := world.OpenDimension(dir, world.NewGenerator(dim, s.config.WorldSeed), dim)
+	generatorMode, _ := world.ParseGeneratorMode(s.config.WorldGenerator)
+	gameWorld, err := world.OpenDimension(dir, world.NewGeneratorWithMode(dim, s.config.WorldSeed, generatorMode), dim)
 	if err != nil {
 		slog.Error("打开维度世界失败，回退到主世界", "dimension", dim, "error", err)
 		return s.worlds[world.DimensionOverworld]
@@ -463,7 +464,8 @@ func New(cfg config.Config) (*Server, error) {
 	if !ok {
 		return nil, fmt.Errorf("未知游戏模式 %q", cfg.GameMode)
 	}
-	gameWorld, err := world.OpenDimension(cfg.WorldDir, world.NewGenerator(world.DimensionOverworld, cfg.WorldSeed), world.DimensionOverworld)
+	generatorMode, _ := world.ParseGeneratorMode(cfg.WorldGenerator)
+	gameWorld, err := world.OpenDimension(cfg.WorldDir, world.NewGeneratorWithMode(world.DimensionOverworld, cfg.WorldSeed, generatorMode), world.DimensionOverworld)
 	if err != nil {
 		return nil, err
 	}

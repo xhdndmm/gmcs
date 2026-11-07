@@ -31,9 +31,9 @@ type Context struct {
 //   - euk$r RangeChoice → min_inclusive <= v < max_exclusive 时取 when_in_range
 //   - euk$a Ap2         → add/mul/min/max
 //
-// 尚未实现（会 panic 而不是静默返回 0）：spline（CubicSpline，float 精度）、
-// interpolated（区块级 4×8×4 网格插值）、find_top_surface、old_blended_noise、
-// end_islands。这些是阶段 3 的后续部分。
+// spline（CubicSpline，单精度）、interpolated（区块级 lattice 三线性插值）、
+// find_top_surface、old_blended_noise（BlendedNoise）均已实现；
+// 未实现的节点类型会 panic 而不是静默返回 0。
 type Evaluator struct {
 	noises       *NoiseRegistry
 	blended      map[*Node]*BlendedNoise

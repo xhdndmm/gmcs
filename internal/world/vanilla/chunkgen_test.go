@@ -135,12 +135,19 @@ func TestCaveAndVoidAirAreAir(t *testing.T) {
 }
 
 func TestCanyonVerticalRadiusProgress(t *testing.T) {
-	definition := carverDefinition{shape: canyonShape{verticalRadiusDefaultFactor: 1}}
-	start := canyonVerticalScale(definition, newLegacyRandom(1), 100, 0)
-	middle := canyonVerticalScale(definition, newLegacyRandom(1), 100, 50)
-	end := canyonVerticalScale(definition, newLegacyRandom(1), 100, 100)
-	if start != 0 || middle < 0.75 || middle >= 1 || end < 0.75 || end >= 1 {
-		t.Fatalf("canyon vertical scales = start:%v middle:%v end:%v", start, middle, end)
+	// 原版 CanyonWorldCarver.updateVerticalRadius：
+	// factor = verticalRadiusDefaultFactor + verticalRadiusCenterFactor * progress，
+	// progress = 1 - 2*clamp(0.5 - step/length)。
+	// 取 center=1、default=0 时，起点 progress=0，中段/终点 progress=1。
+	definition := carverDefinition{shape: canyonShape{verticalRadiusCenterFactor: 1}}
+	start := canyonVerticalRadius(definition, newLegacyRandom(1), 1, 100, 0)
+	middle := canyonVerticalRadius(definition, newLegacyRandom(1), 1, 100, 50)
+	end := canyonVerticalRadius(definition, newLegacyRandom(1), 1, 100, 100)
+	if start != 0 {
+		t.Fatalf("canyon vertical radius at start = %v, want 0", start)
+	}
+	if middle < 0.75 || middle >= 1 || end < 0.75 || end >= 1 {
+		t.Fatalf("canyon vertical radius middle/end = %v/%v, want [0.75,1)", middle, end)
 	}
 }
 
@@ -157,11 +164,13 @@ func TestCarveEllipsoidUsesBlockCenters(t *testing.T) {
 	}
 	context.carveEllipsoid(8.5, 10.5, 8.5, 1, 0.4, 1, carverDefinition{lavaLevel: heightAnchor{kind: "absolute", value: 0}},
 		func(nx, ny, nz float64, _ int) bool { return nx*nx+ny*ny+nz*nz >= 1 })
-	if got := chunk.BlockAt(8, 10, 8).Name; got != "minecraft:air" {
+	// 原版 WorldCarver.carveEllipsoid 的纵向归一化使用 (blockY - 0.5 - centerY)，
+	// 因此 centerY=10.5 时被雕刻的中心方块是 y=11。
+	if got := chunk.BlockAt(8, 11, 8).Name; got != "minecraft:air" {
 		t.Fatalf("center block = %s, want air", got)
 	}
-	if got := chunk.BlockAt(8, 11, 8).Name; got != "minecraft:stone" {
-		t.Fatalf("block above center = %s, want stone", got)
+	if got := chunk.BlockAt(8, 10, 8).Name; got != "minecraft:stone" {
+		t.Fatalf("block below center = %s, want stone", got)
 	}
 }
 

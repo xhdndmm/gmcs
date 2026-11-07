@@ -168,6 +168,12 @@ func loadBiomeParameters() ([]biomeParameterPoint, error) {
 	return points, nil
 }
 
+// ResetCache 清空群系采样缓存。不同区块并行生成时为每个会话调用一次，
+// 避免缓存无限增长；已缓存的值本身是确定性的，清空不影响结果。
+func (b *BiomeSource) ResetCache() {
+	b.cache = make(map[biomeKey]string)
+}
+
 // Climate 返回指定群系的气候数据。未登记的群系返回零值（温度 0、无降水）。
 func (b *BiomeSource) Climate(name string) biomeClimate {
 	return b.climates[qualify(name)]

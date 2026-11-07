@@ -52,6 +52,8 @@ func main() {
 	flag.StringVar(&densityNode, "density-node", "", "把 final_density 替换成给定的 JSON 表达式")
 	column := flag.String("col", "", "打印单个方块列（x,z）的官方与 gmcs 对比")
 	aquifers := flag.Bool("aquifers", true, "对比时是否启用含水层（false 表示单独验证密度函数）")
+	carvers := flag.Bool("carvers", true, "对比时是否运行雕刻器（false 用于验证密度/含水层/表面规则）")
+	onlyCarver := flag.String("only-carver", "", "只保留指定雕刻器（用于逐类对比）")
 	flag.Parse()
 	if *mca == "" && *dumpNode == "" && !*listNodes && *gridNode == "" {
 		fmt.Fprintln(os.Stderr, "缺少 -mca 参数")
@@ -174,6 +176,34 @@ func main() {
 			fmt.Fprintf(os.Stderr, "构造密度探针设置失败: %v\n", err)
 			os.Exit(1)
 		}
+	}
+	if !*carvers {
+		data.BiomeCarvers = nil
+	} else if *onlyCarver != "" {
+		allowed := map[string]bool{}
+		for _, part := range strings.Split(*onlyCarver, ",") {
+			allowed[strings.TrimPrefix(strings.TrimSpace(part), "minecraft:")] = true
+		}
+		keep := map[string]json.RawMessage{}
+		for biome, raw := range data.BiomeCarvers {
+			var names []string
+			if err := json.Unmarshal(raw, &names); err != nil {
+				continue
+			}
+			filtered := make([]string, 0, len(names))
+			for _, name := range names {
+				if allowed[strings.TrimPrefix(name, "minecraft:")] {
+					filtered = append(filtered, name)
+				}
+			}
+			encoded, err := json.Marshal(filtered)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "编码群系雕刻器失败: %v\n", err)
+				os.Exit(1)
+			}
+			keep[biome] = encoded
+		}
+		data.BiomeCarvers = keep
 	}
 	if !*aquifers {
 		if err := overrideAquifers(data); err != nil {

@@ -49,6 +49,7 @@
 | 本批（区块/维度/生物/红石/日志） | 新增 `log_file`（默认 `logs/gmcs.log`）、`log_level`（默认 `info`）、`log_max_size_mb`（默认 16）、`audit_log_file`（默认 `logs/audit.jsonl`）；新增下界/末地维度与 `world/the_nether/`、`world/the_end/` 子目录、`players.json` 新增 `dimension` 字段（行为变化见 2.4） |
 | `eaea510` | 无新字段；流体模拟、发射器/投掷器、TNT、火焰（行为变化见 2.4） |
 | 本批（聊天签名） | 新增 `enforce_secure_profile`（默认 `true`，仅正版模式生效）；聊天消息签名校验与转发（行为变化见 2.4） |
+| 本批（原版生成器接线） | 新增 `world_generator`（`legacy` 默认 / `vanilla` 实验性；不包含地物与结构） |
 
 两个容易踩的点：
 
@@ -67,6 +68,7 @@
 - `view distance must be between 2 and 32`
 - `world border size must be at least 16 blocks`（`world_border_size` 为 0 表示不限制）
 - `unknown game mode "..."`（合法值：survival / creative / adventure / spectator）
+- `unknown world generator "..."`（合法值：legacy / gmcs / vanilla / official）
 - `session server URL must not be empty in online mode`
 
 ### 2.2 存档（`world/`）

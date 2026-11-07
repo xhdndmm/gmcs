@@ -1503,3 +1503,33 @@ BenchmarkTryPrecipitationNoSnow-20       51.14 ns/op     0 B/op   0 allocs/op   
   数小时级长时间运行与真实网络下的内存行为仍待观测）
 - 掉落物高密度场景的物理与广播（合并扫描已有 `BenchmarkItemMergeScan` 覆盖，
   见 3.17；广播路径与长时间运行的内存增长仍待观测）
+
+### 3.45 原版生成器接线与雕刻器修正（本批，单次测量，不是稳定基线）
+
+本批没有做性能优化，只记录当前数据，避免把“能跑”当成“性能结论”。
+
+`BenchmarkVanillaGeneratorChunk`（种子 4321，`internal/world` 的
+`VanillaGenerator`，包含密度/含水层/表面规则/carver 与方块状态映射）：
+
+```text
+BenchmarkVanillaGeneratorChunk-20    21    54,891,047 ns/op    8,076,079 B/op    55,053 allocs/op
+```
+
+仅运行一次（`-count=1`），未做 warmup/多轮统计；该数字不能与旧的
+`BenchmarkGenerateChunk`（38 ms）直接比较，因为后者不含 carver、方块状态映射
+与并发会话池。
+
+正确性侧（种子 4321，官方 1.21.11 区域文件，`tools/vancmp`）：
+
+```text
+仅 cave：   (0,0) 47 / 98304   (1,0) 180 / 98304   (2,0) 552 / 98304
+           (0..2,0) 合计 779 / 294912
+全部 carver：(0,0) 1506 / 98304  (1,0) 1844 / 98304  (2,0) 2455 / 98304
+           (0..2,0) 合计 5805 / 294912
+```
+
+本批按反编译源码修正了 cave 数量/长度、LegacyRandomSource、canReach 半径、
+椭球 `y-0.5` 中心、canyon 采样顺序/垂直半径/skip 公式，以及
+`NOISE → SURFACE → CARVERS` 的顺序。残差仍集中在
+`water → stone`（gmcs 少雕出含水洞穴）与 `air → deepslate`（少雕出洞穴），
+尚未收敛；`world_generator=vanilla` 仍为实验性选项，默认是 `legacy`。

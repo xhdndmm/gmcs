@@ -281,9 +281,10 @@ func (r *Router) carveChunk(chunk *GeneratedChunk, sampler *ChunkSampler, biomes
 	return nil
 }
 
+// carveCaves 对应原版 CaveWorldCarver.carve（1.21.11 字节码逐条复刻）。
 func (c *carvingContext) carveCaves(definition carverDefinition, sourceX, sourceZ int, random *worldgenRandom) {
-	bound := 15
-	count := random.nextIntBounded(bound) + 1 + random.nextIntBounded(bound) + 1 + random.nextIntBounded(bound)
+	// CaveWorldCarver.carve：count = nextInt(nextInt(nextInt(15) + 1) + 1)。
+	count := random.nextIntBounded(random.nextIntBounded(random.nextIntBounded(15)+1) + 1)
 	for range count {
 		x := float64(sourceX*16 + random.nextIntBounded(16))
 		y := float64(definition.y.sample(random, c.router.setting))
@@ -297,130 +298,184 @@ func (c *carvingContext) carveCaves(definition carverDefinition, sourceX, source
 		tunnelCount := 1
 		if random.nextIntBounded(4) == 0 {
 			yScale := definition.yScale.sample(random)
-			roomRadius := 1 + random.nextFloat()*6
-			horizontalRadius := 1.5 + math.Cos(math.Pi/2)*float64(roomRadius)
-			c.carveEllipsoid(x+1, y, z, horizontalRadius, float64(roomRadius)*float64(yScale), horizontalRadius, definition, shouldSkip)
+			roomRadius := float32(1) + random.nextFloat()*6
+			// CaveWorldCarver.createRoom：水平半径 = 1.5 + sin(pi/2) * roomRadius，
+			// 垂直半径 = 水平半径 * yScale。
+			horizontalRadius := 1.5 + float64(float32(math.Sin(math.Pi/2))*roomRadius)
+			verticalRadius := horizontalRadius * float64(yScale)
+			c.carveEllipsoid(x+1, y, z, horizontalRadius, verticalRadius, horizontalRadius, definition, shouldSkip)
 			tunnelCount += random.nextIntBounded(4)
 		}
 		for range tunnelCount {
-			yaw := random.nextFloat() * 2 * math.Pi
+			yaw := random.nextFloat() * 2 * float32(math.Pi)
 			pitch := (random.nextFloat() - 0.5) / 4
 			thickness := caveThickness(random)
-			length := 7 - random.nextIntBounded(1)
+			// getRange() 固定为 4：SectionPos.sectionToBlockCoord(4*2-1) = 112。
+			length := 112 - random.nextIntBounded(112/4)
 			seed := random.nextLong()
-			c.carveCaveTunnel(definition, seed, x, y, z, float64(thickness), float64(yaw), float64(pitch), float64(horizontal), float64(vertical), 1, length, 0, length, shouldSkip)
+			c.carveCaveTunnel(definition, seed, x, y, z, thickness, yaw, pitch, float64(horizontal), float64(vertical), length, 0, shouldSkip)
 		}
 	}
 }
 
-func caveThickness(random carverRandom) float32 {
-	thickness := random.carverFloat() + random.carverFloat()*2
-	if random.carverInt(10) == 0 {
-		thickness *= random.carverFloat()*random.carverFloat()*3 + 1
+func caveThickness(random *worldgenRandom) float32 {
+	thickness := random.nextFloat() + random.nextFloat()*2
+	if random.nextIntBounded(10) == 0 {
+		thickness *= random.nextFloat()*random.nextFloat()*3 + 1
 	}
 	return thickness
 }
 
-func (c *carvingContext) carveCaveTunnel(definition carverDefinition, seed int64, x, y, z, thickness, yaw, pitch, horizontal, vertical, yScale float64, length, start, end int, shouldSkip func(float64, float64, float64, int) bool) {
-	random := NewXoroshiro(seed)
-	branchStep := random.NextInt(length/2) + length/4
-	branch := random.NextInt(6) == 0
-	yawChange, pitchChange := float64(0), float64(0)
-	for step := start; step < end; step++ {
-		radius := 1.5 + math.Sin(math.Pi*float64(step)/float64(length))*thickness
+// carveCaveTunnel 对应原版 CaveWorldCarver.createTunnel。
+// 注意：隧道内部的随机流是 RandomSource.create(seed)，即 LegacyRandomSource。
+func (c *carvingContext) carveCaveTunnel(definition carverDefinition, seed int64, x, y, z float64, thickness, yaw, pitch float32, horizontal, vertical float64, length, start int, shouldSkip func(float64, float64, float64, int) bool) {
+	random := newLegacyRandom(seed)
+	branchStep := random.nextIntBounded(length/2) + length/4
+	branch := random.nextIntBounded(6) == 0
+	yawChange, pitchChange := float32(0), float32(0)
+	for step := start; step < length; step++ {
+		radius := 1.5 + float64(float32(math.Sin(math.Pi*float64(float32(step)/float32(length))))*thickness)
 		radiusX := radius * horizontal
-		radiusY := radius * vertical * yScale
+		radiusY := radius * vertical
 		radiusZ := radius * horizontal
-		cosPitch := math.Cos(pitch)
-		x += math.Cos(yaw) * cosPitch
-		y += math.Sin(pitch)
-		z += math.Sin(yaw) * cosPitch
-		pitch *= 0.7
+		cosPitch := float32(math.Cos(float64(pitch)))
+		x += float64(float32(math.Cos(float64(yaw))) * cosPitch)
+		y += float64(float32(math.Sin(float64(pitch))))
+		z += float64(float32(math.Sin(float64(yaw))) * cosPitch)
+		if branch {
+			pitch *= 0.92
+		} else {
+			pitch *= 0.7
+		}
 		pitch += pitchChange * 0.1
 		yaw += yawChange * 0.1
 		yawChange *= 0.9
 		pitchChange *= 0.75
-		yawChange += float64(random.NextFloat()-random.NextFloat()) * float64(random.NextFloat()) * 2
-		pitchChange += float64(random.NextFloat()-random.NextFloat()) * float64(random.NextFloat()) * 4
-		if branch && step == branchStep && thickness > 1 {
-			branchThickness := thickness * (0.5 + float64(random.NextFloat())*0.5)
-			c.carveCaveTunnel(definition, random.NextLong(), x, y, z, branchThickness, yaw-float64(math.Pi/2), pitch/3, horizontal, vertical, yScale, length, step, length, shouldSkip)
-			c.carveCaveTunnel(definition, random.NextLong(), x, y, z, branchThickness, yaw+float64(math.Pi/2), pitch/3, horizontal, vertical, yScale, length, step, length, shouldSkip)
+		yawChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 2
+		pitchChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 4
+		if step == branchStep && thickness > 1 {
+			branchThickness := thickness * (random.nextFloat()*0.5 + 0.5)
+			c.carveCaveTunnel(definition, random.nextLong(), x, y, z, branchThickness, yaw-float32(math.Pi/2), pitch/3, horizontal, vertical, length, step, shouldSkip)
+			c.carveCaveTunnel(definition, random.nextLong(), x, y, z, branchThickness, yaw+float32(math.Pi/2), pitch/3, horizontal, vertical, length, step, shouldSkip)
 			return
 		}
-		if random.NextInt(4) != 0 {
-			c.carveEllipsoid(x, y, z, radiusX, radiusY, radiusZ, definition, shouldSkip)
+		if random.nextIntBounded(4) == 0 {
+			continue
 		}
+		if !canReachChunk(c.chunk, x, z, step, length, thickness) {
+			return
+		}
+		c.carveEllipsoid(x, y, z, radiusX, radiusY, radiusZ, definition, shouldSkip)
 	}
 }
 
+// carveCanyon 对应原版 CanyonWorldCarver.carve / doCarve。
 func (c *carvingContext) carveCanyon(definition carverDefinition, sourceX, sourceZ int, random *worldgenRandom) {
-	length := int(float32(7*16) * definition.shape.horizontalRadiusFactor.sample(random))
+	// getRange()*2-1 = 7，再乘 16 得到 112。
+	baseLength := float32((4*2 - 1) * 16)
 	x := float64(sourceX*16 + random.nextIntBounded(16))
 	y := float64(definition.y.sample(random, c.router.setting))
 	z := float64(sourceZ*16 + random.nextIntBounded(16))
-	yaw := random.nextFloat() * 2 * math.Pi
-	thickness := definition.shape.thickness.sample(random)
+	yaw := random.nextFloat() * 2 * float32(math.Pi)
 	verticalRotation := definition.verticalRotation.sample(random)
-	yScale := float64(definition.yScale.sample(random))
-	localRandom := NewXoroshiro(random.nextLong())
+	// CanyonWorldCarver.carve 的采样顺序：verticalRotation → yScale → thickness →
+	// distanceFactor（length 由 distanceFactor 决定）。
+	yScale := definition.yScale.sample(random)
+	thickness := definition.shape.thickness.sample(random)
+	length := int(baseLength * definition.shape.distanceFactor.sample(random))
+	seed := random.nextLong()
+	c.doCarveCanyon(definition, seed, x, y, z, thickness, yaw, verticalRotation, length, yScale)
+}
+
+func (c *carvingContext) doCarveCanyon(definition carverDefinition, seed int64, x, y, z float64, thickness, yaw, verticalRotation float32, length int, yScale float32) {
+	random := newLegacyRandom(seed)
 	widthFactors := make([]float32, c.chunk.Height)
 	factor := float32(1)
 	for index := range widthFactors {
-		if index == 0 || localRandom.NextInt(definition.shape.widthSmoothness) == 0 {
-			factor = 1 + localRandom.NextFloat()*localRandom.NextFloat()
+		if index == 0 || random.nextIntBounded(definition.shape.widthSmoothness) == 0 {
+			factor = 1 + random.nextFloat()*random.nextFloat()
 		}
 		widthFactors[index] = factor * factor
 	}
-	pitchChange, yawChange := float32(0), float32(0)
+	yawChange, pitchChange := float32(0), float32(0)
 	for step := 0; step < length; step++ {
-		radius := 1.5 + math.Sin(math.Pi*float64(step)/float64(length))*float64(thickness)
-		horizontalRadius := radius * float64(definition.shape.distanceFactor.sample(localRandom))
-		verticalRadius := radius * yScale * canyonVerticalScale(definition, localRandom, float32(length), float32(step))
-		cosPitch := math.Cos(float64(verticalRotation))
-		x += math.Cos(float64(yaw)) * cosPitch
-		y += math.Sin(float64(verticalRotation))
-		z += math.Sin(float64(yaw)) * cosPitch
+		radius := 1.5 + float64(float32(math.Sin(math.Pi*float64(float32(step)/float32(length))))*thickness)
+		horizontalRadius := radius * float64(definition.shape.horizontalRadiusFactor.sample(random))
+		verticalRadius := canyonVerticalRadius(definition, random, radius*float64(yScale), float32(length), float32(step))
+		cosPitch := float32(math.Cos(float64(verticalRotation)))
+		x += float64(float32(math.Cos(float64(yaw))) * cosPitch)
+		y += float64(float32(math.Sin(float64(verticalRotation))))
+		z += float64(float32(math.Sin(float64(yaw))) * cosPitch)
 		verticalRotation = verticalRotation*0.7 + pitchChange*0.05
 		yaw = yaw + yawChange*0.05
 		yawChange *= 0.8
 		pitchChange *= 0.5
-		yawChange += (localRandom.NextFloat() - localRandom.NextFloat()) * localRandom.NextFloat() * 2
-		pitchChange += (localRandom.NextFloat() - localRandom.NextFloat()) * localRandom.NextFloat() * 4
-		if localRandom.NextInt(4) == 0 {
+		yawChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 2
+		pitchChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 4
+		if random.nextIntBounded(4) == 0 {
 			continue
+		}
+		if !canReachChunk(c.chunk, x, z, step, length, thickness) {
+			return
 		}
 		shouldSkip := func(nx, ny, nz float64, blockY int) bool {
 			index := blockY - c.chunk.MinY - 1
 			if index < 0 || index >= len(widthFactors) {
 				return true
 			}
-			return nx*nx+nz*nz*float64(widthFactors[index])+ny*ny/6+1 >= 1
+			return (nx*nx+nz*nz)*float64(widthFactors[index])+ny*ny/6 >= 1
 		}
 		c.carveEllipsoid(x, y, z, horizontalRadius, verticalRadius, horizontalRadius, definition, shouldSkip)
 	}
 }
 
-func canyonVerticalScale(definition carverDefinition, random carverRandom, length, step float32) float64 {
+func canyonVerticalRadius(definition carverDefinition, random *legacyRandom, yScale float64, length, step float32) float64 {
 	progress := float32(0.5) - step/length
-	if progress < 0 {
-		progress = 0
-	} else if progress > 1 {
-		progress = 1
-	}
+	progress = clampFloat(progress, 0, 1)
 	progress = 1 - 2*progress
-	factor := definition.shape.verticalRadiusCenterFactor + definition.shape.verticalRadiusDefaultFactor*progress
-	return float64(factor * (0.75 + random.carverFloat()*0.25))
+	factor := definition.shape.verticalRadiusDefaultFactor + definition.shape.verticalRadiusCenterFactor*progress
+	jitter := float32(0.75) + random.nextFloat()*0.25
+	return yScale * float64(factor*jitter)
+}
+
+func clampFloat(value, minimum, maximum float32) float32 {
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
+// canReachChunk 对应 WorldCarver.canReach：判断隧道剩余长度是否仍可能触及本区块。
+func canReachChunk(chunk *GeneratedChunk, x, z float64, step, length int, radius float32) bool {
+	centerX := float64(chunk.MinX + 8)
+	centerZ := float64(chunk.MinZ + 8)
+	dx := x - centerX
+	dz := z - centerZ
+	remaining := float64(length - step)
+	limit := float64(radius + 2 + 16)
+	return dx*dx+dz*dz-remaining*remaining <= limit*limit
 }
 
 func (c *carvingContext) carveEllipsoid(centerX, centerY, centerZ, radiusX, radiusY, radiusZ float64, definition carverDefinition, shouldSkip func(float64, float64, float64, int) bool) {
 	if radiusX <= 0 || radiusY <= 0 || radiusZ <= 0 {
 		return
 	}
+	// WorldCarver.carveEllipsoid 的快速剔除：中心点到区块中心超过 16 + 2*半径时
+	// 整个椭球都不可能落在区块内。
+	centerBlockX := float64(c.chunk.MinX + 8)
+	centerBlockZ := float64(c.chunk.MinZ + 8)
+	maxDistance := 16 + radiusX*2
+	if math.Abs(centerX-centerBlockX) > maxDistance || math.Abs(centerZ-centerBlockZ) > maxDistance {
+		return
+	}
 	minX := max(c.chunk.MinX, int(math.Floor(centerX-radiusX))-1)
 	maxX := min(c.chunk.MinX+15, int(math.Floor(centerX+radiusX)))
-	minY := max(c.chunk.MinY, int(math.Floor(centerY-radiusY))-1)
-	maxY := min(c.chunk.MinY+c.chunk.Height-1, int(math.Floor(centerY+radiusY))+1)
+	// 原版非调试模式在世界顶部保留 7 格，且最低一格的基岩层不参与雕刻。
+	minY := max(int(math.Floor(centerY-radiusY))-1, c.chunk.MinY+1)
+	maxY := min(int(math.Floor(centerY+radiusY))+1, c.chunk.MinY+c.chunk.Height-1-7)
 	minZ := max(c.chunk.MinZ, int(math.Floor(centerZ-radiusZ))-1)
 	maxZ := min(c.chunk.MinZ+15, int(math.Floor(centerZ+radiusZ)))
 	lavaLevel := definition.lavaLevel.resolve(c.router.setting)
@@ -431,8 +486,8 @@ func (c *carvingContext) carveEllipsoid(centerX, centerY, centerZ, radiusX, radi
 			if nx*nx+nz*nz >= 1 {
 				continue
 			}
-			for y := maxY; y >= minY; y-- {
-				ny := (float64(y) + 0.5 - centerY) / radiusY
+			for y := maxY; y > minY; y-- {
+				ny := (float64(y) - 0.5 - centerY) / radiusY
 				if shouldSkip(nx, ny, nz, y) {
 					continue
 				}
@@ -464,3 +519,5 @@ func (c *carvingContext) carveEllipsoid(centerX, centerY, centerZ, radiusX, radi
 		}
 	}
 }
+
+// carverRandom 是 carver 取样层的随机源接口（高度/浮点提供器共用）。

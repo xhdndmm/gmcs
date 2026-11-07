@@ -47,6 +47,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `view_distance` | 发送给客户端的视距（区块，2–32） | `10` |
 | `world_dir` | 地图数据目录 | `world` |
 | `world_seed` | 地形生成种子（首次启动随机生成并固定） | 随机 |
+| `world_generator` | 主世界生成器：`legacy`（自研）或 `vanilla`（原版算法，实验性，无地物/结构） | `legacy` |
 | `world_border_size` | 世界边界边长（方块，正方形，以 0,0 为中心；0 不限制） | `0` |
 | `game_mode` | 新玩家的游戏模式（survival/creative/adventure/spectator） | `survival` |
 | `spawn_monsters` | 是否在玩家附近生成敌对生物 | `true` |
@@ -123,6 +124,11 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   地下空腔约占 1–7%）与稀疏的随机游走隧道（worm），保留地表密封与基岩层；
   8 种矿物随机游走成脉（煤/铜/铁/金/红石/钻石/青金石/绿宝石，y<0 时为深板岩变种）。
   观感与原版相近，但不是原版算法（没有噪声域扭曲与含水层）。
+- **原版算法生成器（实验性）**：配置 `world_generator` 为 `vanilla` 时，主世界改用
+  `internal/world/vanilla`：原版噪声路由/密度函数、含水层（水/岩浆/空气）、表面规则
+  与 cave/canyon 雕刻器。当前**尚未实现地物与结构**（不会生成矿物、树木、湖泊、
+  村庄等），也不会读取旧生成器写出的区块；仅建议用于对新地形做对比测试。
+  默认仍为 `legacy`，服务器启动时若原版数据初始化失败会自动回退并记录错误。
 - **多维度**：主世界/下界/末地三套独立世界，按需生成与持久化（主世界使用
   `world/`，下界/末地为 `world/the_nether/`、`world/the_end/` 子目录）：下界含
   基岩地板（y=0）与天花板（y=127）、净岩、岩浆海、石英/远古残骸矿物与萤石/灵魂沙/

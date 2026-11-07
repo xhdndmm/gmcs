@@ -1225,26 +1225,60 @@
     - [ ] **未验证**：区块 (0,0) 之外仍有约 0~450 个方块的残差（洞穴/含水层
       边界、表面规则边缘），尚未逐个定位；只对拍了种子 4321、坐标
       (-4..3, -4..3) 范围内的区块。
-  - [ ] **阶段 4b：雕刻器（cave / canyon）**；
+  - [~] **阶段 4b：雕刻器（cave / canyon）**（算法层已对齐，逐方块仍未完全收敛）；
     - [x] 数据提取：保存 configured_carver 定义与 overworld 群系 carver 引用；
       加载时校验引用完整，确认 cave/canyon 配置均存在。
     - [x] 随机基础：实现 LegacyRandomSource 与 WorldgenRandom 的
       setLargeFeatureSeed，并以 Java Random 序列和固定 seed 向量回归验证。
     - [x] 运行时初版：按 17×17 源区块遍历，接入 cave/canyon、共用 mask、
       含水层流体选择与 surface rules 前置顺序。
-    - [x] 修正雕刻椭球纵向采样坐标：按官方 `WorldCarver` 使用方块中心
-      `y + 0.5 - centerY`；新增中心方块/上邻方块回归测试。
-    - [ ] 官方兼容尚未收敛：种子 4321、carvers-only 官方区块 (0,0)
-      修正前有 1,551 / 98,304 方块不一致；修正后尚未重建官方参考区块复测，仍需
-      核对 carve skip、随机序列和流体替换。
-      当前 BenchmarkGenerateChunk 单次测量约 78.2 ms / 17.7 MB / 15,541 allocs，
-      尚未做稳定基线对比，不作为性能结论。
+    - [x] **按 1.21.11 反编译源码（Vineflower）逐条校正 cave/canyon**：
+      - cave 数量公式实为嵌套 `nextInt(nextInt(nextInt(15)+1)+1)`（此前误写为三次
+        nextInt(15) 相加）；
+      - `getRange()*2-1` 经 `SectionPos.sectionToBlockCoord` 转为 **112** 个方块，
+        隧道长度为 `112 - nextInt(28)`（此前误写为 7）；
+      - 隧道随机流使用 `RandomSource.create(seed)` = **LegacyRandomSource**
+        （此前误用 Xoroshiro）；
+      - `canReach` 的半径参数是 **thickness**，不是当前椭球半径；
+      - 补上隧道分支的 pitch 衰减系数（branch 时 ×0.92，否则 ×0.7）；
+      - 椭球纵向归一化坐标实为 `(blockY - 0.5 - centerY) / radiusY`
+        （此前记录的 `+0.5` 不正确，已按反编译源码修正）；
+      - 椭球 y 循环不包含 `minY` 边界；
+      - cave 房间半径 = `1.5 + sin(pi/2) * roomRadius`，垂直半径再乘 `yScale`；
+      - canyon 长度使用 `distanceFactor`（不是 horizontalRadiusFactor），
+        采样顺序为 verticalRotation → yScale → thickness → distanceFactor；
+      - canyon 垂直半径 = `(radius*yScale) * (default + center*progress) *
+        nextFloat(0.75,1)`（default/center 此前写反）；
+      - canyon skip 公式为 `(nx² + nz²) * width + ny²/6 >= 1`（此前多加了 1）；
+      - `vancmp` 新增 `-carvers=false`、`-only-carver=<name>[,<name>...]`，
+        便于按层/按雕刻器隔离差异；
+      - 修正区块生成顺序为原版 `NOISE → SURFACE → CARVERS`（此前先 carver 后
+        surface，会在雕刻后的洞穴口重新铺地表方块）。
+    - [ ] **逐方块对比仍有残差**：种子 4321、仅 cave 的官方参考区块
+      (0,0)≈47 / 98,304、(1,0)≈180 / 98,304、(0..5,0) 合计≈1,133 / 589,824；
+      全 carver 的 (0,0)≈1,550 / 98,304。残差集中在 `water → stone`
+      （gmcs 少雕出含水洞穴）与少量 `deepslate → air`。已确认 carver 起始判定
+      与官方 Java 序列逐项一致，因此剩余差异在隧道内部/流体替换或参考世界生成
+      条件，尚需继续定位；**不声称已与原版完全一致**。
+    - [x] 新增回归测试：canyon 垂直半径进度、雕刻椭球使用 `y-0.5` 中心。
+      当前 BenchmarkGenerateChunk 尚未给出稳定基线，不作为性能结论。
   - [ ] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
     - [x] 数据管线：提取 configured_feature、placed_feature 与群系 11 阶段
       地物引用；校验群系→放置地物→配置地物引用完整。尚未实现运行时地物/结构放置。
-  - [ ] **阶段 5：接线与验证**：以配置开关切换生成器（保留旧生成器供回退）、
-    与官方服务端同种子区块逐方块对比（区域文件解码）、benchmark 与文档，
-    通过后才把 default 切到原版生成器。
+  - [~] **阶段 5：接线与验证**：
+    - [x] 配置开关 `world_generator`（`legacy` 默认 / `vanilla` 实验性）；
+      `world.NewGeneratorWithMode` 在 vanilla 初始化失败时记录错误并回退 legacy；
+      下界/末地仍使用原生成器。
+    - [x] `world.VanillaGenerator`：`sync.Pool` 为每个 worker 提供独立
+      `Router` 会话（共享只读密度函数图/噪声实例，独立求值缓存与群系缓存），
+      支持异步预生成并发；方块名/属性映射到 gmcs 状态 ID，4×4 群系网格按
+      y=64 采样下发；`SurfaceY` 按区块生成一次并缓存，供出生点搜索。
+    - [x] 工具链：`tools/vancmp` 读取官方 Anvil 区域文件逐方块对比；
+      `tools/genworldgen` 提取原版数据；新增 `BenchmarkVanillaGeneratorChunk`。
+    - [x] 文档：`docs/README.md` 新增 `world_generator` 配置与实验性说明。
+    - [ ] **仍缺**：地物/结构运行时（阶段 4c），因此 vanilla 模式不会生成矿物、
+      树木、湖泊与建筑；残差尚未收敛；真实客户端/长时间运行验证未做。
+      **默认仍是 legacy**，不把原版生成器作为默认实现。
 
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
   余下：服务端重力模拟与客户端预测回滚）
