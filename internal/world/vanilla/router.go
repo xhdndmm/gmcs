@@ -30,6 +30,7 @@ type Router struct {
 	carverReplaceables map[string]struct{}
 	features           *featureRegistry
 	biomeSetCache      map[chunkCoord]map[string]struct{}
+	configuredCache    map[string]placedFeature
 }
 
 type chunkCoord struct{ x, z int }
@@ -109,6 +110,7 @@ func (r *Router) NewSession() *Router {
 		carverReplaceables: r.carverReplaceables,
 		features:           r.features,
 		biomeSetCache:      make(map[chunkCoord]map[string]struct{}),
+		configuredCache:    make(map[string]placedFeature),
 	}
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
 	session.evaluator.finalDensity = session.nodes["final_density"]

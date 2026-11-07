@@ -1168,16 +1168,14 @@ func (r *Router) chunkBiomeSet(chunkX, chunkZ, minY, height int, biomes *BiomeSo
 	if len(r.biomeSetCache) > 1024 {
 		r.biomeSetCache = make(map[chunkCoord]map[string]struct{}, 1024)
 	}
-	set := make(map[string]struct{}, 16)
-	quartYStart := minY >> 2
-	for section := 0; section < height/16; section++ {
-		// 每个 section 取底部 quart y 采样 4×4。群系在 section 内通常稳定；
-		// 这样把 3×3 邻域的采样成本从 13824 降到 3456 次。
-		quartY := quartYStart + section*4
-		for quartX := 0; quartX < 4; quartX++ {
-			for quartZ := 0; quartZ < 4; quartZ++ {
-				set[biomes.BiomeAt(chunkX*4+quartX, quartY, chunkZ*4+quartZ)] = struct{}{}
-			}
+	set := make(map[string]struct{}, 8)
+	// 地物索引只需要“本区块可能出现的群系集合”。当前执行的地物以地表/浅层
+	// 为主，按 y=64 的 4×4 地表群系采样，避免每区块对全部 section 做数千次
+	// 气候噪声求值（实测这是区块生成的主要开销）。
+	quartY := 64 >> 2
+	for quartX := 0; quartX < 4; quartX++ {
+		for quartZ := 0; quartZ < 4; quartZ++ {
+			set[biomes.BiomeAt(chunkX*4+quartX, quartY, chunkZ*4+quartZ)] = struct{}{}
 		}
 	}
 	r.biomeSetCache[key] = set
@@ -1710,6 +1708,99 @@ func (r *Router) placePlacedAt(chunk *GeneratedChunk, random *legacyRandom, plac
 	}
 }
 
+func (r *Router) parseConfiguredFeature(placed placedFeature, config json.RawMessage) placedFeature {
+	switch placed.kind {
+	case "minecraft:ore", "minecraft:scattered_ore":
+		ore, err := parseOreConfiguration(config)
+		if err != nil {
+			placed.supported = false
+			return placed
+		}
+		placed.ore = ore
+	case "minecraft:tree":
+		tree, err := parseTreeConfiguration(config)
+		if err != nil || tree == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.tree = tree
+	case "minecraft:random_selector":
+		selector, err := parseSelectorConfiguration(config)
+		if err != nil || selector == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.selector = selector
+	case "minecraft:random_patch", "minecraft:flower":
+		patch, err := parsePatchConfiguration(config)
+		if err != nil || patch == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.patch = patch
+	case "minecraft:simple_block":
+		simple, err := parseSimpleBlockConfiguration(config)
+		if err != nil || simple == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.simple = simple
+	case "minecraft:spring_feature":
+		spring, err := parseSpringConfiguration(config)
+		if err != nil || spring == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.spring = spring
+	case "minecraft:seagrass":
+		seagrass, err := parseSeagrassConfiguration(config)
+		if err != nil || seagrass == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.seagrass = seagrass
+	case "minecraft:lake":
+		lake, err := parseLakeConfiguration(config)
+		if err != nil || lake == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.lake = lake
+	case "minecraft:vegetation_patch", "minecraft:waterlogged_vegetation_patch":
+		vegetation, err := parseVegetationPatchConfiguration(config)
+		if err != nil || vegetation == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.vegetation = vegetation
+	case "minecraft:block_pile":
+		pile, err := parsePileConfiguration(config)
+		if err != nil || pile == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.pile = pile
+	case "minecraft:disk":
+		disk, err := parseDiskConfiguration(config)
+		if err != nil || disk == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.disk = disk
+	case "minecraft:bamboo":
+		bamboo, err := parseBambooConfiguration(config)
+		if err != nil || bamboo == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.bamboo = bamboo
+	default:
+		placed.supported = false
+		return placed
+	}
+	return placed
+}
+
 func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, ref *featureRef, x, y, z int) {
 	if len(ref.inline) == 0 {
 		if nested, ok := r.features.placed[ref.name]; ok {
@@ -1744,97 +1835,40 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 		}
 	}
 	raw := ref.inline
+	var placed placedFeature
 	if len(raw) == 0 {
-		var ok bool
-		raw, ok = r.features.configured[ref.name]
-		if !ok {
-			return
+		if cached, ok := r.configuredCache[ref.name]; ok {
+			placed = cached
+			placed.placements = ref.placements
+		} else {
+			var ok bool
+			raw, ok = r.features.configured[ref.name]
+			if !ok {
+				return
+			}
 		}
 	}
-	var configured struct {
-		Type   string          `json:"type"`
-		Config json.RawMessage `json:"config"`
+	if len(raw) != 0 {
+		var configured struct {
+			Type   string          `json:"type"`
+			Config json.RawMessage `json:"config"`
+		}
+		if err := json.Unmarshal(raw, &configured); err != nil {
+			return
+		}
+		placed = placedFeature{feature: ref.name, kind: qualify(configured.Type), placements: ref.placements, supported: true}
+		parsed := r.parseConfiguredFeature(placed, configured.Config)
+		if !parsed.supported {
+			return
+		}
+		placed = parsed
+		if len(ref.inline) == 0 {
+			cached := placed
+			cached.placements = nil
+			r.configuredCache[ref.name] = cached
+		}
 	}
-	if err := json.Unmarshal(raw, &configured); err != nil {
-		return
-	}
-	placed := placedFeature{feature: ref.name, kind: qualify(configured.Type), placements: ref.placements, supported: true}
-	switch placed.kind {
-	case "minecraft:ore", "minecraft:scattered_ore":
-		ore, err := parseOreConfiguration(configured.Config)
-		if err != nil {
-			return
-		}
-		placed.ore = ore
-	case "minecraft:tree":
-		tree, err := parseTreeConfiguration(configured.Config)
-		if err != nil || tree == nil {
-			return
-		}
-		placed.tree = tree
-	case "minecraft:random_selector":
-		selector, err := parseSelectorConfiguration(configured.Config)
-		if err != nil || selector == nil {
-			return
-		}
-		placed.selector = selector
-	case "minecraft:random_patch", "minecraft:flower":
-		patch, err := parsePatchConfiguration(configured.Config)
-		if err != nil || patch == nil {
-			return
-		}
-		placed.patch = patch
-	case "minecraft:simple_block":
-		simple, err := parseSimpleBlockConfiguration(configured.Config)
-		if err != nil || simple == nil {
-			return
-		}
-		placed.simple = simple
-	case "minecraft:spring_feature":
-		spring, err := parseSpringConfiguration(configured.Config)
-		if err != nil || spring == nil {
-			return
-		}
-		placed.spring = spring
-	case "minecraft:seagrass":
-		seagrass, err := parseSeagrassConfiguration(configured.Config)
-		if err != nil || seagrass == nil {
-			return
-		}
-		placed.seagrass = seagrass
-	case "minecraft:lake":
-		lake, err := parseLakeConfiguration(configured.Config)
-		if err != nil || lake == nil {
-			return
-		}
-		placed.lake = lake
-	case "minecraft:vegetation_patch", "minecraft:waterlogged_vegetation_patch":
-		vegetation, err := parseVegetationPatchConfiguration(configured.Config)
-		if err != nil || vegetation == nil {
-			return
-		}
-		placed.vegetation = vegetation
-	case "minecraft:block_pile":
-		pile, err := parsePileConfiguration(configured.Config)
-		if err != nil || pile == nil {
-			return
-		}
-		placed.pile = pile
-	case "minecraft:disk":
-		disk, err := parseDiskConfiguration(configured.Config)
-		if err != nil || disk == nil {
-			return
-		}
-		placed.disk = disk
-	case "minecraft:bamboo":
-		bamboo, err := parseBambooConfiguration(configured.Config)
-		if err != nil || bamboo == nil {
-			return
-		}
-		placed.bamboo = bamboo
-	default:
-		return
-	}
+
 	if len(ref.placements) == 0 {
 		switch {
 		case placed.ore != nil:

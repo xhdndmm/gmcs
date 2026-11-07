@@ -1549,3 +1549,22 @@ center factor 为 0，因此默认数据下数值不变，但自定义 carver �
 ore/scattered_ore、部分树形（straight trunk + blob/spruce/pine foliage）、
 花草 patch、spring、海草、岩浆湖、植被 patch、方块堆、圆盘与竹子；并使用
 原版 FeatureSorter 全局顺序。geode、其他树形与结构尚未实现。
+
+### 3.46 FeatureSorter 与地表群系采样（本批，单次测量）
+
+原版 `FeatureSorter` 需要“全部群系”的全局顺序；按官方实现，若每个区块对
+3×3 邻域的每个 section 都采样 4×4×4 群系，单区块会额外产生约 13,824 次气候
+噪声求值，开发机上使 `BenchmarkGenerateChunk` 从约 13 ms 升到约 50 ms。
+
+当前实现保留 FeatureSorter 全局顺序，但把群系集合采样收敛为 3×3 区块的
+`y=64` 地表 4×4 网格（当前执行的地物以地表/浅层为主），并缓存每区块群系集合。
+同机单次测量：
+
+```text
+BenchmarkGenerateChunk-20           ~37 ms/op    8.4 MB/op    10,755 allocs/op
+BenchmarkVanillaGeneratorChunk-20   ~62 ms/op    8.3 MB/op    52,784 allocs/op
+```
+
+这只是开发机单次/双次测量，不是稳定基线；地下群系地物（洞穴植被、深暗等）
+尚未执行，因此这种采样不会改变当前已实现地物的集合。后续若补齐地下地物，
+需要重新评估采样策略与 FeatureSorter 索引一致性。
