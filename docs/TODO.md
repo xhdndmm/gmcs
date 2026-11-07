@@ -1271,6 +1271,13 @@
   - [x] **末地原版地形**：复用 end noise settings / density / surface_rule；
     实现 `end_islands` 密度函数与 TheEndBiomeSource 五群系选择。
     末地结构/末影龙/折跃门仍未实现。
+  - [x] **结构数据与模板解析基础**：新增 `tools/genstructures`，从官方 jar 提取
+    `worldgen/structure`、`worldgen/structure_set`、`worldgen/template_pool` 与
+    `structure/*.nbt`；实现 NBT（全部标签类型）、结构模板 palette/blocks、
+    template_pool 元素与 jigsaw 方块实体元数据解析。
+  - [ ] **结构运行时**：jigsaw 展开、模板旋转/镜像、结构集放置、跨区块写入、
+    processor_list、地形适配，以及村庄/要塞/矿洞/远古城市/末地城/折跃门
+    的逐结构规则尚未实现。
   - [~] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
     - [x] 数据管线：提取 configured_feature、placed_feature 与群系 11 阶段
       地物引用；校验群系→放置地物→配置地物引用完整。

@@ -32,7 +32,7 @@ import (
 	"strings"
 )
 
-//go:embed data/worldgen.json.gz data/biome_parameters.json.gz data/biome_parameters_nether.json.gz
+//go:embed data/worldgen.json.gz data/biome_parameters.json.gz data/biome_parameters_nether.json.gz data/structures.tar.gz
 var dataFiles embed.FS
 
 // DataFileName 是嵌入的数据包文件名。
