@@ -121,7 +121,8 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   桦树/丛林树）、花草/random patch。使用原版 placed_feature 的
   count/in_square/height_range/heightmap/block_predicate_filter/biome/
   rarity_filter 顺序；跨区块边界的矿脉、树干和树冠部分会按当前区块裁切。
-  湖泊、spring、geode、vegetation patch、其他树形与全部结构尚未实现。
+  湖泊、geode、vegetation patch、其他树形、seagrass/kelp 与全部结构尚未实现；
+  部分 spring（水/岩浆泉）已接入。
 - **多维度**：主世界/下界/末地三套独立世界，按需生成与持久化（主世界使用
   `world/`，下界/末地为 `world/the_nether/`、`world/the_end/` 子目录）：下界含
   基岩地板（y=0）与天花板（y=127）、净岩、岩浆海、石英/远古残骸矿物与萤石/灵魂沙/

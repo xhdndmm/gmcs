@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"gmcs/internal/registry"
 )
@@ -29,6 +30,7 @@ type placedFeature struct {
 	selector   *selectorConfiguration
 	patch      *patchConfiguration
 	simple     *simpleBlockConfiguration
+	spring     *springConfiguration
 	placements []placementModifier
 	supported  bool
 }
@@ -58,6 +60,14 @@ type patchConfiguration struct {
 
 type simpleBlockConfiguration struct {
 	provider stateProvider
+}
+
+type springConfiguration struct {
+	state         SurfaceBlock
+	requiresBelow bool
+	rockCount     int
+	holeCount     int
+	validBlocks   map[string]struct{}
 }
 
 type stateProvider struct {
@@ -258,6 +268,12 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 				return nil, fmt.Errorf("解析 %s 的简单方块配置失败：%w", placed.feature, err)
 			}
 			placed.simple = simple
+		case "minecraft:spring_feature":
+			spring, err := parseSpringConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的 spring 配置失败：%w", placed.feature, err)
+			}
+			placed.spring = spring
 		}
 		for index, rawModifier := range encoded.Placement {
 			modifier, err := parsePlacementModifier(rawModifier)
@@ -269,7 +285,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			}
 			placed.placements = append(placed.placements, modifier)
 		}
-		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil {
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil {
 			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
@@ -528,6 +544,37 @@ func parseStateProvider(raw json.RawMessage) (stateProvider, error) {
 	return provider, nil
 }
 
+func parseSpringConfiguration(raw json.RawMessage) (*springConfiguration, error) {
+	var encoded struct {
+		State              json.RawMessage `json:"state"`
+		RequiresBlockBelow bool            `json:"requires_block_below"`
+		RockCount          int             `json:"rock_count"`
+		HoleCount          int             `json:"hole_count"`
+		ValidBlocks        json.RawMessage `json:"valid_blocks"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	state, err := parseFeatureSurfaceBlock(encoded.State)
+	if err != nil {
+		return nil, err
+	}
+	valid := map[string]struct{}{}
+	var names []string
+	if err := json.Unmarshal(encoded.ValidBlocks, &names); err == nil {
+		for _, name := range names {
+			valid[qualify(name)] = struct{}{}
+		}
+	} else {
+		var tag string
+		if err := json.Unmarshal(encoded.ValidBlocks, &tag); err != nil {
+			return nil, err
+		}
+		valid["#"+qualify(tag)] = struct{}{}
+	}
+	return &springConfiguration{state: state, requiresBelow: encoded.RequiresBlockBelow, rockCount: encoded.RockCount, holeCount: encoded.HoleCount, validBlocks: valid}, nil
+}
+
 func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 	var encoded struct {
 		TrunkProvider struct {
@@ -685,7 +732,7 @@ func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 	for step := 0; step < maxSteps; step++ {
 		for index, name := range byStep[step] {
 			placed, ok := r.features.placed[name]
-			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil) {
+			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil) {
 				continue
 			}
 			random.setFeatureSeed(decorationSeed, index, step)
@@ -783,6 +830,8 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placePatch(chunk, random, *placed.patch, position.x, position.y, position.z)
 		case placed.simple != nil:
 			r.placeSimple(chunk, random, *placed.simple, position.x, position.y, position.z)
+		case placed.spring != nil:
+			r.placeSpring(chunk, *placed.spring, position.x, position.y, position.z)
 		}
 	}
 }
@@ -841,6 +890,49 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 	default:
 		return false
 	}
+}
+
+func (r *Router) placeSpring(chunk *GeneratedChunk, spring springConfiguration, x, y, z int) {
+	if !chunk.InRange(x, y, z) {
+		return
+	}
+	below := chunk.BlockAt(x, y-1, z)
+	if !spring.matches(below) || (spring.requiresBelow && !spring.matches(below)) {
+		return
+	}
+	current := chunk.BlockAt(x, y, z)
+	valid, holes := 0, 0
+	neighbors := [...][3]int{{x + 1, y, z}, {x - 1, y, z}, {x, y, z + 1}, {x, y, z - 1}, {x, y + 1, z}}
+	for _, neighbor := range neighbors {
+		block := chunk.BlockAt(neighbor[0], neighbor[1], neighbor[2])
+		if spring.matches(block) {
+			valid++
+		}
+		if block.IsAir() {
+			holes++
+		}
+	}
+	if valid != spring.rockCount || holes != spring.holeCount {
+		return
+	}
+	if !current.IsAir() && !spring.matches(current) {
+		return
+	}
+	chunk.SetBlock(x, y, z, spring.state)
+}
+
+func (s springConfiguration) matches(block SurfaceBlock) bool {
+	if _, ok := s.validBlocks[block.Name]; ok {
+		return true
+	}
+	for key := range s.validBlocks {
+		if strings.HasPrefix(key, "#") {
+			if state, err := registry.BlockStateID(block.Name); err == nil && registry.BlockTagContains(strings.TrimPrefix(key, "#"), state) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *Router) placePatch(chunk *GeneratedChunk, random *legacyRandom, patch patchConfiguration, x, y, z int) {
@@ -924,6 +1016,12 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			return
 		}
 		placed.simple = simple
+	case "minecraft:spring_feature":
+		spring, err := parseSpringConfiguration(configured.Config)
+		if err != nil || spring == nil {
+			return
+		}
+		placed.spring = spring
 	default:
 		return
 	}
@@ -939,6 +1037,8 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placePatch(chunk, random, *placed.patch, x, y, z)
 		case placed.simple != nil:
 			r.placeSimple(chunk, random, *placed.simple, x, y, z)
+		case placed.spring != nil:
+			r.placeSpring(chunk, *placed.spring, x, y, z)
 		}
 		return
 	}
@@ -981,6 +1081,8 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placePatch(chunk, random, *placed.patch, position.x, position.y, position.z)
 		case placed.simple != nil:
 			r.placeSimple(chunk, random, *placed.simple, position.x, position.y, position.z)
+		case placed.spring != nil:
+			r.placeSpring(chunk, *placed.spring, position.x, position.y, position.z)
 		}
 	}
 }
