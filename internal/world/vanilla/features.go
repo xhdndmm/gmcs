@@ -42,6 +42,8 @@ type placedFeature struct {
 	spring     *springConfiguration
 	seagrass   *seagrassConfiguration
 	lake       *lakeConfiguration
+	vegetation *vegetationPatchConfiguration
+	pile       *pileConfiguration
 	placements []placementModifier
 	supported  bool
 }
@@ -71,6 +73,23 @@ type patchConfiguration struct {
 
 type simpleBlockConfiguration struct {
 	provider stateProvider
+}
+
+type pileConfiguration struct {
+	provider stateProvider
+}
+
+type vegetationPatchConfiguration struct {
+	replaceable       string
+	ground            stateProvider
+	vegetation        *featureRef
+	surface           string
+	depth             intProvider
+	extraBottomChance float32
+	verticalRange     int
+	vegetationChance  float32
+	radius            intProvider
+	extraEdgeChance   float32
 }
 
 type lakeConfiguration struct {
@@ -308,6 +327,18 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 				return nil, fmt.Errorf("解析 %s 的湖泊配置失败：%w", placed.feature, err)
 			}
 			placed.lake = lake
+		case "minecraft:vegetation_patch", "minecraft:waterlogged_vegetation_patch":
+			vegetation, err := parseVegetationPatchConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的植被 patch 配置失败：%w", placed.feature, err)
+			}
+			placed.vegetation = vegetation
+		case "minecraft:block_pile":
+			pile, err := parsePileConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的方块堆配置失败：%w", placed.feature, err)
+			}
+			placed.pile = pile
 		}
 		for index, rawModifier := range encoded.Placement {
 			modifier, err := parsePlacementModifier(rawModifier)
@@ -319,7 +350,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			}
 			placed.placements = append(placed.placements, modifier)
 		}
-		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil {
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil {
 			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
@@ -673,7 +704,7 @@ func parseStateProvider(raw json.RawMessage) (stateProvider, error) {
 	}
 	var provider stateProvider
 	switch qualify(encoded.Type) {
-	case "minecraft:simple_state_provider":
+	case "minecraft:simple_state_provider", "minecraft:rotated_block_provider":
 		state, err := parseFeatureSurfaceBlock(encoded.State)
 		if err != nil {
 			return stateProvider{}, err
@@ -691,6 +722,66 @@ func parseStateProvider(raw json.RawMessage) (stateProvider, error) {
 		return stateProvider{}, fmt.Errorf("不支持的 state provider %q", encoded.Type)
 	}
 	return provider, nil
+}
+
+func parsePileConfiguration(raw json.RawMessage) (*pileConfiguration, error) {
+	var encoded struct {
+		StateProvider json.RawMessage `json:"state_provider"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	provider, err := parseStateProvider(encoded.StateProvider)
+	if err != nil {
+		return nil, err
+	}
+	return &pileConfiguration{provider: provider}, nil
+}
+
+func parseVegetationPatchConfiguration(raw json.RawMessage) (*vegetationPatchConfiguration, error) {
+	var encoded struct {
+		Replaceable       string          `json:"replaceable"`
+		GroundState       json.RawMessage `json:"ground_state"`
+		VegetationFeature json.RawMessage `json:"vegetation_feature"`
+		Surface           string          `json:"surface"`
+		Depth             json.RawMessage `json:"depth"`
+		ExtraBottom       float32         `json:"extra_bottom_block_chance"`
+		VerticalRange     int             `json:"vertical_range"`
+		VegetationChance  float32         `json:"vegetation_chance"`
+		Radius            json.RawMessage `json:"xz_radius"`
+		ExtraEdge         float32         `json:"extra_edge_column_chance"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	ground, err := parseStateProvider(encoded.GroundState)
+	if err != nil {
+		return nil, err
+	}
+	vegetation, err := parseFeatureRef(encoded.VegetationFeature)
+	if err != nil {
+		return nil, err
+	}
+	depth, err := parseIntProvider(encoded.Depth)
+	if err != nil {
+		return nil, err
+	}
+	radius, err := parseIntProvider(encoded.Radius)
+	if err != nil {
+		return nil, err
+	}
+	return &vegetationPatchConfiguration{
+		replaceable:       qualify(encoded.Replaceable),
+		ground:            ground,
+		vegetation:        vegetation,
+		surface:           encoded.Surface,
+		depth:             depth,
+		extraBottomChance: encoded.ExtraBottom,
+		verticalRange:     encoded.VerticalRange,
+		vegetationChance:  encoded.VegetationChance,
+		radius:            radius,
+		extraEdgeChance:   encoded.ExtraEdge,
+	}, nil
 }
 
 func parseLakeConfiguration(raw json.RawMessage) (*lakeConfiguration, error) {
@@ -930,7 +1021,7 @@ func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 			last = index
 			name := order.names[index]
 			placed, ok := r.features.placed[name]
-			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil) {
+			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil) {
 				continue
 			}
 			random.setFeatureSeed(decorationSeed, index, step)
@@ -1074,6 +1165,10 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placeSeagrass(chunk, random, *placed.seagrass, position.x, position.y, position.z)
 		case placed.lake != nil:
 			r.placeLake(chunk, random, *placed.lake, position.x, position.y, position.z)
+		case placed.vegetation != nil:
+			r.placeVegetationPatch(chunk, random, *placed.vegetation, position.x, position.y, position.z)
+		case placed.pile != nil:
+			r.placeBlockPile(chunk, random, *placed.pile, position.x, position.y, position.z)
 		}
 	}
 }
@@ -1132,6 +1227,90 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 	default:
 		return false
 	}
+}
+
+func (r *Router) placeBlockPile(chunk *GeneratedChunk, random *legacyRandom, configuration pileConfiguration, x, y, z int) {
+	radiusX := random.nextIntBounded(2) + 2
+	radiusZ := random.nextIntBounded(2) + 2
+	for dx := -radiusX; dx <= radiusX; dx++ {
+		for dz := -radiusZ; dz <= radiusZ; dz++ {
+			for dy := 0; dy <= 1; dy++ {
+				if float32(dx*dx+dz*dz) > random.nextFloat()*10-random.nextFloat()*6 && random.nextFloat() >= 0.031 {
+					continue
+				}
+				posX, posY, posZ := x+dx, y+dy, z+dz
+				if !chunk.InRange(posX, posY, posZ) || !chunk.BlockAt(posX, posY, posZ).IsAir() {
+					continue
+				}
+				below := chunk.BlockAt(posX, posY-1, posZ)
+				if below.IsAir() || below.HasFluid() {
+					continue
+				}
+				chunk.SetBlock(posX, posY, posZ, configuration.provider.sample(random))
+			}
+		}
+	}
+}
+
+func (r *Router) placeVegetationPatch(chunk *GeneratedChunk, random *legacyRandom, configuration vegetationPatchConfiguration, x, y, z int) {
+	radiusX := configuration.radius.sample(random) + 1
+	radiusZ := configuration.radius.sample(random) + 1
+	direction := 1
+	if configuration.surface == "ceiling" {
+		direction = -1
+	}
+	columns := make([]featurePosition, 0)
+	for dx := -radiusX; dx <= radiusX; dx++ {
+		edgeX := dx == -radiusX || dx == radiusX
+		for dz := -radiusZ; dz <= radiusZ; dz++ {
+			edgeZ := dz == -radiusZ || dz == radiusZ
+			if edgeX && edgeZ {
+				continue
+			}
+			if (edgeX || edgeZ) && random.nextFloat() > configuration.extraEdgeChance {
+				continue
+			}
+			pos := featurePosition{x: x + dx, y: y, z: z + dz}
+			for steps := 0; steps < configuration.verticalRange && chunk.InRange(pos.x, pos.y, pos.z) && chunk.BlockAt(pos.x, pos.y, pos.z).IsAir(); steps++ {
+				pos.y += direction
+			}
+			for steps := 0; steps < configuration.verticalRange && chunk.InRange(pos.x, pos.y, pos.z) && !chunk.BlockAt(pos.x, pos.y, pos.z).IsAir(); steps++ {
+				pos.y -= direction
+			}
+			if !chunk.InRange(pos.x, pos.y, pos.z) || !chunk.InRange(pos.x, pos.y+1, pos.z) {
+				continue
+			}
+			surface := chunk.BlockAt(pos.x, pos.y, pos.z)
+			if !r.vegetationReplaceable(configuration.replaceable, surface) {
+				continue
+			}
+			depth := configuration.depth.sample(random)
+			if configuration.extraBottomChance > 0 && random.nextFloat() < configuration.extraBottomChance {
+				depth++
+			}
+			for placed := 0; placed < depth; placed++ {
+				targetY := pos.y - direction*placed
+				if !chunk.InRange(pos.x, targetY, pos.z) || !r.vegetationReplaceable(configuration.replaceable, chunk.BlockAt(pos.x, targetY, pos.z)) {
+					break
+				}
+				chunk.SetBlock(pos.x, targetY, pos.z, configuration.ground.sample(random))
+			}
+			if configuration.vegetationChance > 0 && random.nextFloat() < configuration.vegetationChance {
+				columns = append(columns, featurePosition{x: pos.x, y: pos.y + 1, z: pos.z})
+			}
+		}
+	}
+	for _, column := range columns {
+		r.applyFeatureRef(chunk, random, configuration.vegetation, column.x, column.y, column.z)
+	}
+}
+
+func (r *Router) vegetationReplaceable(tag string, block SurfaceBlock) bool {
+	if tag == "" {
+		return !block.IsAir() && !block.HasFluid()
+	}
+	state, err := registry.BlockStateID(block.Name)
+	return err == nil && registry.BlockTagContains(strings.TrimPrefix(tag, "#"), state)
 }
 
 func (r *Router) placeLake(chunk *GeneratedChunk, random *legacyRandom, configuration lakeConfiguration, x, y, z int) {
@@ -1430,6 +1609,18 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			return
 		}
 		placed.lake = lake
+	case "minecraft:vegetation_patch", "minecraft:waterlogged_vegetation_patch":
+		vegetation, err := parseVegetationPatchConfiguration(configured.Config)
+		if err != nil || vegetation == nil {
+			return
+		}
+		placed.vegetation = vegetation
+	case "minecraft:block_pile":
+		pile, err := parsePileConfiguration(configured.Config)
+		if err != nil || pile == nil {
+			return
+		}
+		placed.pile = pile
 	default:
 		return
 	}
@@ -1451,6 +1642,10 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeSeagrass(chunk, random, *placed.seagrass, x, y, z)
 		case placed.lake != nil:
 			r.placeLake(chunk, random, *placed.lake, x, y, z)
+		case placed.vegetation != nil:
+			r.placeVegetationPatch(chunk, random, *placed.vegetation, x, y, z)
+		case placed.pile != nil:
+			r.placeBlockPile(chunk, random, *placed.pile, x, y, z)
 		}
 		return
 	}
@@ -1499,6 +1694,10 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeSeagrass(chunk, random, *placed.seagrass, position.x, position.y, position.z)
 		case placed.lake != nil:
 			r.placeLake(chunk, random, *placed.lake, position.x, position.y, position.z)
+		case placed.vegetation != nil:
+			r.placeVegetationPatch(chunk, random, *placed.vegetation, position.x, position.y, position.z)
+		case placed.pile != nil:
+			r.placeBlockPile(chunk, random, *placed.pile, position.x, position.y, position.z)
 		}
 	}
 }

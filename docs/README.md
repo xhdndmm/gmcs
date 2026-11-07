@@ -118,11 +118,12 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 - **矿石与部分植被**：已接入原版 generation step 6 的 ore/scattered_ore 地物
   （含煤矿、铜矿、铁矿、金矿、红石、钻石、青金石、绿宝石及深板岩变体），
   以及 generation step 9 的部分树木（straight trunk + blob/spruce/pine
-  foliage，如橡树/桦树/丛林树/云杉/松树）、花草/random patch、海草、岩浆湖。
+  foliage，如橡树/桦树/丛林树/云杉/松树）、花草/random patch、海草、岩浆湖、
+  植被 patch、方块堆。
   使用原版 FeatureSorter 全局顺序和 3×3 区块 section 群系集合；placed_feature 的
   count/in_square/height_range/heightmap/block_predicate_filter/biome/
   rarity_filter 顺序；跨区块边界的矿脉、树干和树冠部分会按当前区块裁切。
-  geode、vegetation patch、其他树形、kelp、disk/bamboo 与全部结构尚未实现；
+  geode、其他树形、kelp、disk/bamboo、结构等尚未实现；
   部分 spring（水/岩浆泉）已接入。
 - **多维度**：主世界/下界/末地三套独立世界，按需生成与持久化（主世界使用
   `world/`，下界/末地为 `world/the_nether/`、`world/the_end/` 子目录）：下界含

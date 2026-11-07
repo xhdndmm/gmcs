@@ -1275,7 +1275,8 @@
     - [x] 部分树木与植被：支持 `straight_trunk_placer` + `blob_foliage_placer`
       / `spruce_foliage_placer` / `pine_foliage_placer`（橡树/桦树/丛林树/
       云杉/松树）、`random_selector`、`random_patch`、`flower`、
-      `simple_block`、`spring_feature`、`seagrass`、`lake`，以及 heightmap /
+      `simple_block`、`spring_feature`、`seagrass`、`lake`、
+      `vegetation_patch`/`waterlogged_vegetation_patch`、`block_pile`，以及 heightmap /
       block_predicate_filter / surface_water_depth_filter / weighted_list 等 placement。
     - [x] 按原版 FeatureSorter 为全部群系建立全局 step/feature index，并按
       3×3 区块 section 的群系集合执行；避免使用区块局部地表群系并集导致
@@ -1283,8 +1284,8 @@
     - [ ] 树木/植被逐方块仍未与官方参考完全收敛：差异主要来自
       区块内群系集合/FeatureSorter 顺序导致的 feature index 不同；跨区块
       树干/树冠目前按当前区块裁切。
-    - [ ] geode、vegetation patch、其他树形（dark oak/acacia/mangrove/
-      cherry 等）、kelp、disk、bamboo、fallen_tree 与全部结构尚未执行。
+    - [ ] geode、其他树形（dark oak/acacia/mangrove/cherry 等）、kelp、disk、
+      bamboo、fallen_tree、multiface_growth 与全部结构尚未执行。
     - [ ] `environment_scan` / `surface_relative_threshold_filter` /
       `noise_threshold_count` 等 placement 尚未实现；使用这些 placement 的
       地物会被标记为 unsupported（例如地下岩浆湖）。
