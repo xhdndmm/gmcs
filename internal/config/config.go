@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -69,10 +68,6 @@ type Config struct {
 	// WorldSeed 是地形生成种子：相同种子生成相同地形。
 	// 首次运行（生成配置文件）时会写入一个随机值。
 	WorldSeed int64 `json:"world_seed"`
-	// WorldGenerator 是主世界地形生成器：legacy（默认，gmcs 自研）或
-	// vanilla（按原版密度函数/含水层/表面规则/carver 生成，实验性）。
-	// vanilla 目前不含地物与结构（无矿物/树木/建筑），且不与旧存档地形兼容。
-	WorldGenerator string `json:"world_generator"`
 	// WorldBorderSize 是世界边界的边长（方块，正方形，以 0,0 为中心）；
 	// 0 表示不限制。启用后客户端显示边界，且生物不会生成/移动出边界。
 	WorldBorderSize int `json:"world_border_size"`
@@ -140,7 +135,6 @@ func Default() Config {
 		ViewDistance:    10,
 		WorldDir:        "world",
 		WorldSeed:       0,
-		WorldGenerator:  "legacy",
 		WorldBorderSize: 0,
 		GameMode:        "survival",
 		SpawnMonsters:   true,
@@ -228,9 +222,6 @@ func (c Config) Validate() error {
 	if c.MaxMobs < 0 {
 		return fmt.Errorf("max mobs must not be negative")
 	}
-	if _, ok := worldGeneratorMode(c.WorldGenerator); !ok {
-		return fmt.Errorf("unknown world generator %q", c.WorldGenerator)
-	}
 	if c.WorldBorderSize < 0 {
 		return fmt.Errorf("world border size must not be negative")
 	}
@@ -253,17 +244,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("log max size must not be negative")
 	}
 	return nil
-}
-
-// worldGeneratorMode 只是配置层的轻量校验，避免 config 依赖 internal/world。
-func worldGeneratorMode(value string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "legacy", "gmcs":
-		return "legacy", true
-	case "vanilla", "official", "vanilla_like":
-		return "vanilla", true
-	}
-	return "", false
 }
 
 // GameMode 是游戏模式（与原版 Game Type ID 一致）。

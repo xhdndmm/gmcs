@@ -148,7 +148,7 @@ func TestOnlineLoginFlow(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.OnlineMode = true
 	cfg.SessionServerURL = sessionServer.URL
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestOnlineLoginFlow(t *testing.T) {
 // dialOnlineTestClient 启动在线模式测试服务器并建立连接（尚未握手）。
 func dialOnlineTestClient(t *testing.T, cfg config.Config) net.Conn {
 	t.Helper()
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

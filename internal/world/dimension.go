@@ -123,15 +123,20 @@ func lower(s string) string {
 	return string(buffer)
 }
 
-// NewGenerator 按维度创建地形生成器。
-func NewGenerator(dimension Dimension, seed int64) Generator {
+// NewGenerator 按维度创建地形生成器。主世界只使用原版算法生成器；
+// 下界/末地仍使用对应的维度生成器。
+func NewGenerator(dimension Dimension, seed int64) (Generator, error) {
 	switch dimension {
 	case DimensionNether:
-		return NetherGenerator{Seed: seed}
+		return NetherGenerator{Seed: seed}, nil
 	case DimensionEnd:
-		return EndGenerator{Seed: seed}
+		return EndGenerator{Seed: seed}, nil
 	default:
-		return SeededGenerator{Seed: seed}
+		generator, err := NewVanillaGenerator(seed)
+		if err != nil {
+			return nil, fmt.Errorf("初始化主世界原版生成器失败：%w", err)
+		}
+		return generator, nil
 	}
 }
 

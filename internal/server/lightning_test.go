@@ -196,7 +196,7 @@ func benchLightningServer(b *testing.B, players int, thundering bool) (*Server, 
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}

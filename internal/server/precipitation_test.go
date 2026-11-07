@@ -188,7 +188,7 @@ func newPrecipitationBenchServer(b *testing.B) *Server {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}

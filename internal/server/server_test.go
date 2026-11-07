@@ -23,7 +23,7 @@ func TestServerListPingAndGracefulShutdown(t *testing.T) {
 	cfg.VersionName = "test-version"
 	cfg.ProtocolVersion = 765
 	cfg.MaxPlayers = 12
-	server, err := New(cfg)
+	server, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestServerListPingAndGracefulShutdown(t *testing.T) {
 func TestServerClosesActiveConnectionOnCancellation(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
-	server, err := New(cfg)
+	server, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

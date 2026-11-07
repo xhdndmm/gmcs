@@ -59,7 +59,7 @@ func TestServerListPingSecureChatFlag(t *testing.T) {
 			cfg := config.Default()
 			cfg.WorldDir = t.TempDir()
 			cfg.OnlineMode = onlineMode
-			instance, err := New(cfg)
+			instance, err := newServer(cfg, testGenerator{})
 			if err != nil {
 				t.Fatal(err)
 			}

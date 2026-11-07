@@ -261,7 +261,7 @@ func TestPlayerPeriodicAutosave(t *testing.T) {
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	cfg.ViewDistance = 2
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestPlayerPeriodicAutosave(t *testing.T) {
 func TestLoadPlayerDataRejectsCorruptFile(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

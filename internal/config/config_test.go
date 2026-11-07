@@ -16,23 +16,6 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	if err := Default().Validate(); err != nil {
 		t.Fatalf("default config should be valid: %v", err)
 	}
-	if Default().WorldGenerator != "legacy" {
-		t.Fatalf("默认 world_generator = %q，want legacy", Default().WorldGenerator)
-	}
-}
-
-func TestWorldGeneratorValidation(t *testing.T) {
-	cfg := Default()
-	for _, value := range []string{"", "legacy", "gmcs", "vanilla", "official", "vanilla_like"} {
-		cfg.WorldGenerator = value
-		if err := cfg.Validate(); err != nil {
-			t.Fatalf("world_generator=%q 应当合法: %v", value, err)
-		}
-	}
-	cfg.WorldGenerator = "unknown"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("非法 world_generator 未被拒绝")
-	}
 }
 
 // TestStringListAcceptsSingleString 验证 ops/starting_items 允许写成单个字符串，

@@ -53,13 +53,28 @@ func TestChunkStreamingOnMovement(t *testing.T) {
 // TestChunkUnloadFarFromPlayers 验证远离所有玩家的区块会从世界内存缓存中卸载
 // （长时间跑图后内存占用保持有界），玩家附近的区块保留，
 // 且被卸载的区块可以正常重新加载。
+// stableChunkCount 等待异步视距区块发送完成，返回稳定的区块数量。
+func stableChunkCount(gameWorld *world.World) int {
+	count := gameWorld.ChunkCount()
+	for stable := 0; stable < 5; {
+		time.Sleep(10 * time.Millisecond)
+		if next := gameWorld.ChunkCount(); next == count {
+			stable++
+		} else {
+			count = next
+			stable = 0
+		}
+	}
+	return count
+}
+
 func TestChunkUnloadFarFromPlayers(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
 	instance, _ := joinServer(t, cfg, "Explorer")
 
-	nearCount := instance.testWorld().ChunkCount()
+	nearCount := stableChunkCount(instance.testWorld())
 	if nearCount == 0 {
 		t.Fatal("玩家附近应已加载区块")
 	}
@@ -218,7 +233,7 @@ func TestChunkUnloadGraceWindow(t *testing.T) {
 	// 调度延迟也不会造成“宽限内被误卸载”的误判。
 	instance.chunkUnloadGrace = 400 * time.Millisecond
 	gameWorld := instance.testWorld()
-	nearCount := gameWorld.ChunkCount()
+	nearCount := stableChunkCount(gameWorld)
 
 	// 加载一组远离玩家的区块（模拟跑图后离开了该区域）。
 	for i := 0; i < 40; i++ {

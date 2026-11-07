@@ -14,7 +14,7 @@ var testMatchBlock = mustBlockState("minecraft:tnt")
 // 取走后清空；未开启跟踪时不记录；已缓存的区块不重复记录。
 func TestChunkLoadTracking(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 7})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestChunkLoadTracking(t *testing.T) {
 // 坐标；区块不在内存缓存中时返回 nil（不触发加载）。
 func TestChunkBlockStatePositions(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 11})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

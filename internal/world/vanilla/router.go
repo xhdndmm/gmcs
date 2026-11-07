@@ -28,6 +28,7 @@ type Router struct {
 	carvers            map[string]carverDefinition
 	biomeCarvers       map[string][]string
 	carverReplaceables map[string]struct{}
+	features           *featureRegistry
 }
 
 // NewRouter 解析指定噪声设置的全部路由项。
@@ -59,6 +60,11 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		}
 		router.biomeCarvers[biome] = names
 	}
+	features, err := parseFeatureRegistry(data)
+	if err != nil {
+		return nil, err
+	}
+	router.features = features
 	router.carverReplaceables = make(map[string]struct{}, len(data.CarverReplaceables))
 	for _, name := range data.CarverReplaceables {
 		router.carverReplaceables[name] = struct{}{}
@@ -97,6 +103,7 @@ func (r *Router) NewSession() *Router {
 		carvers:            r.carvers,
 		biomeCarvers:       r.biomeCarvers,
 		carverReplaceables: r.carverReplaceables,
+		features:           r.features,
 	}
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
 	session.evaluator.finalDensity = session.nodes["final_density"]

@@ -22,7 +22,7 @@ func TestBlockDropsCrops(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestBlockDropTable(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestBlockDropsSilkTouch(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +358,7 @@ func TestBlockDropsFortune(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestRemoveDoublePlantPair(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -117,7 +117,7 @@ func TestChunkPacketCacheHitRate(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func BenchmarkChunkPacketCacheHit(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -166,6 +166,8 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 	if err := r.carveChunk(chunk, sampler, biomes); err != nil {
 		return nil, err
 	}
+	// 原版顺序：CARVERS → FEATURES。当前只执行 generation step 6 的矿石。
+	r.applyOreFeatures(chunk, biomes)
 	chunk.RecalculateHeights()
 	return chunk, nil
 }

@@ -9,9 +9,9 @@ import "testing"
 // benchSink 防止编译器把未使用返回值的编码调用当作死代码消除。
 var benchSink []byte
 
-// BenchmarkGenerateChunk 衡量种子地形生成的单区块成本（含树木）。
-func BenchmarkGenerateChunk(b *testing.B) {
-	generator := SeededGenerator{Seed: 42}
+// BenchmarkFlatGenerateChunk 衡量测试用超平坦区块的生成成本。
+func BenchmarkFlatGenerateChunk(b *testing.B) {
+	generator := FlatGenerator{}
 	chunkX := 0
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -23,7 +23,7 @@ func BenchmarkGenerateChunk(b *testing.B) {
 
 // BenchmarkEncodeChunkDataPacket 衡量区块数据包（含调色板与光照）的编码成本。
 func BenchmarkEncodeChunkDataPacket(b *testing.B) {
-	chunk := SeededGenerator{Seed: 42}.GenerateChunk(0, 0)
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
@@ -34,7 +34,7 @@ func BenchmarkEncodeChunkDataPacket(b *testing.B) {
 // BenchmarkAppendChunkDataPacketReuse 衡量复用输出缓冲的流式编码成本
 // （对应进入世界/移动时连续发送多个区块的实际路径）。
 func BenchmarkAppendChunkDataPacketReuse(b *testing.B) {
-	chunk := SeededGenerator{Seed: 42}.GenerateChunk(0, 0)
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
 	buffer := make([]byte, 0, chunkDataPacketCapacity)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -47,7 +47,7 @@ func BenchmarkAppendChunkDataPacketReuse(b *testing.B) {
 // BenchmarkEncodeChunkPayload 衡量区块存储负载（未压缩）的编码成本，
 // 对应 Flush/UnloadFar 的保存路径。
 func BenchmarkEncodeChunkPayload(b *testing.B) {
-	chunk := SeededGenerator{Seed: 42}.GenerateChunk(0, 0)
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
@@ -58,7 +58,7 @@ func BenchmarkEncodeChunkPayload(b *testing.B) {
 // BenchmarkEncodeCompressedChunkPayload 衡量区块存储负载（zlib 压缩）的编码成本
 // （对象池复用，对应实际保存路径）。
 func BenchmarkEncodeCompressedChunkPayload(b *testing.B) {
-	chunk := SeededGenerator{Seed: 42}.GenerateChunk(0, 0)
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {

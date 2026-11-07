@@ -115,6 +115,29 @@ func newWorldgenRandom() *worldgenRandom {
 	return &worldgenRandom{legacyRandom: newLegacyRandom(0)}
 }
 
+// setDecorationSeed 对应 WorldgenRandom.setDecorationSeed：
+//
+//	setSeed(seed)
+//	l = nextLong() | 1
+//	m = nextLong() | 1
+//	seed = chunkX*l + chunkZ*m ^ seed
+//
+// 返回新的种子，供同一区块内各个 generation step / feature 继续派生。
+func (r *worldgenRandom) setDecorationSeed(seed int64, chunkX, chunkZ int) int64 {
+	r.setSeed(seed)
+	xMultiplier := r.nextLong() | 1
+	zMultiplier := r.nextLong() | 1
+	decorationSeed := int64(chunkX)*xMultiplier + int64(chunkZ)*zMultiplier ^ seed
+	r.setSeed(decorationSeed)
+	return decorationSeed
+}
+
+// setFeatureSeed 对应 WorldgenRandom.setFeatureSeed：
+// seed + featureIndex + 10000*generationStep。
+func (r *worldgenRandom) setFeatureSeed(seed int64, featureIndex, generationStep int) {
+	r.setSeed(seed + int64(featureIndex) + int64(10000*generationStep))
+}
+
 func (r *worldgenRandom) setLargeFeatureSeed(seed int64, chunkX, chunkZ int) int64 {
 	r.setSeed(seed)
 	xMultiplier := r.nextLong()

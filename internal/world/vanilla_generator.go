@@ -6,66 +6,26 @@ package world
 
 import (
 	"log/slog"
-	"strings"
 	"sync"
 
 	"gmcs/internal/registry"
 	"gmcs/internal/world/vanilla"
 )
 
-// GeneratorMode 是主世界地形生成器的选择（配置项 world_generator）。
-type GeneratorMode string
-
-const (
-	// GeneratorLegacy 是 gmcs 自研生成器（当前默认）。
-	GeneratorLegacy GeneratorMode = "legacy"
-	// GeneratorVanilla 是按原版算法生成地形的实验性生成器：
-	// 密度函数 + 含水层 + 表面规则 + cave/canyon 雕刻器。
-	// 地物与结构尚未实现，因此不会生成矿物/树木/建筑。
-	GeneratorVanilla GeneratorMode = "vanilla"
-)
-
-// ParseGeneratorMode 解析配置值；空值回退 legacy。
-func ParseGeneratorMode(value string) (GeneratorMode, bool) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "legacy", "gmcs":
-		return GeneratorLegacy, true
-	case "vanilla", "official", "vanilla_like":
-		return GeneratorVanilla, true
-	default:
-		return GeneratorLegacy, false
-	}
-}
-
-// NewGeneratorWithMode 按维度与模式创建生成器。
-// vanilla 模式目前只支持主世界；下界/末地仍使用原有生成器。
-func NewGeneratorWithMode(dimension Dimension, seed int64, mode GeneratorMode) Generator {
-	if dimension == DimensionOverworld && mode == GeneratorVanilla {
-		generator, err := NewVanillaGenerator(seed)
-		if err == nil {
-			return generator
-		}
-		slog.Error("原版地形生成器初始化失败，回退到 legacy 生成器", "err", err)
-	}
-	return NewGenerator(dimension, seed)
-}
-
 // VanillaGenerator 用 internal/world/vanilla 的原版算法生成主世界区块。
 //
 // 并发模型：Router 本身持有可变求值缓存，不能并发使用；这里用 sync.Pool
 // 为每个 worker 提供独立的 Router 会话（共享只读的密度函数图与噪声实例）。
-// 因此 GenerateChunk 可以像 legacy 生成器一样被异步预生成 worker 并发调用。
+// 因此 GenerateChunk 可以被异步预生成 worker 并发调用。
 type VanillaGenerator struct {
-	seed     int64
-	base     *vanilla.Router
-	fallback Generator
-	pool     sync.Pool
-	heights  sync.Map // ChunkPos -> *[256]int（SurfaceY 按区块缓存）
-	warned   sync.Map // 未收录方块名（只记录一次，避免刷日志）
+	base    *vanilla.Router
+	pool    sync.Pool
+	heights sync.Map // ChunkPos -> *[256]int（SurfaceY 按区块缓存）
+	warned  sync.Map // 未收录方块名（只记录一次，避免刷日志）
 }
 
-// NewVanillaGenerator 创建原版算法生成器。数据缺失或解析失败时返回错误，
-// 调用方应回退到 legacy 生成器。
+// NewVanillaGenerator 创建原版算法生成器。数据缺失或解析失败时返回错误；
+// 主世界没有其他地形生成器作为回退，调用方应中止启动。
 func NewVanillaGenerator(seed int64) (*VanillaGenerator, error) {
 	data, err := vanilla.Load()
 	if err != nil {
@@ -75,7 +35,7 @@ func NewVanillaGenerator(seed int64) (*VanillaGenerator, error) {
 	if err != nil {
 		return nil, err
 	}
-	generator := &VanillaGenerator{seed: seed, base: base, fallback: SeededGenerator{Seed: seed}}
+	generator := &VanillaGenerator{base: base}
 	generator.pool.New = func() any { return base.NewSession() }
 	return generator, nil
 }
@@ -86,10 +46,11 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 	defer g.pool.Put(session)
 	generated, err := session.GenerateChunk(x, z)
 	if err != nil {
-		// 运行期生成失败属于数据/实现错误；不让整个区块加载失败，
-		// 回退到 legacy 生成器并记录错误（便于定位）。
-		slog.Error("原版区块生成失败，回退到 legacy", "chunk_x", x, "chunk_z", z, "err", err)
-		return g.fallback.GenerateChunk(x, z)
+		// 运行期生成失败属于数据/实现错误。这里不伪装成成功区块：
+		// 记录错误并生成一个平坦的应急区块，避免单个区块拖垮整个服务。
+		// 正常数据不应走到这里；测试会覆盖初始化与生成路径。
+		slog.Error("原版区块生成失败，返回平坦应急区块", "chunk_x", x, "chunk_z", z, "err", err)
+		return FlatGenerator{}.GenerateChunk(x, z)
 	}
 	chunk := NewChunkDim(x, z, DimensionOverworld)
 	minX := x * SectionSize
@@ -109,8 +70,8 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 }
 
 // biomeGrid 生成 gmcs 区块使用的 4×4 群系网格。
-// 原版 Biomes 是 4×4×4；gmcs 的区块存储只保留地表格网，这里按地表高度附近
-// 采样（y=64），与旧生成器“地表群系”的语义一致。
+// 原版 Biomes 是 4×4×4；gmcs 的区块存储只保留地表格网，这里按 y=64 采样
+// 地表格网。
 func (g *VanillaGenerator) biomeGrid(session *vanilla.Router, minX, minZ int) [16]uint16 {
 	var grid [16]uint16
 	source, err := session.Biomes()

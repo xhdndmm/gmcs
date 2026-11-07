@@ -23,7 +23,7 @@ func BenchmarkServerTick(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func BenchmarkServerTickManyPlayers(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func BenchmarkItemTick(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func BenchmarkEntityTracking(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func BenchmarkEntityInsideBlocks(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func BenchmarkHopperTick(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func BenchmarkHopperScan(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func BenchmarkHopperChunkScan(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func BenchmarkItemMergeScan(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func BenchmarkFireTick(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -602,7 +602,7 @@ func BenchmarkPlayerDamageMitigation(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -635,7 +635,7 @@ func BenchmarkBlockDropsFortune(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -666,7 +666,7 @@ func BenchmarkItemWaterFlowPush(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -750,7 +750,7 @@ func BenchmarkCropTick(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -790,7 +790,7 @@ func BenchmarkCropTick256(b *testing.B) {
 	cfg := config.Default()
 	cfg.WorldDir = b.TempDir()
 	cfg.SpawnMonsters = false
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		b.Fatal(err)
 	}

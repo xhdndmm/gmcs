@@ -9,34 +9,21 @@ import (
 	"testing"
 )
 
-func TestParseGeneratorMode(t *testing.T) {
-	cases := map[string]GeneratorMode{
-		"":          GeneratorLegacy,
-		"legacy":    GeneratorLegacy,
-		"gmcs":      GeneratorLegacy,
-		"vanilla":   GeneratorVanilla,
-		"official":  GeneratorVanilla,
-		" VANILLA ": GeneratorVanilla,
-	}
-	for input, want := range cases {
-		got, ok := ParseGeneratorMode(input)
-		if !ok || got != want {
-			t.Fatalf("ParseGeneratorMode(%q) = %q,%v; want %q,true", input, got, ok, want)
-		}
-	}
-	if _, ok := ParseGeneratorMode("unknown"); ok {
-		t.Fatal("unknown generator mode accepted")
-	}
-}
-
-func TestGeneratorModeFallbackForOtherDimensions(t *testing.T) {
-	generator := NewGeneratorWithMode(DimensionNether, 1, GeneratorVanilla)
-	if _, ok := generator.(NetherGenerator); !ok {
+func TestNewGeneratorDimensions(t *testing.T) {
+	if generator, err := NewGenerator(DimensionNether, 1); err != nil {
+		t.Fatalf("nether: %v", err)
+	} else if _, ok := generator.(NetherGenerator); !ok {
 		t.Fatalf("nether generator = %T, want NetherGenerator", generator)
 	}
-	generator = NewGeneratorWithMode(DimensionOverworld, 1, GeneratorLegacy)
-	if _, ok := generator.(SeededGenerator); !ok {
-		t.Fatalf("overworld legacy generator = %T, want SeededGenerator", generator)
+	if generator, err := NewGenerator(DimensionEnd, 1); err != nil {
+		t.Fatalf("end: %v", err)
+	} else if _, ok := generator.(EndGenerator); !ok {
+		t.Fatalf("end generator = %T, want EndGenerator", generator)
+	}
+	if generator, err := NewGenerator(DimensionOverworld, 1); err != nil {
+		t.Fatalf("overworld: %v", err)
+	} else if _, ok := generator.(*VanillaGenerator); !ok {
+		t.Fatalf("overworld generator = %T, want *VanillaGenerator", generator)
 	}
 }
 

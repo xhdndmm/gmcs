@@ -12,7 +12,7 @@ import (
 // TestUnloadFarGraceKeepsRecentlyFarChunks 验证卸载宽限期：区块首次被判定
 // 远离所有玩家后先保留（只记录计时起点），连续远离超过宽限后才真正卸载。
 func TestUnloadFarGraceKeepsRecentlyFarChunks(t *testing.T) {
-	instance, err := Open(t.TempDir(), SeededGenerator{Seed: 3})
+	instance, err := Open(t.TempDir(), FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestUnloadFarGraceKeepsRecentlyFarChunks(t *testing.T) {
 // 时序设计不依赖“sleep 不能太久”：宽限内的清零与重新计时通过
 // “首次判远 → 变近 → 立即再判远”的顺序验证，中间的等待只用于超过宽限。
 func TestUnloadFarGraceResetsWhenNear(t *testing.T) {
-	instance, err := Open(t.TempDir(), SeededGenerator{Seed: 9})
+	instance, err := Open(t.TempDir(), FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestUnloadFarGraceResetsWhenNear(t *testing.T) {
 // 缓存数量保持有界，且被卸载的区块可从磁盘恢复出与生成器一致的内容。
 func TestUnloadFarUnloadsDistantChunks(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 1})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestUnloadFarUnloadsDistantChunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	generated := SeededGenerator{Seed: 1}.GenerateChunk(0, 0)
+	generated := FlatGenerator{}.GenerateChunk(0, 0)
 	for x := 0; x < SectionSize; x += 5 {
 		top, y, ok := generated.TopBlock(x, x)
 		if !ok {
@@ -172,7 +172,7 @@ func TestUnloadFarUnloadsDistantChunks(t *testing.T) {
 // TestUnloadFarSavesDirtyChunks 验证带修改的区块在卸载前写盘，不会丢数据。
 func TestUnloadFarSavesDirtyChunks(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 7})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestUnloadFarSavesDirtyChunks(t *testing.T) {
 // TestUnloadFarWithoutCentersIsNoop 验证没有中心点（没有玩家）时不卸载任何区块。
 func TestUnloadFarWithoutCentersIsNoop(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 1})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestUnloadFarWithoutCentersIsNoop(t *testing.T) {
 // TestCloseSavesDirtyChunks 验证关闭世界会把已生成（待保存）的区块写入磁盘。
 func TestCloseSavesDirtyChunks(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 3})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestCloseSavesDirtyChunks(t *testing.T) {
 // （在 -race 下运行才有意义）。
 func TestChunkConcurrentEditAndRead(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 21})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestChunkConcurrentEditAndRead(t *testing.T) {
 // （服务器没有任何玩家时用其释放区块内存）。
 func TestUnloadAllReleasesEveryChunk(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 3})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestUnloadAllReleasesEveryChunk(t *testing.T) {
 // TestReleaseRegionHandles 验证空闲释放会清空区域文件句柄缓存。
 func TestReleaseRegionHandles(t *testing.T) {
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 5})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

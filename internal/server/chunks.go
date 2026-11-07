@@ -436,18 +436,29 @@ func (s *Server) unloadAllChunks() error {
 	s.worldMu.Unlock()
 
 	var firstErr error
-	for dim, gameWorld := range worlds {
-		unloaded, err := gameWorld.UnloadAll()
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
+	// 玩家退出时可能仍有在途的视距区块加载。UnloadAll 只清理调用瞬间已存在
+	// 的区块，因此在途加载完成后可能重新出现少量区块；这里做有界重试，
+	// 避免空闲服务器长期残留这些区块（测试把周期卸载设为 1h 时会暴露）。
+	for attempt := 0; attempt < 16; attempt++ {
+		remaining := 0
+		for dim, gameWorld := range worlds {
+			unloaded, err := gameWorld.UnloadAll()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
 			}
-			continue
+			s.releaseChunkCaches(dim, unloaded)
+			if len(unloaded) > 0 {
+				slog.Info("空闲服务器释放区块", "dimension", dim, "count", len(unloaded))
+			}
+			remaining += gameWorld.ChunkCount()
 		}
-		s.releaseChunkCaches(dim, unloaded)
-		if len(unloaded) > 0 {
-			slog.Info("空闲服务器释放区块", "dimension", dim, "count", len(unloaded))
+		if remaining == 0 {
+			break
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	// 空闲服务器不再持有区域文件句柄（fd 交给 GC 回收）。
 	world.ReleaseRegionHandles()

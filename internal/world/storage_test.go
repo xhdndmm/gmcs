@@ -60,10 +60,10 @@ func TestChunkPayloadRoundTrip(t *testing.T) {
 	}
 }
 
-// TestChunkPayloadRoundTripSeeded 逐方块校验种子地形区块的存储负载编解码
+// TestChunkPayloadRoundTripSeeded 逐方块校验测试地形区块的存储负载编解码
 // （覆盖紧凑存储的展开与重建，包括 1/2/4/8 位调色板路径）。
 func TestChunkPayloadRoundTripSeeded(t *testing.T) {
-	chunk := SeededGenerator{Seed: 9}.GenerateChunk(-3, 4)
+	chunk := FlatGenerator{}.GenerateChunk(-3, 4)
 	decoded, err := decodeChunkPayload(encodeChunkPayload(chunk))
 	if err != nil {
 		t.Fatal(err)

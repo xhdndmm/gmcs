@@ -20,7 +20,7 @@ import (
 func TestMobPersistence(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
-	first, err := New(cfg)
+	first, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestMobPersistence(t *testing.T) {
 	}
 
 	// 模拟重启：用同一世界目录新建服务器。
-	second, err := New(cfg)
+	second, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestEntityPersistenceRejectsInvalidCoordinates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg.WorldDir, entityFileName), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestEntityPersistenceRejectsInvalidCoordinates(t *testing.T) {
 func TestXPOrbPersistence(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
-	first, err := New(cfg)
+	first, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestXPOrbPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, err := New(cfg)
+	second, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestMobPersistenceSkipsUnknownType(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg.WorldDir, entityFileName), content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestMobPersistenceSkipsUnknownType(t *testing.T) {
 func TestItemPersistence(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
-	first, err := New(cfg)
+	first, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestItemPersistence(t *testing.T) {
 	}
 
 	// 模拟重启：用同一世界目录新建服务器。
-	second, err := New(cfg)
+	second, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestItemPersistenceSanitizesInvalidState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg.WorldDir, entityFileName), []byte(payload), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestItemPersistenceSanitizesInvalidState(t *testing.T) {
 func TestArrowPersistence(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
-	first, err := New(cfg)
+	first, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestArrowPersistence(t *testing.T) {
 	}
 
 	// 模拟重启：用同一世界目录新建服务器。
-	second, err := New(cfg)
+	second, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

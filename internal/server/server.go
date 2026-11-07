@@ -373,8 +373,12 @@ func (s *Server) worldForLocked(dim world.Dimension) *world.World {
 	if sub := world.DimensionDir(dim); sub != "" {
 		dir = filepath.Join(dir, sub)
 	}
-	generatorMode, _ := world.ParseGeneratorMode(s.config.WorldGenerator)
-	gameWorld, err := world.OpenDimension(dir, world.NewGeneratorWithMode(dim, s.config.WorldSeed, generatorMode), dim)
+	generator, err := world.NewGenerator(dim, s.config.WorldSeed)
+	if err != nil {
+		slog.Error("创建维度生成器失败，回退到主世界", "dimension", dim, "error", err)
+		return s.worlds[world.DimensionOverworld]
+	}
+	gameWorld, err := world.OpenDimension(dir, generator, dim)
 	if err != nil {
 		slog.Error("打开维度世界失败，回退到主世界", "dimension", dim, "error", err)
 		return s.worlds[world.DimensionOverworld]
@@ -457,6 +461,12 @@ func (s *Server) autosaveLoop(ctx context.Context, interval time.Duration) {
 }
 
 func New(cfg config.Config) (*Server, error) {
+	return newServer(cfg, nil)
+}
+
+// newServer 是 New 的内部实现。overworldGenerator 仅用于测试注入固定地形；
+// 生产路径传 nil，由 world.NewGenerator 创建原版算法生成器。
+func newServer(cfg config.Config, overworldGenerator world.Generator) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -464,8 +474,15 @@ func New(cfg config.Config) (*Server, error) {
 	if !ok {
 		return nil, fmt.Errorf("未知游戏模式 %q", cfg.GameMode)
 	}
-	generatorMode, _ := world.ParseGeneratorMode(cfg.WorldGenerator)
-	gameWorld, err := world.OpenDimension(cfg.WorldDir, world.NewGeneratorWithMode(world.DimensionOverworld, cfg.WorldSeed, generatorMode), world.DimensionOverworld)
+	var err error
+	generator := overworldGenerator
+	if generator == nil {
+		generator, err = world.NewGenerator(world.DimensionOverworld, cfg.WorldSeed)
+		if err != nil {
+			return nil, err
+		}
+	}
+	gameWorld, err := world.OpenDimension(cfg.WorldDir, generator, world.DimensionOverworld)
 	if err != nil {
 		return nil, err
 	}

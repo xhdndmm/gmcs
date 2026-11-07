@@ -30,7 +30,7 @@ func joinServer(t *testing.T, cfg config.Config, name string) (*Server, net.Conn
 func joinServerObserved(t *testing.T, cfg config.Config, name string, observers ...func(id int32, payload []byte)) (*Server, net.Conn) {
 	t.Helper()
 	cfg.ViewDistance = 2 // 测试用小视距，减少区块生成量
-	instance, err := New(cfg)
+	instance, err := newServer(cfg, testGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

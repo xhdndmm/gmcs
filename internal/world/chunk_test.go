@@ -729,8 +729,8 @@ func TestChunkHeightmaps(t *testing.T) {
 
 	// 超平坦：基岩 + 两层泥土 + 草方块，所有列高度一致。
 	check("flat", FlatGenerator{}.GenerateChunk(0, 0))
-	// 种子地形：起伏高度与树木。
-	check("seeded", SeededGenerator{Seed: 42}.GenerateChunk(0, 0))
+	// 固定测试地形。
+	check("flat-2", FlatGenerator{}.GenerateChunk(0, 0))
 	// 手工构造：水柱取水面高度，空列为 0。
 	handmade := NewChunk(0, 0)
 	handmade.SetBlockState(1, 60, 2, StoneBlock)

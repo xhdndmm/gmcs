@@ -18,7 +18,7 @@ func TestChunkMemoryDemo(t *testing.T) {
 		t.Skip("手工测量：设置 GMCS_MEM_DEMO=1 启用")
 	}
 	dir := t.TempDir()
-	instance, err := Open(dir, SeededGenerator{Seed: 5})
+	instance, err := Open(dir, FlatGenerator{})
 	if err != nil {
 		t.Fatal(err)
 	}

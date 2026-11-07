@@ -27,11 +27,12 @@ go test -run=^$ -bench=. -benchmem ./...
 
 ## 2. 当前基准快照（实测）
 
-本节始终对应最新代码；各次优化的历史过程见第 3 节。
+本节始终对应最新代码；各次优化的历史过程见第 3 节。旧版 `legacy` 生成器
+已移除，下文历史数据中的“种子地形”基准为旧实现记录；生产主世界区块基准见
+`BenchmarkVanillaGeneratorChunk`（3.45）。
 
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
-| `BenchmarkGenerateChunk` | world | ≈446 µs/op | 25,900 B/op | 52 allocs/op |
 | `BenchmarkEncodeChunkDataPacket` | world | ≈81.9 µs/op | 159,676 B/op | 2 allocs/op |
 | `BenchmarkAppendChunkDataPacketReuse` | world | ≈49.0 µs/op | 6 B/op | 0 allocs/op |
 | `BenchmarkEncodeChunkPayload` | world | ≈65.1 µs/op | 98,304 B/op | 1 allocs/op |
@@ -68,8 +69,7 @@ go test -run=^$ -bench=. -benchmem ./...
 
 各基准覆盖的内容：
 
-- `BenchmarkGenerateChunk`：用固定种子生成一个区块（高度图 + 层次 + 水域/沙滩 + 植被），
-  覆盖地形生成热路径（含跨区块树冠扫描与洞穴雕刻）。
+- `BenchmarkFlatGenerateChunk`：测试用超平坦区块的生成成本，不代表生产主世界。
 - `BenchmarkEncodeChunkDataPacket`：把已生成区块编码为 1.21.11 Chunk Data and Update
   Light 包（调色板容器 + heightmap + 全亮天空光）。
 - `BenchmarkAppendChunkDataPacketReuse`：复用输出缓冲连续编码（进入世界/移动时
@@ -1543,5 +1543,7 @@ center factor 为 0，因此默认数据下数值不变，但自定义 carver �
 单类雕刻器残差已经较小，但**三类同时启用时仍有约 8,204 / 589,824 的残差**，
 远大于单类残差之和；这说明多个 carver 同源区块上的起始索引/mask 交互仍未
 完全对齐。残差仍集中在 `water → stone`（gmcs 少雕出含水洞穴）与
-`air → deepslate`（少雕出洞穴）。目前**不声称与原版完全一致**；
-`world_generator=vanilla` 仍为实验性选项，默认是 `legacy`。
+`air → deepslate`（少雕出洞穴）。目前**不声称与原版完全一致**。
+
+旧版 `legacy` 生成器已移除，主世界固定使用原版算法生成器。当前只执行
+ore/scattered_ore 地物；树木、植被、湖泊、结构等其他地物尚未实现。
