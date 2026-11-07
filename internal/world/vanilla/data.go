@@ -13,9 +13,12 @@
 // 主世界固定使用该生成器（见 internal/world/vanilla_generator.go）。
 //
 // 数据由 tools/genworldgen 从官方 jar 提取并压缩为 data/worldgen.json.gz
-// （overworld 的噪声设置/密度函数/噪声参数/群系气候/雕刻器/地物定义与引用）；overworld 的多噪声
-// 群系参数表是代码内建的，由 tools/vgoracle/BiomeParameters.java 反射导出为
-// data/biome_parameters.json.gz。仓库里不保存原始数据包文件。
+// （overworld/nether/end 的噪声设置、密度函数、噪声参数、群系气候、雕刻器、
+// 地物定义与引用）；overworld/nether 的多噪声群系参数表是代码内建的，分别由
+// tools/vgoracle/BiomeParameters.java 及其 nether 导出流程反射生成
+// data/biome_parameters.json.gz 与 data/biome_parameters_nether.json.gz。
+// 末地使用 TheEndBiomeSource 规则，不依赖多噪声参数表。仓库里不保存原始
+// 数据包文件。
 package vanilla
 
 import (
