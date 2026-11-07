@@ -155,3 +155,90 @@ func TestOceanHasNoSurfaceGrass(t *testing.T) {
 		}
 	}
 }
+
+func TestLakeFeaturePlacesLava(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := 30; y <= 34; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:stone"})
+			}
+		}
+	}
+	placed := router.features.placed["minecraft:lake_lava_surface"]
+	if !placed.supported || placed.lake == nil {
+		t.Fatal("lake_lava_underground 未被解析为 lake")
+	}
+	random := newWorldgenRandom()
+	random.setSeed(12345)
+	router.placeLake(chunk, random.legacyRandom, *placed.lake, 8, 32, 8)
+	lava := 0
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		if block.Name == "minecraft:lava" {
+			lava++
+		}
+	})
+	if lava == 0 {
+		t.Fatal("湖泊没有放置岩浆")
+	}
+}
+
+func TestSeagrassFeaturePlacesPlant(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			chunk.SetBlock(x, 50, z, SurfaceBlock{Name: "minecraft:sand"})
+			for y := 51; y <= 62; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:water"})
+			}
+		}
+	}
+	random := newWorldgenRandom()
+	random.setSeed(999)
+	router.placeSeagrass(chunk, random.legacyRandom, seagrassConfiguration{probability: 1}, 8, 51, 8)
+	if block := chunk.BlockAt(8, 51, 8); block.Name != "minecraft:tall_seagrass" && block.Name != "minecraft:seagrass" {
+		t.Fatalf("海草没有放置，实际为 %s", block.Name)
+	}
+}
+
+func TestSpruceTreesGeneratedInTaiga(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for chunkX := 280; chunkX < 340 && !found; chunkX++ {
+		chunk, err := router.GenerateChunk(chunkX, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+			if block.Name == "minecraft:spruce_log" || block.Name == "minecraft:spruce_leaves" {
+				found = true
+			}
+		})
+	}
+	if !found {
+		t.Fatal("taiga 区域没有生成云杉")
+	}
+}

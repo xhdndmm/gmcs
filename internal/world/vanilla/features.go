@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"gmcs/internal/registry"
@@ -20,6 +21,14 @@ type featureRegistry struct {
 	placed        map[string]placedFeature
 	configured    map[string]json.RawMessage
 	biomeFeatures map[string][][]string
+	// featureSteps 是原版 FeatureSorter 对全部群系求出的全局 step 顺序。
+	// 每个 step 内的下标就是 setFeatureSeed 使用的 feature index。
+	featureSteps []featureOrderStep
+}
+
+type featureOrderStep struct {
+	names []string
+	index map[string]int
 }
 
 type placedFeature struct {
@@ -31,6 +40,8 @@ type placedFeature struct {
 	patch      *patchConfiguration
 	simple     *simpleBlockConfiguration
 	spring     *springConfiguration
+	seagrass   *seagrassConfiguration
+	lake       *lakeConfiguration
 	placements []placementModifier
 	supported  bool
 }
@@ -60,6 +71,15 @@ type patchConfiguration struct {
 
 type simpleBlockConfiguration struct {
 	provider stateProvider
+}
+
+type lakeConfiguration struct {
+	fluid   stateProvider
+	barrier stateProvider
+}
+
+type seagrassConfiguration struct {
+	probability float32
 }
 
 type springConfiguration struct {
@@ -116,15 +136,17 @@ type blockPredicate struct {
 }
 
 type treeConfiguration struct {
-	trunk         SurfaceBlock
-	leaves        SurfaceBlock
-	baseHeight    int
-	heightRandA   int
-	heightRandB   int
-	foliageType   string
-	foliageRadius intProvider
-	foliageOffset intProvider
-	foliageHeight int
+	trunk               SurfaceBlock
+	leaves              SurfaceBlock
+	baseHeight          int
+	heightRandA         int
+	heightRandB         int
+	foliageType         string
+	foliageRadius       intProvider
+	foliageOffset       intProvider
+	foliageHeight       int
+	foliageHeightRandom intProvider
+	foliageTrunkHeight  intProvider
 }
 
 type intProvider struct {
@@ -274,6 +296,18 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 				return nil, fmt.Errorf("解析 %s 的 spring 配置失败：%w", placed.feature, err)
 			}
 			placed.spring = spring
+		case "minecraft:seagrass":
+			seagrass, err := parseSeagrassConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的海草地物配置失败：%w", placed.feature, err)
+			}
+			placed.seagrass = seagrass
+		case "minecraft:lake":
+			lake, err := parseLakeConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的湖泊配置失败：%w", placed.feature, err)
+			}
+			placed.lake = lake
 		}
 		for index, rawModifier := range encoded.Placement {
 			modifier, err := parsePlacementModifier(rawModifier)
@@ -285,7 +319,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			}
 			placed.placements = append(placed.placements, modifier)
 		}
-		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil {
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil {
 			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
@@ -297,7 +331,122 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 		}
 		registry.biomeFeatures[qualify(biome)] = steps
 	}
+	registry.buildFeatureOrder()
 	return registry, nil
+}
+
+// buildFeatureOrder 复刻原版 FeatureSorter.buildFeaturesPerStep：
+// 1. 按群系注册顺序扫描全部群系，给每个 (step, feature) 记录首次出现顺序；
+// 2. 同一群系内相邻地物连边；
+// 3. 对 DAG 做 DFS 后序，反转得到拓扑序；
+// 4. 按 step 分组，组内顺序即 setFeatureSeed 的 index。
+func (r *featureRegistry) buildFeatureOrder() {
+	biomes := make([]string, 0, len(r.biomeFeatures))
+	for name := range r.biomeFeatures {
+		biomes = append(biomes, name)
+	}
+	sort.Strings(biomes)
+
+	type node struct {
+		step    int
+		feature string
+	}
+	featureIDs := make(map[string]int)
+	nextID := 0
+	nodes := make(map[node]int)
+	edges := make(map[node]map[node]struct{})
+	for _, biome := range biomes {
+		steps := r.biomeFeatures[biome]
+		flattened := make([]node, 0)
+		for step, names := range steps {
+			for _, name := range names {
+				name = qualify(name)
+				if _, ok := featureIDs[name]; !ok {
+					featureIDs[name] = nextID
+					nextID++
+				}
+				n := node{step: step, feature: name}
+				nodes[n] = featureIDs[name]
+				flattened = append(flattened, n)
+			}
+		}
+		for i := 0; i+1 < len(flattened); i++ {
+			if edges[flattened[i]] == nil {
+				edges[flattened[i]] = make(map[node]struct{})
+			}
+			edges[flattened[i]][flattened[i+1]] = struct{}{}
+		}
+	}
+	ordered := make([]node, 0, len(nodes))
+	for n := range nodes {
+		ordered = append(ordered, n)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].step != ordered[j].step {
+			return ordered[i].step < ordered[j].step
+		}
+		return nodes[ordered[i]] < nodes[ordered[j]]
+	})
+	visited := make(map[node]bool)
+	inProgress := make(map[node]bool)
+	result := make([]node, 0, len(nodes))
+	var visit func(node) bool
+	visit = func(n node) bool {
+		if visited[n] {
+			return true
+		}
+		if inProgress[n] {
+			return false
+		}
+		inProgress[n] = true
+		children := make([]node, 0, len(edges[n]))
+		for child := range edges[n] {
+			children = append(children, child)
+		}
+		sort.Slice(children, func(i, j int) bool {
+			if children[i].step != children[j].step {
+				return children[i].step < children[j].step
+			}
+			return nodes[children[i]] < nodes[children[j]]
+		})
+		for _, child := range children {
+			if !visit(child) {
+				return false
+			}
+		}
+		delete(inProgress, n)
+		visited[n] = true
+		result = append(result, n)
+		return true
+	}
+	ok := true
+	for _, n := range ordered {
+		if !visit(n) {
+			ok = false
+			break
+		}
+	}
+	if !ok {
+		// 数据异常时退回各 step 的首次出现顺序，保证服务器仍能启动。
+		r.featureSteps = nil
+		return
+	}
+	maxStep := 0
+	for _, n := range result {
+		if n.step+1 > maxStep {
+			maxStep = n.step + 1
+		}
+	}
+	steps := make([]featureOrderStep, maxStep)
+	for i := range steps {
+		steps[i].index = make(map[string]int)
+	}
+	for i := len(result) - 1; i >= 0; i-- {
+		n := result[i]
+		steps[n.step].index[n.feature] = len(steps[n.step].names)
+		steps[n.step].names = append(steps[n.step].names, n.feature)
+	}
+	r.featureSteps = steps
 }
 
 func parseOreConfiguration(raw json.RawMessage) (*oreConfiguration, error) {
@@ -544,6 +693,35 @@ func parseStateProvider(raw json.RawMessage) (stateProvider, error) {
 	return provider, nil
 }
 
+func parseLakeConfiguration(raw json.RawMessage) (*lakeConfiguration, error) {
+	var encoded struct {
+		Fluid   json.RawMessage `json:"fluid"`
+		Barrier json.RawMessage `json:"barrier"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	fluid, err := parseStateProvider(encoded.Fluid)
+	if err != nil {
+		return nil, err
+	}
+	barrier, err := parseStateProvider(encoded.Barrier)
+	if err != nil {
+		return nil, err
+	}
+	return &lakeConfiguration{fluid: fluid, barrier: barrier}, nil
+}
+
+func parseSeagrassConfiguration(raw json.RawMessage) (*seagrassConfiguration, error) {
+	var encoded struct {
+		Probability float32 `json:"probability"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	return &seagrassConfiguration{probability: encoded.Probability}, nil
+}
+
 func parseSpringConfiguration(raw json.RawMessage) (*springConfiguration, error) {
 	var encoded struct {
 		State              json.RawMessage `json:"state"`
@@ -590,16 +768,19 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			HeightRandB int    `json:"height_rand_b"`
 		} `json:"trunk_placer"`
 		FoliagePlacer struct {
-			Type   string          `json:"type"`
-			Radius json.RawMessage `json:"radius"`
-			Height json.RawMessage `json:"height"`
+			Type        string          `json:"type"`
+			Radius      json.RawMessage `json:"radius"`
+			Height      json.RawMessage `json:"height"`
+			Offset      json.RawMessage `json:"offset"`
+			TrunkHeight json.RawMessage `json:"trunk_height"`
 		} `json:"foliage_placer"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return nil, nil
 	}
+	foliageType := qualify(encoded.FoliagePlacer.Type)
 	if qualify(encoded.TrunkPlacer.Type) != "minecraft:straight_trunk_placer" ||
-		qualify(encoded.FoliagePlacer.Type) != "minecraft:blob_foliage_placer" {
+		(foliageType != "minecraft:blob_foliage_placer" && foliageType != "minecraft:spruce_foliage_placer" && foliageType != "minecraft:pine_foliage_placer") {
 		return nil, nil
 	}
 	trunk, err := parseFeatureSurfaceBlock(encoded.TrunkProvider.State)
@@ -615,21 +796,44 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 		return nil, nil
 	}
 	var foliageHeight int
+	var foliageHeightRandom intProvider
 	if len(encoded.FoliagePlacer.Height) != 0 {
 		if err := json.Unmarshal(encoded.FoliagePlacer.Height, &foliageHeight); err != nil {
-			return nil, nil
+			provider, providerErr := parseIntProvider(encoded.FoliagePlacer.Height)
+			if providerErr != nil {
+				return nil, nil
+			}
+			foliageHeightRandom = provider
 		}
 	}
+	offset, err := parseOptionalIntProvider(encoded.FoliagePlacer.Offset, 0)
+	if err != nil {
+		return nil, nil
+	}
+	trunkHeight, err := parseOptionalIntProvider(encoded.FoliagePlacer.TrunkHeight, 0)
+	if err != nil {
+		return nil, nil
+	}
 	return &treeConfiguration{
-		trunk:         trunk,
-		leaves:        leaves,
-		baseHeight:    encoded.TrunkPlacer.BaseHeight,
-		heightRandA:   encoded.TrunkPlacer.HeightRandA,
-		heightRandB:   encoded.TrunkPlacer.HeightRandB,
-		foliageType:   qualify(encoded.FoliagePlacer.Type),
-		foliageRadius: radius,
-		foliageHeight: foliageHeight,
+		trunk:               trunk,
+		leaves:              leaves,
+		baseHeight:          encoded.TrunkPlacer.BaseHeight,
+		heightRandA:         encoded.TrunkPlacer.HeightRandA,
+		heightRandB:         encoded.TrunkPlacer.HeightRandB,
+		foliageType:         foliageType,
+		foliageRadius:       radius,
+		foliageOffset:       offset,
+		foliageHeight:       foliageHeight,
+		foliageHeightRandom: foliageHeightRandom,
+		foliageTrunkHeight:  trunkHeight,
 	}, nil
+}
+
+func parseOptionalIntProvider(raw json.RawMessage, fallback int) (intProvider, error) {
+	if len(raw) == 0 {
+		return intProvider{kind: "constant", constant: fallback}, nil
+	}
+	return parseIntProvider(raw)
 }
 
 func parseIntProvider(raw json.RawMessage) (intProvider, error) {
@@ -695,50 +899,84 @@ func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 	if r.features == nil {
 		return
 	}
-	// 收集该区块所有地表群系的地物列表，并保留首次出现顺序。
-	// 原版 FeatureSorter 还会考虑全部 4×4×4 群系并做拓扑排序；这里先实现
-	// 地表群系并集，树木/矿石以外的地物在后续阶段继续对齐。
-	maxSteps := 0
-	byStep := make([][]string, 0, 11)
-	seenByStep := make([]map[string]struct{}, 0, 11)
-	for gridZ := 0; gridZ < 4; gridZ++ {
-		for gridX := 0; gridX < 4; gridX++ {
-			biome := biomes.BiomeAtBlock(chunk.MinX+gridX*4+2, 64, chunk.MinZ+gridZ*4+2)
+	if len(r.features.featureSteps) == 0 {
+		return
+	}
+	// 原版 applyBiomeDecoration 收集中心区块周围 3×3 区块内全部
+	// 4×4×4 section 群系，再用全局 FeatureSorter 顺序筛选本 step 的
+	// feature index，并按升序执行。
+	present := r.collectFeatureBiomes(chunk, biomes)
+	random := newWorldgenRandom()
+	decorationSeed := random.setDecorationSeed(r.seed, chunk.ChunkX, chunk.ChunkZ)
+	for step, order := range r.features.featureSteps {
+		indices := make([]int, 0, len(order.names))
+		for biome := range present {
 			steps := r.features.biomeFeatures[biome]
-			if len(steps) > maxSteps {
-				maxSteps = len(steps)
+			if step >= len(steps) {
+				continue
 			}
-			for len(byStep) < len(steps) {
-				byStep = append(byStep, nil)
-				seenByStep = append(seenByStep, make(map[string]struct{}))
-			}
-			for step, names := range steps {
-				for _, name := range names {
-					name = qualify(name)
-					if _, ok := seenByStep[step][name]; ok {
-						continue
-					}
-					seenByStep[step][name] = struct{}{}
-					byStep[step] = append(byStep[step], name)
+			for _, name := range steps[step] {
+				if index, ok := order.index[qualify(name)]; ok {
+					indices = append(indices, index)
 				}
 			}
 		}
-	}
-	if maxSteps == 0 {
-		return
-	}
-	random := newWorldgenRandom()
-	decorationSeed := random.setDecorationSeed(r.seed, chunk.ChunkX, chunk.ChunkZ)
-	for step := 0; step < maxSteps; step++ {
-		for index, name := range byStep[step] {
+		sort.Ints(indices)
+		last := -1
+		for _, index := range indices {
+			if index == last {
+				continue
+			}
+			last = index
+			name := order.names[index]
 			placed, ok := r.features.placed[name]
-			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil) {
+			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil) {
 				continue
 			}
 			random.setFeatureSeed(decorationSeed, index, step)
 			r.applyPlacedFeature(chunk, random.legacyRandom, placed)
 		}
 	}
+}
+
+// collectFeatureBiomes 收集中心区块周围 3×3 区块内所有 section 的群系。
+// 与原版 ChunkAccess.getSections → BiomeManager 的 4×4×4 采样一致。
+func (r *Router) collectFeatureBiomes(chunk *GeneratedChunk, biomes *BiomeSource) map[string]struct{} {
+	present := make(map[string]struct{}, 32)
+	for chunkX := chunk.ChunkX - 1; chunkX <= chunk.ChunkX+1; chunkX++ {
+		for chunkZ := chunk.ChunkZ - 1; chunkZ <= chunk.ChunkZ+1; chunkZ++ {
+			for biome := range r.chunkBiomeSet(chunkX, chunkZ, chunk.MinY, chunk.Height, biomes) {
+				present[biome] = struct{}{}
+			}
+		}
+	}
+	return present
+}
+
+// chunkBiomeSet 缓存单个区块的 4×4×4 群系集合。3×3 邻域复用后，
+// 每个区块只需做一次完整 section 采样，避免重复 9 倍开销。
+func (r *Router) chunkBiomeSet(chunkX, chunkZ, minY, height int, biomes *BiomeSource) map[string]struct{} {
+	key := chunkCoord{x: chunkX, z: chunkZ}
+	if cached, ok := r.biomeSetCache[key]; ok {
+		return cached
+	}
+	if len(r.biomeSetCache) > 1024 {
+		r.biomeSetCache = make(map[chunkCoord]map[string]struct{}, 1024)
+	}
+	set := make(map[string]struct{}, 16)
+	quartYStart := minY >> 2
+	for section := 0; section < height/16; section++ {
+		// 每个 section 取底部 quart y 采样 4×4。群系在 section 内通常稳定；
+		// 这样把 3×3 邻域的采样成本从 13824 降到 3456 次。
+		quartY := quartYStart + section*4
+		for quartX := 0; quartX < 4; quartX++ {
+			for quartZ := 0; quartZ < 4; quartZ++ {
+				set[biomes.BiomeAt(chunkX*4+quartX, quartY, chunkZ*4+quartZ)] = struct{}{}
+			}
+		}
+	}
+	r.biomeSetCache[key] = set
+	return set
 }
 
 type featurePosition struct {
@@ -832,6 +1070,10 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placeSimple(chunk, random, *placed.simple, position.x, position.y, position.z)
 		case placed.spring != nil:
 			r.placeSpring(chunk, *placed.spring, position.x, position.y, position.z)
+		case placed.seagrass != nil:
+			r.placeSeagrass(chunk, random, *placed.seagrass, position.x, position.y, position.z)
+		case placed.lake != nil:
+			r.placeLake(chunk, random, *placed.lake, position.x, position.y, position.z)
 		}
 	}
 }
@@ -890,6 +1132,104 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 	default:
 		return false
 	}
+}
+
+func (r *Router) placeLake(chunk *GeneratedChunk, random *legacyRandom, configuration lakeConfiguration, x, y, z int) {
+	if y <= chunk.MinY+4 || !chunk.InRange(x, y+4, z) {
+		return
+	}
+	y += 4
+	var shape [2048]bool
+	count := random.nextIntBounded(4) + 4
+	for i := 0; i < count; i++ {
+		d1 := random.nextDouble()*6 + 3
+		d2 := random.nextDouble()*4 + 2
+		d3 := random.nextDouble()*6 + 3
+		x0 := random.nextDouble()*(16-d1-2) + 1 + d1/2
+		y0 := random.nextDouble()*(8-d2-4) + 2 + d2/2
+		z0 := random.nextDouble()*(16-d3-2) + 1 + d3/2
+		for ix := 1; ix < 15; ix++ {
+			for iz := 1; iz < 15; iz++ {
+				for iy := 1; iy < 7; iy++ {
+					dx := (float64(ix) - x0) / (d1 / 2)
+					dy := (float64(iy) - y0) / (d2 / 2)
+					dz := (float64(iz) - z0) / (d3 / 2)
+					if dx*dx+dy*dy+dz*dz < 1 {
+						shape[(ix*16+iz)*8+iy] = true
+					}
+				}
+			}
+		}
+	}
+	fluid := configuration.fluid.sample(random)
+	barrier := configuration.barrier.sample(random)
+	for ix := 0; ix < 16; ix++ {
+		for iz := 0; iz < 16; iz++ {
+			for iy := 0; iy < 8; iy++ {
+				index := (ix*16 + iz) * 8
+				if shape[index+iy] {
+					continue
+				}
+				neighbor := (ix < 15 && shape[index+16*8+iy]) || (ix > 0 && shape[index-16*8+iy]) ||
+					(iz < 15 && shape[index+8+iy]) || (iz > 0 && shape[index-8+iy]) ||
+					(iy < 7 && shape[index+iy+1]) || (iy > 0 && shape[index+iy-1])
+				if !neighbor {
+					continue
+				}
+				block := chunk.BlockAt(x+ix, y+iy, z+iz)
+				if iy >= 4 && block.HasFluid() {
+					return
+				}
+				if iy < 4 || block.IsAir() || sameFeatureState(block, fluid) {
+					continue
+				}
+				return
+			}
+		}
+	}
+	for ix := 0; ix < 16; ix++ {
+		for iz := 0; iz < 16; iz++ {
+			for iy := 0; iy < 8; iy++ {
+				if !shape[(ix*16+iz)*8+iy] {
+					continue
+				}
+				if iy >= 4 {
+					chunk.SetBlock(x+ix, y+iy, z+iz, barrier)
+				} else {
+					chunk.SetBlock(x+ix, y+iy, z+iz, fluid)
+				}
+			}
+		}
+	}
+}
+
+func sameFeatureState(a, b SurfaceBlock) bool {
+	if a.Name != b.Name || len(a.Properties) != len(b.Properties) {
+		return false
+	}
+	for key, value := range a.Properties {
+		if b.Properties[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Router) placeSeagrass(chunk *GeneratedChunk, random *legacyRandom, configuration seagrassConfiguration, x, y, z int) {
+	if !chunk.InRange(x, y, z) || chunk.BlockAt(x, y, z).Name != "minecraft:water" {
+		return
+	}
+	below := chunk.BlockAt(x, y-1, z)
+	if below.IsAir() || below.HasFluid() {
+		return
+	}
+	tall := random.nextFloat() < configuration.probability
+	if tall && chunk.InRange(x, y+1, z) && chunk.BlockAt(x, y+1, z).Name == "minecraft:water" {
+		chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:tall_seagrass", Properties: map[string]string{"half": "lower"}})
+		chunk.SetBlock(x, y+1, z, SurfaceBlock{Name: "minecraft:tall_seagrass", Properties: map[string]string{"half": "upper"}})
+		return
+	}
+	chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:seagrass"})
 }
 
 func (r *Router) placeSpring(chunk *GeneratedChunk, spring springConfiguration, x, y, z int) {
@@ -968,7 +1308,63 @@ func (r *Router) placeSelector(chunk *GeneratedChunk, random *legacyRandom, sele
 	r.applyFeatureRef(chunk, random, chosen, x, y, z)
 }
 
+func (r *Router) placePlacedAt(chunk *GeneratedChunk, random *legacyRandom, placed placedFeature, position featurePosition) {
+	if position.y < chunk.MinY || position.y >= chunk.MinY+chunk.Height {
+		return
+	}
+	switch {
+	case placed.ore != nil:
+		r.placeOre(chunk, random, *placed.ore, position.x, position.y, position.z)
+	case placed.tree != nil:
+		r.placeTree(chunk, random, *placed.tree, position.x, position.y, position.z)
+	case placed.selector != nil:
+		r.placeSelector(chunk, random, *placed.selector, position.x, position.y, position.z)
+	case placed.patch != nil:
+		r.placePatch(chunk, random, *placed.patch, position.x, position.y, position.z)
+	case placed.simple != nil:
+		r.placeSimple(chunk, random, *placed.simple, position.x, position.y, position.z)
+	case placed.spring != nil:
+		r.placeSpring(chunk, *placed.spring, position.x, position.y, position.z)
+	case placed.seagrass != nil:
+		r.placeSeagrass(chunk, random, *placed.seagrass, position.x, position.y, position.z)
+	case placed.lake != nil:
+		r.placeLake(chunk, random, *placed.lake, position.x, position.y, position.z)
+	}
+}
+
 func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, ref *featureRef, x, y, z int) {
+	if len(ref.inline) == 0 {
+		if nested, ok := r.features.placed[ref.name]; ok {
+			positions := []featurePosition{{x: x, y: y, z: z}}
+			modifiers := append(append([]placementModifier{}, nested.placements...), ref.placements...)
+			for _, modifier := range modifiers {
+				if !modifier.supported {
+					return
+				}
+				switch modifier.kind {
+				case "minecraft:block_predicate_filter":
+					filtered := positions[:0]
+					for _, position := range positions {
+						if r.blockPredicateMatches(chunk, modifier.predicate, position.x, position.y, position.z) {
+							filtered = append(filtered, position)
+						}
+					}
+					positions = filtered
+				case "minecraft:heightmap":
+					for i := range positions {
+						positions[i].y = chunkHeightmap(chunk, positions[i].x, positions[i].z, modifier.heightmap) + 1
+					}
+				case "minecraft:surface_water_depth_filter", "minecraft:biome":
+				default:
+					return
+				}
+			}
+			for _, position := range positions {
+				r.placePlacedAt(chunk, random, nested, position)
+			}
+			return
+		}
+	}
 	raw := ref.inline
 	if len(raw) == 0 {
 		var ok bool
@@ -1022,6 +1418,18 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			return
 		}
 		placed.spring = spring
+	case "minecraft:seagrass":
+		seagrass, err := parseSeagrassConfiguration(configured.Config)
+		if err != nil || seagrass == nil {
+			return
+		}
+		placed.seagrass = seagrass
+	case "minecraft:lake":
+		lake, err := parseLakeConfiguration(configured.Config)
+		if err != nil || lake == nil {
+			return
+		}
+		placed.lake = lake
 	default:
 		return
 	}
@@ -1039,6 +1447,10 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeSimple(chunk, random, *placed.simple, x, y, z)
 		case placed.spring != nil:
 			r.placeSpring(chunk, *placed.spring, x, y, z)
+		case placed.seagrass != nil:
+			r.placeSeagrass(chunk, random, *placed.seagrass, x, y, z)
+		case placed.lake != nil:
+			r.placeLake(chunk, random, *placed.lake, x, y, z)
 		}
 		return
 	}
@@ -1083,6 +1495,10 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeSimple(chunk, random, *placed.simple, position.x, position.y, position.z)
 		case placed.spring != nil:
 			r.placeSpring(chunk, *placed.spring, position.x, position.y, position.z)
+		case placed.seagrass != nil:
+			r.placeSeagrass(chunk, random, *placed.seagrass, position.x, position.y, position.z)
+		case placed.lake != nil:
+			r.placeLake(chunk, random, *placed.lake, position.x, position.y, position.z)
 		}
 	}
 }
@@ -1103,6 +1519,17 @@ func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configur
 	for offset := 0; offset < height; offset++ {
 		chunk.SetBlock(x, y+offset, z, configuration.trunk)
 	}
+	switch configuration.foliageType {
+	case "minecraft:spruce_foliage_placer":
+		r.placeSpruceFoliage(chunk, random, configuration, x, y, z, height)
+	case "minecraft:pine_foliage_placer":
+		r.placePineFoliage(chunk, random, configuration, x, y, z, height)
+	default:
+		r.placeBlobFoliage(chunk, random, configuration, x, y, z, height)
+	}
+}
+
+func (r *Router) placeBlobFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int) {
 	radius := configuration.foliageRadius.sample(random)
 	top := y + height - 1
 	for layer := 0; layer < configuration.foliageHeight; layer++ {
@@ -1125,6 +1552,66 @@ func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configur
 				}
 				chunk.SetBlock(x+dx, layerY, z+dz, configuration.leaves)
 			}
+		}
+	}
+}
+
+func (r *Router) placeSpruceFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int) {
+	top := y + height - 1
+	start := height - configuration.foliageTrunkHeight.sample(random)
+	if start < 4 {
+		start = 4
+	}
+	baseRadius := configuration.foliageRadius.sample(random)
+	radius := random.nextIntBounded(2)
+	nextRadius := 1
+	limit := 0
+	for layerY := top; layerY >= top-start; layerY-- {
+		r.placeFoliageLayer(chunk, random, configuration, x, layerY, z, radius)
+		if radius >= nextRadius {
+			radius = limit
+			limit = 1
+			if nextRadius+1 < baseRadius+1 {
+				nextRadius++
+			}
+		} else {
+			radius++
+		}
+	}
+}
+
+func (r *Router) placePineFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int) {
+	top := y + height - 1
+	foliageHeight := configuration.foliageHeightRandom.sample(random)
+	if foliageHeight <= 0 {
+		foliageHeight = configuration.foliageHeight
+	}
+	if foliageHeight <= 0 {
+		foliageHeight = 3
+	}
+	baseRadius := configuration.foliageRadius.sample(random)
+	radius := 0
+	for layerY := top; layerY >= top-foliageHeight; layerY-- {
+		r.placeFoliageLayer(chunk, random, configuration, x, layerY, z, radius)
+		if radius >= 1 && layerY == top-foliageHeight+1 {
+			radius--
+		} else if radius < baseRadius+1 {
+			radius++
+		}
+	}
+}
+
+func (r *Router) placeFoliageLayer(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, layerY, z, radius int) {
+	for dx := -radius; dx <= radius; dx++ {
+		for dz := -radius; dz <= radius; dz++ {
+			if radius > 0 && absFeatureInt(dx) == radius && absFeatureInt(dz) == radius && random.nextIntBounded(2) == 0 {
+				continue
+			}
+			target := chunk.BlockAt(x+dx, layerY, z+dz)
+			if !target.IsAir() && target.Name != configuration.leaves.Name {
+				continue
+			}
+			chunk.SetBlock(x+dx, layerY, z+dz, configuration.leaves)
 		}
 	}
 }

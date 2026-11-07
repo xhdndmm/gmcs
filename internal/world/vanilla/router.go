@@ -29,7 +29,10 @@ type Router struct {
 	biomeCarvers       map[string][]string
 	carverReplaceables map[string]struct{}
 	features           *featureRegistry
+	biomeSetCache      map[chunkCoord]map[string]struct{}
 }
+
+type chunkCoord struct{ x, z int }
 
 // NewRouter 解析指定噪声设置的全部路由项。
 func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
@@ -39,13 +42,14 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 	}
 	registry := NewNoiseRegistry(data, seed)
 	router := &Router{
-		data:      data,
-		registry:  registry,
-		setting:   setting,
-		seed:      seed,
-		evaluator: NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
-		nodes:     make(map[string]*Node, len(setting.Router)),
-		named:     make(map[string]*Node),
+		data:          data,
+		registry:      registry,
+		setting:       setting,
+		seed:          seed,
+		evaluator:     NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
+		nodes:         make(map[string]*Node, len(setting.Router)),
+		named:         make(map[string]*Node),
+		biomeSetCache: make(map[chunkCoord]map[string]struct{}),
 	}
 	carvers, err := parseCarverDefinitions(data)
 	if err != nil {
@@ -104,6 +108,7 @@ func (r *Router) NewSession() *Router {
 		biomeCarvers:       r.biomeCarvers,
 		carverReplaceables: r.carverReplaceables,
 		features:           r.features,
+		biomeSetCache:      make(map[chunkCoord]map[string]struct{}),
 	}
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
 	session.evaluator.finalDensity = session.nodes["final_density"]

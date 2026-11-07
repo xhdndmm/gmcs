@@ -1273,14 +1273,21 @@
       count/in_square/height_range/biome/rarity_filter 与 OreFeature 椭球算法
       生成 ore/scattered_ore；跨区块部分裁切到当前区块。
     - [x] 部分树木与植被：支持 `straight_trunk_placer` + `blob_foliage_placer`
-      （橡树/桦树/丛林树）、`random_selector`、`random_patch`、`flower`、
-      `simple_block`、`spring_feature`，以及 heightmap / block_predicate_filter /
-      surface_water_depth_filter / weighted_list 等 placement。
+      / `spruce_foliage_placer` / `pine_foliage_placer`（橡树/桦树/丛林树/
+      云杉/松树）、`random_selector`、`random_patch`、`flower`、
+      `simple_block`、`spring_feature`、`seagrass`、`lake`，以及 heightmap /
+      block_predicate_filter / surface_water_depth_filter / weighted_list 等 placement。
+    - [x] 按原版 FeatureSorter 为全部群系建立全局 step/feature index，并按
+      3×3 区块 section 的群系集合执行；避免使用区块局部地表群系并集导致
+      feature seed 偏移。
     - [ ] 树木/植被逐方块仍未与官方参考完全收敛：差异主要来自
       区块内群系集合/FeatureSorter 顺序导致的 feature index 不同；跨区块
       树干/树冠目前按当前区块裁切。
-    - [ ] 湖泊、geode、vegetation patch、其他树形（spruce/dark oak/
-      acacia/mangrove 等）、seagrass/kelp 与全部结构尚未执行。
+    - [ ] geode、vegetation patch、其他树形（dark oak/acacia/mangrove/
+      cherry 等）、kelp、disk、bamboo、fallen_tree 与全部结构尚未执行。
+    - [ ] `environment_scan` / `surface_relative_threshold_filter` /
+      `noise_threshold_count` 等 placement 尚未实现；使用这些 placement 的
+      地物会被标记为 unsupported（例如地下岩浆湖）。
   - [~] **阶段 5：接线与验证**：
     - [x] **移除 `world_generator` 与旧版 `legacy` 生成器**：主世界固定使用
       原版算法生成器，初始化失败直接中止启动；下界/末地仍使用各自维度生成器。
