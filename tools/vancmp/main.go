@@ -20,7 +20,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -220,18 +219,28 @@ func main() {
 		os.Exit(1)
 	}
 	setting := router.Setting()
-	cellsPerLayer := 16 * 16
-	maxHeightForChunk := math.MaxInt / cellsPerLayer
-	if setting.Height <= 0 || setting.Height > maxHeightForChunk {
+	const cellsPerLayer = 16 * 16
+	// 诊断工具只需要处理正常维度高度；给体素数量设硬上限，既避免
+	// `height*256` 溢出，也避免异常数据触发超大分配。
+	const maxChunkVoxels = 16 * 16 * 4096
+	if setting.Height <= 0 || setting.Height > maxChunkVoxels/cellsPerLayer {
 		fmt.Fprintf(os.Stderr, "无效世界高度: %d\n", setting.Height)
 		os.Exit(1)
 	}
 	blocksPerChunk := setting.Height * cellsPerLayer
-	if blocksPerChunk > math.MaxInt-7 {
+	if blocksPerChunk <= 0 || blocksPerChunk > maxChunkVoxels {
 		fmt.Fprintf(os.Stderr, "区块体素数量过大: %d\n", blocksPerChunk)
 		os.Exit(1)
 	}
-	bitsLen := (blocksPerChunk + 7) / 8
+	// 避免 `blocksPerChunk+7` 在极端输入下溢出；用除法余数计算位图长度。
+	bitsLen := blocksPerChunk / 8
+	if blocksPerChunk%8 != 0 {
+		bitsLen++
+	}
+	if bitsLen <= 0 || bitsLen > maxChunkVoxels/8+1 {
+		fmt.Fprintf(os.Stderr, "区块位图长度非法: %d\n", bitsLen)
+		os.Exit(1)
+	}
 
 	if *density && *column == "" {
 		total, bad := 0, 0
