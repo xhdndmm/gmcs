@@ -136,18 +136,19 @@ func TestCaveAndVoidAirAreAir(t *testing.T) {
 
 func TestCanyonVerticalRadiusProgress(t *testing.T) {
 	// 原版 CanyonWorldCarver.updateVerticalRadius：
-	// factor = verticalRadiusDefaultFactor + verticalRadiusCenterFactor * progress，
-	// progress = 1 - 2*clamp(0.5 - step/length)。
-	// 取 center=1、default=0 时，起点 progress=0，中段/终点 progress=1。
+	// factor = verticalRadiusDefaultFactor + verticalRadiusCenterFactor * f，
+	// f = 1 - floor(0.5 - step/length) * 2。
+	// 取 center=1、default=0 时，前半段（含 step=0、50）f=1，后半段（step>50）f=3。
 	definition := carverDefinition{shape: canyonShape{verticalRadiusCenterFactor: 1}}
 	start := canyonVerticalRadius(definition, newLegacyRandom(1), 1, 100, 0)
 	middle := canyonVerticalRadius(definition, newLegacyRandom(1), 1, 100, 50)
+	secondHalf := canyonVerticalRadius(definition, newLegacyRandom(1), 1, 100, 51)
 	end := canyonVerticalRadius(definition, newLegacyRandom(1), 1, 100, 100)
-	if start != 0 {
-		t.Fatalf("canyon vertical radius at start = %v, want 0", start)
+	if start < 0.75 || start >= 1 || middle < 0.75 || middle >= 1 {
+		t.Fatalf("canyon vertical radius start/middle = %v/%v, want [0.75,1)", start, middle)
 	}
-	if middle < 0.75 || middle >= 1 || end < 0.75 || end >= 1 {
-		t.Fatalf("canyon vertical radius middle/end = %v/%v, want [0.75,1)", middle, end)
+	if secondHalf < 2.25 || secondHalf >= 3 || end < 2.25 || end >= 3 {
+		t.Fatalf("canyon vertical radius secondHalf/end = %v/%v, want [2.25,3)", secondHalf, end)
 	}
 }
 

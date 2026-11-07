@@ -430,22 +430,13 @@ func (c *carvingContext) doCarveCanyon(definition carverDefinition, seed int64, 
 }
 
 func canyonVerticalRadius(definition carverDefinition, random *legacyRandom, yScale float64, length, step float32) float64 {
-	progress := float32(0.5) - step/length
-	progress = clampFloat(progress, 0, 1)
-	progress = 1 - 2*progress
+	// 原版 CanyonWorldCarver.updateVerticalRadius 使用 Mth.floor 的分段函数：
+	//   f = 1.0F - floor(0.5F - step / length) * 2.0F
+	// 因此 f 在隧道前半段为 1，后半段为 3，而不是线性插值。
+	progress := 1 - float32(math.Floor(float64(float32(0.5)-step/length)))*2
 	factor := definition.shape.verticalRadiusDefaultFactor + definition.shape.verticalRadiusCenterFactor*progress
 	jitter := float32(0.75) + random.nextFloat()*0.25
 	return yScale * float64(factor*jitter)
-}
-
-func clampFloat(value, minimum, maximum float32) float32 {
-	if value < minimum {
-		return minimum
-	}
-	if value > maximum {
-		return maximum
-	}
-	return value
 }
 
 // canReachChunk 对应 WorldCarver.canReach：判断隧道剩余长度是否仍可能触及本区块。

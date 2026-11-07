@@ -123,7 +123,7 @@ func main() {
 		return
 	}
 
-	region, err := readRegion(*mca)
+	region, statuses, err := readRegion(*mca)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读取区域文件失败: %v\n", err)
 		os.Exit(1)
@@ -145,6 +145,9 @@ func main() {
 
 	if *names {
 		for _, pos := range positions {
+			if !officialFull(statuses[pos]) {
+				continue
+			}
 			counts := map[string]int{}
 			for _, name := range region[pos] {
 				counts[name]++
@@ -233,10 +236,15 @@ func main() {
 	if *density && *column == "" {
 		total, bad := 0, 0
 		perY := map[int]int{}
-		for i, pos := range positions {
-			if i >= *limit {
+		compared := 0
+		for _, pos := range positions {
+			if !officialFull(statuses[pos]) {
+				continue
+			}
+			if compared >= *limit {
 				break
 			}
+			compared++
 			official := region[pos]
 			sampler := router.NewChunkSampler(pos.x, pos.z)
 			badChunk := 0
@@ -263,7 +271,7 @@ func main() {
 				}
 			}
 			fmt.Printf("chunk (%d,%d): 密度符号不一致 %d / %d\n", pos.x, pos.z, badChunk, blocksPerChunk)
-			if *export != "" && i == 0 {
+			if *export != "" && compared == 1 {
 				bits := make([]byte, bitsLen)
 				for y := setting.MinY; y < setting.MinY+setting.Height; y++ {
 					for z := 0; z < 16; z++ {
@@ -281,8 +289,7 @@ func main() {
 				}
 				fmt.Printf("已导出官方密度符号到 %s（%d 字节）\n", *export, len(bits))
 			}
-			if i == 0 && *pairY > -1000 {
-				pos := positions[0]
+			if compared == 1 && *pairY > -1000 {
 				official := region[pos]
 				sampler := router.NewChunkSampler(pos.x, pos.z)
 				fmt.Printf("y=%d 官方(+ = 石头) / gmcs(+ = 密度>0)：\n", *pairY)
@@ -304,7 +311,7 @@ func main() {
 					fmt.Printf("  %s   %s\n", wantLine, gotLine)
 				}
 			}
-			if i == 0 {
+			if compared == 1 {
 				fmt.Println("每列最高的石头高度差 (官方 - gmcs)：")
 				for z := 0; z < 16; z++ {
 					line := ""
@@ -355,6 +362,10 @@ func main() {
 			fmt.Fprintf(os.Stderr, "区域文件里没有区块 (%d,%d)\n", pos.x, pos.z)
 			os.Exit(1)
 		}
+		if !officialFull(statuses[pos]) {
+			fmt.Fprintf(os.Stderr, "区块 (%d,%d) 尚未生成到 full（status=%q）\n", pos.x, pos.z, statuses[pos])
+			os.Exit(1)
+		}
 		chunk, err := router.GenerateChunk(pos.x, pos.z)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "生成区块失败: %v\n", err)
@@ -378,10 +389,15 @@ func main() {
 	}
 
 	totalBlocks, totalMismatch := 0, 0
-	for i, pos := range positions {
-		if i >= *limit {
+	compared := 0
+	for _, pos := range positions {
+		if !officialFull(statuses[pos]) {
+			continue
+		}
+		if compared >= *limit {
 			break
 		}
+		compared++
 		official := region[pos]
 		chunk, err := router.GenerateChunk(pos.x, pos.z)
 		if err != nil {
@@ -540,22 +556,30 @@ type chunkPos struct {
 	z int
 }
 
+// officialFull 判断官方区块是否已经生成到 full 状态。
+func officialFull(status string) bool {
+	// 旧区域文件可能没有 Status；此时保留原行为，按 full 处理。
+	return status == "" || strings.TrimPrefix(status, "minecraft:") == "full"
+}
+
 // readRegion 读取区域文件并解码每个区块的方块名（按 y→z→x 顺序，共 384×16×16）。
-func readRegion(path string) (map[chunkPos][]string, error) {
+// 同时返回每个区块的生成状态，便于调用方跳过尚未到 full 的区块。
+func readRegion(path string) (map[chunkPos][]string, map[chunkPos]string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(raw) < 8192 {
-		return nil, fmt.Errorf("文件太小，不是区域文件")
+		return nil, nil, fmt.Errorf("文件太小，不是区域文件")
 	}
 	base := strings.TrimSuffix(strings.TrimSuffix(filepath.Base(path), ".mca"), ".r")
 	_ = base
 	regionX, regionZ, err := regionCoords(filepath.Base(path))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	result := make(map[chunkPos][]string)
+	statuses := make(map[chunkPos]string)
 	for i := 0; i < 1024; i++ {
 		location := binary.BigEndian.Uint32(raw[i*4 : i*4+4])
 		sectorOffset := int(location >> 8)
@@ -577,13 +601,15 @@ func readRegion(path string) (map[chunkPos][]string, error) {
 		if err != nil {
 			continue
 		}
-		names, err := decodeChunk(decoded)
+		names, status, err := decodeChunk(decoded)
 		if err != nil {
 			continue
 		}
-		result[chunkPos{x: regionX*32 + i%32, z: regionZ*32 + i/32}] = names
+		pos := chunkPos{x: regionX*32 + i%32, z: regionZ*32 + i/32}
+		result[pos] = names
+		statuses[pos] = status
 	}
-	return result, nil
+	return result, statuses, nil
 }
 
 // regionCoords 从 r.X.Z.mca 解析区域坐标。
@@ -815,25 +841,25 @@ func (r *nbtReader) payload(kind byte) (tag, error) {
 }
 
 // decodeChunk 从区块 NBT 解出全部方块名（y 从 minY 到 minY+height，z、x 依次）。
-func decodeChunk(payload []byte) ([]string, error) {
+func decodeChunk(payload []byte) ([]string, string, error) {
 	reader := &nbtReader{data: payload}
 	kind, err := reader.u8()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if kind != tagCompound {
-		return nil, fmt.Errorf("根标签不是 compound")
+		return nil, "", fmt.Errorf("根标签不是 compound")
 	}
 	if _, err := reader.str(); err != nil { // 根名
-		return nil, err
+		return nil, "", err
 	}
 	root, err := reader.payload(tagCompound)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	sections := root.comp["sections"]
 	if sections.kind != tagList {
-		return nil, fmt.Errorf("缺少 sections")
+		return nil, "", fmt.Errorf("缺少 sections")
 	}
 	if debugChunk {
 		keys := make([]string, 0, len(root.comp))
@@ -942,5 +968,6 @@ func decodeChunk(payload []byte) ([]string, error) {
 			}
 		}
 	}
-	return names, nil
+	status := root.comp["Status"].str
+	return names, status, nil
 }

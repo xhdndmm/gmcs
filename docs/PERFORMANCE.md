@@ -1523,13 +1523,25 @@ BenchmarkVanillaGeneratorChunk-20    21    54,891,047 ns/op    8,076,079 B/op   
 
 ```text
 仅 cave：   (0,0) 47 / 98304   (1,0) 180 / 98304   (2,0) 552 / 98304
-           (0..2,0) 合计 779 / 294912
+           (0..5,0) 合计 1133 / 589824
+仅 extra：  (0..5,0) 合计 340 / 589824
+仅 canyon： (0..5,0) 合计 280 / 589824
 全部 carver：(0,0) 1506 / 98304  (1,0) 1844 / 98304  (2,0) 2455 / 98304
-           (0..2,0) 合计 5805 / 294912
+           (0..5,0) 合计 8204 / 589824
 ```
+
+上表已通过 `tools/vancmp` 的 full 状态过滤，只比较官方已经生成到
+`minecraft:full` 的区块；此前的部分“全 carver 大面积差异”来自把尚未生成完的
+官方区块当成空气，已排除。
 
 本批按反编译源码修正了 cave 数量/长度、LegacyRandomSource、canReach 半径、
 椭球 `y-0.5` 中心、canyon 采样顺序/垂直半径/skip 公式，以及
-`NOISE → SURFACE → CARVERS` 的顺序。残差仍集中在
-`water → stone`（gmcs 少雕出含水洞穴）与 `air → deepslate`（少雕出洞穴），
-尚未收敛；`world_generator=vanilla` 仍为实验性选项，默认是 `legacy`。
+`NOISE → SURFACE → CARVERS` 的顺序。最新一次源码核对把 canyon 垂直半径的
+`progress` 从线性插值改为原版的 `1 - floor(0.5 - step/length) * 2`（vanilla 的
+center factor 为 0，因此默认数据下数值不变，但自定义 carver 会受影响）。
+
+单类雕刻器残差已经较小，但**三类同时启用时仍有约 8,204 / 589,824 的残差**，
+远大于单类残差之和；这说明多个 carver 同源区块上的起始索引/mask 交互仍未
+完全对齐。残差仍集中在 `water → stone`（gmcs 少雕出含水洞穴）与
+`air → deepslate`（少雕出洞穴）。目前**不声称与原版完全一致**；
+`world_generator=vanilla` 仍为实验性选项，默认是 `legacy`。

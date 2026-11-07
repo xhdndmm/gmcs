@@ -1247,20 +1247,25 @@
       - cave 房间半径 = `1.5 + sin(pi/2) * roomRadius`，垂直半径再乘 `yScale`；
       - canyon 长度使用 `distanceFactor`（不是 horizontalRadiusFactor），
         采样顺序为 verticalRotation → yScale → thickness → distanceFactor；
-      - canyon 垂直半径 = `(radius*yScale) * (default + center*progress) *
-        nextFloat(0.75,1)`（default/center 此前写反）；
+      - canyon 垂直半径 = `(radius*yScale) * (default + center*f) *
+        nextFloat(0.75,1)`，其中 `f = 1 - floor(0.5 - step/length) * 2`
+        （不是线性插值；default/center 此前写反）；
       - canyon skip 公式为 `(nx² + nz²) * width + ny²/6 >= 1`（此前多加了 1）；
       - `vancmp` 新增 `-carvers=false`、`-only-carver=<name>[,<name>...]`，
-        便于按层/按雕刻器隔离差异；
+        便于按层/按雕刻器隔离差异；并增加官方区块 `Status=full` 过滤，
+        避免把未生成完的区块误当成空气；
       - 修正区块生成顺序为原版 `NOISE → SURFACE → CARVERS`（此前先 carver 后
         surface，会在雕刻后的洞穴口重新铺地表方块）。
     - [ ] **逐方块对比仍有残差**：种子 4321、仅 cave 的官方参考区块
       (0,0)≈47 / 98,304、(1,0)≈180 / 98,304、(0..5,0) 合计≈1,133 / 589,824；
-      全 carver 的 (0,0)≈1,550 / 98,304。残差集中在 `water → stone`
-      （gmcs 少雕出含水洞穴）与少量 `deepslate → air`。已确认 carver 起始判定
-      与官方 Java 序列逐项一致，因此剩余差异在隧道内部/流体替换或参考世界生成
-      条件，尚需继续定位；**不声称已与原版完全一致**。
-    - [x] 新增回归测试：canyon 垂直半径进度、雕刻椭球使用 `y-0.5` 中心。
+      仅 extra 合计≈340 / 589,824，仅 canyon 合计≈280 / 589,824。
+      但三类同时启用时 (0..5,0) 合计≈8,204 / 589,824，远大于单类之和，
+      说明多 carver 的起始索引/mask 交互仍有未对齐处。残差集中在
+      `water → stone`（gmcs 少雕出含水洞穴）与 `air → deepslate`（少雕出洞穴）。
+      已确认 carver 起始判定与官方 Java 序列逐项一致，因此剩余差异在隧道内部、
+      流体替换或多 carver 同源区块交互；**不声称已与原版完全一致**。
+      已排除“未生成完的官方区块”造成的假差异（vancmp 现在过滤非 full 区块）。
+    - [x] 新增回归测试：canyon 垂直半径分段函数、雕刻椭球使用 `y-0.5` 中心。
       当前 BenchmarkGenerateChunk 尚未给出稳定基线，不作为性能结论。
   - [ ] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
     - [x] 数据管线：提取 configured_feature、placed_feature 与群系 11 阶段
