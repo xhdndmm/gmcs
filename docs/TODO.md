@@ -1272,10 +1272,15 @@
     - [x] 矿石地物运行时：按原版 generation step 6、decoration/feature seed、
       count/in_square/height_range/biome/rarity_filter 与 OreFeature 椭球算法
       生成 ore/scattered_ore；跨区块部分裁切到当前区块。
-    - [ ] 矿石逐方块仍未与官方 ore-only 参考完全收敛：已确认差异主要来自
-      区块内群系集合/FeatureSorter 顺序导致的 feature index 不同；需按官方
-      4×4×4 群系与 FeatureSorter 拓扑顺序实现后再对拍。
-    - [ ] 树木、random_patch、flower、lake、spring、geode、植被、结构等尚未执行。
+    - [x] 部分树木与植被：支持 `straight_trunk_placer` + `blob_foliage_placer`
+      （橡树/桦树/丛林树）、`random_selector`、`random_patch`、`flower`、
+      `simple_block`，以及 heightmap / block_predicate_filter /
+      surface_water_depth_filter / weighted_list 等 placement。
+    - [ ] 树木/植被逐方块仍未与官方参考完全收敛：差异主要来自
+      区块内群系集合/FeatureSorter 顺序导致的 feature index 不同；跨区块
+      树干/树冠目前按当前区块裁切。
+    - [ ] 湖泊、spring、geode、vegetation patch、其他树形（spruce/dark oak/
+      acacia/mangrove 等）与全部结构尚未执行。
   - [~] **阶段 5：接线与验证**：
     - [x] **移除 `world_generator` 与旧版 `legacy` 生成器**：主世界固定使用
       原版算法生成器，初始化失败直接中止启动；下界/末地仍使用各自维度生成器。

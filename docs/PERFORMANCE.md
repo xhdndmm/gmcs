@@ -1545,5 +1545,6 @@ center factor 为 0，因此默认数据下数值不变，但自定义 carver �
 完全对齐。残差仍集中在 `water → stone`（gmcs 少雕出含水洞穴）与
 `air → deepslate`（少雕出洞穴）。目前**不声称与原版完全一致**。
 
-旧版 `legacy` 生成器已移除，主世界固定使用原版算法生成器。当前只执行
-ore/scattered_ore 地物；树木、植被、湖泊、结构等其他地物尚未实现。
+旧版 `legacy` 生成器已移除，主世界固定使用原版算法生成器。当前执行
+ore/scattered_ore、部分树形（straight trunk + blob foliage）与花草 patch；
+湖泊、spring、geode、vegetation patch、其他树形与结构尚未实现。

@@ -115,10 +115,13 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   或树叶被移除（含爆炸摧毁）时对周围 15³ 做一次“6 格内是否仍有原木”的判定，
   没有则按方块战利品表掉落（树苗/木棍等）并立即消失（原版用 `distance` 属性
   逐格扩散，最多约 14 tick，gmcs 表现为砍完即刻消失）。
-- **矿石**：已接入原版 generation step 6 的 ore/scattered_ore 地物（含煤矿、
-  铜矿、铁矿、金矿、红石、钻石、青金石、绿宝石及深板岩变体），使用原版
-  placed_feature 的 count/in_square/height_range/biome/rarity_filter 顺序；
-  跨区块边界的矿脉部分会按当前区块裁切。
+- **矿石与部分植被**：已接入原版 generation step 6 的 ore/scattered_ore 地物
+  （含煤矿、铜矿、铁矿、金矿、红石、钻石、青金石、绿宝石及深板岩变体），
+  以及 generation step 9 的部分树木（straight trunk + blob foliage，如橡树/
+  桦树/丛林树）、花草/random patch。使用原版 placed_feature 的
+  count/in_square/height_range/heightmap/block_predicate_filter/biome/
+  rarity_filter 顺序；跨区块边界的矿脉、树干和树冠部分会按当前区块裁切。
+  湖泊、spring、geode、vegetation patch、其他树形与全部结构尚未实现。
 - **多维度**：主世界/下界/末地三套独立世界，按需生成与持久化（主世界使用
   `world/`，下界/末地为 `world/the_nether/`、`world/the_end/` 子目录）：下界含
   基岩地板（y=0）与天花板（y=127）、净岩、岩浆海、石英/远古残骸矿物与萤石/灵魂沙/

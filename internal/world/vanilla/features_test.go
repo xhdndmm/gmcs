@@ -92,3 +92,66 @@ func TestPlacementCountAndHeightSampling(t *testing.T) {
 		}
 	}
 }
+
+func TestTreeFeaturesGenerated(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	biomes, err := router.Biomes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for chunkX := 0; chunkX < 120 && !found; chunkX++ {
+		for chunkZ := 0; chunkZ < 20; chunkZ++ {
+			name := biomes.BiomeAtBlock(chunkX*16+8, 64, chunkZ*16+8)
+			if strings.Contains(name, "ocean") || strings.Contains(name, "river") {
+				continue
+			}
+			chunk, err := router.GenerateChunk(chunkX, chunkZ)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+				if strings.Contains(block.Name, "_log") || strings.Contains(block.Name, "_leaves") {
+					found = true
+				}
+			})
+			if found {
+				break
+			}
+		}
+	}
+	if !found {
+		t.Fatal("陆地群系没有生成任何树木")
+	}
+}
+
+func TestOceanHasNoSurfaceGrass(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk, err := router.GenerateChunk(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setting := router.Setting()
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			top := chunk.HeightAt(chunk.MinX+x, chunk.MinZ+z)
+			if top >= setting.SeaLevel {
+				t.Fatalf("(%d,%d) 顶部 %d 高于海平面，海洋区块不应有水面植被", x, z, top)
+			}
+		}
+	}
+}

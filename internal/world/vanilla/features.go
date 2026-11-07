@@ -17,6 +17,7 @@ import (
 // 保留类型但不会被 GenerateChunk 执行（见 docs/TODO.md 的阶段 4c）。
 type featureRegistry struct {
 	placed        map[string]placedFeature
+	configured    map[string]json.RawMessage
 	biomeFeatures map[string][][]string
 }
 
@@ -24,14 +25,96 @@ type placedFeature struct {
 	feature    string
 	kind       string
 	ore        *oreConfiguration
+	tree       *treeConfiguration
+	selector   *selectorConfiguration
+	patch      *patchConfiguration
+	simple     *simpleBlockConfiguration
+	placements []placementModifier
+	supported  bool
+}
+
+type selectorConfiguration struct {
+	entries    []selectorEntry
+	defaultRef *featureRef
+}
+
+type selectorEntry struct {
+	chance float32
+	ref    *featureRef
+}
+
+type featureRef struct {
+	name       string
+	inline     json.RawMessage
 	placements []placementModifier
 }
 
+type patchConfiguration struct {
+	tries    int
+	xzSpread int
+	yzSpread int
+	feature  *featureRef
+}
+
+type simpleBlockConfiguration struct {
+	provider stateProvider
+}
+
+type stateProvider struct {
+	entries []weightedState
+}
+
+type weightedState struct {
+	state  SurfaceBlock
+	weight int
+}
+
+func (p stateProvider) sample(random *legacyRandom) SurfaceBlock {
+	if len(p.entries) == 0 {
+		return SurfaceBlock{Name: "minecraft:air"}
+	}
+	total := 0
+	for _, entry := range p.entries {
+		total += entry.weight
+	}
+	value := random.nextIntBounded(total)
+	for _, entry := range p.entries {
+		if value < entry.weight {
+			return entry.state
+		}
+		value -= entry.weight
+	}
+	return p.entries[len(p.entries)-1].state
+}
+
 type placementModifier struct {
-	kind   string
-	count  intProvider
-	chance int
-	height featureHeightProvider
+	kind          string
+	count         intProvider
+	chance        int
+	height        featureHeightProvider
+	heightmap     string
+	predicate     *blockPredicate
+	maxWaterDepth int
+	supported     bool
+}
+
+type blockPredicate struct {
+	kind  string
+	state string
+	tag   string
+	block string
+}
+
+type treeConfiguration struct {
+	trunk         SurfaceBlock
+	leaves        SurfaceBlock
+	baseHeight    int
+	heightRandA   int
+	heightRandB   int
+	foliageType   string
+	foliageRadius intProvider
+	foliageOffset intProvider
+	foliageHeight int
 }
 
 type intProvider struct {
@@ -39,6 +122,12 @@ type intProvider struct {
 	constant int
 	minimum  int
 	maximum  int
+	entries  []weightedInt
+}
+
+type weightedInt struct {
+	value  int
+	weight int
 }
 
 func (p intProvider) sample(random *legacyRandom) int {
@@ -47,6 +136,22 @@ func (p intProvider) sample(random *legacyRandom) int {
 		return p.constant
 	case "minecraft:uniform":
 		return p.minimum + random.nextIntBounded(p.maximum-p.minimum+1)
+	case "minecraft:weighted_list":
+		total := 0
+		for _, entry := range p.entries {
+			total += entry.weight
+		}
+		if total <= 0 {
+			return 0
+		}
+		value := random.nextIntBounded(total)
+		for _, entry := range p.entries {
+			if value < entry.weight {
+				return entry.value
+			}
+			value -= entry.weight
+		}
+		return 0
 	default:
 		return p.constant
 	}
@@ -98,6 +203,7 @@ type oreTarget struct {
 func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 	registry := &featureRegistry{
 		placed:        make(map[string]placedFeature, len(data.PlacedFeatures)),
+		configured:    data.ConfiguredFeatures,
 		biomeFeatures: make(map[string][][]string, len(data.BiomeFeatures)),
 	}
 	for name, raw := range data.PlacedFeatures {
@@ -108,7 +214,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 		if err := json.Unmarshal(raw, &encoded); err != nil {
 			return nil, fmt.Errorf("解析 placed_feature %s 失败：%w", name, err)
 		}
-		placed := placedFeature{feature: qualify(encoded.Feature)}
+		placed := placedFeature{feature: qualify(encoded.Feature), supported: true}
 		configuredRaw, ok := data.ConfiguredFeatures[placed.feature]
 		if !ok {
 			return nil, fmt.Errorf("placed_feature %s 引用了不存在的 configured_feature %s", name, placed.feature)
@@ -121,19 +227,50 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			return nil, fmt.Errorf("解析 configured_feature %s 失败：%w", placed.feature, err)
 		}
 		placed.kind = qualify(configured.Type)
-		if placed.kind == "minecraft:ore" || placed.kind == "minecraft:scattered_ore" {
+		switch placed.kind {
+		case "minecraft:ore", "minecraft:scattered_ore":
 			ore, err := parseOreConfiguration(configured.Config)
 			if err != nil {
 				return nil, fmt.Errorf("解析 %s 的矿石配置失败：%w", placed.feature, err)
 			}
 			placed.ore = ore
-			for index, rawModifier := range encoded.Placement {
-				modifier, err := parsePlacementModifier(rawModifier)
-				if err != nil {
-					return nil, fmt.Errorf("解析 %s 的第 %d 个 placement 失败：%w", name, index, err)
-				}
-				placed.placements = append(placed.placements, modifier)
+		case "minecraft:tree":
+			tree, err := parseTreeConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的树木配置失败：%w", placed.feature, err)
 			}
+			placed.tree = tree
+		case "minecraft:random_selector":
+			selector, err := parseSelectorConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的 selector 配置失败：%w", placed.feature, err)
+			}
+			placed.selector = selector
+		case "minecraft:random_patch", "minecraft:flower":
+			patch, err := parsePatchConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的 patch 配置失败：%w", placed.feature, err)
+			}
+			placed.patch = patch
+		case "minecraft:simple_block":
+			simple, err := parseSimpleBlockConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的简单方块配置失败：%w", placed.feature, err)
+			}
+			placed.simple = simple
+		}
+		for index, rawModifier := range encoded.Placement {
+			modifier, err := parsePlacementModifier(rawModifier)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的第 %d 个 placement 失败：%w", name, index, err)
+			}
+			if !modifier.supported {
+				placed.supported = false
+			}
+			placed.placements = append(placed.placements, modifier)
+		}
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil {
+			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
 	}
@@ -197,20 +334,24 @@ func parseFeatureSurfaceBlock(raw json.RawMessage) (SurfaceBlock, error) {
 
 func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 	var encoded struct {
-		Type   string          `json:"type"`
-		Count  json.RawMessage `json:"count"`
-		Chance int             `json:"chance"`
-		Height json.RawMessage `json:"height"`
+		Type          string          `json:"type"`
+		Count         json.RawMessage `json:"count"`
+		Chance        int             `json:"chance"`
+		Height        json.RawMessage `json:"height"`
+		Heightmap     string          `json:"heightmap"`
+		Predicate     json.RawMessage `json:"predicate"`
+		MaxWaterDepth int             `json:"max_water_depth"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return placementModifier{}, err
 	}
-	modifier := placementModifier{kind: qualify(encoded.Type)}
+	modifier := placementModifier{kind: qualify(encoded.Type), supported: true}
 	switch modifier.kind {
 	case "minecraft:count":
 		count, err := parseIntProvider(encoded.Count)
 		if err != nil {
-			return placementModifier{}, err
+			modifier.supported = false
+			return modifier, nil
 		}
 		modifier.count = count
 	case "minecraft:rarity_filter":
@@ -218,15 +359,230 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 	case "minecraft:height_range":
 		height, err := parseFeatureHeightProvider(encoded.Height)
 		if err != nil {
-			return placementModifier{}, err
+			modifier.supported = false
+			return modifier, nil
 		}
 		modifier.height = height
+	case "minecraft:heightmap":
+		modifier.heightmap = encoded.Heightmap
+	case "minecraft:surface_water_depth_filter":
+		modifier.maxWaterDepth = encoded.MaxWaterDepth
+	case "minecraft:block_predicate_filter":
+		predicate, err := parseBlockPredicate(encoded.Predicate)
+		if err != nil {
+			modifier.supported = false
+			return modifier, nil
+		}
+		modifier.predicate = predicate
 	case "minecraft:in_square", "minecraft:biome":
 		// 无参数。
 	default:
-		return placementModifier{}, fmt.Errorf("不支持的 placement modifier %q", modifier.kind)
+		// 未实现 placement 的地物不执行，但保留数据以保持 feature index。
+		modifier.supported = false
 	}
 	return modifier, nil
+}
+
+func parseBlockPredicate(raw json.RawMessage) (*blockPredicate, error) {
+	var encoded struct {
+		Type  string          `json:"type"`
+		State json.RawMessage `json:"state"`
+		Tag   string          `json:"tag"`
+		Block string          `json:"blocks"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	predicate := &blockPredicate{kind: qualify(encoded.Type), tag: encoded.Tag, block: encoded.Block}
+	if len(encoded.State) != 0 {
+		state, err := parseFeatureSurfaceBlock(encoded.State)
+		if err != nil {
+			return nil, err
+		}
+		predicate.state = state.Name
+	}
+	return predicate, nil
+}
+
+func parseSelectorConfiguration(raw json.RawMessage) (*selectorConfiguration, error) {
+	var encoded struct {
+		Default  json.RawMessage `json:"default"`
+		Features []struct {
+			Chance  float32         `json:"chance"`
+			Feature json.RawMessage `json:"feature"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	configuration := &selectorConfiguration{}
+	for _, entry := range encoded.Features {
+		ref, err := parseFeatureRef(entry.Feature)
+		if err != nil {
+			return nil, err
+		}
+		configuration.entries = append(configuration.entries, selectorEntry{chance: entry.Chance, ref: ref})
+	}
+	if len(encoded.Default) != 0 {
+		ref, err := parseFeatureRef(encoded.Default)
+		if err != nil {
+			return nil, err
+		}
+		configuration.defaultRef = ref
+	}
+	return configuration, nil
+}
+
+func parseFeatureRef(raw json.RawMessage) (*featureRef, error) {
+	var name string
+	if err := json.Unmarshal(raw, &name); err == nil {
+		return &featureRef{name: qualify(name)}, nil
+	}
+	var encoded struct {
+		Feature   json.RawMessage   `json:"feature"`
+		Placement []json.RawMessage `json:"placement"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	ref := &featureRef{}
+	var inlineName string
+	if err := json.Unmarshal(encoded.Feature, &inlineName); err == nil {
+		ref.name = qualify(inlineName)
+	} else {
+		ref.inline = encoded.Feature
+	}
+	for _, rawModifier := range encoded.Placement {
+		modifier, err := parsePlacementModifier(rawModifier)
+		if err != nil {
+			return nil, err
+		}
+		ref.placements = append(ref.placements, modifier)
+	}
+	return ref, nil
+}
+
+func parsePatchConfiguration(raw json.RawMessage) (*patchConfiguration, error) {
+	var encoded struct {
+		Tries    int             `json:"tries"`
+		XZSpread int             `json:"xz_spread"`
+		YZSpread int             `json:"yz_spread"`
+		Feature  json.RawMessage `json:"feature"`
+	}
+
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	ref, err := parseFeatureRef(encoded.Feature)
+	if err != nil {
+		return nil, err
+	}
+	return &patchConfiguration{tries: encoded.Tries, xzSpread: encoded.XZSpread, yzSpread: encoded.YZSpread, feature: ref}, nil
+}
+
+func parseSimpleBlockConfiguration(raw json.RawMessage) (*simpleBlockConfiguration, error) {
+	var encoded struct {
+		ToPlace json.RawMessage `json:"to_place"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	provider, err := parseStateProvider(encoded.ToPlace)
+	if err != nil {
+		return nil, err
+	}
+	return &simpleBlockConfiguration{provider: provider}, nil
+}
+
+func parseStateProvider(raw json.RawMessage) (stateProvider, error) {
+	var encoded struct {
+		Type    string          `json:"type"`
+		State   json.RawMessage `json:"state"`
+		Entries []struct {
+			Data   json.RawMessage `json:"data"`
+			Weight int             `json:"weight"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return stateProvider{}, err
+	}
+	var provider stateProvider
+	switch qualify(encoded.Type) {
+	case "minecraft:simple_state_provider":
+		state, err := parseFeatureSurfaceBlock(encoded.State)
+		if err != nil {
+			return stateProvider{}, err
+		}
+		provider.entries = []weightedState{{state: state, weight: 1}}
+	case "minecraft:weighted_state_provider":
+		for _, entry := range encoded.Entries {
+			state, err := parseFeatureSurfaceBlock(entry.Data)
+			if err != nil {
+				return stateProvider{}, err
+			}
+			provider.entries = append(provider.entries, weightedState{state: state, weight: entry.Weight})
+		}
+	default:
+		return stateProvider{}, fmt.Errorf("不支持的 state provider %q", encoded.Type)
+	}
+	return provider, nil
+}
+
+func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
+	var encoded struct {
+		TrunkProvider struct {
+			State json.RawMessage `json:"state"`
+		} `json:"trunk_provider"`
+		FoliageProvider struct {
+			State json.RawMessage `json:"state"`
+		} `json:"foliage_provider"`
+		TrunkPlacer struct {
+			Type        string `json:"type"`
+			BaseHeight  int    `json:"base_height"`
+			HeightRandA int    `json:"height_rand_a"`
+			HeightRandB int    `json:"height_rand_b"`
+		} `json:"trunk_placer"`
+		FoliagePlacer struct {
+			Type   string          `json:"type"`
+			Radius json.RawMessage `json:"radius"`
+			Height json.RawMessage `json:"height"`
+		} `json:"foliage_placer"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, nil
+	}
+	if qualify(encoded.TrunkPlacer.Type) != "minecraft:straight_trunk_placer" ||
+		qualify(encoded.FoliagePlacer.Type) != "minecraft:blob_foliage_placer" {
+		return nil, nil
+	}
+	trunk, err := parseFeatureSurfaceBlock(encoded.TrunkProvider.State)
+	if err != nil {
+		return nil, err
+	}
+	leaves, err := parseFeatureSurfaceBlock(encoded.FoliageProvider.State)
+	if err != nil {
+		return nil, err
+	}
+	radius, err := parseIntProvider(encoded.FoliagePlacer.Radius)
+	if err != nil {
+		return nil, nil
+	}
+	var foliageHeight int
+	if len(encoded.FoliagePlacer.Height) != 0 {
+		if err := json.Unmarshal(encoded.FoliagePlacer.Height, &foliageHeight); err != nil {
+			return nil, nil
+		}
+	}
+	return &treeConfiguration{
+		trunk:         trunk,
+		leaves:        leaves,
+		baseHeight:    encoded.TrunkPlacer.BaseHeight,
+		heightRandA:   encoded.TrunkPlacer.HeightRandA,
+		heightRandB:   encoded.TrunkPlacer.HeightRandB,
+		foliageType:   qualify(encoded.FoliagePlacer.Type),
+		foliageRadius: radius,
+		foliageHeight: foliageHeight,
+	}, nil
 }
 
 func parseIntProvider(raw json.RawMessage) (intProvider, error) {
@@ -235,17 +591,29 @@ func parseIntProvider(raw json.RawMessage) (intProvider, error) {
 		return intProvider{kind: "constant", constant: constant}, nil
 	}
 	var encoded struct {
-		Type    string `json:"type"`
-		Minimum int    `json:"min_inclusive"`
-		Maximum int    `json:"max_inclusive"`
+		Type         string `json:"type"`
+		Minimum      int    `json:"min_inclusive"`
+		Maximum      int    `json:"max_inclusive"`
+		Distribution []struct {
+			Data   int `json:"data"`
+			Weight int `json:"weight"`
+		} `json:"distribution"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return intProvider{}, err
 	}
-	if qualify(encoded.Type) != "minecraft:uniform" {
+	switch qualify(encoded.Type) {
+	case "minecraft:uniform":
+		return intProvider{kind: "minecraft:uniform", minimum: encoded.Minimum, maximum: encoded.Maximum}, nil
+	case "minecraft:weighted_list":
+		provider := intProvider{kind: "minecraft:weighted_list"}
+		for _, entry := range encoded.Distribution {
+			provider.entries = append(provider.entries, weightedInt{value: entry.Data, weight: entry.Weight})
+		}
+		return provider, nil
+	default:
 		return intProvider{}, fmt.Errorf("不支持的 int provider %q", encoded.Type)
 	}
-	return intProvider{kind: "minecraft:uniform", minimum: encoded.Minimum, maximum: encoded.Maximum}, nil
 }
 
 func parseFeatureHeightProvider(raw json.RawMessage) (featureHeightProvider, error) {
@@ -274,45 +642,55 @@ func parseFeatureHeightProvider(raw json.RawMessage) (featureHeightProvider, err
 	}, nil
 }
 
-// applyOreFeatures 执行区块内 generation step 6 的矿石地物。
-//
-// 这里只执行 ore/scattered_ore；其他地物暂不执行，因此不会把未实现的地物
-// 伪装成已生成。矿石写入限制在当前区块内，跨越区块边界的部分会被裁掉。
-func (r *Router) applyOreFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
+// applyFeatures 执行区块的 generation steps。当前已实现矿石与部分树木；
+// 未实现的地物/placement 会被标记为 unsupported 并跳过。
+func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 	if r.features == nil {
 		return
 	}
-	var names []string
-	seen := make(map[string]struct{})
+	// 收集该区块所有地表群系的地物列表，并保留首次出现顺序。
+	// 原版 FeatureSorter 还会考虑全部 4×4×4 群系并做拓扑排序；这里先实现
+	// 地表群系并集，树木/矿石以外的地物在后续阶段继续对齐。
+	maxSteps := 0
+	byStep := make([][]string, 0, 11)
+	seenByStep := make([]map[string]struct{}, 0, 11)
 	for gridZ := 0; gridZ < 4; gridZ++ {
 		for gridX := 0; gridX < 4; gridX++ {
 			biome := biomes.BiomeAtBlock(chunk.MinX+gridX*4+2, 64, chunk.MinZ+gridZ*4+2)
 			steps := r.features.biomeFeatures[biome]
-			if len(steps) <= 6 {
-				continue
+			if len(steps) > maxSteps {
+				maxSteps = len(steps)
 			}
-			for _, name := range steps[6] {
-				name = qualify(name)
-				if _, ok := seen[name]; ok {
-					continue
+			for len(byStep) < len(steps) {
+				byStep = append(byStep, nil)
+				seenByStep = append(seenByStep, make(map[string]struct{}))
+			}
+			for step, names := range steps {
+				for _, name := range names {
+					name = qualify(name)
+					if _, ok := seenByStep[step][name]; ok {
+						continue
+					}
+					seenByStep[step][name] = struct{}{}
+					byStep[step] = append(byStep[step], name)
 				}
-				seen[name] = struct{}{}
-				names = append(names, name)
 			}
 		}
 	}
-	if len(names) == 0 {
+	if maxSteps == 0 {
 		return
 	}
 	random := newWorldgenRandom()
 	decorationSeed := random.setDecorationSeed(r.seed, chunk.ChunkX, chunk.ChunkZ)
-	for index, name := range names {
-		placed, ok := r.features.placed[name]
-		if !ok || placed.ore == nil {
-			continue
+	for step := 0; step < maxSteps; step++ {
+		for index, name := range byStep[step] {
+			placed, ok := r.features.placed[name]
+			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil) {
+				continue
+			}
+			random.setFeatureSeed(decorationSeed, index, step)
+			r.applyPlacedFeature(chunk, random.legacyRandom, placed)
 		}
-		random.setFeatureSeed(decorationSeed, index, 6)
-		r.applyPlacedOre(chunk, random.legacyRandom, placed)
 	}
 }
 
@@ -320,9 +698,12 @@ type featurePosition struct {
 	x, y, z int
 }
 
-func (r *Router) applyPlacedOre(chunk *GeneratedChunk, random *legacyRandom, placed placedFeature) {
+func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom, placed placedFeature) {
 	positions := []featurePosition{{x: chunk.MinX, y: 0, z: chunk.MinZ}}
 	for _, modifier := range placed.placements {
+		if !modifier.supported {
+			return
+		}
 		switch modifier.kind {
 		case "minecraft:count":
 			count := modifier.count.sample(random)
@@ -345,6 +726,26 @@ func (r *Router) applyPlacedOre(chunk *GeneratedChunk, random *legacyRandom, pla
 			for i := range positions {
 				positions[i].y = modifier.height.sample(random, r.setting)
 			}
+		case "minecraft:heightmap":
+			for i := range positions {
+				positions[i].y = chunkHeightmap(chunk, positions[i].x, positions[i].z, modifier.heightmap) + 1
+			}
+		case "minecraft:surface_water_depth_filter":
+			filtered := positions[:0]
+			for _, position := range positions {
+				depth := 0
+				for y := position.y; y < chunk.MinY+chunk.Height; y++ {
+					block := chunk.BlockAt(position.x, y, position.z)
+					if block.Name != "minecraft:water" {
+						break
+					}
+					depth++
+				}
+				if depth <= modifier.maxWaterDepth {
+					filtered = append(filtered, position)
+				}
+			}
+			positions = filtered
 		case "minecraft:rarity_filter":
 			filtered := positions[:0]
 			for _, position := range positions {
@@ -353,9 +754,16 @@ func (r *Router) applyPlacedOre(chunk *GeneratedChunk, random *legacyRandom, pla
 				}
 			}
 			positions = filtered
+		case "minecraft:block_predicate_filter":
+			filtered := positions[:0]
+			for _, position := range positions {
+				if r.blockPredicateMatches(chunk, modifier.predicate, position.x, position.y, position.z) {
+					filtered = append(filtered, position)
+				}
+			}
+			positions = filtered
 		case "minecraft:biome":
-			// 原版 biome filter 只做群系校验；矿石 placed_feature 的群系列表
-			// 已由 biomeFeatures 限定，这里保留位置即可。
+			// 群系列表已经限定，保留位置。
 		default:
 			return
 		}
@@ -364,7 +772,258 @@ func (r *Router) applyPlacedOre(chunk *GeneratedChunk, random *legacyRandom, pla
 		if position.y < chunk.MinY || position.y >= chunk.MinY+chunk.Height {
 			continue
 		}
-		r.placeOre(chunk, random, *placed.ore, position.x, position.y, position.z)
+		switch {
+		case placed.ore != nil:
+			r.placeOre(chunk, random, *placed.ore, position.x, position.y, position.z)
+		case placed.tree != nil:
+			r.placeTree(chunk, random, *placed.tree, position.x, position.y, position.z)
+		case placed.selector != nil:
+			r.placeSelector(chunk, random, *placed.selector, position.x, position.y, position.z)
+		case placed.patch != nil:
+			r.placePatch(chunk, random, *placed.patch, position.x, position.y, position.z)
+		case placed.simple != nil:
+			r.placeSimple(chunk, random, *placed.simple, position.x, position.y, position.z)
+		}
+	}
+}
+
+func chunkHeightmap(chunk *GeneratedChunk, x, z int, kind string) int {
+	if x < chunk.MinX || x >= chunk.MinX+16 || z < chunk.MinZ || z >= chunk.MinZ+16 {
+		return chunk.MinY - 1
+	}
+	for y := chunk.MinY + chunk.Height - 1; y >= chunk.MinY; y-- {
+		block := chunk.BlockAt(x, y, z)
+		// 地物放置使用的高度图取“可站立表面”：流体不算表面，避免在水面
+		// 上生成草/花。OCEAN_FLOOR 与原版一样取最高固体。
+		switch kind {
+		case "OCEAN_FLOOR", "OCEAN_FLOOR_WG":
+			if !block.IsAir() && !block.HasFluid() {
+				return y
+			}
+		case "MOTION_BLOCKING", "MOTION_BLOCKING_NO_LEAVES":
+			if !block.IsAir() && !block.HasFluid() {
+				return y
+			}
+		default: // WORLD_SURFACE, WORLD_SURFACE_WG
+			if !block.IsAir() && !block.HasFluid() {
+				return y
+			}
+		}
+	}
+	return chunk.MinY - 1
+}
+
+func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPredicate, x, y, z int) bool {
+	if predicate == nil {
+		return true
+	}
+	block := chunk.BlockAt(x, y, z)
+	switch predicate.kind {
+	case "minecraft:would_survive":
+		if !block.IsAir() {
+			return false
+		}
+		below := chunk.BlockAt(x, y-1, z)
+		return !below.IsAir() && !below.HasFluid()
+	case "minecraft:matching_blocks":
+		return predicate.block == "" || qualify(predicate.block) == block.Name
+	case "minecraft:matching_block_tag":
+		if state, err := registry.BlockStateID(block.Name); err == nil {
+			return registry.BlockTagContains(predicate.tag, state)
+		}
+		return false
+	case "minecraft:matching_fluids":
+		return block.Name == qualify(predicate.block) || (predicate.block == "" && block.HasFluid())
+	case "minecraft:replaceable":
+		return block.IsAir()
+	case "minecraft:solid":
+		return !block.IsAir() && !block.HasFluid()
+	default:
+		return false
+	}
+}
+
+func (r *Router) placePatch(chunk *GeneratedChunk, random *legacyRandom, patch patchConfiguration, x, y, z int) {
+	for attempt := 0; attempt < patch.tries; attempt++ {
+		offsetX := x + random.nextIntBounded(patch.xzSpread*2+1) - patch.xzSpread
+		offsetY := y + random.nextIntBounded(patch.yzSpread*2+1) - patch.yzSpread
+		offsetZ := z + random.nextIntBounded(patch.xzSpread*2+1) - patch.xzSpread
+		r.applyFeatureRef(chunk, random, patch.feature, offsetX, offsetY, offsetZ)
+	}
+}
+
+func (r *Router) placeSimple(chunk *GeneratedChunk, random *legacyRandom, simple simpleBlockConfiguration, x, y, z int) {
+	if !chunk.InRange(x, y, z) || !chunk.BlockAt(x, y, z).IsAir() {
+		return
+	}
+	chunk.SetBlock(x, y, z, simple.provider.sample(random))
+}
+
+func (r *Router) placeSelector(chunk *GeneratedChunk, random *legacyRandom, selector selectorConfiguration, x, y, z int) {
+	var chosen *featureRef
+	for _, entry := range selector.entries {
+		if random.nextFloat() < entry.chance {
+			chosen = entry.ref
+			break
+		}
+	}
+	if chosen == nil {
+		chosen = selector.defaultRef
+	}
+	if chosen == nil {
+		return
+	}
+	r.applyFeatureRef(chunk, random, chosen, x, y, z)
+}
+
+func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, ref *featureRef, x, y, z int) {
+	raw := ref.inline
+	if len(raw) == 0 {
+		var ok bool
+		raw, ok = r.features.configured[ref.name]
+		if !ok {
+			return
+		}
+	}
+	var configured struct {
+		Type   string          `json:"type"`
+		Config json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(raw, &configured); err != nil {
+		return
+	}
+	placed := placedFeature{feature: ref.name, kind: qualify(configured.Type), placements: ref.placements, supported: true}
+	switch placed.kind {
+	case "minecraft:ore", "minecraft:scattered_ore":
+		ore, err := parseOreConfiguration(configured.Config)
+		if err != nil {
+			return
+		}
+		placed.ore = ore
+	case "minecraft:tree":
+		tree, err := parseTreeConfiguration(configured.Config)
+		if err != nil || tree == nil {
+			return
+		}
+		placed.tree = tree
+	case "minecraft:random_selector":
+		selector, err := parseSelectorConfiguration(configured.Config)
+		if err != nil || selector == nil {
+			return
+		}
+		placed.selector = selector
+	case "minecraft:random_patch", "minecraft:flower":
+		patch, err := parsePatchConfiguration(configured.Config)
+		if err != nil || patch == nil {
+			return
+		}
+		placed.patch = patch
+	case "minecraft:simple_block":
+		simple, err := parseSimpleBlockConfiguration(configured.Config)
+		if err != nil || simple == nil {
+			return
+		}
+		placed.simple = simple
+	default:
+		return
+	}
+	if len(ref.placements) == 0 {
+		switch {
+		case placed.ore != nil:
+			r.placeOre(chunk, random, *placed.ore, x, y, z)
+		case placed.tree != nil:
+			r.placeTree(chunk, random, *placed.tree, x, y, z)
+		case placed.selector != nil:
+			r.placeSelector(chunk, random, *placed.selector, x, y, z)
+		case placed.patch != nil:
+			r.placePatch(chunk, random, *placed.patch, x, y, z)
+		case placed.simple != nil:
+			r.placeSimple(chunk, random, *placed.simple, x, y, z)
+		}
+		return
+	}
+	// 内层 placed feature 通常只有 block predicate；从头应用 placement 会把
+	// 随机原点再次当作区块原点，因此这里只应用确定性的 predicate/heightmap。
+	positions := []featurePosition{{x: x, y: y, z: z}}
+	for _, modifier := range ref.placements {
+		if !modifier.supported {
+			return
+		}
+		switch modifier.kind {
+		case "minecraft:block_predicate_filter":
+			filtered := positions[:0]
+			for _, position := range positions {
+				if r.blockPredicateMatches(chunk, modifier.predicate, position.x, position.y, position.z) {
+					filtered = append(filtered, position)
+				}
+			}
+			positions = filtered
+		case "minecraft:heightmap":
+			for i := range positions {
+				positions[i].y = chunkHeightmap(chunk, positions[i].x, positions[i].z, modifier.heightmap) + 1
+			}
+		case "minecraft:surface_water_depth_filter":
+			// 在内层 rare 情况下直接保留。
+		case "minecraft:biome":
+		default:
+			return
+		}
+	}
+	for _, position := range positions {
+		switch {
+		case placed.ore != nil:
+			r.placeOre(chunk, random, *placed.ore, position.x, position.y, position.z)
+		case placed.tree != nil:
+			r.placeTree(chunk, random, *placed.tree, position.x, position.y, position.z)
+		case placed.selector != nil:
+			r.placeSelector(chunk, random, *placed.selector, position.x, position.y, position.z)
+		case placed.patch != nil:
+			r.placePatch(chunk, random, *placed.patch, position.x, position.y, position.z)
+		case placed.simple != nil:
+			r.placeSimple(chunk, random, *placed.simple, position.x, position.y, position.z)
+		}
+	}
+}
+
+// placeTree 实现 straight_trunk_placer + blob_foliage_placer 的近似结构。
+// 目前不处理 cross-chunk 写入：跨出当前区块的树干/树叶会被裁掉。
+func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z int) {
+	height := configuration.baseHeight + random.nextIntBounded(configuration.heightRandA+1) + random.nextIntBounded(configuration.heightRandB+1)
+	if height <= 0 || y+height+configuration.foliageHeight >= chunk.MinY+chunk.Height {
+		return
+	}
+	for offset := 0; offset < height; offset++ {
+		block := chunk.BlockAt(x, y+offset, z)
+		if !block.IsAir() && block.Name != configuration.leaves.Name {
+			return
+		}
+	}
+	for offset := 0; offset < height; offset++ {
+		chunk.SetBlock(x, y+offset, z, configuration.trunk)
+	}
+	radius := configuration.foliageRadius.sample(random)
+	top := y + height - 1
+	for layer := 0; layer < configuration.foliageHeight; layer++ {
+		layerRadius := radius - 1 - layer/2
+		if layerRadius < 0 {
+			layerRadius = 0
+		}
+		layerY := top - layer
+		for dx := -layerRadius; dx <= layerRadius; dx++ {
+			for dz := -layerRadius; dz <= layerRadius; dz++ {
+				if dx*dx+dz*dz > layerRadius*layerRadius+1 {
+					continue
+				}
+				if layerRadius > 0 && absFeatureInt(dx) == layerRadius && absFeatureInt(dz) == layerRadius && random.nextIntBounded(2) == 0 {
+					continue
+				}
+				target := chunk.BlockAt(x+dx, layerY, z+dz)
+				if !target.IsAir() && target.Name != configuration.leaves.Name {
+					continue
+				}
+				chunk.SetBlock(x+dx, layerY, z+dz, configuration.leaves)
+			}
+		}
 	}
 }
 
@@ -515,4 +1174,11 @@ func hasAirExposure(chunk *GeneratedChunk, x, y, z int) bool {
 
 func lerpFloat64(t, a, b float64) float64 {
 	return a + t*(b-a)
+}
+
+func absFeatureInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
