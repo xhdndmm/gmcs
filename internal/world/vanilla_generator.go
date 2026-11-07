@@ -18,24 +18,31 @@ import (
 // 为每个 worker 提供独立的 Router 会话（共享只读的密度函数图与噪声实例）。
 // 因此 GenerateChunk 可以被异步预生成 worker 并发调用。
 type VanillaGenerator struct {
-	base    *vanilla.Router
-	pool    sync.Pool
-	heights sync.Map // ChunkPos -> *[256]int（SurfaceY 按区块缓存）
-	warned  sync.Map // 未收录方块名（只记录一次，避免刷日志）
+	dimension Dimension
+	base      *vanilla.Router
+	pool      sync.Pool
+	heights   sync.Map // ChunkPos -> *[256]int（SurfaceY 按区块缓存）
+	warned    sync.Map // 未收录方块名（只记录一次，避免刷日志）
 }
 
 // NewVanillaGenerator 创建原版算法生成器。数据缺失或解析失败时返回错误；
 // 主世界没有其他地形生成器作为回退，调用方应中止启动。
 func NewVanillaGenerator(seed int64) (*VanillaGenerator, error) {
+	return NewVanillaDimensionGenerator(DimensionOverworld, "minecraft:overworld", seed)
+}
+
+// NewVanillaDimensionGenerator 为指定维度创建原版算法生成器。
+// settingName 是该维度的 noise_settings 注册名（overworld/nether/end）。
+func NewVanillaDimensionGenerator(dimension Dimension, settingName string, seed int64) (*VanillaGenerator, error) {
 	data, err := vanilla.Load()
 	if err != nil {
 		return nil, err
 	}
-	base, err := vanilla.NewRouter(data, "minecraft:overworld", seed)
+	base, err := vanilla.NewRouter(data, settingName, seed)
 	if err != nil {
 		return nil, err
 	}
-	generator := &VanillaGenerator{base: base}
+	generator := &VanillaGenerator{dimension: dimension, base: base}
 	generator.pool.New = func() any { return base.NewSession() }
 	return generator, nil
 }
@@ -52,7 +59,7 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 		slog.Error("原版区块生成失败，返回平坦应急区块", "chunk_x", x, "chunk_z", z, "err", err)
 		return FlatGenerator{}.GenerateChunk(x, z)
 	}
-	chunk := NewChunkDim(x, z, DimensionOverworld)
+	chunk := NewChunkDim(x, z, g.dimension)
 	minX := x * SectionSize
 	minZ := z * SectionSize
 	generated.ForEachBlock(func(blockX, blockY, blockZ int, block vanilla.SurfaceBlock) {
@@ -117,7 +124,7 @@ func (g *VanillaGenerator) SurfaceY(x, z int) int {
 	if !ok {
 		heights := new([256]int)
 		for i := range heights {
-			heights[i] = WorldMinY - 1
+			heights[i] = g.dimension.MinY() - 1
 		}
 		chunk := g.GenerateChunk(pos.X, pos.Z)
 		for localZ := 0; localZ < SectionSize; localZ++ {
@@ -135,5 +142,5 @@ func (g *VanillaGenerator) SurfaceY(x, z int) int {
 
 // Dimension 实现 Generator。
 func (g *VanillaGenerator) Dimension() Dimension {
-	return DimensionOverworld
+	return g.dimension
 }

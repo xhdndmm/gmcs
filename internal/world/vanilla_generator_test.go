@@ -12,8 +12,8 @@ import (
 func TestNewGeneratorDimensions(t *testing.T) {
 	if generator, err := NewGenerator(DimensionNether, 1); err != nil {
 		t.Fatalf("nether: %v", err)
-	} else if _, ok := generator.(NetherGenerator); !ok {
-		t.Fatalf("nether generator = %T, want NetherGenerator", generator)
+	} else if _, ok := generator.(*VanillaGenerator); !ok {
+		t.Fatalf("nether generator = %T, want *VanillaGenerator", generator)
 	}
 	if generator, err := NewGenerator(DimensionEnd, 1); err != nil {
 		t.Fatalf("end: %v", err)
@@ -111,5 +111,32 @@ func BenchmarkVanillaGeneratorChunk(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		generator.GenerateChunk(i%16, i/16)
+	}
+}
+
+func TestVanillaNetherGeneratorChunk(t *testing.T) {
+	generator, err := NewVanillaDimensionGenerator(DimensionNether, "minecraft:nether", 4321)
+	if err != nil {
+		t.Fatalf("NewVanillaDimensionGenerator: %v", err)
+	}
+	if generator.Dimension() != DimensionNether {
+		t.Fatalf("dimension = %v", generator.Dimension())
+	}
+	chunk := generator.GenerateChunk(0, 0)
+	solid := 0
+	for z := 0; z < SectionSize; z++ {
+		for x := 0; x < SectionSize; x++ {
+			if chunk.Column(x, z).HasSolid {
+				solid++
+			}
+		}
+	}
+	if solid < 128 {
+		t.Fatalf("下界只有 %d/256 列有固体方块", solid)
+	}
+	for i, biome := range chunk.BiomeGrid() {
+		if biome == 0 {
+			t.Fatalf("下界 biome grid[%d] 为 0", i)
+		}
 	}
 }

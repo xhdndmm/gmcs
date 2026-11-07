@@ -165,8 +165,10 @@ func main() {
 	// 只保留 overworld 的噪声设置与群系参数表（下界/末地在各自批次再提取）；
 	// 密度函数不做过滤：根目录下的 shift_x/shift_z 等被 overworld 路由引用，
 	// 只保留 overworld/ 子目录会漏掉它们。
-	overworldOnly := func(key string) bool { return key == "minecraft:overworld" }
-	if err := collect("noise_settings", overworldOnly, result.NoiseSettings); err != nil {
+	dimensionOnly := func(key string) bool {
+		return key == "minecraft:overworld" || key == "minecraft:nether" || key == "minecraft:the_end" || key == "minecraft:end"
+	}
+	if err := collect("noise_settings", dimensionOnly, result.NoiseSettings); err != nil {
 		fmt.Fprintf(os.Stderr, "提取 noise_settings 失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -178,7 +180,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "提取 noise 失败: %v\n", err)
 		os.Exit(1)
 	}
-	if err := collect("multi_noise_biome_source_parameter_list", overworldOnly, result.BiomeSources); err != nil {
+	if err := collect("multi_noise_biome_source_parameter_list", dimensionOnly, result.BiomeSources); err != nil {
 		fmt.Fprintf(os.Stderr, "提取群系参数表失败: %v\n", err)
 		os.Exit(1)
 	}

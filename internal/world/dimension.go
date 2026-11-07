@@ -128,7 +128,11 @@ func lower(s string) string {
 func NewGenerator(dimension Dimension, seed int64) (Generator, error) {
 	switch dimension {
 	case DimensionNether:
-		return NetherGenerator{Seed: seed}, nil
+		generator, err := NewVanillaDimensionGenerator(DimensionNether, "minecraft:nether", seed)
+		if err != nil {
+			return nil, fmt.Errorf("初始化下界原版生成器失败：%w", err)
+		}
+		return generator, nil
 	case DimensionEnd:
 		return EndGenerator{Seed: seed}, nil
 	default:

@@ -166,6 +166,17 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 	if err := r.carveChunk(chunk, sampler, biomes); err != nil {
 		return nil, err
 	}
+	if setting.Name == "minecraft:nether" {
+		// 原版下界基岩顶位于噪声设置高度范围的最高一层（y=127）。
+		// 表面规则在部分列会留下净岩，这里按维度边界补齐；不改变 y<127 的洞穴。
+		roof := setting.MinY + setting.Height - 1
+		bedrock := SurfaceBlock{Name: "minecraft:bedrock"}
+		for x := chunk.MinX; x < chunk.MinX+16; x++ {
+			for z := chunk.MinZ; z < chunk.MinZ+16; z++ {
+				chunk.SetBlock(x, roof, z, bedrock)
+			}
+		}
+	}
 	// 原版顺序：CARVERS → FEATURES。当前只执行 generation step 6 的矿石。
 	r.applyFeatures(chunk, biomes)
 	chunk.RecalculateHeights()

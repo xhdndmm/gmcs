@@ -17,7 +17,9 @@ func spawnHint(generator Generator, dimension Dimension, x, z int) bool {
 	height := generator.SurfaceY(x, z)
 	switch dimension {
 	case DimensionNether:
-		return height >= 5 && height <= 120
+		// 原版下界有 y=127 的基岩顶；SurfaceY 返回最高固体，因此这里允许
+		// 顶到 127，实际出生面由 spawnGroundY 从 120 往下扫描得到。
+		return height >= 5 && height <= 127
 	case DimensionEnd:
 		return height > 20
 	default:
@@ -106,16 +108,31 @@ func spawnGroundY(chunk *Chunk, x, z int, dimension Dimension) (int, bool) {
 	}
 	groundY := -1
 	var groundState uint16
-	for y := top; y > dimension.MinY()+1; y-- {
-		state := chunk.GetBlockState(x, y, z)
-		if state == AirBlock {
-			continue
+	if dimension == DimensionNether {
+		// 下界顶部是基岩天花板，很多列从 120 往下全是净岩；不能把“第一块
+		// 非空气”当出生地面。这里找最高的“实心块 + 上方两格空气”的落脚点。
+		for y := top; y >= 5; y-- {
+			state := chunk.GetBlockState(x, y, z)
+			if state == AirBlock || state == LavaBlock || state == WaterBlock {
+				continue
+			}
+			if chunk.GetBlockState(x, y+1, z) == AirBlock && chunk.GetBlockState(x, y+2, z) == AirBlock {
+				groundY, groundState = y, state
+				break
+			}
 		}
-		if state == WaterBlock {
-			return 0, false // 水面/湖底：不适合作为出生点
+	} else {
+		for y := top; y > dimension.MinY()+1; y-- {
+			state := chunk.GetBlockState(x, y, z)
+			if state == AirBlock {
+				continue
+			}
+			if state == WaterBlock {
+				return 0, false // 水面/湖底：不适合作为出生点
+			}
+			groundY, groundState = y, state
+			break
 		}
-		groundY, groundState = y, state
-		break
 	}
 	if groundY < 0 {
 		return 0, false

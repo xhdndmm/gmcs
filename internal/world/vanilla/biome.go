@@ -20,6 +20,16 @@ import (
 // 用反射从官方类导出，坐标是原版的量化 long（float * 10000 截断）。
 const BiomeParameterFileName = "data/biome_parameters.json.gz"
 
+// BiomeParameterNetherFileName 是下界五个群系的多噪声参数表。
+const BiomeParameterNetherFileName = "data/biome_parameters_nether.json.gz"
+
+func biomeParameterFileName(settingName string) string {
+	if settingName == "minecraft:nether" {
+		return BiomeParameterNetherFileName
+	}
+	return BiomeParameterFileName
+}
+
 // climateQuantizeScale 是原版 Climate.quantizeCoord 的量化尺度。
 const climateQuantizeScale = 10000
 
@@ -115,7 +125,8 @@ func NewBiomeSource(router *Router) (*BiomeSource, error) {
 	if err != nil {
 		return nil, err
 	}
-	points, err := loadBiomeParameters()
+	fileName := biomeParameterFileName(router.setting.Name)
+	points, err := loadBiomeParameters(fileName)
 	if err != nil {
 		return nil, err
 	}
@@ -129,26 +140,26 @@ func NewBiomeSource(router *Router) (*BiomeSource, error) {
 }
 
 // loadBiomeParameters 读取内嵌的群系参数表。
-func loadBiomeParameters() ([]biomeParameterPoint, error) {
-	compressed, err := dataFiles.ReadFile(BiomeParameterFileName)
+func loadBiomeParameters(fileName string) ([]biomeParameterPoint, error) {
+	compressed, err := dataFiles.ReadFile(fileName)
 	if err != nil {
-		return nil, fmt.Errorf("读取 %s 失败：%w", BiomeParameterFileName, err)
+		return nil, fmt.Errorf("读取 %s 失败：%w", fileName, err)
 	}
 	reader, err := gzip.NewReader(bytes.NewReader(compressed))
 	if err != nil {
-		return nil, fmt.Errorf("解压 %s 失败：%w", BiomeParameterFileName, err)
+		return nil, fmt.Errorf("解压 %s 失败：%w", fileName, err)
 	}
 	defer reader.Close()
 	payload, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, fmt.Errorf("读取 %s 内容失败：%w", BiomeParameterFileName, err)
+		return nil, fmt.Errorf("读取 %s 内容失败：%w", fileName, err)
 	}
 	var file biomeParameterFile
 	if err := json.Unmarshal(payload, &file); err != nil {
-		return nil, fmt.Errorf("解析 %s 失败：%w", BiomeParameterFileName, err)
+		return nil, fmt.Errorf("解析 %s 失败：%w", fileName, err)
 	}
 	if len(file.Points) == 0 {
-		return nil, fmt.Errorf("%s 没有群系参数点", BiomeParameterFileName)
+		return nil, fmt.Errorf("%s 没有群系参数点", fileName)
 	}
 	points := make([]biomeParameterPoint, len(file.Points))
 	for i, record := range file.Points {
