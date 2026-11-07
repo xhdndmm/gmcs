@@ -44,6 +44,8 @@ type placedFeature struct {
 	lake       *lakeConfiguration
 	vegetation *vegetationPatchConfiguration
 	pile       *pileConfiguration
+	disk       *diskConfiguration
+	bamboo     *bambooConfiguration
 	placements []placementModifier
 	supported  bool
 }
@@ -73,6 +75,26 @@ type patchConfiguration struct {
 
 type simpleBlockConfiguration struct {
 	provider stateProvider
+}
+
+type bambooConfiguration struct {
+	probability float32
+}
+
+type diskConfiguration struct {
+	fallback   stateProvider
+	rules      []diskRule
+	target     *blockPredicate
+	radius     intProvider
+	halfHeight int
+}
+
+type diskRule struct {
+	predicate *blockPredicate
+	offsetX   int
+	offsetY   int
+	offsetZ   int
+	state     stateProvider
 }
 
 type pileConfiguration struct {
@@ -148,10 +170,12 @@ type placementModifier struct {
 }
 
 type blockPredicate struct {
-	kind  string
-	state string
-	tag   string
-	block string
+	kind   string
+	state  string
+	tag    string
+	block  string
+	blocks []string
+	offset [3]int
 }
 
 type treeConfiguration struct {
@@ -339,6 +363,18 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 				return nil, fmt.Errorf("解析 %s 的方块堆配置失败：%w", placed.feature, err)
 			}
 			placed.pile = pile
+		case "minecraft:disk":
+			disk, err := parseDiskConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的圆盘配置失败：%w", placed.feature, err)
+			}
+			placed.disk = disk
+		case "minecraft:bamboo":
+			bamboo, err := parseBambooConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的竹子配置失败：%w", placed.feature, err)
+			}
+			placed.bamboo = bamboo
 		}
 		for index, rawModifier := range encoded.Placement {
 			modifier, err := parsePlacementModifier(rawModifier)
@@ -350,7 +386,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			}
 			placed.placements = append(placed.placements, modifier)
 		}
-		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil {
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil {
 			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
@@ -581,15 +617,28 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 
 func parseBlockPredicate(raw json.RawMessage) (*blockPredicate, error) {
 	var encoded struct {
-		Type  string          `json:"type"`
-		State json.RawMessage `json:"state"`
-		Tag   string          `json:"tag"`
-		Block string          `json:"blocks"`
+		Type   string          `json:"type"`
+		State  json.RawMessage `json:"state"`
+		Tag    string          `json:"tag"`
+		Blocks json.RawMessage `json:"blocks"`
+		Offset []int           `json:"offset"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return nil, err
 	}
-	predicate := &blockPredicate{kind: qualify(encoded.Type), tag: encoded.Tag, block: encoded.Block}
+	predicate := &blockPredicate{kind: qualify(encoded.Type), tag: encoded.Tag}
+	if len(encoded.Offset) == 3 {
+		predicate.offset = [3]int{encoded.Offset[0], encoded.Offset[1], encoded.Offset[2]}
+	}
+	var single string
+	if err := json.Unmarshal(encoded.Blocks, &single); err == nil {
+		predicate.block = single
+	} else {
+		var many []string
+		if err := json.Unmarshal(encoded.Blocks, &many); err == nil {
+			predicate.blocks = many
+		}
+	}
 	if len(encoded.State) != 0 {
 		state, err := parseFeatureSurfaceBlock(encoded.State)
 		if err != nil {
@@ -722,6 +771,71 @@ func parseStateProvider(raw json.RawMessage) (stateProvider, error) {
 		return stateProvider{}, fmt.Errorf("不支持的 state provider %q", encoded.Type)
 	}
 	return provider, nil
+}
+
+func parseBambooConfiguration(raw json.RawMessage) (*bambooConfiguration, error) {
+	var encoded struct {
+		Probability float32 `json:"probability"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	return &bambooConfiguration{probability: encoded.Probability}, nil
+}
+
+func parseDiskConfiguration(raw json.RawMessage) (*diskConfiguration, error) {
+	var encoded struct {
+		StateProvider json.RawMessage `json:"state_provider"`
+		Target        json.RawMessage `json:"target"`
+		Radius        json.RawMessage `json:"radius"`
+		HalfHeight    int             `json:"half_height"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	fallback, rules, err := parseRuleBasedStateProvider(encoded.StateProvider)
+	if err != nil {
+		return nil, err
+	}
+	target, err := parseBlockPredicate(encoded.Target)
+	if err != nil {
+		return nil, err
+	}
+	radius, err := parseIntProvider(encoded.Radius)
+	if err != nil {
+		return nil, err
+	}
+	return &diskConfiguration{fallback: fallback, rules: rules, target: target, radius: radius, halfHeight: encoded.HalfHeight}, nil
+}
+
+func parseRuleBasedStateProvider(raw json.RawMessage) (stateProvider, []diskRule, error) {
+	var encoded struct {
+		Fallback json.RawMessage `json:"fallback"`
+		Rules    []struct {
+			IfTrue json.RawMessage `json:"if_true"`
+			Then   json.RawMessage `json:"then"`
+		} `json:"rules"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return stateProvider{}, nil, err
+	}
+	fallback, err := parseStateProvider(encoded.Fallback)
+	if err != nil {
+		return stateProvider{}, nil, err
+	}
+	rules := make([]diskRule, 0, len(encoded.Rules))
+	for _, entry := range encoded.Rules {
+		predicate, err := parseBlockPredicate(entry.IfTrue)
+		if err != nil {
+			return stateProvider{}, nil, err
+		}
+		state, err := parseStateProvider(entry.Then)
+		if err != nil {
+			return stateProvider{}, nil, err
+		}
+		rules = append(rules, diskRule{predicate: predicate, state: state})
+	}
+	return fallback, rules, nil
 }
 
 func parsePileConfiguration(raw json.RawMessage) (*pileConfiguration, error) {
@@ -1021,7 +1135,7 @@ func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 			last = index
 			name := order.names[index]
 			placed, ok := r.features.placed[name]
-			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil) {
+			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil) {
 				continue
 			}
 			random.setFeatureSeed(decorationSeed, index, step)
@@ -1169,6 +1283,10 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placeVegetationPatch(chunk, random, *placed.vegetation, position.x, position.y, position.z)
 		case placed.pile != nil:
 			r.placeBlockPile(chunk, random, *placed.pile, position.x, position.y, position.z)
+		case placed.disk != nil:
+			r.placeDisk(chunk, random, *placed.disk, position.x, position.y, position.z)
+		case placed.bamboo != nil:
+			r.placeBamboo(chunk, random, *placed.bamboo, position.x, position.y, position.z)
 		}
 	}
 }
@@ -1203,7 +1321,7 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 	if predicate == nil {
 		return true
 	}
-	block := chunk.BlockAt(x, y, z)
+	block := chunk.BlockAt(x+predicate.offset[0], y+predicate.offset[1], z+predicate.offset[2])
 	switch predicate.kind {
 	case "minecraft:would_survive":
 		if !block.IsAir() {
@@ -1212,7 +1330,15 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 		below := chunk.BlockAt(x, y-1, z)
 		return !below.IsAir() && !below.HasFluid()
 	case "minecraft:matching_blocks":
-		return predicate.block == "" || qualify(predicate.block) == block.Name
+		if predicate.block != "" && qualify(predicate.block) == block.Name {
+			return true
+		}
+		for _, name := range predicate.blocks {
+			if qualify(name) == block.Name {
+				return true
+			}
+		}
+		return false
 	case "minecraft:matching_block_tag":
 		if state, err := registry.BlockStateID(block.Name); err == nil {
 			return registry.BlockTagContains(predicate.tag, state)
@@ -1226,6 +1352,79 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 		return !block.IsAir() && !block.HasFluid()
 	default:
 		return false
+	}
+}
+
+func (r *Router) placeBamboo(chunk *GeneratedChunk, random *legacyRandom, configuration bambooConfiguration, x, y, z int) {
+	if !chunk.InRange(x, y, z) || !chunk.BlockAt(x, y, z).IsAir() {
+		return
+	}
+	below := chunk.BlockAt(x, y-1, z)
+	if below.Name != "minecraft:grass_block" && below.Name != "minecraft:dirt" && below.Name != "minecraft:podzol" {
+		return
+	}
+	height := random.nextIntBounded(12) + 5
+	if random.nextFloat() < configuration.probability {
+		radius := random.nextIntBounded(4) + 1
+		for dx := -radius; dx <= radius; dx++ {
+			for dz := -radius; dz <= radius; dz++ {
+				if dx*dx+dz*dz > radius*radius {
+					continue
+				}
+				posX, posZ := x+dx, z+dz
+				if !chunk.InRange(posX, y-1, posZ) {
+					continue
+				}
+				if block := chunk.BlockAt(posX, y-1, posZ); block.Name == "minecraft:grass_block" || block.Name == "minecraft:dirt" {
+					chunk.SetBlock(posX, y-1, posZ, SurfaceBlock{Name: "minecraft:podzol"})
+				}
+			}
+		}
+	}
+	for offset := 0; offset < height && chunk.InRange(x, y+offset, z); offset++ {
+		if !chunk.BlockAt(x, y+offset, z).IsAir() {
+			break
+		}
+		chunk.SetBlock(x, y+offset, z, SurfaceBlock{Name: "minecraft:bamboo"})
+	}
+}
+
+func (r *Router) placeDisk(chunk *GeneratedChunk, random *legacyRandom, configuration diskConfiguration, x, y, z int) {
+	radius := configuration.radius.sample(random)
+	top := y + configuration.halfHeight
+	bottom := y - configuration.halfHeight - 1
+	for dx := -radius; dx <= radius; dx++ {
+		for dz := -radius; dz <= radius; dz++ {
+			if dx*dx+dz*dz > radius*radius {
+				continue
+			}
+			placed := false
+			for cursorY := top; cursorY > bottom; cursorY-- {
+				posX, posZ := x+dx, z+dz
+				if !chunk.InRange(posX, cursorY, posZ) {
+					continue
+				}
+				if !r.blockPredicateMatches(chunk, configuration.target, posX, cursorY, posZ) {
+					placed = false
+					continue
+				}
+				state := configuration.fallback.sample(random)
+				for _, rule := range configuration.rules {
+					if r.blockPredicateMatches(chunk, rule.predicate, posX+rule.offsetX, cursorY+rule.offsetY, posZ+rule.offsetZ) {
+						state = rule.state.sample(random)
+						break
+					}
+				}
+				chunk.SetBlock(posX, cursorY, posZ, state)
+				if !placed {
+					above := chunk.BlockAt(posX, cursorY+1, posZ)
+					if above.IsAir() {
+						chunk.SetBlock(posX, cursorY+1, posZ, state)
+					}
+				}
+				placed = true
+			}
+		}
 	}
 }
 
@@ -1621,6 +1820,18 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			return
 		}
 		placed.pile = pile
+	case "minecraft:disk":
+		disk, err := parseDiskConfiguration(configured.Config)
+		if err != nil || disk == nil {
+			return
+		}
+		placed.disk = disk
+	case "minecraft:bamboo":
+		bamboo, err := parseBambooConfiguration(configured.Config)
+		if err != nil || bamboo == nil {
+			return
+		}
+		placed.bamboo = bamboo
 	default:
 		return
 	}
@@ -1646,6 +1857,10 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeVegetationPatch(chunk, random, *placed.vegetation, x, y, z)
 		case placed.pile != nil:
 			r.placeBlockPile(chunk, random, *placed.pile, x, y, z)
+		case placed.disk != nil:
+			r.placeDisk(chunk, random, *placed.disk, x, y, z)
+		case placed.bamboo != nil:
+			r.placeBamboo(chunk, random, *placed.bamboo, x, y, z)
 		}
 		return
 	}
@@ -1698,6 +1913,10 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeVegetationPatch(chunk, random, *placed.vegetation, position.x, position.y, position.z)
 		case placed.pile != nil:
 			r.placeBlockPile(chunk, random, *placed.pile, position.x, position.y, position.z)
+		case placed.disk != nil:
+			r.placeDisk(chunk, random, *placed.disk, position.x, position.y, position.z)
+		case placed.bamboo != nil:
+			r.placeBamboo(chunk, random, *placed.bamboo, position.x, position.y, position.z)
 		}
 	}
 }

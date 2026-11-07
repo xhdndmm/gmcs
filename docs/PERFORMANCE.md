@@ -1547,5 +1547,5 @@ center factor 为 0，因此默认数据下数值不变，但自定义 carver �
 
 旧版 `legacy` 生成器已移除，主世界固定使用原版算法生成器。当前执行
 ore/scattered_ore、部分树形（straight trunk + blob/spruce/pine foliage）、
-花草 patch、spring、海草、岩浆湖、植被 patch 与方块堆；并使用原版
-FeatureSorter 全局顺序。geode、其他树形与结构尚未实现。
+花草 patch、spring、海草、岩浆湖、植被 patch、方块堆、圆盘与竹子；并使用
+原版 FeatureSorter 全局顺序。geode、其他树形与结构尚未实现。

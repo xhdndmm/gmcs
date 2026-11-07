@@ -242,3 +242,33 @@ func TestSpruceTreesGeneratedInTaiga(t *testing.T) {
 		t.Fatal("taiga 区域没有生成云杉")
 	}
 }
+
+func TestAdditionalFeatureParsers(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disk := router.features.placed["minecraft:disk_sand"]; !disk.supported || disk.disk == nil {
+		t.Fatal("disk_sand 未被解析")
+	}
+	if pile := router.features.placed["minecraft:pile_hay"]; !pile.supported || pile.pile == nil {
+		t.Fatal("pile_hay 未被解析")
+	}
+	if veg := router.features.placed["minecraft:pale_moss_patch"]; !veg.supported || veg.vegetation == nil {
+		t.Fatal("pale_moss_patch 未被解析")
+	}
+	foundBamboo := false
+	for _, placed := range router.features.placed {
+		if placed.bamboo != nil {
+			foundBamboo = true
+			break
+		}
+	}
+	if !foundBamboo {
+		t.Fatal("没有解析任何 bamboo 地物")
+	}
+}
