@@ -242,7 +242,8 @@ func TestUnsupportedNodePanics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载数据失败：%v", err)
 	}
-	node := mustParseNode(t, data, `{"type":"minecraft:end_islands"}`)
+	_ = data
+	node := &Node{Type: "not_implemented"}
 	defer func() {
 		if recover() == nil {
 			t.Fatal("未实现的节点类型应当 panic")

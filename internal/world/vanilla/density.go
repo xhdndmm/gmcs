@@ -178,6 +178,8 @@ func (e *Evaluator) Evaluate(node *Node, ctx Context) float64 {
 	case "blend_density":
 		// 没有邻区块混合时原版 Blender.blendDensity 是恒等变换。
 		return e.child(node, 0, ctx)
+	case "end_islands":
+		return endIslandsValue(ctx.X, ctx.Z)
 	case "blend_alpha":
 		return 1
 	case "blend_offset":

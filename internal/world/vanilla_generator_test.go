@@ -17,8 +17,8 @@ func TestNewGeneratorDimensions(t *testing.T) {
 	}
 	if generator, err := NewGenerator(DimensionEnd, 1); err != nil {
 		t.Fatalf("end: %v", err)
-	} else if _, ok := generator.(EndGenerator); !ok {
-		t.Fatalf("end generator = %T, want EndGenerator", generator)
+	} else if _, ok := generator.(*VanillaGenerator); !ok {
+		t.Fatalf("end generator = %T, want *VanillaGenerator", generator)
 	}
 	if generator, err := NewGenerator(DimensionOverworld, 1); err != nil {
 		t.Fatalf("overworld: %v", err)
@@ -138,5 +138,27 @@ func TestVanillaNetherGeneratorChunk(t *testing.T) {
 		if biome == 0 {
 			t.Fatalf("下界 biome grid[%d] 为 0", i)
 		}
+	}
+}
+
+func TestVanillaEndGeneratorChunk(t *testing.T) {
+	generator, err := NewVanillaDimensionGenerator(DimensionEnd, "minecraft:end", 4321)
+	if err != nil {
+		t.Fatalf("NewVanillaDimensionGenerator: %v", err)
+	}
+	chunk := generator.GenerateChunk(0, 0)
+	solid := 0
+	for z := 0; z < SectionSize; z++ {
+		for x := 0; x < SectionSize; x++ {
+			if chunk.Column(x, z).HasSolid {
+				solid++
+			}
+		}
+	}
+	if solid < 64 {
+		t.Fatalf("末地主岛只有 %d/256 列有固体方块", solid)
+	}
+	if got := chunk.Column(8, 8).TopState; got != EndStoneBlock {
+		t.Fatalf("末地主岛顶层 = %d, want end stone", got)
 	}
 }

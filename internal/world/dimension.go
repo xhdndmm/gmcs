@@ -134,7 +134,11 @@ func NewGenerator(dimension Dimension, seed int64) (Generator, error) {
 		}
 		return generator, nil
 	case DimensionEnd:
-		return EndGenerator{Seed: seed}, nil
+		generator, err := NewVanillaDimensionGenerator(DimensionEnd, "minecraft:end", seed)
+		if err != nil {
+			return nil, fmt.Errorf("初始化末地原版生成器失败：%w", err)
+		}
+		return generator, nil
 	default:
 		generator, err := NewVanillaGenerator(seed)
 		if err != nil {

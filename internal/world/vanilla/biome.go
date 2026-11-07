@@ -117,6 +117,7 @@ type BiomeSource struct {
 	points   []biomeParameterPoint
 	climates map[string]biomeClimate
 	cache    map[biomeKey]string
+	end      bool
 }
 
 // NewBiomeSource 为给定路由表创建群系源，并加载内嵌的参数表与群系气候数据。
@@ -124,6 +125,15 @@ func NewBiomeSource(router *Router) (*BiomeSource, error) {
 	data, err := Load()
 	if err != nil {
 		return nil, err
+	}
+	if router.setting.Name == "minecraft:end" {
+		// 末地使用 TheEndBiomeSource（固定五群系规则），不需要多噪声参数表。
+		return &BiomeSource{
+			router:   router,
+			climates: data.BiomeClimates(),
+			cache:    make(map[biomeKey]string),
+			end:      true,
+		}, nil
 	}
 	fileName := biomeParameterFileName(router.setting.Name)
 	points, err := loadBiomeParameters(fileName)
@@ -135,6 +145,7 @@ func NewBiomeSource(router *Router) (*BiomeSource, error) {
 		points:   points,
 		climates: data.BiomeClimates(),
 		cache:    make(map[biomeKey]string),
+		end:      router.setting.Name == "minecraft:end",
 	}
 	return source, nil
 }
@@ -222,6 +233,11 @@ func (b *BiomeSource) BiomeAt(quartX, quartY, quartZ int) string {
 	if name, ok := b.cache[key]; ok {
 		return name
 	}
+	if b.end {
+		name := endBiomeAt(quartX, quartZ)
+		b.cache[key] = name
+		return name
+	}
 	nodes := b.climateNodes()
 	target := b.sample(&nodes, quartX, quartY, quartZ)
 	best := &b.points[0]
@@ -239,6 +255,29 @@ func (b *BiomeSource) BiomeAt(quartX, quartY, quartZ int) string {
 // BiomeAtBlock 返回该方块坐标所属的群系（按原版 4 格对齐规则取 quart 坐标）。
 func (b *BiomeSource) BiomeAtBlock(x, y, z int) string {
 	return b.BiomeAt(blockToQuart(x), blockToQuart(y), blockToQuart(z))
+}
+
+// endBiomeAt 复刻 TheEndBiomeSource.getNoiseBiome 的群系选择。
+// 输入是 quart 坐标；原版先转成方块坐标，再按 section 坐标判断主岛。
+func endBiomeAt(quartX, quartZ int) string {
+	blockX := quartX * 4
+	blockZ := quartZ * 4
+	sectionX := blockX >> 4
+	sectionZ := blockZ >> 4
+	if sectionX*sectionX+sectionZ*sectionZ <= 4096 {
+		return "minecraft:the_end"
+	}
+	value := endIslandsValue(blockX, blockZ)
+	switch {
+	case value > 0.25:
+		return "minecraft:end_highlands"
+	case value >= -0.0625:
+		return "minecraft:end_midlands"
+	case value < -0.21875:
+		return "minecraft:small_end_islands"
+	default:
+		return "minecraft:end_barrens"
+	}
 }
 
 // blockToQuart 等价原版 QuartPos.fromBlock（算术右移 2，即向下取整）。
