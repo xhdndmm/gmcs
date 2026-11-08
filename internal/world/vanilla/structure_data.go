@@ -18,10 +18,11 @@ import (
 // structureData 是官方结构定义/模板池/模板 NBT 的只读集合。
 // 数据由 tools/genstructures 打包为 structures.tar.gz；模板按需解析。
 type structureData struct {
-	Structures    map[string]json.RawMessage
-	StructureSets map[string]json.RawMessage
-	TemplatePools map[string]json.RawMessage
-	Templates     map[string][]byte
+	Structures     map[string]json.RawMessage
+	StructureSets  map[string]json.RawMessage
+	TemplatePools  map[string]json.RawMessage
+	ProcessorLists map[string]json.RawMessage
+	Templates      map[string][]byte
 }
 
 var (
@@ -52,10 +53,11 @@ func loadStructureData() (*structureData, error) {
 	defer gzipReader.Close()
 	reader := tar.NewReader(gzipReader)
 	data := &structureData{
-		Structures:    make(map[string]json.RawMessage),
-		StructureSets: make(map[string]json.RawMessage),
-		TemplatePools: make(map[string]json.RawMessage),
-		Templates:     make(map[string][]byte),
+		Structures:     make(map[string]json.RawMessage),
+		StructureSets:  make(map[string]json.RawMessage),
+		TemplatePools:  make(map[string]json.RawMessage),
+		ProcessorLists: make(map[string]json.RawMessage),
+		Templates:      make(map[string][]byte),
 	}
 	for {
 		header, err := reader.Next()
@@ -80,6 +82,8 @@ func loadStructureData() (*structureData, error) {
 			data.StructureSets[structureKey(name, "worldgen/structure_set/", ".json")] = raw
 		case strings.HasPrefix(name, "worldgen/template_pool/"):
 			data.TemplatePools[structureKey(name, "worldgen/template_pool/", ".json")] = raw
+		case strings.HasPrefix(name, "worldgen/processor_list/"):
+			data.ProcessorLists[structureKey(name, "worldgen/processor_list/", ".json")] = raw
 		case strings.HasPrefix(name, "structure/"):
 			data.Templates[structureKey(name, "structure/", ".nbt")] = raw
 		}
@@ -115,6 +119,12 @@ func (d *structureData) ParsedTemplate(name string) (*structureTemplate, error) 
 	}
 	templateCache.Store(name, template)
 	return template, nil
+}
+
+// ProcessorList 返回按注册名索引的 processor_list JSON。
+func (d *structureData) ProcessorList(name string) (json.RawMessage, bool) {
+	raw, ok := d.ProcessorLists[qualify(name)]
+	return raw, ok
 }
 
 // TemplatePool 返回按注册名索引的 template_pool JSON。

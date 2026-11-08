@@ -22,6 +22,12 @@ var entityTypeTagSets = sync.OnceValue(func() map[string]map[int32]struct{} {
 	return buildTagSets("minecraft:entity_type")
 })
 
+// worldgenBiomeTagSets 是“worldgen 群系标签名 → 群系 ID 集合”。
+// 结构放置的 has_structure/* 过滤使用它。
+var worldgenBiomeTagSets = sync.OnceValue(func() map[string]map[int32]struct{} {
+	return buildTagSets("minecraft:worldgen/biome")
+})
+
 // itemTagSets 是“物品标签名 → 物品 ID 集合”。
 var itemTagSets = sync.OnceValue(func() map[string]map[int32]struct{} {
 	return buildTagSets("minecraft:item")
@@ -51,6 +57,12 @@ func DamageTypeInTag(tagName string, damageTypeID int32) bool {
 // （如 minecraft:sensitive_to_smite、minecraft:sensitive_to_bane_of_arthropods）。
 func EntityTypeInTag(tagName string, entityTypeID int32) bool {
 	_, ok := entityTypeTagSets()[tagName][entityTypeID]
+	return ok
+}
+
+// WorldgenBiomeInTag 报告 worldgen 群系 ID 是否属于指定群系标签。
+func WorldgenBiomeInTag(tagName string, biomeID int32) bool {
+	_, ok := worldgenBiomeTagSets()[tagName][biomeID]
 	return ok
 }
 

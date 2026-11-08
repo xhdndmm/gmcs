@@ -1275,9 +1275,12 @@
     `worldgen/structure`、`worldgen/structure_set`、`worldgen/template_pool` 与
     `structure/*.nbt`；实现 NBT（全部标签类型）、结构模板 palette/blocks、
     template_pool 元素与 jigsaw 方块实体元数据解析。
-  - [ ] **结构运行时**：jigsaw 展开、模板旋转/镜像、结构集放置、跨区块写入、
-    processor_list、地形适配，以及村庄/要塞/矿洞/远古城市/末地城/折跃门
-    的逐结构规则尚未实现。
+  - [~] **结构运行时**：已实现 `random_spread` 结构集、jigsaw 起点/连接展开、
+    模板旋转/镜像、跨区块写入、基础 `block_rot`/`rule(random_block_match)`
+    processor；已能生成 jigsaw 类结构（如村庄）。
+  - [ ] **结构运行时剩余**：要塞/矿洞/末地城专用生成器、末地折跃门、
+    地形适配（beard_thin/beard_box/bury）、完整 processor_list、结构内实体/
+    箱子/刷怪笼、结构 start 持久化与更严格的包围盒/连接器对齐。
   - [~] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
     - [x] 数据管线：提取 configured_feature、placed_feature 与群系 11 阶段
       地物引用；校验群系→放置地物→配置地物引用完整。

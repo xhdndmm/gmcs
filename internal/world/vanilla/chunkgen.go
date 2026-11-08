@@ -177,8 +177,9 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 			}
 		}
 	}
-	// 原版顺序：CARVERS → FEATURES。当前只执行 generation step 6 的矿石。
+	// 原版顺序：CARVERS → FEATURES → STRUCTURES。
 	r.applyFeatures(chunk, biomes)
+	r.applyStructures(chunk, biomes)
 	chunk.RecalculateHeights()
 	return chunk, nil
 }

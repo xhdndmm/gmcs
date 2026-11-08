@@ -7,6 +7,7 @@ package vanilla
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // structureTemplate 是原版 structure/*.nbt 的内存表示。
@@ -31,6 +32,7 @@ type jigsawBlock struct {
 	Pool              string
 	FinalState        string
 	Joint             string
+	Direction         string
 	SelectionPriority int
 	PlacementPriority int
 }
@@ -127,6 +129,12 @@ func (t *structureTemplate) jigsawBlocks() []jigsawBlock {
 			continue
 		}
 		jigsaw := jigsawBlock{Pos: block.Pos}
+		if block.State >= 0 && block.State < len(t.Palette) {
+			orientation := t.Palette[block.State].Properties["orientation"]
+			if fields := strings.Split(orientation, "_"); len(fields) > 0 {
+				jigsaw.Direction = fields[0]
+			}
+		}
 		jigsaw.Name, _ = nbtStringValue(block.NBT["name"])
 		jigsaw.Target, _ = nbtStringValue(block.NBT["target"])
 		jigsaw.Pool, _ = nbtStringValue(block.NBT["pool"])
