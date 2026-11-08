@@ -28,6 +28,7 @@ var (
 	structureDataOnce sync.Once
 	structureDataAll  *structureData
 	structureDataErr  error
+	templateCache     sync.Map // string -> *structureTemplate
 )
 
 // LoadStructureData 读取并缓存全部结构数据。模板 NBT 只保存原始字节，
@@ -96,6 +97,24 @@ func structureKey(name, prefix, suffix string) string {
 func (d *structureData) Template(name string) ([]byte, bool) {
 	raw, ok := d.Templates[qualify(name)]
 	return raw, ok
+}
+
+// ParsedTemplate 返回解析后的结构模板（带缓存）。
+func (d *structureData) ParsedTemplate(name string) (*structureTemplate, error) {
+	name = qualify(name)
+	if cached, ok := templateCache.Load(name); ok {
+		return cached.(*structureTemplate), nil
+	}
+	raw, ok := d.Template(name)
+	if !ok {
+		return nil, fmt.Errorf("缺少结构模板 %s", name)
+	}
+	template, err := parseStructureTemplate(raw)
+	if err != nil {
+		return nil, fmt.Errorf("解析结构模板 %s 失败：%w", name, err)
+	}
+	templateCache.Store(name, template)
+	return template, nil
 }
 
 // TemplatePool 返回按注册名索引的 template_pool JSON。

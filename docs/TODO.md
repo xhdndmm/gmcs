@@ -1289,7 +1289,7 @@
       云杉/松树）、`random_selector`、`random_patch`、`flower`、
       `simple_block`、`spring_feature`、`seagrass`、`lake`、
       `vegetation_patch`/`waterlogged_vegetation_patch`、`block_pile`、`disk`、
-      `bamboo`、`kelp`、`multiface_growth`，以及 heightmap /
+      `bamboo`、`kelp`、`multiface_growth`、`fossil`（基础模板放置），以及 heightmap /
       block_predicate_filter / surface_water_depth_filter / weighted_list 等 placement。
     - [x] 按原版 FeatureSorter 为全部群系建立全局 step/feature index，并按
       3×3 区块 section 的群系集合执行；避免使用区块局部地表群系并集导致
@@ -1298,7 +1298,8 @@
       区块内群系集合/FeatureSorter 顺序导致的 feature index 不同；跨区块
       树干/树冠目前按当前区块裁切。
     - [ ] geode、mangrove/cherry 的专属树根/花瓣形态、fallen_tree、
-      iceberg、fossil 与全部结构尚未执行。
+      iceberg 与全部结构尚未执行；fossil 已完成模板放置，但 processor_list
+      尚未执行。
     - [x] `environment_scan`、`surface_relative_threshold_filter`、`random_offset`
       与复合 block predicate（all_of/any_of/not/inside_world_bounds）已实现；
       地下岩浆湖与部分洞穴植被不再被标记为 unsupported。

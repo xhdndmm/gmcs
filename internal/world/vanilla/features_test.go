@@ -333,3 +333,38 @@ func TestDarkOakTreeGenerated(t *testing.T) {
 		t.Fatal("深色森林区块没有生成深色橡木")
 	}
 }
+
+func TestFossilTemplatePlacement(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed := router.features.placed["minecraft:fossil_lower"]
+	if placed.fossil == nil {
+		t.Fatal("fossil_lower 未解析")
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := 20; y < 50; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:stone"})
+			}
+		}
+	}
+	random := newWorldgenRandom()
+	random.setSeed(4242)
+	router.placeFossil(chunk, random.legacyRandom, *placed.fossil, 4, 30, 4)
+	found := false
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		if strings.Contains(block.Name, "bone_block") || strings.Contains(block.Name, "coal_ore") || strings.Contains(block.Name, "diamond_ore") {
+			found = true
+		}
+	})
+	if !found {
+		t.Fatal("化石模板没有写入骨骼/矿方块")
+	}
+}

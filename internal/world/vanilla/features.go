@@ -49,6 +49,7 @@ type placedFeature struct {
 	bamboo     *bambooConfiguration
 	kelp       *kelpConfiguration
 	multiface  *multifaceConfiguration
+	fossil     *fossilConfiguration
 	placements []placementModifier
 	supported  bool
 }
@@ -78,6 +79,12 @@ type patchConfiguration struct {
 
 type simpleBlockConfiguration struct {
 	provider stateProvider
+}
+
+type fossilConfiguration struct {
+	fossilStructures  []string
+	overlayStructures []string
+	maxEmptyCorners   int
 }
 
 type multifaceConfiguration struct {
@@ -417,6 +424,12 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 				return nil, fmt.Errorf("解析 %s 的多面生长配置失败：%w", placed.feature, err)
 			}
 			placed.multiface = multiface
+		case "minecraft:fossil":
+			fossil, err := parseFossilConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的化石配置失败：%w", placed.feature, err)
+			}
+			placed.fossil = fossil
 		}
 		for index, rawModifier := range encoded.Placement {
 			modifier, err := parsePlacementModifier(rawModifier)
@@ -428,7 +441,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			}
 			placed.placements = append(placed.placements, modifier)
 		}
-		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil {
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil && placed.fossil == nil {
 			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
@@ -889,6 +902,25 @@ func parseStateProvider(raw json.RawMessage) (stateProvider, error) {
 	return provider, nil
 }
 
+func parseFossilConfiguration(raw json.RawMessage) (*fossilConfiguration, error) {
+	var encoded struct {
+		FossilStructures  []string `json:"fossil_structures"`
+		OverlayStructures []string `json:"overlay_structures"`
+		MaxEmptyCorners   int      `json:"max_empty_corners_allowed"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	if len(encoded.FossilStructures) == 0 {
+		return nil, fmt.Errorf("化石配置缺少 fossil_structures")
+	}
+	return &fossilConfiguration{
+		fossilStructures:  encoded.FossilStructures,
+		overlayStructures: encoded.OverlayStructures,
+		maxEmptyCorners:   encoded.MaxEmptyCorners,
+	}, nil
+}
+
 func parseMultifaceConfiguration(raw json.RawMessage) (*multifaceConfiguration, error) {
 	var encoded struct {
 		Block             string   `json:"block"`
@@ -1306,7 +1338,7 @@ func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 			last = index
 			name := order.names[index]
 			placed, ok := r.features.placed[name]
-			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil) {
+			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil && placed.fossil == nil) {
 				continue
 			}
 			random.setFeatureSeed(decorationSeed, index, step)
@@ -1525,6 +1557,8 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placeKelp(chunk, random, position.x, position.y, position.z)
 		case placed.multiface != nil:
 			r.placeMultiface(chunk, random, *placed.multiface, position.x, position.y, position.z)
+		case placed.fossil != nil:
+			r.placeFossil(chunk, random, *placed.fossil, position.x, position.y, position.z)
 		}
 	}
 }
@@ -1651,6 +1685,33 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 	default:
 		return false
 	}
+}
+
+func (r *Router) placeFossil(chunk *GeneratedChunk, random *legacyRandom, configuration fossilConfiguration, x, y, z int) {
+	data, err := LoadStructureData()
+	if err != nil {
+		return
+	}
+	index := random.nextIntBounded(len(configuration.fossilStructures))
+	name := configuration.fossilStructures[index]
+	template, err := data.ParsedTemplate(name)
+	if err != nil || template == nil {
+		return
+	}
+	rotation := templateRotation(random.nextIntBounded(4))
+	if empty := templateCornerAirCount(chunk, template, x, y, z, rotation, false); empty > configuration.maxEmptyCorners {
+		return
+	}
+	placeTemplate(chunk, template, x, y, z, rotation, false)
+	if len(configuration.overlayStructures) == 0 {
+		return
+	}
+	overlayName := configuration.overlayStructures[index%len(configuration.overlayStructures)]
+	overlay, err := data.ParsedTemplate(overlayName)
+	if err != nil || overlay == nil {
+		return
+	}
+	placeTemplate(chunk, overlay, x, y, z, rotation, false)
 }
 
 func (r *Router) placeMultiface(chunk *GeneratedChunk, random *legacyRandom, configuration multifaceConfiguration, x, y, z int) {
@@ -2254,6 +2315,8 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeKelp(chunk, random, x, y, z)
 		case placed.multiface != nil:
 			r.placeMultiface(chunk, random, *placed.multiface, x, y, z)
+		case placed.fossil != nil:
+			r.placeFossil(chunk, random, *placed.fossil, x, y, z)
 		}
 		return
 	}
@@ -2361,6 +2424,8 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeKelp(chunk, random, position.x, position.y, position.z)
 		case placed.multiface != nil:
 			r.placeMultiface(chunk, random, *placed.multiface, position.x, position.y, position.z)
+		case placed.fossil != nil:
+			r.placeFossil(chunk, random, *placed.fossil, position.x, position.y, position.z)
 		}
 	}
 }
