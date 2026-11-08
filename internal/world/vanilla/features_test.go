@@ -309,3 +309,27 @@ func TestKelpAndMultifaceParse(t *testing.T) {
 		t.Fatal("glow_lichen 未被解析")
 	}
 }
+
+func TestDarkOakTreeGenerated(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk, err := router.GenerateChunk(501, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		if block.Name == "minecraft:dark_oak_log" || block.Name == "minecraft:dark_oak_leaves" {
+			found = true
+		}
+	})
+	if !found {
+		t.Fatal("深色森林区块没有生成深色橡木")
+	}
+}

@@ -1105,10 +1105,16 @@ func parseSpringConfiguration(raw json.RawMessage) (*springConfiguration, error)
 func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 	var encoded struct {
 		TrunkProvider struct {
-			State json.RawMessage `json:"state"`
+			State   json.RawMessage `json:"state"`
+			Entries []struct {
+				Data json.RawMessage `json:"data"`
+			} `json:"entries"`
 		} `json:"trunk_provider"`
 		FoliageProvider struct {
-			State json.RawMessage `json:"state"`
+			State   json.RawMessage `json:"state"`
+			Entries []struct {
+				Data json.RawMessage `json:"data"`
+			} `json:"entries"`
 		} `json:"foliage_provider"`
 		TrunkPlacer struct {
 			Type        string `json:"type"`
@@ -1128,15 +1134,24 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 		return nil, nil
 	}
 	foliageType := qualify(encoded.FoliagePlacer.Type)
-	if qualify(encoded.TrunkPlacer.Type) != "minecraft:straight_trunk_placer" ||
-		(foliageType != "minecraft:blob_foliage_placer" && foliageType != "minecraft:spruce_foliage_placer" && foliageType != "minecraft:pine_foliage_placer") {
+	trunkType := qualify(encoded.TrunkPlacer.Type)
+	knownTrunk := trunkType == "minecraft:straight_trunk_placer" ||
+		trunkType == "minecraft:dark_oak_trunk_placer" ||
+		trunkType == "minecraft:forking_trunk_placer" ||
+		trunkType == "minecraft:fancy_trunk_placer" ||
+		trunkType == "minecraft:giant_trunk_placer" ||
+		trunkType == "minecraft:mega_jungle_trunk_placer" ||
+		trunkType == "minecraft:bending_trunk_placer" ||
+		trunkType == "minecraft:upwards_branching_trunk_placer" ||
+		trunkType == "minecraft:cherry_trunk_placer"
+	if !knownTrunk || !strings.HasSuffix(foliageType, "_foliage_placer") {
 		return nil, nil
 	}
-	trunk, err := parseFeatureSurfaceBlock(encoded.TrunkProvider.State)
+	trunk, err := parseProviderFirstState(encoded.TrunkProvider.State, encoded.TrunkProvider.Entries)
 	if err != nil {
 		return nil, err
 	}
-	leaves, err := parseFeatureSurfaceBlock(encoded.FoliageProvider.State)
+	leaves, err := parseProviderFirstState(encoded.FoliageProvider.State, encoded.FoliageProvider.Entries)
 	if err != nil {
 		return nil, err
 	}
@@ -1176,6 +1191,18 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 		foliageHeightRandom: foliageHeightRandom,
 		foliageTrunkHeight:  trunkHeight,
 	}, nil
+}
+
+func parseProviderFirstState(state json.RawMessage, entries []struct {
+	Data json.RawMessage `json:"data"`
+}) (SurfaceBlock, error) {
+	if len(state) != 0 {
+		return parseFeatureSurfaceBlock(state)
+	}
+	if len(entries) == 0 {
+		return SurfaceBlock{}, fmt.Errorf("state provider 没有 state/entries")
+	}
+	return parseFeatureSurfaceBlock(entries[0].Data)
 }
 
 func parseOptionalIntProvider(raw json.RawMessage, fallback int) (intProvider, error) {
@@ -2366,8 +2393,15 @@ func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configur
 
 func (r *Router) placeBlobFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int) {
 	radius := configuration.foliageRadius.sample(random)
+	if radius <= 0 {
+		radius = 2
+	}
+	foliageHeight := configuration.foliageHeight
+	if foliageHeight <= 0 {
+		foliageHeight = 3
+	}
 	top := y + height - 1
-	for layer := 0; layer < configuration.foliageHeight; layer++ {
+	for layer := 0; layer < foliageHeight; layer++ {
 		layerRadius := radius - 1 - layer/2
 		if layerRadius < 0 {
 			layerRadius = 0

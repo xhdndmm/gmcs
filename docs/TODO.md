@@ -1297,8 +1297,8 @@
     - [ ] 树木/植被逐方块仍未与官方参考完全收敛：差异主要来自
       区块内群系集合/FeatureSorter 顺序导致的 feature index 不同；跨区块
       树干/树冠目前按当前区块裁切。
-    - [ ] geode、其他树形（dark oak/acacia/mangrove/cherry 等）、
-      fallen_tree、iceberg、fossil 与全部结构尚未执行。
+    - [ ] geode、mangrove/cherry 的专属树根/花瓣形态、fallen_tree、
+      iceberg、fossil 与全部结构尚未执行。
     - [x] `environment_scan`、`surface_relative_threshold_filter`、`random_offset`
       与复合 block predicate（all_of/any_of/not/inside_world_bounds）已实现；
       地下岩浆湖与部分洞穴植被不再被标记为 unsupported。
