@@ -292,3 +292,20 @@ func TestAdvancedPlacementModifiersParse(t *testing.T) {
 		}
 	}
 }
+
+func TestKelpAndMultifaceParse(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kelp := router.features.placed["minecraft:kelp_cold"]; kelp.kelp == nil {
+		t.Fatal("kelp_cold 的 kelp 配置未被解析")
+	}
+	if lichen := router.features.placed["minecraft:glow_lichen"]; !lichen.supported || lichen.multiface == nil {
+		t.Fatal("glow_lichen 未被解析")
+	}
+}

@@ -46,6 +46,8 @@ type placedFeature struct {
 	pile       *pileConfiguration
 	disk       *diskConfiguration
 	bamboo     *bambooConfiguration
+	kelp       *kelpConfiguration
+	multiface  *multifaceConfiguration
 	placements []placementModifier
 	supported  bool
 }
@@ -76,6 +78,18 @@ type patchConfiguration struct {
 type simpleBlockConfiguration struct {
 	provider stateProvider
 }
+
+type multifaceConfiguration struct {
+	block             string
+	canBePlacedOn     map[string]struct{}
+	ceiling           bool
+	floor             bool
+	wall              bool
+	chanceOfSpreading float32
+	searchRange       int
+}
+
+type kelpConfiguration struct{}
 
 type bambooConfiguration struct {
 	probability float32
@@ -387,6 +401,14 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 				return nil, fmt.Errorf("解析 %s 的竹子配置失败：%w", placed.feature, err)
 			}
 			placed.bamboo = bamboo
+		case "minecraft:kelp":
+			placed.kelp = &kelpConfiguration{}
+		case "minecraft:multiface_growth":
+			multiface, err := parseMultifaceConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的多面生长配置失败：%w", placed.feature, err)
+			}
+			placed.multiface = multiface
 		}
 		for index, rawModifier := range encoded.Placement {
 			modifier, err := parsePlacementModifier(rawModifier)
@@ -398,7 +420,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			}
 			placed.placements = append(placed.placements, modifier)
 		}
-		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil {
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil {
 			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
@@ -845,6 +867,34 @@ func parseStateProvider(raw json.RawMessage) (stateProvider, error) {
 	return provider, nil
 }
 
+func parseMultifaceConfiguration(raw json.RawMessage) (*multifaceConfiguration, error) {
+	var encoded struct {
+		Block             string   `json:"block"`
+		CanBePlacedOn     []string `json:"can_be_placed_on"`
+		Ceiling           bool     `json:"can_place_on_ceiling"`
+		Floor             bool     `json:"can_place_on_floor"`
+		Wall              bool     `json:"can_place_on_wall"`
+		ChanceOfSpreading float32  `json:"chance_of_spreading"`
+		SearchRange       int      `json:"search_range"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]struct{}, len(encoded.CanBePlacedOn))
+	for _, name := range encoded.CanBePlacedOn {
+		allowed[qualify(name)] = struct{}{}
+	}
+	return &multifaceConfiguration{
+		block:             qualify(encoded.Block),
+		canBePlacedOn:     allowed,
+		ceiling:           encoded.Ceiling,
+		floor:             encoded.Floor,
+		wall:              encoded.Wall,
+		chanceOfSpreading: encoded.ChanceOfSpreading,
+		searchRange:       encoded.SearchRange,
+	}, nil
+}
+
 func parseBambooConfiguration(raw json.RawMessage) (*bambooConfiguration, error) {
 	var encoded struct {
 		Probability float32 `json:"probability"`
@@ -1207,7 +1257,7 @@ func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 			last = index
 			name := order.names[index]
 			placed, ok := r.features.placed[name]
-			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil) {
+			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil) {
 				continue
 			}
 			random.setFeatureSeed(decorationSeed, index, step)
@@ -1404,6 +1454,10 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placeDisk(chunk, random, *placed.disk, position.x, position.y, position.z)
 		case placed.bamboo != nil:
 			r.placeBamboo(chunk, random, *placed.bamboo, position.x, position.y, position.z)
+		case placed.kelp != nil:
+			r.placeKelp(chunk, random, position.x, position.y, position.z)
+		case placed.multiface != nil:
+			r.placeMultiface(chunk, random, *placed.multiface, position.x, position.y, position.z)
 		}
 	}
 }
@@ -1504,6 +1558,61 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 		return !block.IsAir() && !block.HasFluid()
 	default:
 		return false
+	}
+}
+
+func (r *Router) placeMultiface(chunk *GeneratedChunk, random *legacyRandom, configuration multifaceConfiguration, x, y, z int) {
+	if !chunk.InRange(x, y, z) || !chunk.BlockAt(x, y, z).IsAir() {
+		return
+	}
+	type face struct {
+		name       string
+		dx, dy, dz int
+	}
+	faces := []face{{"north", 0, 0, -1}, {"south", 0, 0, 1}, {"east", 1, 0, 0}, {"west", -1, 0, 0}}
+	if configuration.ceiling {
+		faces = append(faces, face{"up", 0, 1, 0})
+	}
+	if configuration.floor {
+		faces = append(faces, face{"down", 0, -1, 0})
+	}
+	for i := len(faces) - 1; i > 0; i-- {
+		j := random.nextIntBounded(i + 1)
+		faces[i], faces[j] = faces[j], faces[i]
+	}
+	for _, candidate := range faces {
+		if candidate.dy == 0 && !configuration.wall {
+			continue
+		}
+		neighbor := chunk.BlockAt(x+candidate.dx, y+candidate.dy, z+candidate.dz)
+		if _, ok := configuration.canBePlacedOn[neighbor.Name]; !ok {
+			continue
+		}
+		properties := map[string]string{candidate.name: "true"}
+		chunk.SetBlock(x, y, z, SurfaceBlock{Name: configuration.block, Properties: properties})
+		return
+	}
+}
+
+func (r *Router) placeKelp(chunk *GeneratedChunk, random *legacyRandom, x, y, z int) {
+	if !chunk.InRange(x, y, z) || chunk.BlockAt(x, y, z).Name != "minecraft:water" {
+		return
+	}
+	below := chunk.BlockAt(x, y-1, z)
+	if below.IsAir() || below.HasFluid() {
+		return
+	}
+	height := random.nextIntBounded(10) + 1
+	for offset := 0; offset < height; offset++ {
+		posY := y + offset
+		if !chunk.InRange(x, posY, z) || chunk.BlockAt(x, posY, z).Name != "minecraft:water" {
+			break
+		}
+		if offset == height-1 {
+			chunk.SetBlock(x, posY, z, SurfaceBlock{Name: "minecraft:kelp", Properties: map[string]string{"age": fmt.Sprintf("%d", random.nextIntBounded(26))}})
+		} else {
+			chunk.SetBlock(x, posY, z, SurfaceBlock{Name: "minecraft:kelp_plant"})
+		}
 	}
 }
 
@@ -2049,6 +2158,10 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeDisk(chunk, random, *placed.disk, x, y, z)
 		case placed.bamboo != nil:
 			r.placeBamboo(chunk, random, *placed.bamboo, x, y, z)
+		case placed.kelp != nil:
+			r.placeKelp(chunk, random, x, y, z)
+		case placed.multiface != nil:
+			r.placeMultiface(chunk, random, *placed.multiface, x, y, z)
 		}
 		return
 	}
@@ -2152,6 +2265,10 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeDisk(chunk, random, *placed.disk, position.x, position.y, position.z)
 		case placed.bamboo != nil:
 			r.placeBamboo(chunk, random, *placed.bamboo, position.x, position.y, position.z)
+		case placed.kelp != nil:
+			r.placeKelp(chunk, random, position.x, position.y, position.z)
+		case placed.multiface != nil:
+			r.placeMultiface(chunk, random, *placed.multiface, position.x, position.y, position.z)
 		}
 	}
 }
