@@ -368,3 +368,38 @@ func TestFossilTemplatePlacement(t *testing.T) {
 		t.Fatal("化石模板没有写入骨骼/矿方块")
 	}
 }
+
+func TestFallenTreePlacement(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed := router.features.placed["minecraft:fallen_oak_tree"]
+	if placed.fallenTree == nil {
+		t.Fatal("fallen_oak_tree 未解析")
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			chunk.SetBlock(x, 63, z, SurfaceBlock{Name: "minecraft:grass_block"})
+		}
+	}
+	random := newWorldgenRandom()
+	random.setSeed(1234)
+	router.placeFallenTree(chunk, random.legacyRandom, *placed.fallenTree, 4, 64, 4)
+	logs := 0
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			if chunk.BlockAt(x, 64, z).Name == "minecraft:oak_log" {
+				logs++
+			}
+		}
+	}
+	if logs < 2 {
+		t.Fatalf("倒木原木数量 = %d", logs)
+	}
+}

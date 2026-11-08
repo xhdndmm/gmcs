@@ -119,7 +119,8 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   （含煤矿、铜矿、铁矿、金矿、红石、钻石、青金石、绿宝石及深板岩变体），
   以及 generation step 9 的部分树木（straight trunk + blob/spruce/pine
   foliage，如橡树/桦树/丛林树/云杉/松树）、花草/random patch、海草、岩浆湖、
-  植被 patch、方块堆、圆盘（沙/黏土/沙砾）、竹子、海带、多面生长与化石模板。
+  植被 patch、方块堆、圆盘（沙/黏土/沙砾）、竹子、海带、多面生长、
+  化石模板与倒木。
   使用原版 FeatureSorter 全局顺序和 3×3 区块 section 群系集合；placed_feature 的
   count/in_square/height_range/heightmap/block_predicate_filter/biome/
   rarity_filter 顺序；跨区块边界的矿脉、树干和树冠部分会按当前区块裁切。
