@@ -1289,7 +1289,7 @@
       云杉/松树）、`random_selector`、`random_patch`、`flower`、
       `simple_block`、`spring_feature`、`seagrass`、`lake`、
       `vegetation_patch`/`waterlogged_vegetation_patch`、`block_pile`、`disk`、
-      `bamboo`、`multiface_growth`，以及 kelp 的 feature 配置解析；heightmap /
+      `bamboo`、`kelp`、`multiface_growth`，以及 heightmap /
       block_predicate_filter / surface_water_depth_filter / weighted_list 等 placement。
     - [x] 按原版 FeatureSorter 为全部群系建立全局 step/feature index，并按
       3×3 区块 section 的群系集合执行；避免使用区块局部地表群系并集导致
@@ -1302,8 +1302,8 @@
     - [x] `environment_scan`、`surface_relative_threshold_filter`、`random_offset`
       与复合 block predicate（all_of/any_of/not/inside_world_bounds）已实现；
       地下岩浆湖与部分洞穴植被不再被标记为 unsupported。
-    - [ ] `noise_threshold_count` / `noise_based_count` 等 placement 尚未实现；
-      因此 `kelp_cold`/`kelp_warm` 仍未实际执行。
+    - [x] `noise_threshold_count` / `noise_based_count` 已实现；海带与部分草地/花
+      重新进入执行路径。
   - [~] **阶段 5：接线与验证**：
     - [x] **移除 `world_generator` 与旧版 `legacy` 生成器**：主世界固定使用
       原版算法生成器，初始化失败直接中止启动；下界与末地已接入原版噪声/

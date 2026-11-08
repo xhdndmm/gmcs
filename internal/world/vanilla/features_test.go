@@ -302,8 +302,8 @@ func TestKelpAndMultifaceParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kelp := router.features.placed["minecraft:kelp_cold"]; kelp.kelp == nil {
-		t.Fatal("kelp_cold 的 kelp 配置未被解析")
+	if kelp := router.features.placed["minecraft:kelp_cold"]; !kelp.supported || kelp.kelp == nil {
+		t.Fatal("kelp_cold 未被解析或仍被标记为 unsupported")
 	}
 	if lichen := router.features.placed["minecraft:glow_lichen"]; !lichen.supported || lichen.multiface == nil {
 		t.Fatal("glow_lichen 未被解析")

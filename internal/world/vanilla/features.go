@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 
 	"gmcs/internal/registry"
 )
@@ -188,9 +189,16 @@ type placementModifier struct {
 	thresholdMin *int
 	thresholdMax *int
 	// random_offset
-	xzSpread  intProvider
-	ySpread   intProvider
-	supported bool
+	xzSpread intProvider
+	ySpread  intProvider
+	// noise_based_count / noise_threshold_count
+	noiseToCountRatio int
+	noiseFactor       float64
+	noiseOffset       float64
+	noiseLevel        float64
+	aboveNoise        int
+	belowNoise        int
+	supported         bool
 }
 
 type blockPredicate struct {
@@ -615,6 +623,12 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 		MaxInclusive  *int            `json:"max_inclusive"`
 		XZSpread      json.RawMessage `json:"xz_spread"`
 		YSpread       json.RawMessage `json:"y_spread"`
+		NoiseToCount  int             `json:"noise_to_count_ratio"`
+		NoiseFactor   float64         `json:"noise_factor"`
+		NoiseOffset   float64         `json:"noise_offset"`
+		NoiseLevel    float64         `json:"noise_level"`
+		AboveNoise    int             `json:"above_noise"`
+		BelowNoise    int             `json:"below_noise"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return placementModifier{}, err
@@ -673,6 +687,14 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 		modifier.heightmap = encoded.Heightmap
 		modifier.thresholdMin = encoded.MinInclusive
 		modifier.thresholdMax = encoded.MaxInclusive
+	case "minecraft:noise_based_count":
+		modifier.noiseToCountRatio = encoded.NoiseToCount
+		modifier.noiseFactor = encoded.NoiseFactor
+		modifier.noiseOffset = encoded.NoiseOffset
+	case "minecraft:noise_threshold_count":
+		modifier.noiseLevel = encoded.NoiseLevel
+		modifier.aboveNoise = encoded.AboveNoise
+		modifier.belowNoise = encoded.BelowNoise
 	case "minecraft:random_offset":
 		xz, err := parseIntProvider(encoded.XZSpread)
 		if err != nil {
@@ -1327,6 +1349,24 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 				}
 			}
 			positions = next
+		case "minecraft:noise_based_count":
+			next := make([]featurePosition, 0, len(positions))
+			for _, position := range positions {
+				count := noiseBasedCount(position.x, position.y, position.z, modifier)
+				for n := 0; n < count; n++ {
+					next = append(next, position)
+				}
+			}
+			positions = next
+		case "minecraft:noise_threshold_count":
+			next := make([]featurePosition, 0, len(positions))
+			for _, position := range positions {
+				count := noiseThresholdCount(position.x, position.z, modifier)
+				for n := 0; n < count; n++ {
+					next = append(next, position)
+				}
+			}
+			positions = next
 		case "minecraft:in_square":
 			for i := range positions {
 				positions[i].x += random.nextIntBounded(16)
@@ -1460,6 +1500,31 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placeMultiface(chunk, random, *placed.multiface, position.x, position.y, position.z)
 		}
 	}
+}
+
+var featureNoiseOnce = sync.OnceValue(func() *NormalNoise {
+	return NewNormalNoise(NewXoroshiro(0), -4, []float64{1})
+})
+
+func noiseBasedCount(x, y, z int, modifier placementModifier) int {
+	if modifier.noiseFactor == 0 {
+		return 0
+	}
+	value := featureNoiseOnce().Value(float64(x)/modifier.noiseFactor, float64(y)/modifier.noiseFactor, float64(z)/modifier.noiseFactor)
+	count := int(math.Round((value + modifier.noiseOffset) * float64(modifier.noiseToCountRatio)))
+	if count < 0 {
+		return 0
+	}
+	return count
+}
+
+func noiseThresholdCount(x, z int, modifier placementModifier) int {
+	// NoiseThresholdCountPlacement 的噪声因子固定为 80。
+	value := featureNoiseOnce().Value(float64(x)/80, 0, float64(z)/80)
+	if value < modifier.noiseLevel {
+		return modifier.belowNoise
+	}
+	return modifier.aboveNoise
 }
 
 func directionDelta(direction string) (int, int, int) {
