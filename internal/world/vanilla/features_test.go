@@ -272,3 +272,23 @@ func TestAdditionalFeatureParsers(t *testing.T) {
 		t.Fatal("没有解析任何 bamboo 地物")
 	}
 }
+
+func TestAdvancedPlacementModifiersParse(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"minecraft:lake_lava_underground", "minecraft:lush_caves_vegetation"} {
+		placed, ok := router.features.placed[name]
+		if !ok {
+			t.Fatalf("缺少 %s", name)
+		}
+		if !placed.supported {
+			t.Fatalf("%s 仍被标记为 unsupported", name)
+		}
+	}
+}

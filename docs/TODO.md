@@ -1299,9 +1299,10 @@
       树干/树冠目前按当前区块裁切。
     - [ ] geode、其他树形（dark oak/acacia/mangrove/cherry 等）、kelp、
       fallen_tree、multiface_growth、iceberg、fossil 与全部结构尚未执行。
-    - [ ] `environment_scan` / `surface_relative_threshold_filter` /
-      `noise_threshold_count` 等 placement 尚未实现；使用这些 placement 的
-      地物会被标记为 unsupported（例如地下岩浆湖）。
+    - [x] `environment_scan`、`surface_relative_threshold_filter`、`random_offset`
+      与复合 block predicate（all_of/any_of/not/inside_world_bounds）已实现；
+      地下岩浆湖与部分洞穴植被不再被标记为 unsupported。
+    - [ ] `noise_threshold_count` / `noise_based_count` 等 placement 尚未实现。
   - [~] **阶段 5：接线与验证**：
     - [x] **移除 `world_generator` 与旧版 `legacy` 生成器**：主世界固定使用
       原版算法生成器，初始化失败直接中止启动；下界与末地已接入原版噪声/

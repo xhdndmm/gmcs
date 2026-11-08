@@ -43,14 +43,15 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 	}
 	registry := NewNoiseRegistry(data, seed)
 	router := &Router{
-		data:          data,
-		registry:      registry,
-		setting:       setting,
-		seed:          seed,
-		evaluator:     NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
-		nodes:         make(map[string]*Node, len(setting.Router)),
-		named:         make(map[string]*Node),
-		biomeSetCache: make(map[chunkCoord]map[string]struct{}),
+		data:            data,
+		registry:        registry,
+		setting:         setting,
+		seed:            seed,
+		evaluator:       NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
+		nodes:           make(map[string]*Node, len(setting.Router)),
+		named:           make(map[string]*Node),
+		biomeSetCache:   make(map[chunkCoord]map[string]struct{}),
+		configuredCache: make(map[string]placedFeature),
 	}
 	carvers, err := parseCarverDefinitions(data)
 	if err != nil {

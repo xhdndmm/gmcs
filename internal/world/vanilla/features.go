@@ -166,16 +166,28 @@ type placementModifier struct {
 	heightmap     string
 	predicate     *blockPredicate
 	maxWaterDepth int
-	supported     bool
+	// environment_scan
+	direction string
+	maxSteps  int
+	allowed   *blockPredicate
+	// surface_relative_threshold_filter
+	thresholdMin *int
+	thresholdMax *int
+	// random_offset
+	xzSpread  intProvider
+	ySpread   intProvider
+	supported bool
 }
 
 type blockPredicate struct {
-	kind   string
-	state  string
-	tag    string
-	block  string
-	blocks []string
-	offset [3]int
+	kind     string
+	state    string
+	tag      string
+	block    string
+	blocks   []string
+	offset   [3]int
+	children []*blockPredicate
+	child    *blockPredicate
 }
 
 type treeConfiguration struct {
@@ -573,6 +585,14 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 		Heightmap     string          `json:"heightmap"`
 		Predicate     json.RawMessage `json:"predicate"`
 		MaxWaterDepth int             `json:"max_water_depth"`
+		Direction     string          `json:"direction_of_search"`
+		MaxSteps      int             `json:"max_steps"`
+		Target        json.RawMessage `json:"target_condition"`
+		Allowed       json.RawMessage `json:"allowed_search_condition"`
+		MinInclusive  *int            `json:"min_inclusive"`
+		MaxInclusive  *int            `json:"max_inclusive"`
+		XZSpread      json.RawMessage `json:"xz_spread"`
+		YSpread       json.RawMessage `json:"y_spread"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return placementModifier{}, err
@@ -608,6 +628,42 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 		modifier.predicate = predicate
 	case "minecraft:in_square", "minecraft:biome":
 		// 无参数。
+	case "minecraft:environment_scan":
+		modifier.direction = encoded.Direction
+		modifier.maxSteps = encoded.MaxSteps
+		if len(encoded.Target) != 0 {
+			target, err := parseBlockPredicate(encoded.Target)
+			if err != nil {
+				modifier.supported = false
+				return modifier, nil
+			}
+			modifier.predicate = target
+		}
+		if len(encoded.Allowed) != 0 {
+			allowed, err := parseBlockPredicate(encoded.Allowed)
+			if err != nil {
+				modifier.supported = false
+				return modifier, nil
+			}
+			modifier.allowed = allowed
+		}
+	case "minecraft:surface_relative_threshold_filter":
+		modifier.heightmap = encoded.Heightmap
+		modifier.thresholdMin = encoded.MinInclusive
+		modifier.thresholdMax = encoded.MaxInclusive
+	case "minecraft:random_offset":
+		xz, err := parseIntProvider(encoded.XZSpread)
+		if err != nil {
+			modifier.supported = false
+			return modifier, nil
+		}
+		y, err := parseIntProvider(encoded.YSpread)
+		if err != nil {
+			modifier.supported = false
+			return modifier, nil
+		}
+		modifier.xzSpread = xz
+		modifier.ySpread = y
 	default:
 		// 未实现 placement 的地物不执行，但保留数据以保持 feature index。
 		modifier.supported = false
@@ -617,11 +673,13 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 
 func parseBlockPredicate(raw json.RawMessage) (*blockPredicate, error) {
 	var encoded struct {
-		Type   string          `json:"type"`
-		State  json.RawMessage `json:"state"`
-		Tag    string          `json:"tag"`
-		Blocks json.RawMessage `json:"blocks"`
-		Offset []int           `json:"offset"`
+		Type       string            `json:"type"`
+		State      json.RawMessage   `json:"state"`
+		Tag        string            `json:"tag"`
+		Blocks     json.RawMessage   `json:"blocks"`
+		Offset     []int             `json:"offset"`
+		Predicates []json.RawMessage `json:"predicates"`
+		Predicate  json.RawMessage   `json:"predicate"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return nil, err
@@ -629,6 +687,20 @@ func parseBlockPredicate(raw json.RawMessage) (*blockPredicate, error) {
 	predicate := &blockPredicate{kind: qualify(encoded.Type), tag: encoded.Tag}
 	if len(encoded.Offset) == 3 {
 		predicate.offset = [3]int{encoded.Offset[0], encoded.Offset[1], encoded.Offset[2]}
+	}
+	for _, child := range encoded.Predicates {
+		parsed, err := parseBlockPredicate(child)
+		if err != nil {
+			return nil, err
+		}
+		predicate.children = append(predicate.children, parsed)
+	}
+	if len(encoded.Predicate) != 0 {
+		child, err := parseBlockPredicate(encoded.Predicate)
+		if err != nil {
+			return nil, err
+		}
+		predicate.child = child
 	}
 	var single string
 	if err := json.Unmarshal(encoded.Blocks, &single); err == nil {
@@ -1242,6 +1314,53 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 				}
 			}
 			positions = filtered
+		case "minecraft:environment_scan":
+			next := make([]featurePosition, 0, len(positions))
+			for _, position := range positions {
+				if modifier.allowed != nil && !r.blockPredicateMatches(chunk, modifier.allowed, position.x, position.y, position.z) {
+					continue
+				}
+				dx, dy, dz := directionDelta(modifier.direction)
+				found := false
+				for step := 0; step < modifier.maxSteps; step++ {
+					position.x += dx
+					position.y += dy
+					position.z += dz
+					if !chunk.InRange(position.x, position.y, position.z) {
+						break
+					}
+					if modifier.predicate == nil || r.blockPredicateMatches(chunk, modifier.predicate, position.x, position.y, position.z) {
+						found = true
+						break
+					}
+				}
+				if found {
+					next = append(next, position)
+				}
+			}
+			positions = next
+		case "minecraft:surface_relative_threshold_filter":
+			filtered := positions[:0]
+			for _, position := range positions {
+				height := chunkHeightmap(chunk, position.x, position.z, modifier.heightmap)
+				value := position.y - height
+				if modifier.thresholdMin != nil && value < *modifier.thresholdMin {
+					continue
+				}
+				if modifier.thresholdMax != nil && value > *modifier.thresholdMax {
+					continue
+				}
+				filtered = append(filtered, position)
+			}
+			positions = filtered
+		case "minecraft:random_offset":
+			for i := range positions {
+				xOffset := modifier.xzSpread.sample(random)
+				zOffset := modifier.xzSpread.sample(random)
+				positions[i].x += xOffset
+				positions[i].z += zOffset
+				positions[i].y += modifier.ySpread.sample(random)
+			}
 		case "minecraft:block_predicate_filter":
 			filtered := positions[:0]
 			for _, position := range positions {
@@ -1289,6 +1408,23 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 	}
 }
 
+func directionDelta(direction string) (int, int, int) {
+	switch direction {
+	case "up":
+		return 0, 1, 0
+	case "north":
+		return 0, 0, -1
+	case "south":
+		return 0, 0, 1
+	case "west":
+		return -1, 0, 0
+	case "east":
+		return 1, 0, 0
+	default:
+		return 0, -1, 0
+	}
+}
+
 func chunkHeightmap(chunk *GeneratedChunk, x, z int, kind string) int {
 	if x < chunk.MinX || x >= chunk.MinX+16 || z < chunk.MinZ || z >= chunk.MinZ+16 {
 		return chunk.MinY - 1
@@ -1321,6 +1457,24 @@ func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPr
 	}
 	block := chunk.BlockAt(x+predicate.offset[0], y+predicate.offset[1], z+predicate.offset[2])
 	switch predicate.kind {
+	case "minecraft:all_of":
+		for _, child := range predicate.children {
+			if !r.blockPredicateMatches(chunk, child, x, y, z) {
+				return false
+			}
+		}
+		return true
+	case "minecraft:any_of":
+		for _, child := range predicate.children {
+			if r.blockPredicateMatches(chunk, child, x, y, z) {
+				return true
+			}
+		}
+		return false
+	case "minecraft:not":
+		return predicate.child == nil || !r.blockPredicateMatches(chunk, predicate.child, x, y, z)
+	case "minecraft:inside_world_bounds":
+		return y >= chunk.MinY && y < chunk.MinY+chunk.Height && x >= chunk.MinX-15 && x < chunk.MinX+31 && z >= chunk.MinZ-15 && z < chunk.MinZ+31
 	case "minecraft:would_survive":
 		if !block.IsAir() {
 			return false
@@ -1906,6 +2060,53 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			return
 		}
 		switch modifier.kind {
+		case "minecraft:environment_scan":
+			next := make([]featurePosition, 0, len(positions))
+			for _, position := range positions {
+				if modifier.allowed != nil && !r.blockPredicateMatches(chunk, modifier.allowed, position.x, position.y, position.z) {
+					continue
+				}
+				dx, dy, dz := directionDelta(modifier.direction)
+				found := false
+				for step := 0; step < modifier.maxSteps; step++ {
+					position.x += dx
+					position.y += dy
+					position.z += dz
+					if !chunk.InRange(position.x, position.y, position.z) {
+						break
+					}
+					if modifier.predicate == nil || r.blockPredicateMatches(chunk, modifier.predicate, position.x, position.y, position.z) {
+						found = true
+						break
+					}
+				}
+				if found {
+					next = append(next, position)
+				}
+			}
+			positions = next
+		case "minecraft:surface_relative_threshold_filter":
+			filtered := positions[:0]
+			for _, position := range positions {
+				height := chunkHeightmap(chunk, position.x, position.z, modifier.heightmap)
+				value := position.y - height
+				if modifier.thresholdMin != nil && value < *modifier.thresholdMin {
+					continue
+				}
+				if modifier.thresholdMax != nil && value > *modifier.thresholdMax {
+					continue
+				}
+				filtered = append(filtered, position)
+			}
+			positions = filtered
+		case "minecraft:random_offset":
+			for i := range positions {
+				xOffset := modifier.xzSpread.sample(random)
+				zOffset := modifier.xzSpread.sample(random)
+				positions[i].x += xOffset
+				positions[i].z += zOffset
+				positions[i].y += modifier.ySpread.sample(random)
+			}
 		case "minecraft:block_predicate_filter":
 			filtered := positions[:0]
 			for _, position := range positions {
