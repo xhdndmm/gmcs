@@ -120,6 +120,10 @@ func (c *GeneratedChunk) RecalculateHeights() {
 // GenerateChunk 用原版算法生成一个区块：
 // 密度 → 含水层（石头/水/岩浆/空气）→ 表面规则（草/沙/深板岩/冰/基岩等）。
 func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
+	return r.generateChunkInternal(chunkX, chunkZ, true)
+}
+
+func (r *Router) generateChunkInternal(chunkX, chunkZ int, withStructures bool) (*GeneratedChunk, error) {
 	setting := r.setting
 	chunk := NewGeneratedChunk(chunkX, chunkZ, setting.MinY, setting.Height)
 	sampler := r.NewChunkSampler(chunkX, chunkZ)
@@ -179,7 +183,9 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 	}
 	// 原版顺序：CARVERS → FEATURES → STRUCTURES。
 	r.applyFeatures(chunk, biomes)
-	r.applyStructures(chunk, biomes)
+	if withStructures {
+		r.applyStructures(chunk, biomes)
+	}
 	chunk.RecalculateHeights()
 	return chunk, nil
 }

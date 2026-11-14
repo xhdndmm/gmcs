@@ -148,9 +148,12 @@ func TestOceanHasNoSurfaceGrass(t *testing.T) {
 	setting := router.Setting()
 	for x := 0; x < 16; x++ {
 		for z := 0; z < 16; z++ {
+			if !chunk.BlockAt(chunk.MinX+x, setting.SeaLevel-1, chunk.MinZ+z).IsWater() {
+				continue
+			}
 			top := chunk.HeightAt(chunk.MinX+x, chunk.MinZ+z)
-			if top >= setting.SeaLevel {
-				t.Fatalf("(%d,%d) 顶部 %d 高于海平面，海洋区块不应有水面植被", x, z, top)
+			if top >= setting.SeaLevel && chunk.BlockAt(chunk.MinX+x, top, chunk.MinZ+z).Name == "minecraft:grass_block" {
+				t.Fatalf("(%d,%d) 海平面以上出现草方块，海洋区块不应有水面植被", x, z)
 			}
 		}
 	}
@@ -401,5 +404,75 @@ func TestFallenTreePlacement(t *testing.T) {
 	}
 	if logs < 2 {
 		t.Fatalf("倒木原木数量 = %d", logs)
+	}
+}
+
+func TestExtraFeatureRuntime(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"minecraft:vines",
+		"minecraft:glowstone",
+		"minecraft:desert_well",
+		"minecraft:forest_flowers",
+		"minecraft:pointed_dripstone",
+	} {
+		placed, ok := router.features.placed[name]
+		if !ok {
+			t.Fatalf("缺少 placed_feature %s", name)
+		}
+		if !placed.supported || !placed.hasRuntime() {
+			t.Fatalf("%s 未接入运行时", name)
+		}
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := 0; y <= 4; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:sandstone"})
+			}
+		}
+	}
+	random := newWorldgenRandom()
+	random.setSeed(12345)
+	router.placeDesertWell(chunk, 8, 4, 8)
+	water := false
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		if block.Name == "minecraft:water" {
+			water = true
+		}
+	})
+	if !water {
+		t.Fatal("沙漠水井没有水")
+	}
+}
+
+func TestAllBiomeFeaturesHaveRuntime(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for biome, steps := range router.features.biomeFeatures {
+		for step, names := range steps {
+			for _, name := range names {
+				placed, ok := router.features.placed[qualify(name)]
+				if !ok {
+					t.Fatalf("%s step %d 引用了不存在的 placed_feature %s", biome, step, name)
+				}
+				if !placed.supported || !placed.hasRuntime() {
+					t.Fatalf("%s step %d 的地物 %s（%s）没有运行时", biome, step, name, placed.kind)
+				}
+			}
+		}
 	}
 }

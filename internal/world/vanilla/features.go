@@ -51,8 +51,16 @@ type placedFeature struct {
 	multiface  *multifaceConfiguration
 	fossil     *fossilConfiguration
 	fallenTree *fallenTreeConfiguration
+	extra      *extraFeature
 	placements []placementModifier
 	supported  bool
+}
+
+func (p placedFeature) hasRuntime() bool {
+	return p.ore != nil || p.tree != nil || p.selector != nil || p.patch != nil || p.simple != nil ||
+		p.spring != nil || p.seagrass != nil || p.lake != nil || p.vegetation != nil || p.pile != nil ||
+		p.disk != nil || p.bamboo != nil || p.kelp != nil || p.multiface != nil || p.fossil != nil ||
+		p.fallenTree != nil || p.extra != nil
 }
 
 type selectorConfiguration struct {
@@ -204,6 +212,8 @@ type placementModifier struct {
 	// random_offset
 	xzSpread intProvider
 	ySpread  intProvider
+	// fixed_placement
+	positions [][3]int
 	// noise_based_count / noise_threshold_count
 	noiseToCountRatio int
 	noiseFactor       float64
@@ -240,16 +250,21 @@ type treeConfiguration struct {
 }
 
 type intProvider struct {
-	kind     string
-	constant int
-	minimum  int
-	maximum  int
-	entries  []weightedInt
+	kind      string
+	constant  int
+	minimum   int
+	maximum   int
+	mean      float32
+	deviation float32
+	inner     int
+	source    *intProvider
+	entries   []weightedInt
 }
 
 type weightedInt struct {
-	value  int
-	weight int
+	value    int
+	weight   int
+	provider *intProvider
 }
 
 func (p intProvider) sample(random *legacyRandom) int {
@@ -269,11 +284,45 @@ func (p intProvider) sample(random *legacyRandom) int {
 		value := random.nextIntBounded(total)
 		for _, entry := range p.entries {
 			if value < entry.weight {
+				if entry.provider != nil {
+					return entry.provider.sample(random)
+				}
 				return entry.value
 			}
 			value -= entry.weight
 		}
 		return 0
+	case "minecraft:clamped":
+		value := p.minimum
+		if p.source != nil {
+			value = p.source.sample(random)
+		}
+		if value < p.minimum {
+			return p.minimum
+		}
+		if value > p.maximum {
+			return p.maximum
+		}
+		return value
+	case "minecraft:biased_to_bottom":
+		value := p.minimum + random.nextIntBounded(random.nextIntBounded(p.maximum-p.minimum+1)+1)
+		return value
+	case "minecraft:very_biased_to_bottom":
+		if p.maximum-p.minimum-p.inner+1 <= 0 {
+			return p.minimum
+		}
+		upper := randomIntInclusive(random, p.minimum+p.inner, p.maximum)
+		lower := randomIntInclusive(random, p.minimum, upper-1)
+		return randomIntInclusive(random, p.minimum, lower-1+p.inner)
+	case "minecraft:clamped_normal":
+		value := int(math.Round(float64(p.mean + float32(random.nextGaussian())*p.deviation)))
+		if value < p.minimum {
+			return p.minimum
+		}
+		if value > p.maximum {
+			return p.maximum
+		}
+		return value
 	default:
 		return p.constant
 	}
@@ -284,6 +333,7 @@ type featureHeightProvider struct {
 	minimum heightAnchor
 	maximum heightAnchor
 	plateau int
+	inner   int
 }
 
 func (p featureHeightProvider) sample(random *legacyRandom, setting NoiseSetting) int {
@@ -303,6 +353,15 @@ func (p featureHeightProvider) sample(random *legacyRandom, setting NoiseSetting
 		left := (span - p.plateau) / 2
 		right := span - left
 		return minimum + random.nextIntBounded(right+1) + random.nextIntBounded(left+1)
+	case "minecraft:biased_to_bottom":
+		return minimum + random.nextIntBounded(random.nextIntBounded(maximum-minimum+1)+1)
+	case "minecraft:very_biased_to_bottom":
+		if maximum-minimum-p.inner+1 <= 0 {
+			return minimum
+		}
+		upper := randomIntInclusive(random, minimum+p.inner, maximum)
+		lower := randomIntInclusive(random, minimum, upper-1)
+		return randomIntInclusive(random, minimum, lower-1+p.inner)
 	default: // uniform
 		return minimum + random.nextIntBounded(maximum-minimum+1)
 	}
@@ -442,6 +501,13 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 				return nil, fmt.Errorf("解析 %s 的倒木配置失败：%w", placed.feature, err)
 			}
 			placed.fallenTree = fallen
+		default:
+			extra, ok := parseExtraFeature(placed.kind, configured.Config)
+			if !ok {
+				placed.supported = false
+			} else {
+				placed.extra = extra
+			}
 		}
 		for index, rawModifier := range encoded.Placement {
 			modifier, err := parsePlacementModifier(rawModifier)
@@ -453,7 +519,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			}
 			placed.placements = append(placed.placements, modifier)
 		}
-		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil && placed.fossil == nil && placed.fallenTree == nil {
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil && placed.fossil == nil && placed.fallenTree == nil && placed.extra == nil {
 			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
@@ -475,11 +541,22 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 // 3. 对 DAG 做 DFS 后序，反转得到拓扑序；
 // 4. 按 step 分组，组内顺序即 setFeatureSeed 的 index。
 func (r *featureRegistry) buildFeatureOrder() {
-	biomes := make([]string, 0, len(r.biomeFeatures))
-	for name := range r.biomeFeatures {
-		biomes = append(biomes, name)
+	// 原版 FeatureSorter 的 sources 顺序是群系注册表顺序，不是字母序。
+	// 该顺序决定每个 feature 的全局 index，而 index 直接参与 setFeatureSeed，
+	// 所以必须与官方注册表 ID 顺序一致。
+	biomes := append([]string(nil), registry.SyncEntryNames("minecraft:worldgen/biome")...)
+	seen := make(map[string]struct{}, len(biomes))
+	for _, name := range biomes {
+		seen[name] = struct{}{}
 	}
-	sort.Strings(biomes)
+	extras := make([]string, 0)
+	for name := range r.biomeFeatures {
+		if _, ok := seen[name]; !ok {
+			extras = append(extras, name)
+		}
+	}
+	sort.Strings(extras)
+	biomes = append(biomes, extras...)
 
 	type node struct {
 		step    int
@@ -565,7 +642,7 @@ func (r *featureRegistry) buildFeatureOrder() {
 		r.featureSteps = nil
 		return
 	}
-	maxStep := 0
+	maxStep := 11 // GenerationStep.Decoration 的 11 个阶段
 	for _, n := range result {
 		if n.step+1 > maxStep {
 			maxStep = n.step + 1
@@ -654,6 +731,7 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 		NoiseLevel    float64         `json:"noise_level"`
 		AboveNoise    int             `json:"above_noise"`
 		BelowNoise    int             `json:"below_noise"`
+		Positions     [][3]int        `json:"positions"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return placementModifier{}, err
@@ -720,6 +798,15 @@ func parsePlacementModifier(raw json.RawMessage) (placementModifier, error) {
 		modifier.noiseLevel = encoded.NoiseLevel
 		modifier.aboveNoise = encoded.AboveNoise
 		modifier.belowNoise = encoded.BelowNoise
+	case "minecraft:count_on_every_layer":
+		count, err := parseIntProvider(encoded.Count)
+		if err != nil {
+			modifier.supported = false
+			return modifier, nil
+		}
+		modifier.count = count
+	case "minecraft:fixed_placement":
+		modifier.positions = encoded.Positions
 	case "minecraft:random_offset":
 		xz, err := parseIntProvider(encoded.XZSpread)
 		if err != nil {
@@ -1286,12 +1373,16 @@ func parseIntProvider(raw json.RawMessage) (intProvider, error) {
 		return intProvider{kind: "constant", constant: constant}, nil
 	}
 	var encoded struct {
-		Type         string `json:"type"`
-		Minimum      int    `json:"min_inclusive"`
-		Maximum      int    `json:"max_inclusive"`
+		Type         string          `json:"type"`
+		Minimum      int             `json:"min_inclusive"`
+		Maximum      int             `json:"max_inclusive"`
+		Source       json.RawMessage `json:"source"`
+		Mean         float32         `json:"mean"`
+		Deviation    float32         `json:"deviation"`
+		Inner        int             `json:"inner"`
 		Distribution []struct {
-			Data   int `json:"data"`
-			Weight int `json:"weight"`
+			Data   json.RawMessage `json:"data"`
+			Weight int             `json:"weight"`
 		} `json:"distribution"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
@@ -1300,10 +1391,26 @@ func parseIntProvider(raw json.RawMessage) (intProvider, error) {
 	switch qualify(encoded.Type) {
 	case "minecraft:uniform":
 		return intProvider{kind: "minecraft:uniform", minimum: encoded.Minimum, maximum: encoded.Maximum}, nil
+	case "minecraft:clamped":
+		source, err := parseIntProvider(encoded.Source)
+		if err != nil {
+			return intProvider{}, err
+		}
+		return intProvider{kind: "minecraft:clamped", minimum: encoded.Minimum, maximum: encoded.Maximum, source: &source}, nil
+	case "minecraft:biased_to_bottom":
+		return intProvider{kind: "minecraft:biased_to_bottom", minimum: encoded.Minimum, maximum: encoded.Maximum}, nil
+	case "minecraft:very_biased_to_bottom":
+		return intProvider{kind: "minecraft:very_biased_to_bottom", minimum: encoded.Minimum, maximum: encoded.Maximum, inner: encoded.Inner}, nil
+	case "minecraft:clamped_normal":
+		return intProvider{kind: "minecraft:clamped_normal", minimum: encoded.Minimum, maximum: encoded.Maximum, mean: encoded.Mean, deviation: encoded.Deviation}, nil
 	case "minecraft:weighted_list":
 		provider := intProvider{kind: "minecraft:weighted_list"}
 		for _, entry := range encoded.Distribution {
-			provider.entries = append(provider.entries, weightedInt{value: entry.Data, weight: entry.Weight})
+			parsed, err := parseIntProvider(entry.Data)
+			if err != nil {
+				return intProvider{}, err
+			}
+			provider.entries = append(provider.entries, weightedInt{weight: entry.Weight, provider: &parsed})
 		}
 		return provider, nil
 	default:
@@ -1317,6 +1424,7 @@ func parseFeatureHeightProvider(raw json.RawMessage) (featureHeightProvider, err
 		Minimum json.RawMessage `json:"min_inclusive"`
 		Maximum json.RawMessage `json:"max_inclusive"`
 		Plateau int             `json:"plateau"`
+		Inner   int             `json:"inner"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return featureHeightProvider{}, err
@@ -1334,6 +1442,7 @@ func parseFeatureHeightProvider(raw json.RawMessage) (featureHeightProvider, err
 		minimum: minimum,
 		maximum: maximum,
 		plateau: encoded.Plateau,
+		inner:   encoded.Inner,
 	}, nil
 }
 
@@ -1374,7 +1483,7 @@ func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 			last = index
 			name := order.names[index]
 			placed, ok := r.features.placed[name]
-			if !ok || !placed.supported || (placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil && placed.fossil == nil && placed.fallenTree == nil) {
+			if !ok || !placed.supported || !placed.hasRuntime() {
 				continue
 			}
 			random.setFeatureSeed(decorationSeed, index, step)
@@ -1397,8 +1506,9 @@ func (r *Router) collectFeatureBiomes(chunk *GeneratedChunk, biomes *BiomeSource
 	return present
 }
 
-// chunkBiomeSet 缓存单个区块的 4×4×4 群系集合。3×3 邻域复用后，
-// 每个区块只需做一次完整 section 采样，避免重复 9 倍开销。
+// chunkBiomeSet 缓存单个区块全部 section 的 4×4×4 群系集合，等价于原版
+// ChunkAccess.getSections() 后逐 section 读取 biome container。
+// 3×3 邻域复用后，每个区块只完整采样一次。
 func (r *Router) chunkBiomeSet(chunkX, chunkZ, minY, height int, biomes *BiomeSource) map[string]struct{} {
 	key := chunkCoord{x: chunkX, z: chunkZ}
 	if cached, ok := r.biomeSetCache[key]; ok {
@@ -1407,14 +1517,14 @@ func (r *Router) chunkBiomeSet(chunkX, chunkZ, minY, height int, biomes *BiomeSo
 	if len(r.biomeSetCache) > 1024 {
 		r.biomeSetCache = make(map[chunkCoord]map[string]struct{}, 1024)
 	}
-	set := make(map[string]struct{}, 8)
-	// 地物索引只需要“本区块可能出现的群系集合”。当前执行的地物以地表/浅层
-	// 为主，按 y=64 的 4×4 地表群系采样，避免每区块对全部 section 做数千次
-	// 气候噪声求值（实测这是区块生成的主要开销）。
-	quartY := 64 >> 2
-	for quartX := 0; quartX < 4; quartX++ {
-		for quartZ := 0; quartZ < 4; quartZ++ {
-			set[biomes.BiomeAt(chunkX*4+quartX, quartY, chunkZ*4+quartZ)] = struct{}{}
+	set := make(map[string]struct{}, 16)
+	firstQuartY := minY >> 2
+	lastQuartY := (minY + height - 1) >> 2
+	for quartY := firstQuartY; quartY <= lastQuartY; quartY++ {
+		for quartX := 0; quartX < 4; quartX++ {
+			for quartZ := 0; quartZ < 4; quartZ++ {
+				set[biomes.BiomeAt(chunkX*4+quartX, quartY, chunkZ*4+quartZ)] = struct{}{}
+			}
 		}
 	}
 	r.biomeSetCache[key] = set
@@ -1538,6 +1648,39 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 				filtered = append(filtered, position)
 			}
 			positions = filtered
+		case "minecraft:count_on_every_layer":
+			next := make([]featurePosition, 0, len(positions))
+			for _, position := range positions {
+				layer := 0
+				for {
+					found := false
+					count := modifier.count.sample(random)
+					for n := 0; n < count; n++ {
+						px := position.x + random.nextIntBounded(16)
+						pz := position.z + random.nextIntBounded(16)
+						py := countOnEveryLayerY(chunk, px, pz, layer)
+						if py != math.MinInt {
+							next = append(next, featurePosition{x: px, y: py, z: pz})
+							found = true
+						}
+					}
+					if !found {
+						break
+					}
+					layer++
+				}
+			}
+			positions = next
+		case "minecraft:fixed_placement":
+			next := positions[:0]
+			for range positions {
+				for _, fixed := range modifier.positions {
+					if fixed[0] >= chunk.MinX && fixed[0] < chunk.MinX+16 && fixed[2] >= chunk.MinZ && fixed[2] < chunk.MinZ+16 {
+						next = append(next, featurePosition{x: fixed[0], y: fixed[1], z: fixed[2]})
+					}
+				}
+			}
+			positions = next
 		case "minecraft:random_offset":
 			for i := range positions {
 				xOffset := modifier.xzSpread.sample(random)
@@ -1597,8 +1740,37 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placeFossil(chunk, random, *placed.fossil, position.x, position.y, position.z)
 		case placed.fallenTree != nil:
 			r.placeFallenTree(chunk, random, *placed.fallenTree, position.x, position.y, position.z)
+		case placed.extra != nil:
+			r.placeExtra(chunk, random, *placed.extra, position.x, position.y, position.z)
 		}
 	}
+}
+
+func randomIntInclusive(random *legacyRandom, minimum, maximum int) int {
+	if minimum >= maximum {
+		return minimum
+	}
+	return minimum + random.nextIntBounded(maximum-minimum+1)
+}
+
+func countOnEveryLayerY(chunk *GeneratedChunk, x, z, layer int) int {
+	if x < chunk.MinX || x >= chunk.MinX+16 || z < chunk.MinZ || z >= chunk.MinZ+16 {
+		return math.MinInt
+	}
+	top := chunkHeightmap(chunk, x, z, "WORLD_SURFACE")
+	previous := chunk.BlockAt(x, top, z)
+	seen := 0
+	for y := top - 1; y >= chunk.MinY; y-- {
+		current := chunk.BlockAt(x, y, z)
+		if !current.IsAir() && !current.HasFluid() && (previous.IsAir() || previous.HasFluid()) && current.Name != "minecraft:water" {
+			if seen == layer {
+				return y + 1
+			}
+			seen++
+		}
+		previous = current
+	}
+	return math.MinInt
 }
 
 var featureNoiseOnce = sync.OnceValue(func() *NormalNoise {
@@ -1649,24 +1821,34 @@ func chunkHeightmap(chunk *GeneratedChunk, x, z int, kind string) int {
 	}
 	for y := chunk.MinY + chunk.Height - 1; y >= chunk.MinY; y-- {
 		block := chunk.BlockAt(x, y, z)
-		// 地物放置使用的高度图取“可站立表面”：流体不算表面，避免在水面
-		// 上生成草/花。OCEAN_FLOOR 与原版一样取最高固体。
+		// 原版 Heightmap.Types 的谓词：
+		// - WORLD_SURFACE：任何非空气方块（水/岩浆也算）；
+		// - OCEAN_FLOOR：非空气且非流体；
+		// - MOTION_BLOCKING：非空气（MOTION_BLOCKING_NO_LEAVES 再排除树叶）。
 		switch kind {
 		case "OCEAN_FLOOR", "OCEAN_FLOOR_WG":
 			if !block.IsAir() && !block.HasFluid() {
 				return y
 			}
-		case "MOTION_BLOCKING", "MOTION_BLOCKING_NO_LEAVES":
-			if !block.IsAir() && !block.HasFluid() {
+		case "MOTION_BLOCKING":
+			if !block.IsAir() {
+				return y
+			}
+		case "MOTION_BLOCKING_NO_LEAVES":
+			if !block.IsAir() && !isLeafBlock(block.Name) {
 				return y
 			}
 		default: // WORLD_SURFACE, WORLD_SURFACE_WG
-			if !block.IsAir() && !block.HasFluid() {
+			if !block.IsAir() {
 				return y
 			}
 		}
 	}
 	return chunk.MinY - 1
+}
+
+func isLeafBlock(name string) bool {
+	return strings.HasSuffix(name, "_leaves") || name == "minecraft:azalea_leaves" || name == "minecraft:flowering_azalea_leaves"
 }
 
 func (r *Router) blockPredicateMatches(chunk *GeneratedChunk, predicate *blockPredicate, x, y, z int) bool {
@@ -2280,8 +2462,12 @@ func (r *Router) parseConfiguredFeature(placed placedFeature, config json.RawMes
 		}
 		placed.bamboo = bamboo
 	default:
-		placed.supported = false
-		return placed
+		extra, ok := parseExtraFeature(placed.kind, config)
+		if !ok {
+			placed.supported = false
+			return placed
+		}
+		placed.extra = extra
 	}
 	return placed
 }
@@ -2438,6 +2624,39 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 				filtered = append(filtered, position)
 			}
 			positions = filtered
+		case "minecraft:count_on_every_layer":
+			next := make([]featurePosition, 0, len(positions))
+			for _, position := range positions {
+				layer := 0
+				for {
+					found := false
+					count := modifier.count.sample(random)
+					for n := 0; n < count; n++ {
+						px := position.x + random.nextIntBounded(16)
+						pz := position.z + random.nextIntBounded(16)
+						py := countOnEveryLayerY(chunk, px, pz, layer)
+						if py != math.MinInt {
+							next = append(next, featurePosition{x: px, y: py, z: pz})
+							found = true
+						}
+					}
+					if !found {
+						break
+					}
+					layer++
+				}
+			}
+			positions = next
+		case "minecraft:fixed_placement":
+			next := positions[:0]
+			for range positions {
+				for _, fixed := range modifier.positions {
+					if fixed[0] >= chunk.MinX && fixed[0] < chunk.MinX+16 && fixed[2] >= chunk.MinZ && fixed[2] < chunk.MinZ+16 {
+						next = append(next, featurePosition{x: fixed[0], y: fixed[1], z: fixed[2]})
+					}
+				}
+			}
+			positions = next
 		case "minecraft:random_offset":
 			for i := range positions {
 				xOffset := modifier.xzSpread.sample(random)
@@ -2499,6 +2718,8 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeFossil(chunk, random, *placed.fossil, position.x, position.y, position.z)
 		case placed.fallenTree != nil:
 			r.placeFallenTree(chunk, random, *placed.fallenTree, position.x, position.y, position.z)
+		case placed.extra != nil:
+			r.placeExtra(chunk, random, *placed.extra, position.x, position.y, position.z)
 		}
 	}
 }

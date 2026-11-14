@@ -7,6 +7,7 @@ package vanilla
 import (
 	"crypto/md5"
 	"encoding/binary"
+	"math"
 )
 
 // 随机源：NextLong 与原版 XoroshiroRandomSource 逐位一致（用 tools/vgoracle 从官方
@@ -54,7 +55,9 @@ const (
 // legacyRandom 是原版 LegacyRandomSource。地物和雕刻器的 WorldgenRandom
 // 仍使用这条 48 位 LCG 随机流，而密度噪声使用 Xoroshiro。
 type legacyRandom struct {
-	seed uint64
+	seed           uint64
+	gaussianCached bool
+	gaussianValue  float64
 }
 
 func newLegacyRandom(seed int64) *legacyRandom {
@@ -65,6 +68,7 @@ func newLegacyRandom(seed int64) *legacyRandom {
 
 func (r *legacyRandom) setSeed(seed int64) {
 	r.seed = (uint64(seed) ^ legacyRandomMultiplier) & legacyRandomMask
+	r.gaussianCached = false
 }
 
 func (r *legacyRandom) next(bits uint) uint32 {
@@ -103,6 +107,27 @@ func (r *legacyRandom) nextFloat() float32 {
 func (r *legacyRandom) nextDouble() float64 {
 	value := uint64(r.next(26))<<27 | uint64(r.next(27))
 	return float64(value) / (1 << 53)
+}
+
+// nextGaussian 对应 java.util.Random.nextGaussian 的 Box-Muller 实现。
+func (r *legacyRandom) nextGaussian() float64 {
+	if r.gaussianCached {
+		r.gaussianCached = false
+		return r.gaussianValue
+	}
+	var v1, v2, s float64
+	for {
+		v1 = 2*r.nextDouble() - 1
+		v2 = 2*r.nextDouble() - 1
+		s = v1*v1 + v2*v2
+		if s < 1 && s != 0 {
+			break
+		}
+	}
+	multiplier := math.Sqrt(-2 * math.Log(s) / s)
+	r.gaussianValue = v2 * multiplier
+	r.gaussianCached = true
+	return v1 * multiplier
 }
 
 // worldgenRandom wraps LegacyRandomSource and implements the feature/carver seed

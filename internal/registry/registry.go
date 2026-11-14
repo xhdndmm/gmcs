@@ -265,6 +265,12 @@ func SyncEntryCount(registryName string) int {
 	return len(syncEntries[registryName])
 }
 
+// SyncEntryNames 返回同步注册表的条目名（顺序即官方注册顺序）。
+// 调用者不得修改返回的切片内容。
+func SyncEntryNames(registryName string) []string {
+	return syncEntries[registryName]
+}
+
 // AllTags 返回需要由服务器在配置阶段通过 Update Tags 完整发送的全部注册表标签：
 // 同步注册表（ID 为服务器发送顺序）与静态注册表（ID 为客户端内置的全局注册表 ID）。
 // 标签无法通过 Known Packs 获取，缺失会导致客户端解析本地数据失败。

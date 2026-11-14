@@ -29,7 +29,7 @@ func TestVillageJigsawStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := runtime.cachedStart(4321, setIndex, 52, 153, biomes)
+	start := runtime.cachedStart(4321, setIndex, 52, 153, biomes, router)
 	if start == nil {
 		t.Fatal("村庄起点未生成")
 	}

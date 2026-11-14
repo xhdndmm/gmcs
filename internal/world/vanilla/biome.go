@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 )
 
 // BiomeParameterFileName 是 overworld 多噪声群系参数表的数据文件。
@@ -118,6 +119,20 @@ type BiomeSource struct {
 	climates map[string]biomeClimate
 	cache    map[biomeKey]string
 	end      bool
+	tree     *biomeTree
+}
+
+type biomeTreeNode struct {
+	index        int
+	left, right  int
+	min, max     [6]int64
+	minAbsOffset int64
+}
+
+type biomeTree struct {
+	points []biomeParameterPoint
+	nodes  []biomeTreeNode
+	root   int
 }
 
 // NewBiomeSource 为给定路由表创建群系源，并加载内嵌的参数表与群系气候数据。
@@ -147,6 +162,7 @@ func NewBiomeSource(router *Router) (*BiomeSource, error) {
 		cache:    make(map[biomeKey]string),
 		end:      router.setting.Name == "minecraft:end",
 	}
+	source.tree = newBiomeTree(points)
 	return source, nil
 }
 
@@ -240,21 +256,160 @@ func (b *BiomeSource) BiomeAt(quartX, quartY, quartZ int) string {
 	}
 	nodes := b.climateNodes()
 	target := b.sample(&nodes, quartX, quartY, quartZ)
-	best := &b.points[0]
-	bestDistance := best.distance(&target)
-	for i := 1; i < len(b.points); i++ {
-		if distance := b.points[i].distance(&target); distance < bestDistance {
-			best = &b.points[i]
-			bestDistance = distance
+	best := 0
+	bestDistance := int64(math.MaxInt64)
+	if b.tree != nil {
+		b.tree.query(b.tree.root, &target, &best, &bestDistance)
+	} else {
+		for i := range b.points {
+			if distance := b.points[i].distance(&target); distance < bestDistance {
+				best = i
+				bestDistance = distance
+			}
 		}
 	}
-	b.cache[key] = best.biome
-	return best.biome
+	b.cache[key] = b.points[best].biome
+	return b.points[best].biome
 }
 
 // BiomeAtBlock 返回该方块坐标所属的群系（按原版 4 格对齐规则取 quart 坐标）。
 func (b *BiomeSource) BiomeAtBlock(x, y, z int) string {
 	return b.BiomeAt(blockToQuart(x), blockToQuart(y), blockToQuart(z))
+}
+
+func newBiomeTree(points []biomeParameterPoint) *biomeTree {
+	if len(points) == 0 {
+		return nil
+	}
+	tree := &biomeTree{points: points, nodes: make([]biomeTreeNode, 0, len(points))}
+	indices := make([]int, len(points))
+	for i := range indices {
+		indices[i] = i
+	}
+	tree.root = tree.build(indices)
+	return tree
+}
+
+func (t *biomeTree) build(indices []int) int {
+	if len(indices) == 0 {
+		return -1
+	}
+	node := len(t.nodes)
+	t.nodes = append(t.nodes, biomeTreeNode{index: -1, left: -1, right: -1})
+	// 选择跨度最大的维度做中位数切分，降低查询剪枝成本。
+	dim := 0
+	var widest int64 = -1
+	for d := 0; d < 6; d++ {
+		minValue, maxValue := int64(math.MaxInt64), int64(math.MinInt64)
+		for _, idx := range indices {
+			span := t.points[idx].spans[d]
+			if span.min < minValue {
+				minValue = span.min
+			}
+			if span.max > maxValue {
+				maxValue = span.max
+			}
+		}
+		if width := maxValue - minValue; width > widest {
+			widest, dim = width, d
+		}
+	}
+	sort.Slice(indices, func(i, j int) bool {
+		left, right := t.points[indices[i]].spans[dim], t.points[indices[j]].spans[dim]
+		if left.min != right.min {
+			return left.min < right.min
+		}
+		return left.max < right.max
+	})
+	mid := len(indices) / 2
+	pointIndex := indices[mid]
+	entry := biomeTreeNode{index: pointIndex, left: -1, right: -1, minAbsOffset: absInt64(t.points[pointIndex].offset)}
+	for d := 0; d < 6; d++ {
+		entry.min[d] = t.points[pointIndex].spans[d].min
+		entry.max[d] = t.points[pointIndex].spans[d].max
+	}
+	t.nodes[node] = entry
+	if mid > 0 {
+		left := t.build(indices[:mid])
+		t.nodes[node].left = left
+		if left >= 0 {
+			for d := 0; d < 6; d++ {
+				t.nodes[node].min[d] = min(t.nodes[node].min[d], t.nodes[left].min[d])
+				t.nodes[node].max[d] = max(t.nodes[node].max[d], t.nodes[left].max[d])
+			}
+			t.nodes[node].minAbsOffset = min(t.nodes[node].minAbsOffset, t.nodes[left].minAbsOffset)
+		}
+	}
+	if mid+1 < len(indices) {
+		right := t.build(indices[mid+1:])
+		t.nodes[node].right = right
+		if right >= 0 {
+			for d := 0; d < 6; d++ {
+				t.nodes[node].min[d] = min(t.nodes[node].min[d], t.nodes[right].min[d])
+				t.nodes[node].max[d] = max(t.nodes[node].max[d], t.nodes[right].max[d])
+			}
+			t.nodes[node].minAbsOffset = min(t.nodes[node].minAbsOffset, t.nodes[right].minAbsOffset)
+		}
+	}
+	return node
+}
+
+func (t *biomeTree) query(node int, target *climateTarget, best *int, bestDistance *int64) {
+	if node < 0 {
+		return
+	}
+	entry := &t.nodes[node]
+	var lower int64
+	for d := 0; d < 6; d++ {
+		value := target.values[d]
+		switch {
+		case value < entry.min[d]:
+			lower += entry.min[d] - value
+		case value > entry.max[d]:
+			lower += value - entry.max[d]
+		}
+	}
+	lower += entry.minAbsOffset
+	if lower > *bestDistance {
+		return
+	}
+	if entry.index >= 0 {
+		distance := t.points[entry.index].distance(target)
+		if distance < *bestDistance || (distance == *bestDistance && entry.index < *best) {
+			*best = entry.index
+			*bestDistance = distance
+		}
+	}
+	// 先访问包围盒下界较小的一侧。
+	leftLower, rightLower := int64(math.MaxInt64), int64(math.MaxInt64)
+	if entry.left >= 0 {
+		leftLower = t.nodeLower(entry.left, target)
+	}
+	if entry.right >= 0 {
+		rightLower = t.nodeLower(entry.right, target)
+	}
+	if leftLower < rightLower {
+		t.query(entry.left, target, best, bestDistance)
+		t.query(entry.right, target, best, bestDistance)
+	} else {
+		t.query(entry.right, target, best, bestDistance)
+		t.query(entry.left, target, best, bestDistance)
+	}
+}
+
+func (t *biomeTree) nodeLower(node int, target *climateTarget) int64 {
+	entry := &t.nodes[node]
+	var lower int64
+	for d := 0; d < 6; d++ {
+		value := target.values[d]
+		switch {
+		case value < entry.min[d]:
+			lower += entry.min[d] - value
+		case value > entry.max[d]:
+			lower += value - entry.max[d]
+		}
+	}
+	return lower + entry.minAbsOffset
 }
 
 // endBiomeAt 复刻 TheEndBiomeSource.getNoiseBiome 的群系选择。

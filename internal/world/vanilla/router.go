@@ -31,6 +31,8 @@ type Router struct {
 	features           *featureRegistry
 	biomeSetCache      map[chunkCoord]map[string]struct{}
 	configuredCache    map[string]placedFeature
+	structureTerrain   map[chunkCoord]*GeneratedChunk
+	structuresEnabled  bool
 }
 
 type chunkCoord struct{ x, z int }
@@ -43,15 +45,16 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 	}
 	registry := NewNoiseRegistry(data, seed)
 	router := &Router{
-		data:            data,
-		registry:        registry,
-		setting:         setting,
-		seed:            seed,
-		evaluator:       NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
-		nodes:           make(map[string]*Node, len(setting.Router)),
-		named:           make(map[string]*Node),
-		biomeSetCache:   make(map[chunkCoord]map[string]struct{}),
-		configuredCache: make(map[string]placedFeature),
+		data:             data,
+		registry:         registry,
+		setting:          setting,
+		seed:             seed,
+		evaluator:        NewEvaluatorWithCells(registry, setting.CellWidth, setting.CellHeight),
+		nodes:            make(map[string]*Node, len(setting.Router)),
+		named:            make(map[string]*Node),
+		biomeSetCache:    make(map[chunkCoord]map[string]struct{}),
+		configuredCache:  make(map[string]placedFeature),
+		structureTerrain: make(map[chunkCoord]*GeneratedChunk),
 	}
 	carvers, err := parseCarverDefinitions(data)
 	if err != nil {
@@ -112,10 +115,31 @@ func (r *Router) NewSession() *Router {
 		features:           r.features,
 		biomeSetCache:      make(map[chunkCoord]map[string]struct{}),
 		configuredCache:    make(map[string]placedFeature),
+		structureTerrain:   make(map[chunkCoord]*GeneratedChunk),
+		structuresEnabled:  r.structuresEnabled,
 	}
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
 	session.evaluator.finalDensity = session.nodes["final_density"]
 	return session
+}
+
+// SetStructuresEnabled 控制是否在区块生成末尾放置结构（诊断/对拍用）。
+func (r *Router) SetStructuresEnabled(enabled bool) {
+	r.structuresEnabled = enabled
+}
+
+// SetFeaturesEnabled 控制是否执行群系地物（诊断/对拍用）。
+func (r *Router) SetFeaturesEnabled(enabled bool) {
+	if enabled {
+		if r.features == nil {
+			features, err := parseFeatureRegistry(r.data)
+			if err == nil {
+				r.features = features
+			}
+		}
+		return
+	}
+	r.features = nil
 }
 
 // Setting 返回该路由表对应的噪声设置。

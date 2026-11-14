@@ -104,10 +104,11 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 ### 世界与地形
 
 - **原版算法主世界**（`world_seed`）：主世界使用 `internal/world/vanilla` 的
-  Noise Router、密度函数、含水层、表面规则、cave/canyon 雕刻器与矿石地物；
-  深层为深板岩，海平面约 Y=62，4×4 群系网格按原版多噪声群系源采样并随区块下发。
-  同种子同坐标结果恒定。当前**尚未实现树木、植被、湖泊、结构等其他地物**，
-  因此原版森林/村庄等不会出现；旧版 gmcs 自研生成器已移除，旧存档不会自动转换。
+  Noise Router、密度函数、含水层、表面规则、cave/canyon 雕刻器、全部群系地物
+  与基础 jigsaw 结构；深层为深板岩，海平面约 Y=62，群系按原版多噪声群系源
+  采样并随区块下发。同种子同坐标结果恒定。树木/geode/dripstone 等仍有已记录
+  的近似，要塞/矿洞/末地城尚未实现；旧版 gmcs 自研生成器已移除，旧存档不会
+  自动转换。
 - **出生点与恢复**：出生点在世界边界内搜索陆地（候选列要求玩家碰撞盒
   不与任何碰撞形状相交且脚下确有支撑面，栅栏/墙/箱子顶面之类的列会被跳过；
   恢复存档时若位置被方块占据，会先向上推、再就近寻找可站立空位）。
@@ -117,19 +118,18 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   逐格扩散，最多约 14 tick，gmcs 表现为砍完即刻消失）。
 - **矿石与部分植被**：已接入原版 generation step 6 的 ore/scattered_ore 地物
   （含煤矿、铜矿、铁矿、金矿、红石、钻石、青金石、绿宝石及深板岩变体），
-  以及 generation step 9 的部分树木（straight trunk + blob/spruce/pine
-  foliage，如橡树/桦树/丛林树/云杉/松树）、花草/random patch、海草、岩浆湖、
-  植被 patch、方块堆、圆盘（沙/黏土/沙砾）、竹子、海带、多面生长、
-  化石模板与倒木。
+  以及树木（当前部分为单干+团状树冠近似）、花草/random patch、海草、岩浆湖、
+  植被 patch、方块堆、圆盘（沙/黏土/沙砾）、竹子、海带、多面生长、geode、
+  下界/末地地物、化石模板与倒木。
   使用原版 FeatureSorter 全局顺序和 3×3 区块 section 群系集合；placed_feature 的
   count/in_square/height_range/heightmap/block_predicate_filter/biome/
   rarity_filter 顺序；跨区块边界的矿脉、树干和树冠部分会按当前区块裁切。
-  geode、其他树形、kelp、结构等尚未实现；
-  部分 spring（水/岩浆泉）已接入。
+  204 个群系引用的 placed_feature 均已接入运行时；树木/geode/iceberg/
+  dripstone/sculk/root system 等仍存在近似或残差，详见 docs/TODO.md。
 - **多维度**：主世界/下界/末地三套独立世界，按需生成与持久化（主世界使用
-  `world/`，下界/末地为 `world/the_nether/`、`world/the_end/` 子目录）：下界含
-  基岩地板（y=0）与天花板（y=127）、净岩、岩浆海、石英/远古残骸矿物与萤石/灵魂沙/
-  玄武岩装饰；末地含主岛（末地石、黑曜石柱）、外岛与虚空。玩家所在维度随
+  `world/`，下界/末地为 `world/the_nether/`、`world/the_end/` 子目录）：
+  下界/末地均已接入原版噪声、表面规则、雕刻器与地物；末地结构/末影龙/
+  折跃门仍不完整。玩家所在维度随
   `players.json` 持久化，重连恢复；跨维度切换用 `/dimension` 或下界/末地传送门。
 - **传送门**：下界传送门（黑曜石框 2×3–21×21，打火石点燃；进入按 **1:8** 坐标缩放传送，
   到达侧无门时自动建造出口，带冷却与音效，回程双向）与末地传送门（12 个末地传送门

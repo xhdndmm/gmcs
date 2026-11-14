@@ -28,6 +28,31 @@ import (
 	"gmcs/internal/world/vanilla"
 )
 
+func filterBiomeFeatures(input map[string]json.RawMessage, needle string) map[string]json.RawMessage {
+	output := make(map[string]json.RawMessage, len(input))
+	for biome, raw := range input {
+		var steps [][]string
+		if json.Unmarshal(raw, &steps) != nil {
+			output[biome] = raw
+			continue
+		}
+		for i := range steps {
+			filtered := steps[i][:0]
+			for _, name := range steps[i] {
+				if strings.Contains(name, needle) {
+					filtered = append(filtered, name)
+				}
+			}
+			steps[i] = filtered
+		}
+		encoded, err := json.Marshal(steps)
+		if err == nil {
+			output[biome] = encoded
+		}
+	}
+	return output
+}
+
 func main() {
 	mca := flag.String("mca", "", "区域文件路径")
 	seed := flag.Int64("seed", 4321, "世界种子")
@@ -52,6 +77,9 @@ func main() {
 	column := flag.String("col", "", "打印单个方块列（x,z）的官方与 gmcs 对比")
 	aquifers := flag.Bool("aquifers", true, "对比时是否启用含水层（false 表示单独验证密度函数）")
 	carvers := flag.Bool("carvers", true, "对比时是否运行雕刻器（false 用于验证密度/含水层/表面规则）")
+	features := flag.Bool("features", true, "对比时是否运行群系地物")
+	structures := flag.Bool("structures", true, "对比时是否运行结构")
+	featureFilter := flag.String("feature-filter", "", "只执行名称包含该子串的群系地物（空表示全部）")
 	onlyCarver := flag.String("only-carver", "", "只保留指定雕刻器（用于逐类对比）")
 	flag.Parse()
 	if *mca == "" && *dumpNode == "" && !*listNodes && *gridNode == "" {
@@ -213,11 +241,16 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if *featureFilter != "" {
+		data.BiomeFeatures = filterBiomeFeatures(data.BiomeFeatures, *featureFilter)
+	}
 	router, err := vanilla.NewRouter(data, "minecraft:overworld", *seed)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "构造路由表失败: %v\n", err)
 		os.Exit(1)
 	}
+	router.SetFeaturesEnabled(*features)
+	router.SetStructuresEnabled(*structures)
 	setting := router.Setting()
 	const cellsPerLayer = 16 * 16
 	// 诊断工具只需要处理正常维度高度；给体素数量设硬上限，既避免

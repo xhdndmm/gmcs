@@ -125,9 +125,19 @@ func loadStructureRuntime() (*structureRuntime, error) {
 				Size:              encoded.Size,
 			}
 			def.StartHeight = structureStartHeight{Absolute: encoded.StartHeight.Absolute, AboveBottom: encoded.StartHeight.AboveBottom}
-			var biomeName string
-			if json.Unmarshal(encoded.Biomes, &biomeName) == nil {
-				def.Biomes = qualify(biomeName)
+			var biomeNames []string
+			if json.Unmarshal(encoded.Biomes, &biomeNames) == nil {
+				// 原版结构 biomes 可以是单个标签或列表；列表时要求命中任意一个。
+				parts := make([]string, 0, len(biomeNames))
+				for _, name := range biomeNames {
+					parts = append(parts, qualify(name))
+				}
+				def.Biomes = strings.Join(parts, "|")
+			} else {
+				var biomeName string
+				if json.Unmarshal(encoded.Biomes, &biomeName) == nil {
+					def.Biomes = qualify(biomeName)
+				}
 			}
 			runtime.defs[name] = def
 		}
@@ -181,6 +191,9 @@ func loadStructureRuntime() (*structureRuntime, error) {
 // applyStructures 在区块生成末尾放置结构。当前支持 jigsaw 结构；
 // 要塞/矿洞/末地城的专用生成器尚未接入。
 func (r *Router) applyStructures(chunk *GeneratedChunk, biomes *BiomeSource) {
+	if !r.structuresEnabled {
+		return
+	}
 	runtime, err := loadStructureRuntime()
 	if err != nil {
 		return
@@ -201,7 +214,7 @@ func (r *Router) applyStructures(chunk *GeneratedChunk, biomes *BiomeSource) {
 					originZ < chunk.ChunkZ-radius || originZ > chunk.ChunkZ+radius {
 					continue
 				}
-				start := runtime.cachedStart(r.seed, setIndex, originX, originZ, biomes)
+				start := runtime.cachedStart(r.seed, setIndex, originX, originZ, biomes, r)
 				if start == nil {
 					continue
 				}
@@ -224,13 +237,13 @@ func randomSpreadOrigin(seed int64, set structureSetDefinition, cellX, cellZ int
 	return x, z
 }
 
-func (r *structureRuntime) cachedStart(seed int64, setIndex, originX, originZ int, biomes *BiomeSource) *structureStart {
+func (r *structureRuntime) cachedStart(seed int64, setIndex, originX, originZ int, biomes *BiomeSource, router *Router) *structureStart {
 	key := structureStartKey{seed: seed, set: setIndex, originX: originX, originZ: originZ}
 	if cached, ok := r.cache.Load(key); ok {
 		return cached.(*structureStart)
 	}
 	// 先占位，避免并发生成时重复大量工作；简单起见直接构建并覆盖。
-	start := r.buildStart(seed, setIndex, originX, originZ, biomes)
+	start := r.buildStart(seed, setIndex, originX, originZ, biomes, router)
 	if start == nil {
 		return nil
 	}
@@ -238,7 +251,7 @@ func (r *structureRuntime) cachedStart(seed int64, setIndex, originX, originZ in
 	return start
 }
 
-func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int, biomes *BiomeSource) *structureStart {
+func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int, biomes *BiomeSource, router *Router) *structureStart {
 	set := r.sets[setIndex]
 	random := newLegacyRandom(seed + int64(set.Salt) + int64(originX)*17 + int64(originZ)*31)
 	choice := chooseWeightedStructure(set.Structures, random)
@@ -265,7 +278,7 @@ func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int
 	mirror := random.nextIntBounded(2) == 0
 	startX := originX*16 + 8
 	startZ := originZ*16 + 8
-	startY := r.startHeight(def, startX, startZ)
+	startY := r.startHeight(router, def, startX, startZ)
 	if startY < -64 {
 		startY = -64
 	}
@@ -375,10 +388,23 @@ func overlapsAny(piece structurePiece, pieces []structurePiece) bool {
 	return false
 }
 
-func (r *structureRuntime) startHeight(def structureDefinition, x, z int) int {
+func (r *structureRuntime) startHeight(router *Router, def structureDefinition, x, z int) int {
 	if def.ProjectStart != "" {
-		// 当前区块生成路径没有邻区块高度图；以海平面附近作为近似起点。
-		return 64
+		key := chunkCoord{x: x >> 4, z: z >> 4}
+		chunk, ok := router.structureTerrain[key]
+		if !ok {
+			var err error
+			chunk, err = router.generateChunkInternal(key.x, key.z, false)
+			if err != nil {
+				return 64
+			}
+			router.structureTerrain[key] = chunk
+		}
+		heightmap := def.ProjectStart
+		if heightmap == "" {
+			heightmap = "WORLD_SURFACE_WG"
+		}
+		return chunkHeightmap(chunk, x, z, heightmap) + 1
 	}
 	if def.StartHeight.Absolute != nil {
 		return *def.StartHeight.Absolute
@@ -394,14 +420,19 @@ func (r *structureRuntime) biomeAllowed(def structureDefinition, biomes *BiomeSo
 		return true
 	}
 	name := biomes.BiomeAtBlock(x, 64, z)
-	if strings.HasPrefix(def.Biomes, "#") {
-		id, ok := registry.SyncEntryID("minecraft:worldgen/biome", name)
-		if !ok {
-			return false
+	for _, entry := range strings.Split(def.Biomes, "|") {
+		if strings.HasPrefix(entry, "#") {
+			id, ok := registry.SyncEntryID("minecraft:worldgen/biome", name)
+			if ok && registry.WorldgenBiomeInTag(strings.TrimPrefix(entry, "#"), id) {
+				return true
+			}
+			continue
 		}
-		return registry.WorldgenBiomeInTag(strings.TrimPrefix(def.Biomes, "#"), id)
+		if entry == name {
+			return true
+		}
 	}
-	return def.Biomes == name
+	return false
 }
 
 func chooseWeightedStructure(entries []weightedStructure, random *legacyRandom) string {

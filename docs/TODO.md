@@ -1277,10 +1277,12 @@
     template_pool 元素与 jigsaw 方块实体元数据解析。
   - [~] **结构运行时**：已实现 `random_spread` 结构集、jigsaw 起点/连接展开、
     模板旋转/镜像、跨区块写入、基础 `block_rot`/`rule(random_block_match)`
-    processor；已能生成 jigsaw 类结构（如村庄）。
-  - [ ] **结构运行时剩余**：要塞/矿洞/末地城专用生成器、末地折跃门、
+    processor、按结构 `project_start_to_heightmap` 生成地形高度（通过无结构
+    地形区块缓存）；已能生成 jigsaw 类结构（如村庄）。
+  - [ ] **结构运行时剩余**：要塞/矿洞/末地城专用生成器、末地折跃门 NBT、
     地形适配（beard_thin/beard_box/bury）、完整 processor_list、结构内实体/
-    箱子/刷怪笼、结构 start 持久化与更严格的包围盒/连接器对齐。
+    箱子/刷怪笼、结构 start 持久化、concentric_rings 结构集与更严格的
+    jigsaw 连接器/包围盒对齐。
   - [~] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
     - [x] 数据管线：提取 configured_feature、placed_feature 与群系 11 阶段
       地物引用；校验群系→放置地物→配置地物引用完整。
@@ -1298,12 +1300,31 @@
     - [x] 按原版 FeatureSorter 为全部群系建立全局 step/feature index，并按
       3×3 区块 section 的群系集合执行；避免使用区块局部地表群系并集导致
       feature seed 偏移。
-    - [ ] 树木/植被逐方块仍未与官方参考完全收敛：差异主要来自
-      区块内群系集合/FeatureSorter 顺序导致的 feature index 不同；跨区块
-      树干/树冠目前按当前区块裁切。
-    - [ ] geode、mangrove/cherry 的专属树根/花瓣形态、iceberg 与全部结构
-      尚未执行；fossil 已完成模板放置，但 processor_list 尚未执行；
-      fallen_tree 的 log/stump decorators 尚未执行。
+    - [x] **FeatureSorter/群系采样对齐**：改为按官方群系注册表顺序建立
+      feature index；3×3 邻域改为逐个 section 采样全部 4×4×4 群系，
+      不再只采样 y=64 地表；用 6 维 KD 树做精确最近参数点查询，避免
+      7593 个参数点线性扫描导致的性能崩塌。新增
+      `TestBiomeTreeMatchesBruteForce`、`TestAllBiomeFeaturesHaveRuntime`。
+    - [x] **地物类型覆盖**：204 个被群系引用的 placed_feature 均已有运行时；
+      新增 simple/random boolean selector、vines、glowstone、netherrack
+      replace blobs、basalt columns/pillar、block column、huge fungus、
+      nether forest vegetation、sea pickle、underwater magma、freeze top、
+      forest rock、blue ice、ice spike、desert well、delta、twisting/weeping
+      vines、chorus plant、end island/platform/spike/gateway、iceberg、
+      monster room、geode、dripstone、sculk patch、root system、
+      void start platform；支持 clamped/biased/very_biased/clamped_normal
+      int provider、biased/very_biased height provider、count_on_every_layer、
+      fixed_placement。
+    - [~] **已知近似/残差**：
+      - 树木仍使用单干+团状树冠近似，未完整移植全部 trunk/foliage placer、
+        tree decorators、minimum_size 碰撞与跨区块树冠；mangrove/cherry
+        专属形态未完成。
+      - geode 只实现分层球体，未移植裂缝、invalid_blocks、inner placements；
+      - iceberg、dripstone、sculk patch、root system、end spike/gateway、
+        monster room 的方块实体/复杂几何仍不完整；
+      - 地物逐方块对比仍有差异；例如 ore_tuff 单地物在区块 (0,0) 仍有
+        约 1854/98304 差异，说明 feature index/随机流或 ore 放置细节仍未收敛。
+      - 跨区块树干/树冠按当前区块裁切。
     - [x] `environment_scan`、`surface_relative_threshold_filter`、`random_offset`
       与复合 block predicate（all_of/any_of/not/inside_world_bounds）已实现；
       地下岩浆湖与部分洞穴植被不再被标记为 unsupported。
