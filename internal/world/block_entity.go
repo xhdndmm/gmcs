@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 
 	"gmcs/internal/protocol"
+	"gmcs/internal/registry"
 )
 
 // 方块实体（block entity）：目前仅支持容器类方块（箱子/陷阱箱/木桶等）的
@@ -250,6 +251,9 @@ func appendBlockEntityNBT(dst []byte, entity BlockEntity) []byte {
 		return append(dst, 0x0A, 0x00, 0x00)
 	}
 	dst = append(dst, 0x0A, 0x00, 0x00) // TAG_Compound + 空名
+	if names := registry.SyncEntryNames("minecraft:block_entity_type"); int(entity.TypeID) >= 0 && int(entity.TypeID) < len(names) {
+		dst = appendNBTString(dst, "id", names[entity.TypeID])
+	}
 	if entity.SpawnerEntity != "" {
 		dst = append(dst, 0x0A)
 		dst = appendNBTName(dst, "SpawnData")

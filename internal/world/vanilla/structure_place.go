@@ -6,6 +6,7 @@ package vanilla
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -80,6 +81,51 @@ func placeTemplate(chunk *GeneratedChunk, template *structureTemplate, originX, 
 			chunk.SetBlockEntity(x, y, z, entity)
 		}
 	}
+	// 模板自带的实体（村民/动物等）也转入生成阶段实体列表。服务器目前只
+	// 接管其中的展示框/潜影贝；其他类型保留给后续实体系统扩展。
+	for _, rawEntity := range template.Entities {
+		pos, ok := templateEntityPos(rawEntity["pos"])
+		if !ok {
+			continue
+		}
+		transformed := transformTemplatePos([3]int{int(math.Floor(pos[0])), int(math.Floor(pos[1])), int(math.Floor(pos[2]))}, template.Size, rotation, mirror)
+		entityType, _ := nbtStringValue(rawEntity["id"])
+		if entityType == "" {
+			continue
+		}
+		entity := GeneratedEntity{
+			Type: qualify(entityType),
+			Pos:  [3]float64{float64(originX+transformed[0]) + pos[0] - math.Floor(pos[0]), float64(originY+transformed[1]) + pos[1] - math.Floor(pos[1]), float64(originZ+transformed[2]) + pos[2] - math.Floor(pos[2])},
+		}
+		if item, ok := nbtCompoundValue(rawEntity["Item"]); ok {
+			entity.Item, _ = nbtStringValue(item["id"])
+			entity.Item = qualify(entity.Item)
+		}
+		chunk.AddEntity(entity)
+	}
+}
+
+func templateEntityPos(value any) ([3]float64, bool) {
+	list, ok := value.([]any)
+	if !ok || len(list) < 3 {
+		return [3]float64{}, false
+	}
+	var result [3]float64
+	for i := 0; i < 3; i++ {
+		switch number := list[i].(type) {
+		case float64:
+			result[i] = number
+		case float32:
+			result[i] = float64(number)
+		case int32:
+			result[i] = float64(number)
+		case int64:
+			result[i] = float64(number)
+		default:
+			return [3]float64{}, false
+		}
+	}
+	return result, true
 }
 
 func parseSimpleBlockState(value string) (SurfaceBlock, error) {

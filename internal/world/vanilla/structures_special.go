@@ -366,18 +366,10 @@ func (r *structureRuntime) buildMineshaft(seed int64, originX, originZ int, def 
 func (r *structureRuntime) buildStronghold(seed int64, originX, originZ int, router *Router) *structureStart {
 	random := newLegacyRandom(seed + int64(originX)*17 + int64(originZ)*31)
 	startX, startZ := originX*16+8, originZ*16+8
-	startY := r.startHeight(router, structureDefinition{Type: "minecraft:stronghold"}, startX, startZ)
-	if startY < 8 {
-		startY = 32
-	}
-	if startY > 200 {
-		startY = 64
-	}
-	// 要塞通常埋在地下；bury 适配把中心放到地表以下。
-	startY -= 20
-	if startY < 8 {
-		startY = 8
-	}
+	// StrongholdPieces 的起始 y 是 64（不是地表高度）；保留该固定层，
+	// 与官方 fig.m 起始房间一致。
+	startY := 64
+	_ = router
 	stone := SurfaceBlock{Name: "minecraft:stone_bricks"}
 	mossy := SurfaceBlock{Name: "minecraft:mossy_stone_bricks"}
 	cracked := SurfaceBlock{Name: "minecraft:cracked_stone_bricks"}

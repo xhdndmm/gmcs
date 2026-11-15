@@ -744,3 +744,15 @@ func TestChunkHeightmaps(t *testing.T) {
 		t.Fatalf("empty column height = %d, want 0", got)
 	}
 }
+
+func TestChunkGeneratedEntitiesTakeOnce(t *testing.T) {
+	chunk := NewChunk(0, 0)
+	chunk.SetGeneratedEntities([]PendingEntity{{Type: "minecraft:item_frame", X: 1, Y: 2, Z: 3, Item: "minecraft:elytra"}})
+	got := chunk.TakeGeneratedEntities()
+	if len(got) != 1 || got[0].Item != "minecraft:elytra" {
+		t.Fatalf("generated entities = %+v", got)
+	}
+	if again := chunk.TakeGeneratedEntities(); len(again) != 0 {
+		t.Fatalf("重复取走 = %+v", again)
+	}
+}

@@ -42,7 +42,7 @@ func (s *Server) tickDragon(players []*session) {
 	if s.dragon == nil {
 		dragon := &dragonEntity{
 			ID: s.entityIDs.Add(1), UUID: newEntityUUID(), Dim: world.DimensionEnd,
-			X: 0, Y: 80, Z: 0, Health: dragonMaxHealth,
+			X: 0, Y: 128, Z: 0, Health: dragonMaxHealth,
 		}
 		s.dragon = dragon
 		s.entityMu.Unlock()
@@ -58,7 +58,7 @@ func (s *Server) tickDragon(players []*session) {
 	dragon.Angle += 0.012
 	dragon.X = math.Cos(dragon.Angle) * 40
 	dragon.Z = math.Sin(dragon.Angle) * 40
-	dragon.Y = 80 + math.Sin(dragon.Angle*2)*4
+	dragon.Y = 128 + math.Sin(dragon.Angle*2)*4
 	dragon.Yaw = float32(math.Atan2(-math.Sin(dragon.Angle), math.Cos(dragon.Angle))*180/math.Pi) + 90
 	x, y, z, yaw := dragon.X, dragon.Y, dragon.Z, dragon.Yaw
 	s.entityMu.Unlock()

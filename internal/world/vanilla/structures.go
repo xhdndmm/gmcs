@@ -14,15 +14,16 @@ import (
 )
 
 type structureDefinition struct {
-	Type              string
-	Biomes            string
-	StartPool         string
-	StartJigsawName   string
-	ProjectStart      string
-	TerrainAdaptation string
-	MineshaftType     string
-	Size              int
-	StartHeight       structureStartHeight
+	Type                  string
+	Biomes                string
+	StartPool             string
+	StartJigsawName       string
+	ProjectStart          string
+	TerrainAdaptation     string
+	MineshaftType         string
+	Size                  int
+	MaxDistanceFromCenter int
+	StartHeight           structureStartHeight
 }
 
 type structureStartHeight struct {
@@ -96,11 +97,13 @@ type structureBlockPlacement struct {
 }
 
 type pieceConnector struct {
-	pos       [3]int
-	direction string
-	name      string
-	target    string
-	pool      string
+	pos               [3]int
+	direction         string
+	name              string
+	target            string
+	pool              string
+	selectionPriority int
+	placementPriority int
 }
 
 var (
@@ -131,6 +134,7 @@ func loadStructureRuntime() (*structureRuntime, error) {
 				TerrainAdaptation string          `json:"terrain_adaptation"`
 				MineshaftType     string          `json:"mineshaft_type"`
 				Size              int             `json:"size"`
+				MaxDistance       int             `json:"max_distance_from_center"`
 				StartHeight       struct {
 					Absolute    *int `json:"absolute"`
 					AboveBottom *int `json:"above_bottom"`
@@ -141,13 +145,14 @@ func loadStructureRuntime() (*structureRuntime, error) {
 				return
 			}
 			def := structureDefinition{
-				Type:              qualify(encoded.Type),
-				StartPool:         qualify(encoded.StartPool),
-				StartJigsawName:   encoded.StartJigsawName,
-				ProjectStart:      encoded.ProjectStart,
-				TerrainAdaptation: encoded.TerrainAdaptation,
-				MineshaftType:     encoded.MineshaftType,
-				Size:              encoded.Size,
+				Type:                  qualify(encoded.Type),
+				StartPool:             qualify(encoded.StartPool),
+				StartJigsawName:       encoded.StartJigsawName,
+				ProjectStart:          encoded.ProjectStart,
+				TerrainAdaptation:     encoded.TerrainAdaptation,
+				MineshaftType:         encoded.MineshaftType,
+				Size:                  encoded.Size,
+				MaxDistanceFromCenter: encoded.MaxDistance,
 			}
 			def.StartHeight = structureStartHeight{Absolute: encoded.StartHeight.Absolute, AboveBottom: encoded.StartHeight.AboveBottom}
 			var biomeNames []string
@@ -408,14 +413,20 @@ func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int
 func makePiece(runtime *structureRuntime, name string, template *structureTemplate, originX, originY, originZ int, rotation templateRotation, mirror bool, processors string, random *legacyRandom) structurePiece {
 	template = runtime.applyProcessorList(template, processors, random)
 	piece := structurePiece{name: name, template: template, templateName: name, processors: processors, origin: [3]int{originX, originY, originZ}, rotation: rotation, mirror: mirror, size: transformedSize(template.Size, rotation)}
-	for _, jigsaw := range template.jigsawBlocks() {
+	jigsaws := template.jigsawBlocks()
+	sort.SliceStable(jigsaws, func(i, j int) bool {
+		return jigsaws[i].SelectionPriority > jigsaws[j].SelectionPriority
+	})
+	for _, jigsaw := range jigsaws {
 		pos := transformTemplatePos(jigsaw.Pos, template.Size, rotation, mirror)
 		piece.connectors = append(piece.connectors, pieceConnector{
-			pos:       [3]int{originX + pos[0], originY + pos[1], originZ + pos[2]},
-			direction: rotateDirection(jigsaw.Direction, rotation, mirror),
-			name:      jigsaw.Name,
-			target:    jigsaw.Target,
-			pool:      jigsaw.Pool,
+			pos:               [3]int{originX + pos[0], originY + pos[1], originZ + pos[2]},
+			direction:         rotateDirection(jigsaw.Direction, rotation, mirror),
+			name:              jigsaw.Name,
+			target:            jigsaw.Target,
+			pool:              jigsaw.Pool,
+			selectionPriority: jigsaw.SelectionPriority,
+			placementPriority: jigsaw.PlacementPriority,
 		})
 	}
 	return piece
@@ -430,6 +441,11 @@ func alignPiece(runtime *structureRuntime, source structurePiece, connector piec
 	for attempt := 0; attempt < 8; attempt++ {
 		rotation := templateRotation(random.nextIntBounded(4))
 		mirror := random.nextIntBounded(2) == 0
+		type candidate struct {
+			jigsaw   jigsawBlock
+			priority int
+		}
+		candidates := make([]candidate, 0, len(targetJigsaws))
 		for _, targetJigsaw := range targetJigsaws {
 			if connector.target != "" && targetJigsaw.Name != connector.target {
 				continue
@@ -439,7 +455,11 @@ func alignPiece(runtime *structureRuntime, source structurePiece, connector piec
 			if targetDir := rotateDirection(targetJigsaw.Direction, rotation, mirror); oppositeDirection(targetDir) != connector.direction {
 				continue
 			}
-			targetPos := transformTemplatePos(targetJigsaw.Pos, target.Size, rotation, mirror)
+			candidates = append(candidates, candidate{jigsaw: targetJigsaw, priority: targetJigsaw.PlacementPriority})
+		}
+		sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].priority > candidates[j].priority })
+		for _, item := range candidates {
+			targetPos := transformTemplatePos(item.jigsaw.Pos, target.Size, rotation, mirror)
 			origin := [3]int{
 				connector.pos[0] + sourceDir[0] - targetPos[0],
 				connector.pos[1] + sourceDir[1] - targetPos[1],
@@ -463,7 +483,9 @@ func withinCenter(origin [3]int, size [3]int, center [3]int, def structureDefini
 	dx := origin[0] + size[0]/2 - center[0]
 	dz := origin[2] + size[2]/2 - center[2]
 	limit := 80
-	if def.Size > 0 {
+	if def.MaxDistanceFromCenter > 0 {
+		limit = def.MaxDistanceFromCenter
+	} else if def.Size > 0 {
 		limit = def.Size * 16
 	}
 	return dx*dx+dz*dz <= limit*limit
