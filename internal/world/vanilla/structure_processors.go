@@ -132,7 +132,7 @@ func (r *structureRuntime) applyProcessorList(template *structureTemplate, name 
 				probability := rule.InputPredicate.Probability
 				stateIndex := -1
 				for i, block := range clone.Palette {
-					if block.Name == output.Name {
+					if sameSurfaceBlock(block, output) {
 						stateIndex = i
 						break
 					}
@@ -234,4 +234,16 @@ func parseBlockList(raw json.RawMessage) map[string]struct{} {
 		}
 	}
 	return result
+}
+
+func sameSurfaceBlock(a, b SurfaceBlock) bool {
+	if a.Name != b.Name || len(a.Properties) != len(b.Properties) {
+		return false
+	}
+	for key, value := range a.Properties {
+		if b.Properties[key] != value {
+			return false
+		}
+	}
+	return true
 }

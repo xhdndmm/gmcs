@@ -434,3 +434,15 @@ func TestGeneratedBlockEntityParsesSpawnerAndSign(t *testing.T) {
 		t.Fatalf("sign = %+v ok=%v", sign, ok)
 	}
 }
+
+func TestRotateSurfaceBlockDirections(t *testing.T) {
+	state := SurfaceBlock{Name: "minecraft:oak_stairs", Properties: map[string]string{"facing": "north", "hinge": "left"}}
+	rotated := rotateSurfaceBlock(state, rotateClockwise90, false)
+	if rotated.Properties["facing"] != "east" || rotated.Properties["hinge"] != "right" {
+		t.Fatalf("rotated = %+v", rotated.Properties)
+	}
+	axis := rotateSurfaceBlock(SurfaceBlock{Name: "minecraft:oak_log", Properties: map[string]string{"axis": "x"}}, rotateClockwise90, false)
+	if axis.Properties["axis"] != "z" {
+		t.Fatalf("axis = %v", axis.Properties["axis"])
+	}
+}

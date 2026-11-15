@@ -72,6 +72,7 @@ func placeTemplate(chunk *GeneratedChunk, template *structureTemplate, originX, 
 		if state.Name == "minecraft:structure_void" {
 			continue
 		}
+		state = rotateSurfaceBlock(state, rotation, mirror)
 		chunk.SetBlock(x, y, z, state)
 		if entity, ok := generatedBlockEntityFromNBT(state.Name, block.NBT); ok {
 			entity.Type = blockEntityTypeName(entity.Type)
@@ -185,4 +186,56 @@ func placeStructureMarker(chunk *GeneratedChunk, data nbtCompound, x, y, z int, 
 		})
 	}
 	_ = random
+}
+
+// rotateSurfaceBlock 旋转/镜像方块状态的朝向属性。结构模板只有 palette
+// 的方块名和属性；不旋转 stairs/fence/chest 等朝向会让建筑内部方向错乱。
+func rotateSurfaceBlock(state SurfaceBlock, rotation templateRotation, mirror bool) SurfaceBlock {
+	if len(state.Properties) == 0 {
+		return state
+	}
+	properties := make(map[string]string, len(state.Properties))
+	for key, value := range state.Properties {
+		properties[key] = value
+	}
+	if facing, ok := properties["facing"]; ok {
+		facing = rotateDirection(facing, rotation, mirror)
+		properties["facing"] = facing
+	}
+	if axis, ok := properties["axis"]; ok && (rotation == rotateClockwise90 || rotation == rotateCounterClockwise90) {
+		switch axis {
+		case "x":
+			properties["axis"] = "z"
+		case "z":
+			properties["axis"] = "x"
+		}
+	}
+	if orientation, ok := properties["orientation"]; ok {
+		parts := strings.SplitN(orientation, "_", 2)
+		parts[0] = rotateDirection(parts[0], rotation, mirror)
+		properties["orientation"] = strings.Join(parts, "_")
+	}
+	// 镜像会翻转 east/west 的铰链侧；rotation 90/270 也会交换 hinge。
+	if hinge, ok := properties["hinge"]; ok {
+		if mirror || rotation == rotateClockwise90 || rotation == rotateCounterClockwise90 {
+			if hinge == "left" {
+				properties["hinge"] = "right"
+			} else if hinge == "right" {
+				properties["hinge"] = "left"
+			}
+		}
+	}
+	if shape, ok := properties["shape"]; ok {
+		switch shape {
+		case "inner_left":
+			if rotation == rotateClockwise90 {
+				properties["shape"] = "inner_right"
+			}
+		case "inner_right":
+			if rotation == rotateCounterClockwise90 {
+				properties["shape"] = "inner_left"
+			}
+		}
+	}
+	return SurfaceBlock{Name: state.Name, Properties: properties}
 }
