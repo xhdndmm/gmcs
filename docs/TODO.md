@@ -1319,7 +1319,7 @@
       nether forest vegetation、sea pickle、underwater magma、freeze top、
       forest rock、blue ice、ice spike、desert well、delta、twisting/weeping
       vines、chorus plant、end island/platform/spike/gateway、iceberg、
-      monster room、geode、dripstone、sculk patch、root system、
+      monster room、geode、dripstone、sculk patch、root system（含悬挂根）、
       void start platform；支持 clamped/biased/very_biased/clamped_normal
       int provider、biased/very_biased height provider、count_on_every_layer、
       fixed_placement。
@@ -1329,9 +1329,9 @@
         fancy/forking/cherry/mangrove 形态与跨区块树冠仍未完成。
       - geode 已移植分层阈值、裂缝、invalid_blocks、potential placements 与
         LegacyRandomSource NormalNoise；仍需逐方块对拍验证；
-      - iceberg、dripstone、sculk patch、root system、end spike、
-        monster room 的复杂几何仍不完整；折跃门仅有方块传送，
-        ExitPortal NBT 未接入；
+      - iceberg、dripstone、sculk patch、end spike、monster room 的复杂几何
+        仍不完整；root system 已加入悬挂根/根柱但未逐方块对拍；折跃门仅有
+        方块传送，ExitPortal NBT 未接入；
       - 地物逐方块对比仍有差异；例如 ore_tuff 单地物在区块 (0,0) 仍有
         约 1854/98304 差异，说明 feature index/随机流或 ore 放置细节仍未收敛。
       - 跨区块树干/树冠按当前区块裁切。

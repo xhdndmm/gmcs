@@ -1584,4 +1584,7 @@ BenchmarkVanillaGeneratorChunk-20   ~62 ms/op    8.3 MB/op    52,784 allocs/op
 
 - 原版矿脉接入后，`BenchmarkGenerateChunk` 仍约 55 ms/区块（矿脉密度函数复用
   区块插值 lattice）；与官方纯矿脉参考世界对比约 93/196608 方块不一致。
+- 结构方块实体/战利品表、矿洞/要塞、2×2 树干接入后，当前完整生成基准
+  约 84 ms/区块（首次运行含要塞/战利品表缓存构建，单次约 132 ms），
+  内存约 20–29 MB/op；这是性能回归，仍需后续 profile 优化。
 - 晶洞使用独立 LegacyRandomSource NormalNoise；已加入分层/裂缝/晶芽放置测试。
