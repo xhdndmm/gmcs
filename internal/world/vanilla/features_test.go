@@ -476,3 +476,35 @@ func TestAllBiomeFeaturesHaveRuntime(t *testing.T) {
 		}
 	}
 }
+
+func TestGeodeExactPlacesLayers(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed := router.features.placed["minecraft:amethyst_geode"]
+	if placed.geode == nil {
+		t.Fatal("紫水晶晶洞没有解析为 geode 配置")
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := -32; y <= 32; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:stone"})
+			}
+		}
+	}
+	random := newLegacyRandom(12345)
+	router.placeGeodeExact(chunk, random, *placed.geode, 8, 0, 8)
+	counts := map[string]int{}
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) { counts[block.Name]++ })
+	for _, name := range []string{"minecraft:smooth_basalt", "minecraft:calcite", "minecraft:amethyst_block"} {
+		if counts[name] == 0 {
+			t.Fatalf("晶洞缺少分层方块 %s：%v", name, counts)
+		}
+	}
+}

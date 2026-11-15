@@ -50,7 +50,6 @@ func parseExtraFeature(kind string, config json.RawMessage) (*extraFeature, bool
 		"minecraft:end_gateway",
 		"minecraft:iceberg",
 		"minecraft:monster_room",
-		"minecraft:geode",
 		"minecraft:large_dripstone",
 		"minecraft:dripstone_cluster",
 		"minecraft:pointed_dripstone",
@@ -119,8 +118,6 @@ func (r *Router) placeExtra(chunk *GeneratedChunk, random *legacyRandom, feature
 		r.placeIceberg(chunk, random, feature.config, x, y, z)
 	case "minecraft:monster_room":
 		r.placeMonsterRoom(chunk, random, x, y, z)
-	case "minecraft:geode":
-		r.placeGeode(chunk, random, feature.config, x, y, z)
 	case "minecraft:large_dripstone":
 		r.placeLargeDripstone(chunk, random, feature.config, x, y, z)
 	case "minecraft:dripstone_cluster":
@@ -1024,38 +1021,6 @@ func (r *Router) placeMonsterRoom(chunk *GeneratedChunk, random *legacyRandom, x
 		}
 	}
 	chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:spawner"})
-}
-
-func (r *Router) placeGeode(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
-	// 基础紫水晶晶洞：外层平滑玄武岩、中层方解石、内层紫水晶块。
-	// 裂缝、晶芽朝向和 invalid_blocks 计数尚未完整移植。
-	radius := 12.0
-	for dx := -int(radius); dx <= int(radius); dx++ {
-		for dy := -int(radius); dy <= int(radius); dy++ {
-			for dz := -int(radius); dz <= int(radius); dz++ {
-				distance := math.Sqrt(float64(dx*dx + dy*dy + dz*dz))
-				var state SurfaceBlock
-				switch {
-				case distance > radius-2:
-					state = SurfaceBlock{Name: "minecraft:smooth_basalt"}
-				case distance > radius-4:
-					state = SurfaceBlock{Name: "minecraft:calcite"}
-				case distance > radius-6:
-					state = SurfaceBlock{Name: "minecraft:amethyst_block"}
-				case distance > radius-7:
-					state = SurfaceBlock{Name: "minecraft:air"}
-				default:
-					continue
-				}
-				px, py, pz := x+dx, y+dy, z+dz
-				if chunk.InRange(px, py, pz) {
-					chunk.SetBlock(px, py, pz, state)
-				}
-			}
-		}
-	}
-	_ = random
-	_ = raw
 }
 
 func (r *Router) placeLargeDripstone(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {

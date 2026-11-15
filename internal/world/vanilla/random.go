@@ -268,6 +268,32 @@ func (r *Xoroshiro) ForkPositional() positionalRandomFactory {
 	return positionalRandomFactory{lo: uint64(r.NextLong()), hi: uint64(r.NextLong())}
 }
 
+// legacyPositionalRandomFactory 是原版 LegacyRandomSource 的
+// LegacyPositionalRandomFactory：at/fromHashOf 都派生新的 LegacyRandomSource。
+type legacyPositionalRandomFactory struct {
+	seed int64
+}
+
+func (r *legacyRandom) ForkPositional() legacyPositionalRandomFactory {
+	return legacyPositionalRandomFactory{seed: r.nextLong()}
+}
+
+func (f legacyPositionalRandomFactory) At(x, y, z int) *legacyRandom {
+	return newLegacyRandom(mthGetSeed(x, y, z) ^ f.seed)
+}
+
+func (f legacyPositionalRandomFactory) FromHashOf(name string) *legacyRandom {
+	return newLegacyRandom(int64(javaStringHash(name)) ^ f.seed)
+}
+
+func javaStringHash(value string) int32 {
+	var hash int32
+	for _, c := range value {
+		hash = 31*hash + int32(c)
+	}
+	return hash
+}
+
 // FromHashOf 等价原版 PositionalRandomFactory.fromHashOf(String)：
 // seed = MD5(name)[0..8) 与 MD5(name)[8..16) （大端）分别与工厂种子异或。
 func (f positionalRandomFactory) FromHashOf(name string) *Xoroshiro {

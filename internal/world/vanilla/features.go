@@ -51,6 +51,7 @@ type placedFeature struct {
 	multiface  *multifaceConfiguration
 	fossil     *fossilConfiguration
 	fallenTree *fallenTreeConfiguration
+	geode      *geodeConfiguration
 	extra      *extraFeature
 	placements []placementModifier
 	supported  bool
@@ -60,7 +61,7 @@ func (p placedFeature) hasRuntime() bool {
 	return p.ore != nil || p.tree != nil || p.selector != nil || p.patch != nil || p.simple != nil ||
 		p.spring != nil || p.seagrass != nil || p.lake != nil || p.vegetation != nil || p.pile != nil ||
 		p.disk != nil || p.bamboo != nil || p.kelp != nil || p.multiface != nil || p.fossil != nil ||
-		p.fallenTree != nil || p.extra != nil
+		p.fallenTree != nil || p.geode != nil || p.extra != nil
 }
 
 type selectorConfiguration struct {
@@ -507,6 +508,12 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 				return nil, fmt.Errorf("解析 %s 的倒木配置失败：%w", placed.feature, err)
 			}
 			placed.fallenTree = fallen
+		case "minecraft:geode":
+			geode, err := parseGeodeConfiguration(configured.Config)
+			if err != nil {
+				return nil, fmt.Errorf("解析 %s 的晶洞配置失败：%w", placed.feature, err)
+			}
+			placed.geode = geode
 		default:
 			extra, ok := parseExtraFeature(placed.kind, configured.Config)
 			if !ok {
@@ -525,7 +532,7 @@ func parseFeatureRegistry(data *Data) (*featureRegistry, error) {
 			}
 			placed.placements = append(placed.placements, modifier)
 		}
-		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil && placed.fossil == nil && placed.fallenTree == nil && placed.extra == nil {
+		if placed.ore == nil && placed.tree == nil && placed.selector == nil && placed.patch == nil && placed.simple == nil && placed.spring == nil && placed.seagrass == nil && placed.lake == nil && placed.vegetation == nil && placed.pile == nil && placed.disk == nil && placed.bamboo == nil && placed.kelp == nil && placed.multiface == nil && placed.fossil == nil && placed.fallenTree == nil && placed.geode == nil && placed.extra == nil {
 			placed.supported = false
 		}
 		registry.placed[qualify(name)] = placed
@@ -1755,6 +1762,8 @@ func (r *Router) applyPlacedFeature(chunk *GeneratedChunk, random *legacyRandom,
 			r.placeFossil(chunk, random, *placed.fossil, position.x, position.y, position.z)
 		case placed.fallenTree != nil:
 			r.placeFallenTree(chunk, random, *placed.fallenTree, position.x, position.y, position.z)
+		case placed.geode != nil:
+			r.placeGeodeExact(chunk, random, *placed.geode, position.x, position.y, position.z)
 		case placed.extra != nil:
 			r.placeExtra(chunk, random, *placed.extra, position.x, position.y, position.z)
 		}
@@ -2476,6 +2485,13 @@ func (r *Router) parseConfiguredFeature(placed placedFeature, config json.RawMes
 			return placed
 		}
 		placed.bamboo = bamboo
+	case "minecraft:geode":
+		geode, err := parseGeodeConfiguration(config)
+		if err != nil || geode == nil {
+			placed.supported = false
+			return placed
+		}
+		placed.geode = geode
 	default:
 		extra, ok := parseExtraFeature(placed.kind, config)
 		if !ok {
@@ -2589,6 +2605,8 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeFossil(chunk, random, *placed.fossil, x, y, z)
 		case placed.fallenTree != nil:
 			r.placeFallenTree(chunk, random, *placed.fallenTree, x, y, z)
+		case placed.geode != nil:
+			r.placeGeodeExact(chunk, random, *placed.geode, x, y, z)
 		}
 		return
 	}
@@ -2733,6 +2751,8 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 			r.placeFossil(chunk, random, *placed.fossil, position.x, position.y, position.z)
 		case placed.fallenTree != nil:
 			r.placeFallenTree(chunk, random, *placed.fallenTree, position.x, position.y, position.z)
+		case placed.geode != nil:
+			r.placeGeodeExact(chunk, random, *placed.geode, position.x, position.y, position.z)
 		case placed.extra != nil:
 			r.placeExtra(chunk, random, *placed.extra, position.x, position.y, position.z)
 		}

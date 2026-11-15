@@ -37,6 +37,24 @@ func NewImprovedNoise(random *Xoroshiro) *ImprovedNoise {
 	return noise
 }
 
+// NewImprovedNoiseLegacy 用 LegacyRandomSource 构造 ImprovedNoise
+// （原版 new ImprovedNoise(RandomSource)，但随机源是 legacy LCG）。
+func NewImprovedNoiseLegacy(random *legacyRandom) *ImprovedNoise {
+	noise := &ImprovedNoise{
+		xo: random.nextDouble() * 256,
+		yo: random.nextDouble() * 256,
+		zo: random.nextDouble() * 256,
+	}
+	for i := 0; i < 256; i++ {
+		noise.p[i] = i
+	}
+	for i := 0; i < 256; i++ {
+		j := random.nextIntBounded(256 - i)
+		noise.p[i], noise.p[i+j] = noise.p[i+j], noise.p[i]
+	}
+	return noise
+}
+
 // Noise 返回 (x, y, z) 处的 perlin 噪声（等价原版 ImprovedNoise.noise(x,y,z)）。
 func (n *ImprovedNoise) Noise(x, y, z float64) float64 {
 	d := x + n.xo
@@ -254,6 +272,34 @@ func NewPerlinNoise(random *Xoroshiro, firstOctave int, amplitudes []float64) *P
 	}
 	perlin.initFactors(firstOctave)
 	return perlin
+}
+
+// NewPerlinNoiseLegacySource 是 PerlinNoise.createLegacy 的 LegacyRandomSource
+// 版本；geode 等旧式世界生成地物仍使用它。
+func NewPerlinNoiseLegacySource(random *legacyRandom, firstOctave int, amplitudes []float64) *PerlinNoise {
+	size := len(amplitudes)
+	if size == 0 {
+		panic("vanilla: PerlinNoise 至少需要一个八度振幅")
+	}
+	positional := random.ForkPositional()
+	perlin := &PerlinNoise{
+		amplitudes: append([]float64(nil), amplitudes...),
+		levels:     make([]*ImprovedNoise, size),
+	}
+	for i := 0; i < size; i++ {
+		if perlin.amplitudes[i] == 0 {
+			continue
+		}
+		perlin.levels[i] = NewImprovedNoiseLegacy(positional.FromHashOf("octave_" + strconv.Itoa(firstOctave+i)))
+	}
+	perlin.initFactors(firstOctave)
+	return perlin
+}
+
+func NewNormalNoiseLegacySource(random *legacyRandom, firstOctave int, amplitudes []float64) *NormalNoise {
+	first := NewPerlinNoiseLegacySource(random, firstOctave, amplitudes)
+	second := NewPerlinNoiseLegacySource(random, firstOctave, amplitudes)
+	return newNormalNoise(first, second, firstOctave, amplitudes)
 }
 
 // NewPerlinNoiseLegacy 等价原版 PerlinNoise.createLegacy(RandomSource, int, DoubleList)
