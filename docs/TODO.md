@@ -1286,10 +1286,11 @@
   - [~] **末地城基础拼装**：已加入 `end_city` 分支，用官方
     base_floor/second_floor_1/third_floor_1/third_roof 模板拼装；桥梁、
     塔楼递归、船、末影龙/折跃门 NBT 仍未完整移植。
-  - [ ] **结构运行时剩余**：要塞/矿洞专用生成器、末地折跃门 NBT、
-    地形适配（beard_thin/beard_box/bury）、完整 processor_list、结构内实体/
-    箱子/刷怪笼、结构 start 持久化、concentric_rings 结构集与更严格的
-    jigsaw 连接器/包围盒对齐。
+  - [~] **结构运行时剩余**：已加入矿洞/要塞专用生成器、`concentric_rings`
+    结构集、矿洞 `legacy_type_3` 频率过滤、结构模板方块实体与基础战利品表、
+    末地折跃门方块传送；仍未完成 `beard_thin/beard_box/bury` 精确地形适配、
+    完整 processor_list、结构 spawner/告示牌等 NBT、结构 start 持久化以及
+    更严格的 jigsaw 连接器/包围盒对齐。
   - [~] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
     - [x] 数据管线：提取 configured_feature、placed_feature 与群系 11 阶段
       地物引用；校验群系→放置地物→配置地物引用完整。
@@ -1323,13 +1324,14 @@
       int provider、biased/very_biased height provider、count_on_every_layer、
       fixed_placement。
     - [~] **已知近似/残差**：
-      - 树木仍使用单干+团状树冠近似，未完整移植全部 trunk/foliage placer、
-        tree decorators、minimum_size 碰撞与跨区块树冠；mangrove/cherry
-        专属形态未完成。
+      - 树木已支持 2×2 巨型/深色橡木主干、two/three_layers minimum_size
+        基础空间检查和 trunk_vine/leave_vine/cocoa 装饰器；复杂分叉
+        fancy/forking/cherry/mangrove 形态与跨区块树冠仍未完成。
       - geode 已移植分层阈值、裂缝、invalid_blocks、potential placements 与
         LegacyRandomSource NormalNoise；仍需逐方块对拍验证；
-      - iceberg、dripstone、sculk patch、root system、end spike/gateway、
-        monster room 的方块实体/复杂几何仍不完整；
+      - iceberg、dripstone、sculk patch、root system、end spike、
+        monster room 的复杂几何仍不完整；折跃门仅有方块传送，
+        ExitPortal NBT 未接入；
       - 地物逐方块对比仍有差异；例如 ore_tuff 单地物在区块 (0,0) 仍有
         约 1854/98304 差异，说明 feature index/随机流或 ore 放置细节仍未收敛。
       - 跨区块树干/树冠按当前区块裁切。

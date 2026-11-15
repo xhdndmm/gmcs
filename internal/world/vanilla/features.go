@@ -252,6 +252,12 @@ type treeConfiguration struct {
 	twoLayers           bool
 	threeLayers         bool
 	minimumSizeLimit    int
+	minimumLower        int
+	minimumMiddle       int
+	minimumUpper        int
+	minimumUpperLimit   int
+	minClippedHeight    int
+	minimumThreeLayers  bool
 	decorators          []treeDecorator
 }
 
@@ -1295,8 +1301,13 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			HeightRandB int    `json:"height_rand_b"`
 		} `json:"trunk_placer"`
 		MinimumSize struct {
-			Type  string `json:"type"`
-			Limit int    `json:"limit"`
+			Type             string `json:"type"`
+			Limit            int    `json:"limit"`
+			UpperLimit       int    `json:"upper_limit"`
+			LowerSize        int    `json:"lower_size"`
+			MiddleSize       int    `json:"middle_size"`
+			UpperSize        int    `json:"upper_size"`
+			MinClippedHeight *int   `json:"min_clipped_height"`
 		} `json:"minimum_size"`
 		Decorators []struct {
 			Type        string  `json:"type"`
@@ -1378,8 +1389,21 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 		twoLayers:           encoded.MinimumSize.Type == "minecraft:two_layers_feature_size",
 		threeLayers:         encoded.MinimumSize.Type == "minecraft:three_layers_feature_size",
 		minimumSizeLimit:    encoded.MinimumSize.Limit,
+		minimumLower:        encoded.MinimumSize.LowerSize,
+		minimumMiddle:       encoded.MinimumSize.MiddleSize,
+		minimumUpper:        encoded.MinimumSize.UpperSize,
+		minimumUpperLimit:   encoded.MinimumSize.UpperLimit,
+		minimumThreeLayers:  encoded.MinimumSize.Type == "minecraft:three_layers_feature_size",
+		minClippedHeight:    intValueOrZero(encoded.MinimumSize.MinClippedHeight),
 		decorators:          decorators,
 	}, nil
+}
+
+func intValueOrZero(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func parseProviderFirstState(state json.RawMessage, entries []struct {
@@ -2771,6 +2795,25 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 	}
 }
 
+func treeMinimumWidth(configuration treeConfiguration, treeHeight, layer int) int {
+	if configuration.minimumThreeLayers {
+		if layer < configuration.minimumSizeLimit {
+			return configuration.minimumLower
+		}
+		if layer >= treeHeight-configuration.minimumUpperLimit {
+			return configuration.minimumUpper
+		}
+		return configuration.minimumMiddle
+	}
+	if configuration.twoLayers {
+		if layer < configuration.minimumSizeLimit {
+			return configuration.minimumLower
+		}
+		return configuration.minimumUpper
+	}
+	return 0
+}
+
 // placeTree 实现 straight/dark_oak/giant/mega_jungle 等树干放置器与
 // blob/spruce/pine 树叶放置器。2×2 树干已支持；复杂分叉树仍退化为
 // 2×2 主干，minimum_size 只做基础空间检查。
@@ -2778,6 +2821,31 @@ func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configur
 	height := configuration.baseHeight + random.nextIntBounded(configuration.heightRandA+1) + random.nextIntBounded(configuration.heightRandB+1)
 	if height <= 0 || y+height+configuration.foliageHeight >= chunk.MinY+chunk.Height {
 		return
+	}
+	freeHeight := height
+	for checkY := 0; checkY <= height+1; checkY++ {
+		radius := treeMinimumWidth(configuration, height, checkY)
+		blocked := false
+		for dx := -radius; dx <= radius && !blocked; dx++ {
+			for dz := -radius; dz <= radius; dz++ {
+				block := chunk.BlockAt(x+dx, y+checkY, z+dz)
+				if block.IsAir() || block.Name == configuration.leaves.Name || block.Name == configuration.trunk.Name {
+					continue
+				}
+				freeHeight = checkY - 2
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			break
+		}
+	}
+	if freeHeight < height && (configuration.minClippedHeight == 0 || freeHeight < configuration.minClippedHeight) {
+		return
+	}
+	if freeHeight < height && freeHeight > 0 {
+		height = freeHeight
 	}
 	width := 1
 	switch configuration.trunkType {

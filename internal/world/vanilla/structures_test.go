@@ -287,3 +287,31 @@ func TestConcentricRingOrigins(t *testing.T) {
 		t.Fatal("要塞环原点重复")
 	}
 }
+
+func TestMineshaftFrequencyFilter(t *testing.T) {
+	runtime, err := loadStructureRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var set structureSetDefinition
+	found := false
+	for _, candidate := range runtime.sets {
+		if candidate.Name == "minecraft:mineshafts" {
+			set, found = candidate, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("缺少 mineshafts 结构集")
+	}
+	allowed := 0
+	const samples = 20000
+	for i := 0; i < samples; i++ {
+		if structureFrequencyAllows(4321, set, i, i*3) {
+			allowed++
+		}
+	}
+	if allowed == 0 || allowed > samples/20 {
+		t.Fatalf("矿洞频率过滤结果异常：%d/%d", allowed, samples)
+	}
+}
