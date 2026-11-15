@@ -101,7 +101,7 @@ func (r *Router) applyRegionFeatures(chunk *GeneratedChunk, biomes *BiomeSource)
 	if r.features == nil {
 		return
 	}
-	if r.featureCache == nil {
+	if r.featureCache == nil || !r.regionsEnabled {
 		r.applyFeatures(chunk, biomes)
 		return
 	}

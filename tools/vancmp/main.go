@@ -81,6 +81,7 @@ func main() {
 	structures := flag.Bool("structures", true, "对比时是否运行结构")
 	featureFilter := flag.String("feature-filter", "", "只执行名称包含该子串的群系地物（空表示全部）")
 	oreVeins := flag.Bool("ore-veins", true, "是否启用原版矿脉（ore_veins_enabled）")
+	regionFeatures := flag.Bool("region-features", true, "是否合并 3×3 邻域地物写入")
 	dumpBlock := flag.String("dumpblock", "", "打印指定方块在官方与生成结果中的前若干坐标")
 	onlyCarver := flag.String("only-carver", "", "只保留指定雕刻器（用于逐类对比）")
 	flag.Parse()
@@ -262,6 +263,7 @@ func main() {
 	}
 	router.SetFeaturesEnabled(*features)
 	router.SetStructuresEnabled(*structures)
+	router.SetRegionFeaturesEnabled(*regionFeatures)
 	setting := router.Setting()
 	const cellsPerLayer = 16 * 16
 	// 诊断工具只需要处理正常维度高度；给体素数量设硬上限，既避免

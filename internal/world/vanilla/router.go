@@ -33,6 +33,7 @@ type Router struct {
 	configuredCache    map[string]placedFeature
 	structureTerrain   map[chunkCoord]*GeneratedChunk
 	structuresEnabled  bool
+	regionsEnabled     bool
 	featureCache       *featureResultCache
 }
 
@@ -56,6 +57,7 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		biomeSetCache:    make(map[chunkCoord]map[string]struct{}),
 		configuredCache:  make(map[string]placedFeature),
 		structureTerrain: make(map[chunkCoord]*GeneratedChunk),
+		regionsEnabled:   true,
 		featureCache:     newFeatureResultCache(96),
 	}
 	carvers, err := parseCarverDefinitions(data)
@@ -119,6 +121,7 @@ func (r *Router) NewSession() *Router {
 		configuredCache:    make(map[string]placedFeature),
 		structureTerrain:   make(map[chunkCoord]*GeneratedChunk),
 		structuresEnabled:  r.structuresEnabled,
+		regionsEnabled:     r.regionsEnabled,
 		featureCache:       r.featureCache,
 	}
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
@@ -129,6 +132,11 @@ func (r *Router) NewSession() *Router {
 // SetStructuresEnabled 控制是否在区块生成末尾放置结构（诊断/对拍用）。
 func (r *Router) SetStructuresEnabled(enabled bool) {
 	r.structuresEnabled = enabled
+}
+
+// SetRegionFeaturesEnabled 控制是否合并 3×3 邻域地物写入（诊断/性能用）。
+func (r *Router) SetRegionFeaturesEnabled(enabled bool) {
+	r.regionsEnabled = enabled
 }
 
 // SetFeaturesEnabled 控制是否执行群系地物（诊断/对拍用）。
