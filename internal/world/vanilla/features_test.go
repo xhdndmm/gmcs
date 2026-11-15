@@ -671,3 +671,38 @@ func TestRegionFeaturesApplyNeighborWrites(t *testing.T) {
 		t.Fatal("region 地物没有把邻域越界写入合并到当前区块")
 	}
 }
+
+func TestIcebergPlacesIceInWater(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed := router.features.placed["minecraft:iceberg_packed"]
+	if placed.extra == nil {
+		t.Fatal("iceberg_packed 没有解析为 extra")
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := 55; y < 75; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:water", Properties: map[string]string{"level": "0"}})
+			}
+		}
+	}
+	random := newWorldgenRandom()
+	random.setSeed(9090)
+	router.placeIceberg(chunk, random.legacyRandom, placed.extra.config, 8, 62, 8)
+	count := 0
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		if block.Name == "minecraft:ice" || block.Name == "minecraft:packed_ice" || block.Name == "minecraft:blue_ice" {
+			count++
+		}
+	})
+	if count == 0 {
+		t.Fatal("冰山没有生成冰方块")
+	}
+}

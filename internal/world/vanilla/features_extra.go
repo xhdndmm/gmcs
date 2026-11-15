@@ -945,12 +945,11 @@ func (r *Router) placeIceberg(chunk *GeneratedChunk, random *legacyRandom, raw j
 	if err != nil {
 		return
 	}
-	// 对应 IcebergFeature.place 的主循环。原版还会处理 allowed_states 和
-	// 逐方块的 snow/冰替换；这里保留主要形状、上下锥体和随机尖顶。
+	// IcebergFeature.place 的主要流程：上半冰体、下半冰锥和随机尖顶。
 	snow := random.nextDouble() > 0.7
 	angle := random.nextDouble() * 2 * math.Pi
 	radiusLimit := 11 - random.nextIntBounded(5)
-	baseHeight := 3 + random.nextIntBounded(3)
+	p8 := 3 + random.nextIntBounded(3)
 	big := random.nextDouble() > 0.7
 	height := 11
 	if big {
@@ -970,16 +969,16 @@ func (r *Router) placeIceberg(chunk *GeneratedChunk, random *legacyRandom, raw j
 	for dx := -radius; dx < radius; dx++ {
 		for dz := -radius; dz < radius; dz++ {
 			for dy := 0; dy < height; dy++ {
-				limit := 0
+				var limit int
 				if big {
 					limit = icebergBigLimit(dy, height, shape)
 				} else {
-					limit = icebergLayerLimit(random, dy, height, shape)
+					limit = icebergShapeLimit(random, dy, height, shape)
 				}
 				if !big && dx >= limit {
 					continue
 				}
-				icebergPlaceCell(chunk, random, state, x+dx, y+dy, z+dz, limit, radius, big, snow, angle)
+				icebergPlaceCell(chunk, random, state, x, y, z, dx, dy, dz, limit, radius, big, snow, angle)
 			}
 		}
 	}
@@ -988,29 +987,30 @@ func (r *Router) placeIceberg(chunk *GeneratedChunk, random *legacyRandom, raw j
 			for dy := -1; dy > -lowerHeight; dy-- {
 				limit := radius
 				if big {
-					v := float64(radius) * (1 - float64(dy*dy)/float64(lowerHeight*8))
+					v := float64(radius) * (1 - float64(dy*dy)/float64(maxInt(lowerHeight, 1)*8))
 					limit = int(math.Floor(v))
 				}
 				layer := icebergLowerLimit(random, -dy, lowerHeight, shape)
 				if dx >= layer {
 					continue
 				}
-				icebergPlaceCell(chunk, random, state, x+dx, y+dy, z+dz, limit, radius, big, snow, angle)
+				icebergPlaceCell(chunk, random, state, x, y, z, dx, dy, dz, limit, radius, big, snow, angle)
 			}
 		}
 	}
+	// 原版还会在部分冰体上生成尖顶；保留一个确定性的小尖顶。
 	if random.nextDouble() > 0.7 {
-		spikeHeight := random.nextIntBounded(8) + 3
-		for dy := 0; dy <= spikeHeight; dy++ {
-			if chunk.InRange(x, y+dy, z) {
-				chunk.SetBlock(x, y+dy, z, state)
+		spike := random.nextIntBounded(6) + 2
+		for dy := 1; dy <= spike; dy++ {
+			if chunk.InRange(x, y+height+dy, z) {
+				chunk.SetBlock(x, y+height+dy, z, state)
 			}
 		}
-		_ = baseHeight
 	}
+	_ = p8
 }
 
-func icebergLayerLimit(random *legacyRandom, layer, height, shape int) int {
+func icebergShapeLimit(random *legacyRandom, layer, height, shape int) int {
 	factor := float32(3.5) - random.nextFloat()
 	value := (1 - float32(layer*layer)/(float32(height)*factor)) * float32(shape)
 	if height > 15+random.nextIntBounded(5) {
@@ -1024,30 +1024,48 @@ func icebergLayerLimit(random *legacyRandom, layer, height, shape int) int {
 }
 
 func icebergBigLimit(layer, height, shape int) int {
-	value := (1 - float32(layer*layer)/float32(height)) * float32(shape)
+	value := (1 - float32(layer*layer)/float32(maxInt(height, 1))) * float32(shape)
 	return int(math.Ceil(float64(value / 2)))
 }
 
 func icebergLowerLimit(random *legacyRandom, layer, height, shape int) int {
 	factor := float32(1) + random.nextFloat()/2
-	value := (1 - float32(layer)/(float32(height)*factor)) * float32(shape)
+	value := (1 - float32(layer)/(float32(maxInt(height, 1))*factor)) * float32(shape)
 	return int(math.Ceil(float64(value / 2)))
 }
 
-func icebergPlaceCell(chunk *GeneratedChunk, random *legacyRandom, state SurfaceBlock, x, y, z, limit, radius int, big, snow bool, angle float64) {
+func icebergPlaceCell(chunk *GeneratedChunk, random *legacyRandom, state SurfaceBlock, centerX, centerY, centerZ, dx, dy, dz, limit, radius int, big, snow bool, angle float64) {
+	x, y, z := centerX+dx, centerY+dy, centerZ+dz
 	if !chunk.InRange(x, y, z) {
 		return
 	}
-	// 原版还会用椭圆距离与噪声边界筛除部分方块；这里的几何边界已在
-	// 上层 dx/dy 限制中处理，水/空气/冰是可替换目标。
+	var distance float64
+	if big {
+		if limit <= 0 {
+			return
+		}
+		sin, cos := math.Sin(angle), math.Cos(angle)
+		fx, fz := float64(dx), float64(dz)
+		a := (fx*cos - fz*sin) / float64(maxInt(radius, 1))
+		b := (fx*sin + fz*cos) / float64(limit)
+		distance = a*a + b*b - 1
+	} else {
+		// IcebergFeature.a(x,z,center,radius,random)
+		density := 10 * clampFloat(float64(0.2+random.nextFloat()*0.6), 0.2, 0.8) / float64(maxInt(radius, 1))
+		distance = density + float64(dx*dx+dz*dz) - float64(radius*radius)
+	}
+	if distance >= 0 {
+		return
+	}
+	if big && distance > -0.5 && random.nextDouble() > 0.9 {
+		return
+	}
 	current := chunk.BlockAt(x, y, z)
-	switch current.Name {
-	case "minecraft:water", "minecraft:air", "minecraft:ice", "minecraft:snow_block", "minecraft:packed_ice":
-	default:
+	if !(current.IsAir() || current.HasFluid() || current.Name == "minecraft:ice" || current.Name == "minecraft:snow_block" || current.Name == "minecraft:packed_ice") {
 		return
 	}
 	chunk.SetBlock(x, y, z, state)
-	if snow && random.nextDouble() > 0.8 {
+	if snow && y > centerY && random.nextDouble() > 0.8 {
 		chunk.SetBlock(x, y+1, z, SurfaceBlock{Name: "minecraft:snow_block"})
 	}
 }
