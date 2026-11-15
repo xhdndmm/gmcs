@@ -4,7 +4,10 @@
 
 package vanilla
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // GeneratedItem 是生成阶段方块实体容器中的一个物品。
 // 只保留注册名和数量；组件数据由接线层按需转换。
@@ -19,6 +22,14 @@ type GeneratedBlockEntity struct {
 	Type      string
 	Items     []GeneratedItem
 	LootTable string
+	// 刷怪笼数据（结构模板中的 SpawnData/Delay/MinSpawnDelay/MaxSpawnDelay）。
+	SpawnerEntity   string
+	SpawnerDelay    int
+	SpawnerMinDelay int
+	SpawnerMaxDelay int
+	// 告示牌文本（front_text/back_text 的 messages，已去掉 JSON 引号）。
+	FrontText [4]string
+	BackText  [4]string
 	Data      nbtCompound
 }
 
@@ -72,8 +83,45 @@ func generatedBlockEntityFromNBT(name string, data nbtCompound) (GeneratedBlockE
 			entity.Items = append(entity.Items, GeneratedItem{Name: qualify(itemName), Count: count})
 		}
 	}
+	if name == "minecraft:spawner" {
+		if spawnData, ok := nbtCompoundValue(data["SpawnData"]); ok {
+			if spawnEntity, ok := nbtCompoundValue(spawnData["entity"]); ok {
+				entity.SpawnerEntity, _ = nbtStringValue(spawnEntity["id"])
+				entity.SpawnerEntity = qualify(entity.SpawnerEntity)
+			}
+		}
+		entity.SpawnerDelay = nbtIntValue(data["Delay"])
+		entity.SpawnerMinDelay = nbtIntValue(data["MinSpawnDelay"])
+		entity.SpawnerMaxDelay = nbtIntValue(data["MaxSpawnDelay"])
+	}
+	if name == "minecraft:sign" || name == "minecraft:hanging_sign" {
+		entity.FrontText = signMessages(data, "front_text")
+		entity.BackText = signMessages(data, "back_text")
+	}
 	entity.Data = data
 	return entity, true
+}
+
+// signMessages 读取告示牌一侧的 4 行文本。模板 NBT 中 messages 是 JSON
+// 文本组件字符串；这里保存其文本展示值，无法解析时保留原字符串。
+func signMessages(data nbtCompound, side string) [4]string {
+	var result [4]string
+	text, ok := nbtCompoundValue(data[side])
+	if !ok {
+		return result
+	}
+	messages, ok := text["messages"].([]any)
+	if !ok {
+		return result
+	}
+	for index := 0; index < len(messages) && index < 4; index++ {
+		raw, ok := nbtStringValue(messages[index])
+		if !ok {
+			continue
+		}
+		result[index] = decodeTextComponent(raw)
+	}
+	return result
 }
 
 // SetBlockEntity 设置生成区块中的方块实体；越界坐标忽略。
@@ -110,4 +158,20 @@ func blockEntityTypeName(name string) string {
 		return name
 	}
 	return "minecraft:" + name
+}
+
+// decodeTextComponent 把告示牌 JSON 文本组件压缩为可展示文本；支持常见的
+// {"text":"..."} 与纯字符串。原版完整组件保留在模板 Data 中。
+func decodeTextComponent(raw string) string {
+	var text string
+	if json.Unmarshal([]byte(raw), &text) == nil {
+		return text
+	}
+	var component struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal([]byte(raw), &component) == nil {
+		return component.Text
+	}
+	return raw
 }

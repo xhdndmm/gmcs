@@ -47,6 +47,15 @@ func NewVanillaDimensionGenerator(dimension Dimension, settingName string, seed 
 	return generator, nil
 }
 
+// SetStructureCacheDir 配置结构 start 的磁盘缓存目录。目录中的文件是 gmcs
+// 自有 JSON 缓存，不是 Anvil 区块；空字符串关闭持久化。
+func (g *VanillaGenerator) SetStructureCacheDir(dir string) {
+	if g == nil || g.base == nil {
+		return
+	}
+	g.base.SetStructureCacheDir(dir)
+}
+
 // GenerateChunk 实现 Generator。
 func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 	session := g.pool.Get().(*vanilla.Router)
@@ -77,7 +86,15 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 		if !ok {
 			return
 		}
-		blockEntity := BlockEntity{TypeID: typeID}
+		blockEntity := BlockEntity{
+			TypeID:          typeID,
+			SpawnerEntity:   entity.SpawnerEntity,
+			SpawnerDelay:    int32(entity.SpawnerDelay),
+			SpawnerMinDelay: int32(entity.SpawnerMinDelay),
+			SpawnerMaxDelay: int32(entity.SpawnerMaxDelay),
+			FrontText:       entity.FrontText,
+			BackText:        entity.BackText,
+		}
 		if entity.Type == "minecraft:end_gateway" {
 			if exact, ok := entity.Data["exact"].(bool); ok {
 				blockEntity.GatewayExact = exact
@@ -95,6 +112,18 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 		}
 		chunk.SetBlockEntity(blockX&15, blockY, blockZ&15, blockEntity)
 	})
+	pending := make([]PendingEntity, 0)
+	generated.ForEachEntity(func(entity vanilla.GeneratedEntity) {
+		pending = append(pending, PendingEntity{
+			Type:   entity.Type,
+			X:      entity.Pos[0],
+			Y:      entity.Pos[1],
+			Z:      entity.Pos[2],
+			Item:   entity.Item,
+			Facing: entity.Facing,
+		})
+	})
+	chunk.SetGeneratedEntities(pending)
 	chunk.SetBiomeGrid(g.biomeGrid(session, minX, minZ))
 	return chunk
 }

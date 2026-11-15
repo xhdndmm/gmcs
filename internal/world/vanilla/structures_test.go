@@ -354,3 +354,83 @@ func TestJigsawFinalStateReplacesJigsaw(t *testing.T) {
 		t.Fatalf("jigsaw final_state = %s", got)
 	}
 }
+
+func TestStructureStartStoreRoundTrip(t *testing.T) {
+	runtime, err := loadStructureRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.SetStructureCacheDir(t.TempDir())
+	defer runtime.SetStructureCacheDir("")
+	key := structureStartKey{seed: 1, set: 2, originX: -3, originZ: 4}
+	start := &structureStart{pieces: []structurePiece{{
+		name:   "test",
+		origin: [3]int{1, 2, 3},
+		size:   [3]int{1, 1, 1},
+		blocks: []structureBlockPlacement{{
+			pos: [3]int{1, 2, 3}, state: SurfaceBlock{Name: "minecraft:stone"},
+			entity: &GeneratedBlockEntity{Type: "minecraft:chest", Items: []GeneratedItem{{Name: "minecraft:apple", Count: 2}}},
+		}},
+	}}}
+	runtime.startStore().save(key, start)
+	loaded, ok := runtime.startStore().load(key, runtime)
+	if !ok || len(loaded.pieces) != 1 || len(loaded.pieces[0].blocks) != 1 {
+		t.Fatalf("loaded = %#v, ok=%v", loaded, ok)
+	}
+	if got := loaded.pieces[0].blocks[0].state.Name; got != "minecraft:stone" {
+		t.Fatalf("state = %s", got)
+	}
+	if loaded.pieces[0].blocks[0].entity == nil || len(loaded.pieces[0].blocks[0].entity.Items) != 1 {
+		t.Fatal("方块实体没有持久化")
+	}
+}
+
+func TestStructureMarkersCreateChestSentryAndElytra(t *testing.T) {
+	template := &structureTemplate{
+		Size:    [3]int{3, 1, 1},
+		Palette: []SurfaceBlock{{Name: "minecraft:structure_block"}},
+		Blocks: []templateBlock{
+			{Pos: [3]int{0, 0, 0}, State: 0, NBT: nbtCompound{"metadata": "Chest"}},
+			{Pos: [3]int{1, 0, 0}, State: 0, NBT: nbtCompound{"metadata": "Sentry"}},
+			{Pos: [3]int{2, 0, 0}, State: 0, NBT: nbtCompound{"metadata": "Elytra"}},
+		},
+	}
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	placeTemplate(chunk, template, 0, 64, 0, rotateNone, false, newLegacyRandom(2))
+	if chunk.BlockAt(0, 64, 0).Name != "minecraft:chest" {
+		t.Fatal("Chest 标记没有放置箱子")
+	}
+	if entity, ok := chunk.BlockEntityAt(0, 64, 0); !ok || entity.LootTable != "minecraft:chests/end_city_treasure" {
+		t.Fatalf("箱子战利品 = %+v ok=%v", entity, ok)
+	}
+	var sentry, elytra bool
+	chunk.ForEachEntity(func(entity GeneratedEntity) {
+		if entity.Type == "minecraft:shulker" {
+			sentry = true
+		}
+		if entity.Type == "minecraft:item_frame" && entity.Item == "minecraft:elytra" {
+			elytra = true
+		}
+	})
+	if !sentry || !elytra {
+		t.Fatalf("生成实体 sentry=%v elytra=%v", sentry, elytra)
+	}
+}
+
+func TestGeneratedBlockEntityParsesSpawnerAndSign(t *testing.T) {
+	spawner, ok := generatedBlockEntityFromNBT("minecraft:spawner", nbtCompound{
+		"id":        "minecraft:spawner",
+		"SpawnData": nbtCompound{"entity": nbtCompound{"id": "minecraft:silverfish"}},
+		"Delay":     int16(20), "MinSpawnDelay": int32(200), "MaxSpawnDelay": int32(800),
+	})
+	if !ok || spawner.SpawnerEntity != "minecraft:silverfish" || spawner.SpawnerMinDelay != 200 {
+		t.Fatalf("spawner = %+v ok=%v", spawner, ok)
+	}
+	sign, ok := generatedBlockEntityFromNBT("minecraft:sign", nbtCompound{
+		"id":         "minecraft:sign",
+		"front_text": nbtCompound{"messages": []any{`{"text":"line1"}`, `{"text":"line2"}`, `""`, `""`}},
+	})
+	if !ok || sign.FrontText[0] != "line1" || sign.FrontText[1] != "line2" {
+		t.Fatalf("sign = %+v ok=%v", sign, ok)
+	}
+}

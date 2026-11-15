@@ -153,6 +153,37 @@ type Chunk struct {
 	heights *columnHeights
 	// blockEntities 是方块实体数据（索引见 blockEntityIndex）；零值为空。
 	blockEntities map[int]BlockEntity
+	// generatedEntities 是地形/结构生成阶段产生、尚未由服务器实体系统
+	// 认领的实体（例如末地船展示框）。生成后由 World 队列交给服务器。
+	generatedEntities []PendingEntity
+}
+
+// PendingEntity 是生成阶段产生、等待服务器实体系统接管的实体。
+type PendingEntity struct {
+	Type    string
+	Dim     Dimension
+	X, Y, Z float64
+	Item    string
+	Facing  string
+}
+
+// SetGeneratedEntities 由生成器写入待接管实体。
+func (c *Chunk) SetGeneratedEntities(entities []PendingEntity) {
+	c.mu.Lock()
+	c.generatedEntities = append(c.generatedEntities, entities...)
+	c.mu.Unlock()
+}
+
+// TakeGeneratedEntities 取走待接管实体；服务器处理一次后不会重复生成。
+func (c *Chunk) TakeGeneratedEntities() []PendingEntity {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.generatedEntities) == 0 {
+		return nil
+	}
+	result := c.generatedEntities
+	c.generatedEntities = nil
+	return result
 }
 
 // columnHeights 是惰性计算的列高度缓存。

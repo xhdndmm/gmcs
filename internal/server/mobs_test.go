@@ -235,8 +235,8 @@ func TestMobSpawnKindWeights(t *testing.T) {
 func TestMobKindsTableValid(t *testing.T) {
 	for kind := mobKind(0); kind < mobKindCount; kind++ {
 		stats := mobKinds[kind]
-		if stats.name == "" || stats.health <= 0 || stats.walkSpeed <= 0 ||
-			stats.spawnWeight <= 0 ||
+		if stats.name == "" || stats.health <= 0 ||
+			(!stats.stationary && (stats.walkSpeed <= 0 || stats.spawnWeight <= 0)) ||
 			stats.hurtSound == "" || stats.deathSound == "" {
 			t.Errorf("mobKinds[%d] invalid: %+v", kind, stats)
 		}
@@ -251,8 +251,8 @@ func TestMobKindsTableValid(t *testing.T) {
 			t.Errorf("hostile mob %v needs a follow range", stats.name)
 		}
 	}
-	if mobKindCount != 12 {
-		t.Fatalf("expected 12 mob kinds, got %d", mobKindCount)
+	if mobKindCount != 13 {
+		t.Fatalf("expected 13 mob kinds, got %d", mobKindCount)
 	}
 }
 

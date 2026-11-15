@@ -24,6 +24,7 @@ type GeneratedChunk struct {
 	blocks        []SurfaceBlock
 	heights       [256]int
 	blockEntities map[[3]int]GeneratedBlockEntity
+	entities      []GeneratedEntity
 	// capture 非 nil 时记录所有 SetBlock/SetBlockEntity 调用，包括越界写入，
 	// 用于跨区块地物的 region 级结果缓存。
 	capture         map[[3]int]SurfaceBlock
@@ -31,6 +32,27 @@ type GeneratedChunk struct {
 	// captureOutside 只记录越界写入，用于跨区块地物缓存；区块自身写入不需要
 	// 在邻域重放。
 	captureOutside bool
+}
+
+// GeneratedEntity 是结构模板/标记方块在生成阶段产生的实体。
+// 目前用于末地城船上的物品展示框和哨兵潜影贝。
+type GeneratedEntity struct {
+	Type   string
+	Pos    [3]float64
+	Item   string
+	Facing string
+}
+
+// ForEachEntity 遍历生成阶段产生的实体。
+func (c *GeneratedChunk) ForEachEntity(fn func(entity GeneratedEntity)) {
+	for _, entity := range c.entities {
+		fn(entity)
+	}
+}
+
+// AddEntity 追加一个生成阶段实体。
+func (c *GeneratedChunk) AddEntity(entity GeneratedEntity) {
+	c.entities = append(c.entities, entity)
 }
 
 // NewGeneratedChunk 创建一个全空气的区块。

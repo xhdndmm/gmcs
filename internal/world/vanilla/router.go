@@ -34,6 +34,7 @@ type Router struct {
 	structureTerrain   map[chunkCoord]*GeneratedChunk
 	structuresEnabled  bool
 	regionsEnabled     bool
+	structureCacheDir  string
 	featureCache       *featureResultCache
 }
 
@@ -122,6 +123,7 @@ func (r *Router) NewSession() *Router {
 		structureTerrain:   make(map[chunkCoord]*GeneratedChunk),
 		structuresEnabled:  r.structuresEnabled,
 		regionsEnabled:     r.regionsEnabled,
+		structureCacheDir:  r.structureCacheDir,
 		featureCache:       r.featureCache,
 	}
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
@@ -132,6 +134,12 @@ func (r *Router) NewSession() *Router {
 // SetStructuresEnabled 控制是否在区块生成末尾放置结构（诊断/对拍用）。
 func (r *Router) SetStructuresEnabled(enabled bool) {
 	r.structuresEnabled = enabled
+}
+
+// SetStructureCacheDir 配置结构 start 的磁盘缓存目录（空字符串关闭）。
+// 目录只保存 gmcs 自己的结构展开结果，不是 Anvil 区块格式。
+func (r *Router) SetStructureCacheDir(dir string) {
+	r.structureCacheDir = dir
 }
 
 // SetRegionFeaturesEnabled 控制是否合并 3×3 邻域地物写入（诊断/性能用）。

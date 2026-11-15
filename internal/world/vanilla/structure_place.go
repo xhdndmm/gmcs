@@ -62,11 +62,15 @@ func placeTemplate(chunk *GeneratedChunk, template *structureTemplate, originX, 
 				continue
 			}
 		}
-		if state.Name == "minecraft:structure_void" || state.Name == "minecraft:structure_block" {
-			continue
-		}
 		pos := transformTemplatePos(block.Pos, template.Size, rotation, mirror)
 		x, y, z := originX+pos[0], originY+pos[1], originZ+pos[2]
+		if state.Name == "minecraft:structure_block" {
+			placeStructureMarker(chunk, block.NBT, x, y, z, rotation, mirror, random)
+			continue
+		}
+		if state.Name == "minecraft:structure_void" {
+			continue
+		}
 		chunk.SetBlock(x, y, z, state)
 		if entity, ok := generatedBlockEntityFromNBT(state.Name, block.NBT); ok {
 			entity.Type = blockEntityTypeName(entity.Type)
@@ -112,4 +116,27 @@ func templateCornerAirCount(chunk *GeneratedChunk, template *structureTemplate, 
 		}
 	}
 	return empty
+}
+
+// placeStructureMarker 处理末地城等模板中的结构方块标记。原版模板用
+// mode=DATA / metadata=Sentry|Chest|Elytra 表示要生成的实体或箱子。
+func placeStructureMarker(chunk *GeneratedChunk, data nbtCompound, x, y, z int, rotation templateRotation, mirror bool, random *legacyRandom) {
+	metadata, _ := nbtStringValue(data["metadata"])
+	switch metadata {
+	case "Chest":
+		chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:chest", Properties: map[string]string{"facing": "north", "waterlogged": "false"}})
+		chunk.SetBlockEntity(x, y, z, GeneratedBlockEntity{
+			Type: "minecraft:chest", LootTable: "minecraft:chests/end_city_treasure", Data: nbtCompound{"id": "minecraft:chest"},
+		})
+	case "Sentry":
+		chunk.AddEntity(GeneratedEntity{Type: "minecraft:shulker", Pos: [3]float64{float64(x) + 0.5, float64(y), float64(z) + 0.5}})
+	case "Elytra":
+		facing := rotateDirection("north", rotation, mirror)
+		chunk.AddEntity(GeneratedEntity{
+			Type: "minecraft:item_frame",
+			Pos:  [3]float64{float64(x) + 0.5, float64(y), float64(z) + 0.5},
+			Item: "minecraft:elytra", Facing: facing,
+		})
+	}
+	_ = random
 }

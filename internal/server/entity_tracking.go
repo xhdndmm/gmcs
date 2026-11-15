@@ -5,6 +5,7 @@
 package server
 
 import (
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/world"
 )
@@ -231,6 +232,8 @@ func (s *Server) tickEntityTracking(players []*session) {
 	arrows := scratch.trackArrows[:0]
 	tnts := scratch.trackTnts[:0]
 	orbs := scratch.trackOrbs[:0]
+	frames := scratch.trackFrames[:0]
+	dragons := scratch.trackDragons[:0]
 	defer func() {
 		scratch.trackAdds = adds
 		scratch.trackRemoves = removes
@@ -240,6 +243,8 @@ func (s *Server) tickEntityTracking(players []*session) {
 		scratch.trackArrows = arrows
 		scratch.trackTnts = tnts
 		scratch.trackOrbs = orbs
+		scratch.trackFrames = frames
+		scratch.trackDragons = dragons
 	}()
 
 	s.entityMu.Lock()
@@ -278,6 +283,14 @@ func (s *Server) tickEntityTracking(players []*session) {
 			orbs = append(orbs, o)
 			alive[o.Dim][o.ID] = trackPos{x: o.X, z: o.Z}
 		}
+	}
+	for _, frame := range s.frames {
+		frames = append(frames, frame)
+		alive[frame.Dim][frame.ID] = trackPos{x: frame.X, z: frame.Z}
+	}
+	if s.dragon != nil && !s.dragon.Dead {
+		dragons = append(dragons, s.dragon)
+		alive[s.dragon.Dim][s.dragon.ID] = trackPos{x: s.dragon.X, z: s.dragon.Z}
 	}
 
 	// 玩家快照（既是跟踪集的归属者，也是彼此可见性的“实体”来源）：
@@ -352,6 +365,45 @@ func (s *Server) tickEntityTracking(players []*session) {
 				built = true
 			}
 			tp.tr.ids[e.ID] = struct{}{}
+			adds = append(adds, trackAddOp{player: tp.player, packets: [3][]byte{p1, p2}, count: 2})
+		}
+	}
+	for _, dragon := range dragons {
+		var p1 []byte
+		built := false
+		for i := range tracked {
+			tp := &tracked[i]
+			if tp.dim != dragon.Dim || !inTrackingRange(tp.x, tp.z, dragon.X, dragon.Z, entityTrackingRange) {
+				continue
+			}
+			if _, ok := tp.tr.ids[dragon.ID]; ok {
+				continue
+			}
+			if !built {
+				p1 = protocol.EncodeAddEntity(dragon.ID, dragon.UUID, s.dragonTypeID, dragon.X, dragon.Y, dragon.Z, 0, 0, 0, dragon.Yaw, 0)
+				built = true
+			}
+			tp.tr.ids[dragon.ID] = struct{}{}
+			adds = append(adds, trackAddOp{player: tp.player, packets: [3][]byte{p1}, count: 1})
+		}
+	}
+	for _, frame := range frames {
+		var p1, p2 []byte
+		built := false
+		for i := range tracked {
+			tp := &tracked[i]
+			if tp.dim != frame.Dim || !inTrackingRange(tp.x, tp.z, frame.X, frame.Z, entityTrackingRange) {
+				continue
+			}
+			if _, ok := tp.tr.ids[frame.ID]; ok {
+				continue
+			}
+			if !built {
+				p1 = protocol.EncodeAddEntity(frame.ID, frame.UUID, s.itemFrameTypeID, frame.X, frame.Y, frame.Z, 0, 0, 0, 0, 0)
+				p2 = protocol.EncodeEntityMetadataItem(frame.ID, item.Stack{ItemID: frame.ItemID, Count: 1}.AppendSlot(nil))
+				built = true
+			}
+			tp.tr.ids[frame.ID] = struct{}{}
 			adds = append(adds, trackAddOp{player: tp.player, packets: [3][]byte{p1, p2}, count: 2})
 		}
 	}

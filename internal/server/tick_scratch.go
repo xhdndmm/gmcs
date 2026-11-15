@@ -52,6 +52,8 @@ type tickScratch struct {
 	trackArrows  []*arrowEntity
 	trackTnts    []*primedTnt
 	trackOrbs    []*xpOrb
+	trackFrames  []*frameEntity
+	trackDragons []*dragonEntity
 	// trackAlive 是各维度的存活实体索引（id → 水平位置），跨帧复用。
 	trackAlive [3]map[int32]trackPos
 }

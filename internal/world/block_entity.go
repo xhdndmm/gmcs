@@ -4,7 +4,12 @@
 
 package world
 
-import "gmcs/internal/protocol"
+import (
+	"encoding/binary"
+	"encoding/json"
+
+	"gmcs/internal/protocol"
+)
 
 // 方块实体（block entity）：目前仅支持容器类方块（箱子/陷阱箱/木桶等）的
 // 槽位内容。数据随区块负载持久化，并在 Chunk Data 包中发送给客户端。
@@ -65,11 +70,19 @@ type BlockEntity struct {
 	// GatewayExit / GatewayExact 是末地折跃门的 ExitPortal 目标与 exact 标记。
 	GatewayExit  [3]int
 	GatewayExact bool
+	// 刷怪笼数据（结构模板生成）；服务器 tick 尚未使用这些字段。
+	SpawnerEntity   string
+	SpawnerDelay    int32
+	SpawnerMinDelay int32
+	SpawnerMaxDelay int32
+	// 告示牌四行文本（front/back），由结构模板 NBT 转换。
+	FrontText [4]string
+	BackText  [4]string
 }
 
 // Empty 报告方块实体是否没有任何内容（槽位全空且无处理进度）。
 func (b BlockEntity) Empty() bool {
-	if b.GatewayExact || b.GatewayExit != [3]int{} || b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 || b.TransferCooldown > 0 {
+	if b.GatewayExact || b.GatewayExit != [3]int{} || b.SpawnerEntity != "" || b.SpawnerDelay > 0 || b.SpawnerMinDelay > 0 || b.SpawnerMaxDelay > 0 || b.FrontText != [4]string{} || b.BackText != [4]string{} || b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 || b.TransferCooldown > 0 {
 		return false
 	}
 	for _, slot := range b.Items {
@@ -172,6 +185,19 @@ func (c *Chunk) BlockEntityCount() int {
 	return len(c.blockEntities)
 }
 
+// ForEachBlockEntity 遍历区块中的方块实体（顺序不确定）。回调在持有区块读锁时
+// 调用，不能回调内修改区块。
+func (c *Chunk) ForEachBlockEntity(fn func(x, y, z int, entity BlockEntity)) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for index, entity := range c.blockEntities {
+		x := index & 0xF
+		z := (index >> 4) & 0xF
+		y := (index >> 8) + WorldMinY
+		fn(x, y, z, entity)
+	}
+}
+
 // appendBlockEntityPacketData 把区块中的全部方块实体按 Chunk Data 包格式
 // 追加到 dst。调用方必须持有 c.mu（读或写）。
 //
@@ -196,9 +222,9 @@ func (c *Chunk) appendBlockEntityPacketData(dst []byte) []byte {
 		dst = append(dst, byte((x<<4)|z))
 		dst = protocol.AppendInt16(dst, int16(y))
 		dst = protocol.AppendVarInt(dst, entity.TypeID)
-		// NBT 负载：空 compound（TAG_Compound 0x0A + 空名 + TAG_End）。
-		// 槽位内容不通过区块发送，改由打开容器时的 Container Set Content 下发。
-		dst = append(dst, 0x0A, 0x00, 0x00)
+		// NBT 负载：槽位内容不通过区块发送，改由打开容器时的
+		// Container Set Content 下发；告示牌/刷怪笼需要初始 NBT 才能显示。
+		dst = appendBlockEntityNBT(dst, entity)
 	}
 	return dst
 }
@@ -214,4 +240,71 @@ func sortInts(values []int) {
 		}
 		values[j+1] = value
 	}
+}
+
+// appendBlockEntityNBT 把客户端需要的初始方块实体 NBT 追加到 dst。
+// 普通容器仍发送空 compound；刷怪笼/告示牌发送原版字段名。
+func appendBlockEntityNBT(dst []byte, entity BlockEntity) []byte {
+	hasSign := entity.FrontText != [4]string{} || entity.BackText != [4]string{}
+	if entity.SpawnerEntity == "" && !hasSign {
+		return append(dst, 0x0A, 0x00, 0x00)
+	}
+	dst = append(dst, 0x0A, 0x00, 0x00) // TAG_Compound + 空名
+	if entity.SpawnerEntity != "" {
+		dst = append(dst, 0x0A)
+		dst = appendNBTName(dst, "SpawnData")
+		dst = append(dst, 0x0A)
+		dst = appendNBTName(dst, "entity")
+		dst = appendNBTString(dst, "id", entity.SpawnerEntity)
+		dst = append(dst, 0x00) // entity end
+		dst = append(dst, 0x00) // SpawnData end
+		dst = appendNBTInt(dst, "Delay", entity.SpawnerDelay)
+		dst = appendNBTInt(dst, "MinSpawnDelay", entity.SpawnerMinDelay)
+		dst = appendNBTInt(dst, "MaxSpawnDelay", entity.SpawnerMaxDelay)
+	}
+	if hasSign {
+		dst = appendSignText(dst, "front_text", entity.FrontText)
+		dst = appendSignText(dst, "back_text", entity.BackText)
+	}
+	dst = append(dst, 0x00) // root end
+	return dst
+}
+
+func appendSignText(dst []byte, name string, lines [4]string) []byte {
+	dst = append(dst, 0x0A)
+	dst = appendNBTName(dst, name)
+	dst = append(dst, 0x09) // TAG_List
+	dst = appendNBTName(dst, "messages")
+	dst = append(dst, 0x08) // TAG_String element
+	dst = binary.BigEndian.AppendUint32(dst, 4)
+	for _, line := range lines {
+		component, _ := json.Marshal(struct {
+			Text string `json:"text"`
+		}{Text: line})
+		dst = appendNBTStringPayload(dst, string(component))
+	}
+	dst = append(dst, 0x00) // front/back_text end
+	return dst
+}
+
+func appendNBTName(dst []byte, name string) []byte {
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(name)))
+	return append(dst, name...)
+}
+
+func appendNBTString(dst []byte, name, value string) []byte {
+	dst = append(dst, 0x08)
+	dst = appendNBTName(dst, name)
+	return appendNBTStringPayload(dst, value)
+}
+
+func appendNBTStringPayload(dst []byte, value string) []byte {
+	dst = binary.BigEndian.AppendUint16(dst, uint16(len(value)))
+	return append(dst, value...)
+}
+
+func appendNBTInt(dst []byte, name string, value int32) []byte {
+	dst = append(dst, 0x03)
+	dst = appendNBTName(dst, name)
+	return binary.BigEndian.AppendUint32(dst, uint32(value))
 }

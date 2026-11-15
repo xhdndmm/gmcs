@@ -54,6 +54,8 @@ type World struct {
 	// 运行时状态（例如漏斗）。未开启时不记录，避免无人消费时持续增长。
 	trackChunks  bool
 	loadedChunks []ChunkPos
+	// pendingEntities 是生成阶段产生、等待服务器实体系统接管的实体。
+	pendingEntities []PendingEntity
 }
 
 // chunkFuture 表示一次进行中的区块加载/生成；done 关闭后可从 chunks 读取
@@ -220,6 +222,12 @@ func (w *World) publishChunkLoad(pos ChunkPos, chunk *Chunk, generated bool, err
 		chunk.SetDimension(w.dimension)
 	}
 	w.chunks[pos] = chunk
+	if pending := chunk.TakeGeneratedEntities(); len(pending) > 0 {
+		for index := range pending {
+			pending[index].Dim = w.dimension
+		}
+		w.pendingEntities = append(w.pendingEntities, pending...)
+	}
 	w.trackChunkLoaded(pos)
 	if generated {
 		w.dirty[pos] = struct{}{}
@@ -480,6 +488,35 @@ func (w *World) Chunk(x, z int) (*Chunk, error) {
 		}
 		return chunk, nil
 	}
+}
+
+// ForEachBlockEntity 遍历当前已加载区块中的方块实体。维度与坐标由 fn 的
+// 世界坐标参数给出；不触发区块加载。
+func (w *World) ForEachBlockEntity(fn func(dim Dimension, x, y, z int, entity BlockEntity)) {
+	w.mu.RLock()
+	chunks := make([]*Chunk, 0, len(w.chunks))
+	for _, chunk := range w.chunks {
+		chunks = append(chunks, chunk)
+	}
+	w.mu.RUnlock()
+	for _, chunk := range chunks {
+		minX, minZ := chunk.X*SectionSize, chunk.Z*SectionSize
+		chunk.ForEachBlockEntity(func(x, y, z int, entity BlockEntity) {
+			fn(w.dimension, minX+x, y, minZ+z, entity)
+		})
+	}
+}
+
+// TakeGeneratedEntities 返回并清空生成阶段产生的待接管实体。
+func (w *World) TakeGeneratedEntities() []PendingEntity {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pendingEntities) == 0 {
+		return nil
+	}
+	entities := w.pendingEntities
+	w.pendingEntities = nil
+	return entities
 }
 
 // MarkDirty 标记区块需要保存。

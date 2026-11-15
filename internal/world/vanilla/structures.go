@@ -51,14 +51,16 @@ type weightedStructure struct {
 }
 
 type structureRuntime struct {
-	data   *structureData
-	defs   map[string]structureDefinition
-	sets   []structureSetDefinition
-	pools  map[string]*templatePool
-	poolMu sync.Mutex
-	cache  sync.Map // structureStartKey -> *structureStart
-	ringMu sync.Mutex
-	rings  map[int][][2]int
+	data    *structureData
+	defs    map[string]structureDefinition
+	sets    []structureSetDefinition
+	pools   map[string]*templatePool
+	poolMu  sync.Mutex
+	cache   sync.Map // structureStartKey -> *structureStart
+	ringMu  sync.Mutex
+	rings   map[int][][2]int
+	storeMu sync.Mutex
+	store   *structureStartStore
 }
 
 type structureStartKey struct {
@@ -75,6 +77,8 @@ type structureStart struct {
 type structurePiece struct {
 	name              string
 	template          *structureTemplate
+	templateName      string
+	processors        string
 	origin            [3]int
 	rotation          templateRotation
 	mirror            bool
@@ -230,6 +234,9 @@ func (r *Router) applyStructures(chunk *GeneratedChunk, biomes *BiomeSource) {
 	if err != nil {
 		return
 	}
+	if r.structureCacheDir != "" {
+		runtime.SetStructureCacheDir(r.structureCacheDir)
+	}
 	for setIndex, set := range runtime.sets {
 		if len(set.Structures) == 0 {
 			continue
@@ -290,13 +297,36 @@ func (r *structureRuntime) cachedStart(seed int64, setIndex, originX, originZ in
 	if cached, ok := r.cache.Load(key); ok {
 		return cached.(*structureStart)
 	}
-	// 先占位，避免并发生成时重复大量工作；简单起见直接构建并覆盖。
+	// 先尝试磁盘 start；没有时再构建。原版 start 会在区块状态中持久化，
+	// 这里用独立目录保存展开后的 pieces，保证重启前后一致。
+	if start, ok := r.startStore().load(key, r); ok {
+		r.cache.Store(key, start)
+		return start
+	}
 	start := r.buildStart(seed, setIndex, originX, originZ, biomes, router)
 	if start == nil {
 		return nil
 	}
 	r.cache.Store(key, start)
+	r.startStore().save(key, start)
 	return start
+}
+
+func (r *structureRuntime) startStore() *structureStartStore {
+	r.storeMu.Lock()
+	defer r.storeMu.Unlock()
+	if r.store == nil {
+		r.store = &structureStartStore{}
+	}
+	return r.store
+}
+
+// SetStructureCacheDir 配置结构 start 的磁盘缓存目录；空字符串关闭持久化。
+func (r *structureRuntime) SetStructureCacheDir(dir string) {
+	store := r.startStore()
+	store.mu.Lock()
+	store.dir = dir
+	store.mu.Unlock()
 }
 
 func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int, biomes *BiomeSource, router *Router) *structureStart {
@@ -377,7 +407,7 @@ func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int
 
 func makePiece(runtime *structureRuntime, name string, template *structureTemplate, originX, originY, originZ int, rotation templateRotation, mirror bool, processors string, random *legacyRandom) structurePiece {
 	template = runtime.applyProcessorList(template, processors, random)
-	piece := structurePiece{name: name, template: template, origin: [3]int{originX, originY, originZ}, rotation: rotation, mirror: mirror, size: transformedSize(template.Size, rotation)}
+	piece := structurePiece{name: name, template: template, templateName: name, processors: processors, origin: [3]int{originX, originY, originZ}, rotation: rotation, mirror: mirror, size: transformedSize(template.Size, rotation)}
 	for _, jigsaw := range template.jigsawBlocks() {
 		pos := transformTemplatePos(jigsaw.Pos, template.Size, rotation, mirror)
 		piece.connectors = append(piece.connectors, pieceConnector{
@@ -402,6 +432,11 @@ func alignPiece(runtime *structureRuntime, source structurePiece, connector piec
 		mirror := random.nextIntBounded(2) == 0
 		for _, targetJigsaw := range targetJigsaws {
 			if connector.target != "" && targetJigsaw.Name != connector.target {
+				continue
+			}
+			// 目标连接块必须朝向源连接块（原版 JigsawPlacement 检查
+			// JigsawBlock 的 front 方向）；否则会在接口处生成背靠背的墙。
+			if targetDir := rotateDirection(targetJigsaw.Direction, rotation, mirror); oppositeDirection(targetDir) != connector.direction {
 				continue
 			}
 			targetPos := transformTemplatePos(targetJigsaw.Pos, target.Size, rotation, mirror)
@@ -747,6 +782,24 @@ func rotateDirection(direction string, rotation templateRotation, mirror bool) s
 	}
 	index = (index + int(rotation)) % 4
 	return []string{"north", "east", "south", "west"}[(index+4)%4]
+}
+
+func oppositeDirection(direction string) string {
+	switch direction {
+	case "north":
+		return "south"
+	case "south":
+		return "north"
+	case "east":
+		return "west"
+	case "west":
+		return "east"
+	case "up":
+		return "down"
+	case "down":
+		return "up"
+	}
+	return direction
 }
 
 func directionVector(direction string) [3]int {

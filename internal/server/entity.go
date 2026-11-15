@@ -141,6 +141,8 @@ const (
 	mobSalmon
 	mobTropicalFish
 	mobSquid
+	// 末地城的哨兵潜影贝；不参与自然生成，由结构标记生成。
+	mobShulker
 )
 
 // mobStats 描述一种生物的基础数值与音效名。
@@ -166,10 +168,12 @@ type mobStats struct {
 	passive bool
 	// aquatic 为 true 表示水生生物（只在水中生成、在水里游动、不会走上陆地）。
 	aquatic bool
+	// stationary 为 true 表示不执行移动 AI（潜影贝/展示框等固定实体）。
+	stationary bool
 }
 
 // mobKindCount 是支持的生物种类数量。
-const mobKindCount mobKind = mobSquid + 1
+const mobKindCount mobKind = mobShulker + 1
 
 // mobKinds 是全部生物的基础数值（生命 20、伤害 2–3，与原版普通难度接近）。
 // 用数组按 mobKind 直接索引：tick 热路径每生物每帧多次访问，避免 map 哈希。
@@ -235,6 +239,11 @@ var mobKinds = [mobKindCount]mobStats{
 		name: "minecraft:squid", health: 10, walkSpeed: 0.03, followRange: 0, damage: 0,
 		experience: 1, hurtSound: "minecraft:entity.squid.hurt", deathSound: "minecraft:entity.squid.death",
 		spawnWeight: 10, passive: true, aquatic: true,
+	},
+	mobShulker: {
+		name: "minecraft:shulker", health: 30, walkSpeed: 0, followRange: 0, damage: 4,
+		experience: 5, hurtSound: "minecraft:entity.shulker.hurt", deathSound: "minecraft:entity.shulker.death",
+		spawnWeight: 0, passive: true, stationary: true,
 	},
 }
 
@@ -360,6 +369,13 @@ func (s *Server) tick() {
 	// 挖掘进度推进与 Block Changed Ack（原版 ServerPlayerGameMode.tick）。
 	s.tickMining(players)
 	s.tickMobs(players)
+	s.tickGeneratedEntities()
+	s.tickDragon(players)
+	s.spawnerTicks++
+	if s.spawnerTicks >= 20 {
+		s.spawnerTicks = 0
+		s.tickSpawners(players)
+	}
 	s.tickArrows(players)
 	s.tickItems(players)
 	s.tickXPOrbs(players)
@@ -518,6 +534,13 @@ func (s *Server) tickMobs(players []*session) {
 			if m.Dead {
 				continue
 			}
+		}
+		if stats.stationary {
+			// 固定结构实体（潜影贝等）不执行寻路/游荡；仍需处理受击冷却。
+			if m.HurtCooldown > 0 {
+				m.HurtCooldown--
+			}
+			continue
 		}
 		// 被动生物只游荡；末影人未被激怒（被注视/受击）时同样不索敌。
 		if stats.passive {
@@ -1268,6 +1291,20 @@ func (s *Server) sendExistingEntities(player *session) error {
 			packets = append(packets, protocol.EncodeEntityMetadataByte(m.ID, 0, 1))
 		}
 	}
+	if s.dragon != nil && !s.dragon.Dead && s.dragon.Dim == dim && inRange(s.dragon.X, s.dragon.Z) {
+		tr.ids[s.dragon.ID] = struct{}{}
+		packets = append(packets, protocol.EncodeAddEntity(s.dragon.ID, s.dragon.UUID, s.dragonTypeID,
+			s.dragon.X, s.dragon.Y, s.dragon.Z, 0, 0, 0, s.dragon.Yaw, 0))
+	}
+	for _, frame := range s.frames {
+		if frame.Dim != dim || !inRange(frame.X, frame.Z) {
+			continue
+		}
+		tr.ids[frame.ID] = struct{}{}
+		packets = append(packets,
+			protocol.EncodeAddEntity(frame.ID, frame.UUID, s.itemFrameTypeID, frame.X, frame.Y, frame.Z, 0, 0, 0, 0, 0),
+			protocol.EncodeEntityMetadataItem(frame.ID, item.Stack{ItemID: frame.ItemID, Count: 1}.AppendSlot(nil)))
+	}
 	for _, e := range s.items {
 		if e.Dim != dim || !inRange(e.X, e.Z) {
 			continue
@@ -1333,6 +1370,15 @@ func (s *Server) handleAttack(player *session, targetID int32) {
 	px, py, pz, _, _ := player.playerPosition()
 
 	s.entityMu.Lock()
+	if s.dragon != nil && s.dragon.ID == targetID {
+		dragon := s.dragon
+		s.entityMu.Unlock()
+		if dragon.Dim != player.dimensionID() || math.Hypot(px-dragon.X, pz-dragon.Z) > 8 || math.Abs(py-dragon.Y) > 8 {
+			return
+		}
+		s.damageDragon(player, dragon, playerAttackDamage)
+		return
+	}
 	m := s.mobs[targetID]
 	if m == nil || m.Dead {
 		s.entityMu.Unlock()
@@ -1753,6 +1799,14 @@ func (s *Server) resolveMobRegistryIDs() {
 		return
 	}
 	s.arrowTypeID = arrowType
+	if dragonType, ok := staticLookup("minecraft:entity_type", "minecraft:ender_dragon"); ok {
+		s.dragonTypeID = dragonType
+	}
+	if frameType, ok := staticLookup("minecraft:entity_type", "minecraft:item_frame"); ok {
+		s.itemFrameTypeID = frameType
+	} else {
+		slog.Warn("缺少物品展示框实体类型，末地船展示框将跳过")
+	}
 	for _, item := range []struct {
 		entry  string
 		target *int32

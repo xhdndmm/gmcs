@@ -156,6 +156,15 @@ type Server struct {
 	// soundEndermanTeleport 是末影人传送音效（缺失时静默跳过）。
 	soundEndermanTeleport int32
 
+	// 生成阶段产生的展示框（例如末地船鞘翅）；受 entityMu 保护。
+	itemFrameTypeID int32
+	frames          map[int32]*frameEntity
+	// 结构刷怪笼扫描计数（每 20 tick 一次）。
+	spawnerTicks int
+	// 末影龙（受 entityMu 保护）；最小 Boss 实现。
+	dragonTypeID int32
+	dragon       *dragonEntity
+
 	// 掉落物系统（注册表缺少物品实体类型或拾取音效时禁用）。
 	itemTypeID      int32
 	soundItemPickup int32
@@ -378,6 +387,9 @@ func (s *Server) worldForLocked(dim world.Dimension) *world.World {
 		slog.Error("创建维度生成器失败，回退到主世界", "dimension", dim, "error", err)
 		return s.worlds[world.DimensionOverworld]
 	}
+	if vanilla, ok := generator.(*world.VanillaGenerator); ok && s.config.WorldDir != "" {
+		vanilla.SetStructureCacheDir(filepath.Join(s.config.WorldDir, "structure_starts"))
+	}
 	gameWorld, err := world.OpenDimension(dir, generator, dim)
 	if err != nil {
 		slog.Error("打开维度世界失败，回退到主世界", "dimension", dim, "error", err)
@@ -482,6 +494,9 @@ func newServer(cfg config.Config, overworldGenerator world.Generator) (*Server, 
 			return nil, err
 		}
 	}
+	if vanilla, ok := generator.(*world.VanillaGenerator); ok && cfg.WorldDir != "" {
+		vanilla.SetStructureCacheDir(filepath.Join(cfg.WorldDir, "structure_starts"))
+	}
 	gameWorld, err := world.OpenDimension(cfg.WorldDir, generator, world.DimensionOverworld)
 	if err != nil {
 		return nil, err
@@ -506,6 +521,7 @@ func newServer(cfg config.Config, overworldGenerator world.Generator) (*Server, 
 		players:                make(map[[16]byte]*session),
 		keepAliveInterval:      defaultKeepAliveInterval,
 		mobs:                   make(map[int32]*mob),
+		frames:                 make(map[int32]*frameEntity),
 		items:                  make(map[int32]*itemEntity),
 		xpOrbs:                 make(map[int32]*xpOrb),
 		entityTrack:            make(map[*session]*sessionTracker),

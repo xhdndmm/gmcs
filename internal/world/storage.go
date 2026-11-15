@@ -112,12 +112,12 @@ const (
 	regionSize    = 1 << regionShift // 32 个区块
 	sectorSize    = 4096
 	headerSectors = 2
-	// chunkVersion 是当前存储负载版本：v2 追加方块实体，v3 追加熔炉进度，
+	// chunkVersion 是当前存储负载版本：v11 追加刷怪笼/告示牌 NBT，v10 追加折跃门，
 	// v4 追加 4×4 群系网格（section 内的 biome 字段仅作兼容保留），
 	// v5 追加槽位药水 ID 与酿造台进度，v6 追加槽位耐久/铁砧惩罚/自定义名称，
 	// v7 追加槽位附魔列表，v8 追加槽位纹饰图案/材质名，v9 追加漏斗传送冷却，
 	// v10 追加末地折跃门目标。
-	chunkVersion = 10
+	chunkVersion = 11
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 	// maxStoredNameLength 是容器槽位自定义名称的存储长度上限（协议字符串上限）。
@@ -401,6 +401,13 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 	size += 5
 	for _, entity := range chunk.blockEntities {
 		size += 31 + len(entity.Items)*10
+		size += len(entity.SpawnerEntity) + 2 + 5*5
+		for _, line := range entity.FrontText {
+			size += len(line) + 2
+		}
+		for _, line := range entity.BackText {
+			size += len(line) + 2
+		}
 		for _, slot := range entity.Items {
 			size += len(slot.CustomName) + 2
 			size += 2 + len(slot.Enchantments)*8
@@ -493,6 +500,20 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 		offset += binary.PutUvarint(dst[offset:], gatewayFlags)
 		for _, coordinate := range entity.GatewayExit {
 			offset += binary.PutUvarint(dst[offset:], uint64(uint32(coordinate)))
+		}
+		// v11：刷怪笼与告示牌数据。
+		offset += binary.PutUvarint(dst[offset:], uint64(len(entity.SpawnerEntity)))
+		offset += copy(dst[offset:], entity.SpawnerEntity)
+		for _, value := range []int32{entity.SpawnerDelay, entity.SpawnerMinDelay, entity.SpawnerMaxDelay} {
+			offset += binary.PutUvarint(dst[offset:], uint64(uint32(value)))
+		}
+		for _, line := range entity.FrontText {
+			offset += binary.PutUvarint(dst[offset:], uint64(len(line)))
+			offset += copy(dst[offset:], line)
+		}
+		for _, line := range entity.BackText {
+			offset += binary.PutUvarint(dst[offset:], uint64(len(line)))
+			offset += copy(dst[offset:], line)
 		}
 	}
 	return offset
@@ -791,6 +812,30 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint1
 				}
 				offset += size
 				entity.GatewayExit[i] = int(int32(uint32(value)))
+			}
+		}
+		if version >= 11 {
+			var err error
+			if entity.SpawnerEntity, offset, err = readStoredName(payload, offset, "刷怪笼实体"); err != nil {
+				return 0, err
+			}
+			for _, target := range []*int32{&entity.SpawnerDelay, &entity.SpawnerMinDelay, &entity.SpawnerMaxDelay} {
+				value, size := binary.Uvarint(payload[offset:])
+				if size <= 0 {
+					return 0, fmt.Errorf("刷怪笼延迟字段无效")
+				}
+				offset += size
+				*target = int32(uint32(value))
+			}
+			for index := range entity.FrontText {
+				if entity.FrontText[index], offset, err = readStoredName(payload, offset, "告示牌正面文本"); err != nil {
+					return 0, err
+				}
+			}
+			for index := range entity.BackText {
+				if entity.BackText[index], offset, err = readStoredName(payload, offset, "告示牌背面文本"); err != nil {
+					return 0, err
+				}
 			}
 		}
 		if chunk.blockEntities == nil {

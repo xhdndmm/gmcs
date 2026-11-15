@@ -211,6 +211,14 @@ func (b *specialBlockBuilder) set(x, y, z int, state SurfaceBlock) {
 	b.blocks[pos] = structureBlockPlacement{pos: pos, state: state}
 }
 
+func (b *specialBlockBuilder) setEntity(x, y, z int, state SurfaceBlock, entity GeneratedBlockEntity) {
+	b.set(x, y, z, state)
+	pos := [3]int{x, y, z}
+	block := b.blocks[pos]
+	block.entity = &entity
+	b.blocks[pos] = block
+}
+
 func (b *specialBlockBuilder) fill(x0, y0, z0, x1, y1, z1 int, state SurfaceBlock) {
 	if x0 > x1 {
 		x0, x1 = x1, x0
@@ -322,6 +330,14 @@ func (r *structureRuntime) buildMineshaft(seed int64, originX, originZ int, def 
 			if random.nextIntBounded(18) == 0 {
 				queue = append(queue, segment{x: x, y: y - 4, z: z, dir: current.dir, length: 5 + random.nextIntBounded(6)})
 			}
+			if step == 3 && random.nextIntBounded(4) == 0 {
+				builder.setEntity(x+dz, y, z-dx, SurfaceBlock{Name: "minecraft:chest", Properties: map[string]string{"facing": "north", "waterlogged": "false"}},
+					GeneratedBlockEntity{Type: "minecraft:chest", LootTable: "minecraft:chests/abandoned_mineshaft", Data: nbtCompound{"id": "minecraft:chest"}})
+			}
+			if step == 6 && random.nextIntBounded(10) == 0 {
+				builder.setEntity(x, y, z, SurfaceBlock{Name: "minecraft:spawner"},
+					GeneratedBlockEntity{Type: "minecraft:spawner", SpawnerEntity: "minecraft:cave_spider", SpawnerDelay: 20, SpawnerMinDelay: 200, SpawnerMaxDelay: 800, Data: nbtCompound{"id": "minecraft:spawner"}})
+			}
 		}
 		// 末端房间；原版在部分交叉点生成 7×7 房间。
 		if random.nextIntBounded(3) == 0 {
@@ -370,6 +386,11 @@ func (r *structureRuntime) buildStronghold(seed int64, originX, originZ int, rou
 	root.fill(startX-6, startY-1, startZ-6, startX+6, startY+6, startZ+6, stone)
 	root.fill(startX-5, startY, startZ-5, startX+5, startY+5, startZ+5, airState)
 	root.fill(startX-5, startY-1, startZ-5, startX+5, startY-1, startZ+5, stone)
+	// 中央大厅两侧箱子（StrongholdPieces 的 ChestCorridor/图书馆战利品）。
+	root.setEntity(startX-5, startY, startZ-1, SurfaceBlock{Name: "minecraft:chest", Properties: map[string]string{"facing": "east", "waterlogged": "false"}},
+		GeneratedBlockEntity{Type: "minecraft:chest", LootTable: "minecraft:chests/stronghold_corridor", Data: nbtCompound{"id": "minecraft:chest"}})
+	root.setEntity(startX+5, startY, startZ+1, SurfaceBlock{Name: "minecraft:chest", Properties: map[string]string{"facing": "west", "waterlogged": "false"}},
+		GeneratedBlockEntity{Type: "minecraft:chest", LootTable: "minecraft:chests/stronghold_crossing", Data: nbtCompound{"id": "minecraft:chest"}})
 	for i := 0; i < 4; i++ {
 		dir := [2]int{0, 1}
 		switch i {
@@ -411,6 +432,9 @@ func (r *structureRuntime) buildStronghold(seed int64, originX, originZ int, rou
 		}
 	}
 	root.fill(px-1, startY-1, pz-1, px+1, startY-1, pz+1, SurfaceBlock{Name: "minecraft:lava"})
+	// 传送门房间后方的银鱼刷怪笼（原版 stronghold 的 portal room spawner）。
+	root.setEntity(px, startY+1, pz+4, SurfaceBlock{Name: "minecraft:spawner"},
+		GeneratedBlockEntity{Type: "minecraft:spawner", SpawnerEntity: "minecraft:silverfish", SpawnerDelay: 20, SpawnerMinDelay: 200, SpawnerMaxDelay: 800, Data: nbtCompound{"id": "minecraft:spawner"}})
 	start := &structureStart{}
 	start.pieces = append(start.pieces, root.piece("minecraft:stronghold", [3]int{startX, startY, startZ}))
 	return start
