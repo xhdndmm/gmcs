@@ -20,6 +20,7 @@ type structureDefinition struct {
 	StartJigsawName   string
 	ProjectStart      string
 	TerrainAdaptation string
+	MineshaftType     string
 	Size              int
 	StartHeight       structureStartHeight
 }
@@ -30,12 +31,17 @@ type structureStartHeight struct {
 }
 
 type structureSetDefinition struct {
-	Name       string
-	Spacing    int
-	Separation int
-	Salt       int
-	Frequency  float64
-	Structures []weightedStructure
+	Name            string
+	Spacing         int
+	Separation      int
+	Salt            int
+	Frequency       float64
+	FrequencyMethod string
+	PlacementType   string
+	Count           int
+	Distance        int
+	Spread          int
+	Structures      []weightedStructure
 }
 
 type weightedStructure struct {
@@ -50,6 +56,8 @@ type structureRuntime struct {
 	pools  map[string]*templatePool
 	poolMu sync.Mutex
 	cache  sync.Map // structureStartKey -> *structureStart
+	ringMu sync.Mutex
+	rings  map[int][][2]int
 }
 
 type structureStartKey struct {
@@ -70,6 +78,15 @@ type structurePiece struct {
 	rotation   templateRotation
 	mirror     bool
 	connectors []pieceConnector
+	// 专用生成器（矿洞/要塞）直接提供绝对坐标方块，template 为 nil。
+	size   [3]int
+	blocks []structureBlockPlacement
+}
+
+type structureBlockPlacement struct {
+	pos    [3]int
+	state  SurfaceBlock
+	entity *GeneratedBlockEntity
 }
 
 type pieceConnector struct {
@@ -106,6 +123,7 @@ func loadStructureRuntime() (*structureRuntime, error) {
 				StartJigsawName   string          `json:"start_jigsaw_name"`
 				ProjectStart      string          `json:"project_start_to_heightmap"`
 				TerrainAdaptation string          `json:"terrain_adaptation"`
+				MineshaftType     string          `json:"mineshaft_type"`
 				Size              int             `json:"size"`
 				StartHeight       struct {
 					Absolute    *int `json:"absolute"`
@@ -122,6 +140,7 @@ func loadStructureRuntime() (*structureRuntime, error) {
 				StartJigsawName:   encoded.StartJigsawName,
 				ProjectStart:      encoded.ProjectStart,
 				TerrainAdaptation: encoded.TerrainAdaptation,
+				MineshaftType:     encoded.MineshaftType,
 				Size:              encoded.Size,
 			}
 			def.StartHeight = structureStartHeight{Absolute: encoded.StartHeight.Absolute, AboveBottom: encoded.StartHeight.AboveBottom}
@@ -150,11 +169,15 @@ func loadStructureRuntime() (*structureRuntime, error) {
 			raw := data.StructureSets[setName]
 			var encoded struct {
 				Placement struct {
-					Type       string  `json:"type"`
-					Spacing    int     `json:"spacing"`
-					Separation int     `json:"separation"`
-					Salt       int     `json:"salt"`
-					Frequency  float64 `json:"frequency"`
+					Type            string  `json:"type"`
+					Spacing         int     `json:"spacing"`
+					Separation      int     `json:"separation"`
+					Salt            int     `json:"salt"`
+					Frequency       float64 `json:"frequency"`
+					FrequencyMethod string  `json:"frequency_reduction_method"`
+					Count           int     `json:"count"`
+					Distance        int     `json:"distance"`
+					Spread          int     `json:"spread"`
 				} `json:"placement"`
 				Structures []struct {
 					Structure string `json:"structure"`
@@ -165,15 +188,20 @@ func loadStructureRuntime() (*structureRuntime, error) {
 				structureRuntimeErr = err
 				return
 			}
-			if encoded.Placement.Type != "minecraft:random_spread" {
+			if encoded.Placement.Type != "minecraft:random_spread" && encoded.Placement.Type != "minecraft:concentric_rings" {
 				continue
 			}
 			set := structureSetDefinition{
-				Name:       setName,
-				Spacing:    encoded.Placement.Spacing,
-				Separation: encoded.Placement.Separation,
-				Salt:       encoded.Placement.Salt,
-				Frequency:  encoded.Placement.Frequency,
+				Name:            setName,
+				Spacing:         encoded.Placement.Spacing,
+				Separation:      encoded.Placement.Separation,
+				Salt:            encoded.Placement.Salt,
+				Frequency:       encoded.Placement.Frequency,
+				FrequencyMethod: encoded.Placement.FrequencyMethod,
+				PlacementType:   encoded.Placement.Type,
+				Count:           encoded.Placement.Count,
+				Distance:        encoded.Placement.Distance,
+				Spread:          encoded.Placement.Spread,
 			}
 			if set.Frequency <= 0 {
 				set.Frequency = 1
@@ -199,7 +227,14 @@ func (r *Router) applyStructures(chunk *GeneratedChunk, biomes *BiomeSource) {
 		return
 	}
 	for setIndex, set := range runtime.sets {
-		if set.Spacing <= 0 || len(set.Structures) == 0 {
+		if len(set.Structures) == 0 {
+			continue
+		}
+		if set.PlacementType == "minecraft:concentric_rings" {
+			r.applyConcentricStructures(chunk, setIndex, set, biomes)
+			continue
+		}
+		if set.Spacing <= 0 {
 			continue
 		}
 		radius := 8
@@ -210,6 +245,9 @@ func (r *Router) applyStructures(chunk *GeneratedChunk, biomes *BiomeSource) {
 		for cellX := startCellX; cellX <= endCellX; cellX++ {
 			for cellZ := startCellZ; cellZ <= endCellZ; cellZ++ {
 				originX, originZ := randomSpreadOrigin(r.seed, set, cellX, cellZ)
+				if !structureFrequencyAllows(r.seed, set, originX, originZ) {
+					continue
+				}
 				if originX < chunk.ChunkX-radius || originX > chunk.ChunkX+radius ||
 					originZ < chunk.ChunkZ-radius || originZ > chunk.ChunkZ+radius {
 					continue
@@ -219,6 +257,10 @@ func (r *Router) applyStructures(chunk *GeneratedChunk, biomes *BiomeSource) {
 					continue
 				}
 				for _, piece := range start.pieces {
+					if piece.template == nil {
+						placeStructureBlocks(chunk, piece)
+						continue
+					}
 					random := newLegacyRandom(r.seed + int64(piece.origin[0])*31 + int64(piece.origin[1])*17 + int64(piece.origin[2])*13)
 					placeTemplate(chunk, piece.template, piece.origin[0], piece.origin[1], piece.origin[2], piece.rotation, piece.mirror, random)
 				}
@@ -265,6 +307,12 @@ func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int
 	}
 	if def.Type == "minecraft:end_city" {
 		return r.buildEndCity(seed, originX, originZ, router)
+	}
+	if def.Type == "minecraft:mineshaft" {
+		return r.buildMineshaft(seed, originX, originZ, def, router)
+	}
+	if def.Type == "minecraft:stronghold" {
+		return r.buildStronghold(seed, originX, originZ, router)
 	}
 	if def.Type != "minecraft:jigsaw" || def.StartPool == "" {
 		return nil
@@ -322,7 +370,7 @@ func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int
 
 func makePiece(runtime *structureRuntime, name string, template *structureTemplate, originX, originY, originZ int, rotation templateRotation, mirror bool, processors string, random *legacyRandom) structurePiece {
 	template = runtime.applyProcessorList(template, processors, random)
-	piece := structurePiece{name: name, template: template, origin: [3]int{originX, originY, originZ}, rotation: rotation, mirror: mirror}
+	piece := structurePiece{name: name, template: template, origin: [3]int{originX, originY, originZ}, rotation: rotation, mirror: mirror, size: transformedSize(template.Size, rotation)}
 	for _, jigsaw := range template.jigsawBlocks() {
 		pos := transformTemplatePos(jigsaw.Pos, template.Size, rotation, mirror)
 		piece.connectors = append(piece.connectors, pieceConnector{

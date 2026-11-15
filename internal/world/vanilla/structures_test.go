@@ -223,3 +223,67 @@ func TestTemplateLootTableBlockEntity(t *testing.T) {
 		t.Fatalf("战利品箱数据不符：%+v", entity)
 	}
 }
+
+func TestMineshaftAndStrongholdBuilders(t *testing.T) {
+	runtime, err := loadStructureRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mineshaft, ok := runtime.defs["minecraft:mineshaft"]
+	if !ok {
+		t.Fatal("缺少矿洞结构定义")
+	}
+	start := runtime.buildMineshaft(4321, 0, 0, mineshaft, nil)
+	if start == nil || len(start.pieces) == 0 || len(start.pieces[0].blocks) == 0 {
+		t.Fatal("矿洞生成器没有产生方块")
+	}
+	if _, ok := runtime.defs["minecraft:stronghold"]; !ok {
+		t.Fatal("缺少要塞结构定义")
+	}
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start = runtime.buildStronghold(4321, 0, 0, router)
+	if start == nil || len(start.pieces) == 0 || len(start.pieces[0].blocks) == 0 {
+		t.Fatal("要塞生成器没有产生方块")
+	}
+	hasPortal := false
+	for _, block := range start.pieces[0].blocks {
+		if block.state.Name == "minecraft:end_portal_frame" {
+			hasPortal = true
+			break
+		}
+	}
+	if !hasPortal {
+		t.Fatal("要塞没有末地传送门框架")
+	}
+}
+
+func TestConcentricRingOrigins(t *testing.T) {
+	runtime, err := loadStructureRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := -1
+	for i, set := range runtime.sets {
+		if set.Name == "minecraft:strongholds" {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		t.Fatal("缺少 strongholds 结构集")
+	}
+	origins := runtime.ringOrigins(4321, index, runtime.sets[index])
+	if len(origins) != runtime.sets[index].Count {
+		t.Fatalf("要塞环数量 = %d, want %d", len(origins), runtime.sets[index].Count)
+	}
+	if origins[0] == origins[1] {
+		t.Fatal("要塞环原点重复")
+	}
+}

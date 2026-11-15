@@ -248,6 +248,10 @@ type treeConfiguration struct {
 	foliageHeight       int
 	foliageHeightRandom intProvider
 	foliageTrunkHeight  intProvider
+	trunkType           string
+	twoLayers           bool
+	threeLayers         bool
+	minimumSizeLimit    int
 	decorators          []treeDecorator
 }
 
@@ -1290,6 +1294,10 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			HeightRandA int    `json:"height_rand_a"`
 			HeightRandB int    `json:"height_rand_b"`
 		} `json:"trunk_placer"`
+		MinimumSize struct {
+			Type  string `json:"type"`
+			Limit int    `json:"limit"`
+		} `json:"minimum_size"`
 		Decorators []struct {
 			Type        string  `json:"type"`
 			Probability float32 `json:"probability"`
@@ -1366,6 +1374,10 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 		foliageHeight:       foliageHeight,
 		foliageHeightRandom: foliageHeightRandom,
 		foliageTrunkHeight:  trunkHeight,
+		trunkType:           trunkType,
+		twoLayers:           encoded.MinimumSize.Type == "minecraft:two_layers_feature_size",
+		threeLayers:         encoded.MinimumSize.Type == "minecraft:three_layers_feature_size",
+		minimumSizeLimit:    encoded.MinimumSize.Limit,
 		decorators:          decorators,
 	}, nil
 }
@@ -2759,30 +2771,80 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 	}
 }
 
-// placeTree 实现 straight_trunk_placer + blob_foliage_placer 的近似结构。
-// 目前不处理 cross-chunk 写入：跨出当前区块的树干/树叶会被裁掉。
+// placeTree 实现 straight/dark_oak/giant/mega_jungle 等树干放置器与
+// blob/spruce/pine 树叶放置器。2×2 树干已支持；复杂分叉树仍退化为
+// 2×2 主干，minimum_size 只做基础空间检查。
 func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z int) {
 	height := configuration.baseHeight + random.nextIntBounded(configuration.heightRandA+1) + random.nextIntBounded(configuration.heightRandB+1)
 	if height <= 0 || y+height+configuration.foliageHeight >= chunk.MinY+chunk.Height {
 		return
 	}
-	for offset := 0; offset < height; offset++ {
-		block := chunk.BlockAt(x, y+offset, z)
-		if !block.IsAir() && block.Name != configuration.leaves.Name {
+	width := 1
+	switch configuration.trunkType {
+	case "minecraft:dark_oak_trunk_placer", "minecraft:giant_trunk_placer", "minecraft:mega_jungle_trunk_placer":
+		width = 2
+	}
+	if configuration.twoLayers {
+		limit := configuration.minimumSizeLimit
+		if limit <= 0 {
+			limit = 1
+		}
+		// two_layers 的最低层宽度由 limit 控制；2×2 树干至少要求 limit >= 1。
+		if width == 2 && limit < 1 {
 			return
 		}
 	}
-	for offset := 0; offset < height; offset++ {
-		chunk.SetBlock(x, y+offset, z, configuration.trunk)
+	if configuration.threeLayers && width == 2 && configuration.minimumSizeLimit <= 0 {
+		return
+	}
+	for dx := 0; dx < width; dx++ {
+		for dz := 0; dz < width; dz++ {
+			for offset := 0; offset < height; offset++ {
+				block := chunk.BlockAt(x+dx, y+offset, z+dz)
+				if !block.IsAir() && block.Name != configuration.leaves.Name {
+					return
+				}
+			}
+		}
+	}
+	for dx := 0; dx < width; dx++ {
+		for dz := 0; dz < width; dz++ {
+			for offset := 0; offset < height; offset++ {
+				chunk.SetBlock(x+dx, y+offset, z+dz, configuration.trunk)
+			}
+		}
+	}
+	// 深色橡木/巨型树在主干顶部向外分叉；简单增加两层树干。
+	if width == 2 && configuration.trunkType != "minecraft:mega_jungle_trunk_placer" {
+		for offset := height - 2; offset < height; offset++ {
+			if random.nextBoolean() {
+				chunk.SetBlock(x-1, y+offset, z+random.nextIntBounded(2), configuration.trunk)
+			}
+			if random.nextBoolean() {
+				chunk.SetBlock(x+width, y+offset, z+random.nextIntBounded(2), configuration.trunk)
+			}
+			if random.nextBoolean() {
+				chunk.SetBlock(x+random.nextIntBounded(2), y+offset, z-1, configuration.trunk)
+			}
+			if random.nextBoolean() {
+				chunk.SetBlock(x+random.nextIntBounded(2), y+offset, z+width, configuration.trunk)
+			}
+		}
 	}
 	leaves := make([]featurePosition, 0, 64)
+	leafX, leafZ := x, z
+	if width == 2 {
+		leafX, leafZ = x, z
+		// 巨型树树冠覆盖 2×2 主干上方；blob 半径加一以接近原版体积。
+		configuration.foliageRadius = intProvider{kind: "minecraft:constant", constant: configuration.foliageRadius.sample(random) + 1}
+	}
 	switch configuration.foliageType {
 	case "minecraft:spruce_foliage_placer":
-		r.placeSpruceFoliage(chunk, random, configuration, x, y, z, height, &leaves)
+		r.placeSpruceFoliage(chunk, random, configuration, leafX, y, leafZ, height, &leaves)
 	case "minecraft:pine_foliage_placer":
-		r.placePineFoliage(chunk, random, configuration, x, y, z, height, &leaves)
+		r.placePineFoliage(chunk, random, configuration, leafX, y, leafZ, height, &leaves)
 	default:
-		r.placeBlobFoliage(chunk, random, configuration, x, y, z, height, &leaves)
+		r.placeBlobFoliage(chunk, random, configuration, leafX, y, leafZ, height, &leaves)
 	}
 	r.applyTreeDecorators(chunk, random, configuration, x, y, z, height, leaves)
 }
