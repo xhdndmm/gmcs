@@ -32,7 +32,6 @@ func TestVanillaChunkRoundTrip(t *testing.T) {
 	for i := range grid {
 		grid[i] = plainsBiomeID()
 	}
-	grid[0] = grid[0]
 	chunk.SetBiomeGrid(grid)
 	root, err := buildVanillaChunk(chunk, world.DimensionOverworld)
 	if err != nil {
