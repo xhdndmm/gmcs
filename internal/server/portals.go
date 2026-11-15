@@ -61,6 +61,12 @@ func isEndPortalState(state uint16) bool {
 	return ok && state == id
 }
 
+// isEndGatewayState 报告方块状态是否为末地折跃门。
+func isEndGatewayState(state uint16) bool {
+	id, ok := registry.BlockStateIDs["minecraft:end_gateway"]
+	return ok && state == id
+}
+
 // portalBlockState 构造指定朝向的下界传送门方块状态。
 // axis "x" 表示门面沿 X 轴展开（宽度沿 X）；"z" 表示沿 Z 轴展开。
 func portalBlockState(axis string) (uint16, bool) {
@@ -358,6 +364,8 @@ func (s *Server) checkPortalTravel(player *session) {
 		s.travelThroughNetherPortal(player, x, y, z, yaw, pitch)
 	case isEndPortalState(feet) || isEndPortalState(head):
 		s.travelThroughEndPortal(player, x, y, z, yaw, pitch)
+	case isEndGatewayState(feet) || isEndGatewayState(head):
+		s.travelThroughEndGateway(player, x, y, z, yaw, pitch)
 	}
 }
 
@@ -400,6 +408,30 @@ func (s *Server) travelThroughNetherPortal(player *session, x, y, z float64, yaw
 	}
 	player.portalCooldown.Store(portalCooldownTicks)
 	s.playPortalSound(player, destX, destY, destZ)
+}
+
+// travelThroughEndGateway 执行末地折跃门传送。自然折跃门的目标是外岛；
+// 这里按折跃门 X 方向偏移 1000 格选择一个确定的外岛落点，并在目标处
+// 构建一个小的黑曜石平台。原版折跃门的 ExitPortal NBT 尚未接入，因此
+// 目标点不等同于原版逐门保存的联动坐标。
+func (s *Server) travelThroughEndGateway(player *session, x, y, z float64, yaw, pitch float32) {
+	if player.dimensionID() != world.DimensionEnd {
+		return
+	}
+	targetX := x + 1000
+	if targetX > 29000000 {
+		targetX = x - 1000
+	}
+	targetZ := z
+	end := s.worldFor(world.DimensionEnd)
+	s.ensureEndPlatform(end, int(math.Floor(targetX)), int(math.Floor(targetZ)))
+	s.playPortalSound(player, x, y, z)
+	if err := player.teleportTo(world.DimensionEnd, targetX, endPlatformY, targetZ, yaw, pitch); err != nil {
+		player.tryWrite(protocol.EncodeSystemChat("传送失败。"))
+		return
+	}
+	player.portalCooldown.Store(portalCooldownTicks)
+	s.playPortalSound(player, targetX, endPlatformY, targetZ)
 }
 
 // travelThroughEndPortal 执行末地传送门传送：进入末地使用 (100, 50, 0) 平台，
