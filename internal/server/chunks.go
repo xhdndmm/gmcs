@@ -309,6 +309,8 @@ func (s *Server) chunkUnloadLoop(ctx context.Context) {
 // 已打开但当前无玩家的维度在空闲超过 dimensionIdleGrace 后同样释放全部
 // 区块（玩家切维度/传送后旧维度不会长期占用内存）。
 func (s *Server) unloadFarChunks() error {
+	s.chunkUnloadMu.Lock()
+	defer s.chunkUnloadMu.Unlock()
 	players := s.playerSnapshot()
 	centers := make(map[world.Dimension][]world.ChunkPos)
 	for _, player := range players {

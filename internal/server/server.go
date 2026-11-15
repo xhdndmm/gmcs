@@ -94,6 +94,10 @@ type Server struct {
 	dimIdleMu    sync.Mutex
 	dimIdleSince map[world.Dimension]time.Time
 
+	// chunkUnloadMu 串行化区块卸载与最终关服保存，避免卸载/关闭世界并发
+	// 造成“世界已关闭”错误或在关闭后继续写盘。
+	chunkUnloadMu sync.Mutex
+
 	// unloadNow 由最后一名玩家退出时唤醒（容量 1、non-blocking），
 	// 使空闲服务器立即释放区块资源而不必等待下一个扫描周期。
 	unloadNow chan struct{}
@@ -444,6 +448,8 @@ func (s *Server) spawnPositionFor(dim world.Dimension) (x, y, z float64) {
 
 // closeWorlds 关闭全部已加载的维度世界（保存区块）。
 func (s *Server) closeWorlds() error {
+	s.chunkUnloadMu.Lock()
+	defer s.chunkUnloadMu.Unlock()
 	s.worldMu.Lock()
 	worlds := make([]*world.World, 0, len(s.worlds))
 	for _, gameWorld := range s.worlds {
