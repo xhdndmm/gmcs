@@ -105,6 +105,14 @@ func (r *Router) applyRegionFeatures(chunk *GeneratedChunk, biomes *BiomeSource)
 		r.applyFeatures(chunk, biomes)
 		return
 	}
+	// 当前区块先执行自己的地物；否则邻域树冠会改变中心区块的放置判定，
+	// 也会让地物执行明显变慢。
+	key := chunkCoord{x: chunk.ChunkX, z: chunk.ChunkZ}
+	if entry := r.featureCache.peek(key); entry != nil && entry.result != nil {
+		r.applyFeatures(chunk, biomes)
+	} else {
+		r.ensureFeatureResult(chunk.ChunkX, chunk.ChunkZ, chunk, biomes)
+	}
 	apply := func(result *featureResult) {
 		if result == nil {
 			return
@@ -120,7 +128,6 @@ func (r *Router) applyRegionFeatures(chunk *GeneratedChunk, biomes *BiomeSource)
 			}
 		}
 	}
-	// 邻域只重放越界写入；当前区块自身最后执行，保持其地物优先级。
 	for dz := -1; dz <= 1; dz++ {
 		for dx := -1; dx <= 1; dx++ {
 			if dx == 0 && dz == 0 {
@@ -129,10 +136,4 @@ func (r *Router) applyRegionFeatures(chunk *GeneratedChunk, biomes *BiomeSource)
 			apply(r.ensureFeatureResult(chunk.ChunkX+dx, chunk.ChunkZ+dz, nil, biomes))
 		}
 	}
-	key := chunkCoord{x: chunk.ChunkX, z: chunk.ChunkZ}
-	if entry := r.featureCache.peek(key); entry != nil && entry.result != nil {
-		r.applyFeatures(chunk, biomes)
-		return
-	}
-	r.ensureFeatureResult(chunk.ChunkX, chunk.ChunkZ, chunk, biomes)
 }
