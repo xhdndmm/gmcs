@@ -259,10 +259,13 @@ func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int
 		return nil
 	}
 	def, ok := r.defs[choice]
-	if !ok || def.Type != "minecraft:jigsaw" || def.StartPool == "" {
+	if !ok || !r.biomeAllowed(def, biomes, originX*16+8, originZ*16+8) {
 		return nil
 	}
-	if !r.biomeAllowed(def, biomes, originX*16+8, originZ*16+8) {
+	if def.Type == "minecraft:end_city" {
+		return r.buildEndCity(seed, originX, originZ, router)
+	}
+	if def.Type != "minecraft:jigsaw" || def.StartPool == "" {
 		return nil
 	}
 	pool := def.StartPool
@@ -388,8 +391,66 @@ func overlapsAny(piece structurePiece, pieces []structurePiece) bool {
 	return false
 }
 
+func (r *structureRuntime) buildEndCity(seed int64, originX, originZ int, router *Router) *structureStart {
+	// EndCityPieces 的基础拼装：base_floor -> second_floor_1 ->
+	// third_floor_1 -> third_roof，再按随机选择塔楼类型。
+	// 桥梁/船/塔楼递归尚未完整移植，但保证末地城方块进入区块。
+	random := newLegacyRandom(seed + int64(originX)*17 + int64(originZ)*31)
+	rotation := templateRotation(random.nextIntBounded(4))
+	startX, startZ := originX*16+8, originZ*16+8
+	startY := r.startHeight(router, structureDefinition{Type: "minecraft:end_city", ProjectStart: "WORLD_SURFACE_WG"}, startX, startZ)
+	if startY < 60 {
+		return nil
+	}
+	start := &structureStart{}
+	add := func(name string, parent *structurePiece, offset [3]int, rot templateRotation) *structurePiece {
+		template, err := r.data.ParsedTemplate(name)
+		if err != nil || template == nil {
+			return nil
+		}
+		origin := [3]int{startX, startY, startZ}
+		if parent != nil {
+			dx, dz := rotateHorizontalOffset(offset[0], offset[2], rot)
+			origin = [3]int{parent.origin[0] + dx, parent.origin[1] + offset[1], parent.origin[2] + dz}
+		}
+		piece := makePiece(r, name, template, origin[0], origin[1], origin[2], rot, false, "", random)
+		start.pieces = append(start.pieces, piece)
+		return &start.pieces[len(start.pieces)-1]
+	}
+	base := add("minecraft:end_city/base_floor", nil, [3]int{}, rotation)
+	if base == nil {
+		return nil
+	}
+	second := add("minecraft:end_city/second_floor_1", base, [3]int{-1, 0, -1}, rotation)
+	if second == nil {
+		return nil
+	}
+	third := add("minecraft:end_city/third_floor_1", second, [3]int{-1, 4, -1}, rotation)
+	if third == nil {
+		return nil
+	}
+	top := add("minecraft:end_city/third_roof", third, [3]int{-1, 8, -1}, rotation)
+	if top == nil {
+		return nil
+	}
+	return start
+}
+
+func rotateHorizontalOffset(x, z int, rotation templateRotation) (int, int) {
+	switch rotation {
+	case rotateClockwise90:
+		return -z, x
+	case rotate180:
+		return -x, -z
+	case rotateCounterClockwise90:
+		return z, -x
+	default:
+		return x, z
+	}
+}
+
 func (r *structureRuntime) startHeight(router *Router, def structureDefinition, x, z int) int {
-	if def.ProjectStart != "" {
+	if def.ProjectStart != "" || def.Type == "minecraft:end_city" {
 		key := chunkCoord{x: x >> 4, z: z >> 4}
 		chunk, ok := router.structureTerrain[key]
 		if !ok {

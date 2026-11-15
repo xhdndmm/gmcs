@@ -1283,7 +1283,10 @@
     模板旋转/镜像、跨区块写入、基础 `block_rot`/`rule(random_block_match)`
     processor、按结构 `project_start_to_heightmap` 生成地形高度（通过无结构
     地形区块缓存）；已能生成 jigsaw 类结构（如村庄）。
-  - [ ] **结构运行时剩余**：要塞/矿洞/末地城专用生成器、末地折跃门 NBT、
+  - [~] **末地城基础拼装**：已加入 `end_city` 分支，用官方
+    base_floor/second_floor_1/third_floor_1/third_roof 模板拼装；桥梁、
+    塔楼递归、船、末影龙/折跃门 NBT 仍未完整移植。
+  - [ ] **结构运行时剩余**：要塞/矿洞专用生成器、末地折跃门 NBT、
     地形适配（beard_thin/beard_box/bury）、完整 processor_list、结构内实体/
     箱子/刷怪笼、结构 start 持久化、concentric_rings 结构集与更严格的
     jigsaw 连接器/包围盒对齐。

@@ -84,3 +84,21 @@ func TestProcessorListApplied(t *testing.T) {
 		t.Fatal("processor_list 应用后模板为空")
 	}
 }
+
+func TestEndCityTemplatesExist(t *testing.T) {
+	data, err := LoadStructureData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"minecraft:end_city/base_floor",
+		"minecraft:end_city/second_floor_1",
+		"minecraft:end_city/third_floor_1",
+		"minecraft:end_city/third_roof",
+	} {
+		template, err := data.ParsedTemplate(name)
+		if err != nil || template == nil || len(template.Blocks) == 0 {
+			t.Fatalf("末地城模板 %s 不可用：%v", name, err)
+		}
+	}
+}
