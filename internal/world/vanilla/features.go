@@ -247,6 +247,12 @@ type treeConfiguration struct {
 	foliageHeight       int
 	foliageHeightRandom intProvider
 	foliageTrunkHeight  intProvider
+	decorators          []treeDecorator
+}
+
+type treeDecorator struct {
+	kind        string
+	probability float32
 }
 
 type intProvider struct {
@@ -1277,6 +1283,10 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			HeightRandA int    `json:"height_rand_a"`
 			HeightRandB int    `json:"height_rand_b"`
 		} `json:"trunk_placer"`
+		Decorators []struct {
+			Type        string  `json:"type"`
+			Probability float32 `json:"probability"`
+		} `json:"decorators"`
 		FoliagePlacer struct {
 			Type        string          `json:"type"`
 			Radius      json.RawMessage `json:"radius"`
@@ -1333,6 +1343,10 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 	if err != nil {
 		return nil, nil
 	}
+	decorators := make([]treeDecorator, 0, len(encoded.Decorators))
+	for _, rawDecorator := range encoded.Decorators {
+		decorators = append(decorators, treeDecorator{kind: qualify(rawDecorator.Type), probability: rawDecorator.Probability})
+	}
 	return &treeConfiguration{
 		trunk:               trunk,
 		leaves:              leaves,
@@ -1345,6 +1359,7 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 		foliageHeight:       foliageHeight,
 		foliageHeightRandom: foliageHeightRandom,
 		foliageTrunkHeight:  trunkHeight,
+		decorators:          decorators,
 	}, nil
 }
 
@@ -2740,17 +2755,102 @@ func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configur
 	for offset := 0; offset < height; offset++ {
 		chunk.SetBlock(x, y+offset, z, configuration.trunk)
 	}
+	leaves := make([]featurePosition, 0, 64)
 	switch configuration.foliageType {
 	case "minecraft:spruce_foliage_placer":
-		r.placeSpruceFoliage(chunk, random, configuration, x, y, z, height)
+		r.placeSpruceFoliage(chunk, random, configuration, x, y, z, height, &leaves)
 	case "minecraft:pine_foliage_placer":
-		r.placePineFoliage(chunk, random, configuration, x, y, z, height)
+		r.placePineFoliage(chunk, random, configuration, x, y, z, height, &leaves)
 	default:
-		r.placeBlobFoliage(chunk, random, configuration, x, y, z, height)
+		r.placeBlobFoliage(chunk, random, configuration, x, y, z, height, &leaves)
+	}
+	r.applyTreeDecorators(chunk, random, configuration, x, y, z, height, leaves)
+}
+
+func (r *Router) applyTreeDecorators(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves []featurePosition) {
+	for _, decorator := range configuration.decorators {
+		switch decorator.kind {
+		case "minecraft:trunk_vine":
+			for trunkY := y; trunkY < y+height; trunkY++ {
+				for _, direction := range [][3]int{{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}} {
+					if random.nextIntBounded(3) == 0 {
+						continue
+					}
+					px, pz := x+direction[0], z+direction[2]
+					if chunk.InRange(px, trunkY, pz) && chunk.BlockAt(px, trunkY, pz).IsAir() {
+						properties := map[string]string{"north": "false", "south": "false", "east": "false", "west": "false", "up": "false", "down": "false"}
+						switch direction {
+						case [3]int{0, 0, -1}:
+							properties["north"] = "true"
+						case [3]int{0, 0, 1}:
+							properties["south"] = "true"
+						case [3]int{-1, 0, 0}:
+							properties["west"] = "true"
+						case [3]int{1, 0, 0}:
+							properties["east"] = "true"
+						}
+						chunk.SetBlock(px, trunkY, pz, SurfaceBlock{Name: "minecraft:vine", Properties: properties})
+					}
+				}
+			}
+		case "minecraft:leave_vine":
+			for _, leaf := range leaves {
+				for _, direction := range [][3]int{{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}} {
+					if random.nextFloat() >= decorator.probability {
+						continue
+					}
+					px, pz := leaf.x+direction[0], leaf.z+direction[2]
+					py := leaf.y
+					if !chunk.InRange(px, py, pz) || !chunk.BlockAt(px, py, pz).IsAir() {
+						continue
+					}
+					properties := map[string]string{"north": "false", "south": "false", "east": "false", "west": "false", "up": "false", "down": "false"}
+					switch direction {
+					case [3]int{0, 0, -1}:
+						properties["north"] = "true"
+					case [3]int{0, 0, 1}:
+						properties["south"] = "true"
+					case [3]int{-1, 0, 0}:
+						properties["west"] = "true"
+					case [3]int{1, 0, 0}:
+						properties["east"] = "true"
+					}
+					chunk.SetBlock(px, py, pz, SurfaceBlock{Name: "minecraft:vine", Properties: properties})
+					for extension := 1; extension <= 4; extension++ {
+						if !chunk.InRange(px, py-extension, pz) || !chunk.BlockAt(px, py-extension, pz).IsAir() {
+							break
+						}
+						chunk.SetBlock(px, py-extension, pz, SurfaceBlock{Name: "minecraft:vine", Properties: properties})
+					}
+				}
+			}
+		case "minecraft:cocoa":
+			for trunkY := y; trunkY <= y+2 && trunkY < y+height; trunkY++ {
+				if random.nextFloat() >= decorator.probability {
+					continue
+				}
+				directions := [][3]int{{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}}
+				direction := directions[random.nextIntBounded(len(directions))]
+				px, pz := x+direction[0], z+direction[2]
+				if !chunk.InRange(px, trunkY, pz) || !chunk.BlockAt(px, trunkY, pz).IsAir() {
+					continue
+				}
+				facing := "north"
+				switch direction {
+				case [3]int{0, 0, 1}:
+					facing = "south"
+				case [3]int{-1, 0, 0}:
+					facing = "west"
+				case [3]int{1, 0, 0}:
+					facing = "east"
+				}
+				chunk.SetBlock(px, trunkY, pz, SurfaceBlock{Name: "minecraft:cocoa", Properties: map[string]string{"age": fmt.Sprintf("%d", random.nextIntBounded(3)), "facing": facing}})
+			}
+		}
 	}
 }
 
-func (r *Router) placeBlobFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int) {
+func (r *Router) placeBlobFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves *[]featurePosition) {
 	radius := configuration.foliageRadius.sample(random)
 	if radius <= 0 {
 		radius = 2
@@ -2779,12 +2879,13 @@ func (r *Router) placeBlobFoliage(chunk *GeneratedChunk, random *legacyRandom, c
 					continue
 				}
 				chunk.SetBlock(x+dx, layerY, z+dz, configuration.leaves)
+				*leaves = append(*leaves, featurePosition{x: x + dx, y: layerY, z: z + dz})
 			}
 		}
 	}
 }
 
-func (r *Router) placeSpruceFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int) {
+func (r *Router) placeSpruceFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves *[]featurePosition) {
 	top := y + height - 1
 	start := height - configuration.foliageTrunkHeight.sample(random)
 	if start < 4 {
@@ -2795,7 +2896,7 @@ func (r *Router) placeSpruceFoliage(chunk *GeneratedChunk, random *legacyRandom,
 	nextRadius := 1
 	limit := 0
 	for layerY := top; layerY >= top-start; layerY-- {
-		r.placeFoliageLayer(chunk, random, configuration, x, layerY, z, radius)
+		r.placeFoliageLayer(chunk, random, configuration, x, layerY, z, radius, leaves)
 		if radius >= nextRadius {
 			radius = limit
 			limit = 1
@@ -2808,7 +2909,7 @@ func (r *Router) placeSpruceFoliage(chunk *GeneratedChunk, random *legacyRandom,
 	}
 }
 
-func (r *Router) placePineFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int) {
+func (r *Router) placePineFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves *[]featurePosition) {
 	top := y + height - 1
 	foliageHeight := configuration.foliageHeightRandom.sample(random)
 	if foliageHeight <= 0 {
@@ -2820,7 +2921,7 @@ func (r *Router) placePineFoliage(chunk *GeneratedChunk, random *legacyRandom, c
 	baseRadius := configuration.foliageRadius.sample(random)
 	radius := 0
 	for layerY := top; layerY >= top-foliageHeight; layerY-- {
-		r.placeFoliageLayer(chunk, random, configuration, x, layerY, z, radius)
+		r.placeFoliageLayer(chunk, random, configuration, x, layerY, z, radius, leaves)
 		if radius >= 1 && layerY == top-foliageHeight+1 {
 			radius--
 		} else if radius < baseRadius+1 {
@@ -2829,7 +2930,7 @@ func (r *Router) placePineFoliage(chunk *GeneratedChunk, random *legacyRandom, c
 	}
 }
 
-func (r *Router) placeFoliageLayer(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, layerY, z, radius int) {
+func (r *Router) placeFoliageLayer(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, layerY, z, radius int, leaves *[]featurePosition) {
 	for dx := -radius; dx <= radius; dx++ {
 		for dz := -radius; dz <= radius; dz++ {
 			if radius > 0 && absFeatureInt(dx) == radius && absFeatureInt(dz) == radius && random.nextIntBounded(2) == 0 {
@@ -2840,6 +2941,7 @@ func (r *Router) placeFoliageLayer(chunk *GeneratedChunk, random *legacyRandom, 
 				continue
 			}
 			chunk.SetBlock(x+dx, layerY, z+dz, configuration.leaves)
+			*leaves = append(*leaves, featurePosition{x: x + dx, y: layerY, z: z + dz})
 		}
 	}
 }
