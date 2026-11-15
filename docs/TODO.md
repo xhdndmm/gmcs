@@ -1122,7 +1122,11 @@
       与 `evaluateSpline` 占大头），以及 `cache_once`/`cache_all_in_cell` 目前
       仍是直通（其粒度绑在 `NoiseChunk` 的欧值格 `euu.F` 上，语义待字节码确认）。
     - [x] 含水层（aquifer barrier/floodedness/spread/lava）与逐方块
-      stone/water/lava/air 判定。**类映射**：`euc` = `Aquifer` 接口
+      stone/water/lava/air 判定。
+    - [x] **矿脉（OreVeinifier）**：按 `vein_toggle`/`vein_ridged`/`vein_gap`
+      与 `PositionalRandomFactory.at` 生成铜脉（花岗岩外壳）和铁脉（凝灰岩外壳），
+      含 raw copper/iron block 稀有中心；仅替换密度为正的默认石头。
+      与官方纯矿脉参考世界对比：区块 (0..1,0) 约 93/196608 不一致。**类映射**：`euc` = `Aquifer` 接口
       （`create(NoiseChunk, ChunkPos, NoiseRouter, PositionalRandomFactory, minY, height,
       FluidPicker)`、`computeSubstance(FunctionContext, double) -> BlockState`、
       `shouldScheduleFluidUpdate()`）；`euc$c` = `NoiseBasedAquifer`

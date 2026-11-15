@@ -137,10 +137,22 @@ func (r *Router) generateChunkInternal(chunkX, chunkZ int, withStructures bool) 
 	for x := chunk.MinX; x < chunk.MinX+16; x++ {
 		for z := chunk.MinZ; z < chunk.MinZ+16; z++ {
 			for y := setting.MinY; y < setting.MinY+setting.Height; y++ {
-				kind, defaultBlock := aquifer.ComputeSubstance(x, y, z, sampler.Density(x, y, z))
+				density := sampler.Density(x, y, z)
+				kind, defaultBlock := aquifer.ComputeSubstance(x, y, z, density)
 				switch {
 				case defaultBlock:
-					chunk.SetBlock(x, y, z, stone)
+					// 原版 NoiseChunk 的 materialRule 顺序是
+					// aquifer -> ore vein；矿脉只替换默认石头。
+					placed := false
+					if setting.OreVeinsEnabled {
+						if vein, ok := r.oreVeinAt(sampler, x, y, z); ok {
+							chunk.SetBlock(x, y, z, vein)
+							placed = true
+						}
+					}
+					if !placed {
+						chunk.SetBlock(x, y, z, stone)
+					}
 				case kind == fluidWater:
 					chunk.SetBlock(x, y, z, water)
 				case kind == fluidLava:
@@ -188,6 +200,45 @@ func (r *Router) generateChunkInternal(chunkX, chunkZ int, withStructures bool) 
 	}
 	chunk.RecalculateHeights()
 	return chunk, nil
+}
+
+// oreVeinAt 复刻 1.21.11 OreVeinifier。
+// 铜脉 y∈[0,50]、铁脉 y∈[-60,-8]；toggle>0 选铜，否则选铁。
+func (r *Router) oreVeinAt(sampler *ChunkSampler, x, y, z int) (SurfaceBlock, bool) {
+	toggle := sampler.Field("vein_toggle", x, y, z)
+	veininess := math.Abs(toggle)
+	var minimum, maximum int
+	var ore, raw, shell string
+	if toggle > 0 {
+		minimum, maximum = 0, 50
+		ore, raw, shell = "minecraft:copper_ore", "minecraft:raw_copper_block", "minecraft:granite"
+	} else {
+		minimum, maximum = -60, -8
+		ore, raw, shell = "minecraft:iron_ore", "minecraft:raw_iron_block", "minecraft:tuff"
+	}
+	if y < minimum || y > maximum {
+		return SurfaceBlock{}, false
+	}
+	distanceToEdge := min(maximum-y, y-minimum)
+	edgeFactor := clampedMap(float64(distanceToEdge), 0, 20, -0.2, 0)
+	if veininess+edgeFactor < 0.4 {
+		return SurfaceBlock{}, false
+	}
+	positional := r.registry.factory.At(x, y, z)
+	if positional.NextFloat() > 0.7 {
+		return SurfaceBlock{}, false
+	}
+	if sampler.Field("vein_ridged", x, y, z) >= 0 {
+		return SurfaceBlock{}, false
+	}
+	threshold := clampedMap(veininess, 0.4, 0.6, 0.1, 0.3)
+	if float64(positional.NextFloat()) < threshold && sampler.Field("vein_gap", x, y, z) > -0.3 {
+		if positional.NextFloat() < 0.02 {
+			return SurfaceBlock{Name: raw}, true
+		}
+		return SurfaceBlock{Name: ore}, true
+	}
+	return SurfaceBlock{Name: shell}, true
 }
 
 // isSolidBlock 等价原版 SurfaceSystem 的"实心"判定：

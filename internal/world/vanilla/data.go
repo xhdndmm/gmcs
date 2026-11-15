@@ -288,6 +288,8 @@ type NoiseSetting struct {
 	DefaultFluid string
 	// AquifersEnabled 对应原版 NoiseGeneratorSettings.isAquifersEnabled()。
 	AquifersEnabled bool
+	// OreVeinsEnabled 对应原版 NoiseGeneratorSettings.isOreVeinsEnabled()。
+	OreVeinsEnabled bool
 	Router          map[string]json.RawMessage
 	Raw             json.RawMessage
 }
@@ -331,6 +333,7 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 		DefaultBlock    json.RawMessage `json:"default_block"`
 		DefaultFluid    json.RawMessage `json:"default_fluid"`
 		AquifersEnabled bool            `json:"aquifers_enabled"`
+		OreVeinsEnabled bool            `json:"ore_veins_enabled"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return NoiseSetting{}, fmt.Errorf("解析噪声设置 %s 失败：%w", name, err)
@@ -357,6 +360,7 @@ func (d *Data) NoiseSetting(name string) (NoiseSetting, error) {
 		DefaultBlock:    blockStateName(parsed.DefaultBlock),
 		DefaultFluid:    blockStateName(parsed.DefaultFluid),
 		AquifersEnabled: parsed.AquifersEnabled,
+		OreVeinsEnabled: parsed.OreVeinsEnabled,
 		Router:          parsed.Router,
 		Raw:             raw,
 	}, nil

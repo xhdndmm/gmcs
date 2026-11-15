@@ -345,3 +345,23 @@ func BenchmarkGenerateChunk(b *testing.B) {
 		}
 	}
 }
+
+func TestOreVeinsAddGraniteAndTuff(t *testing.T) {
+	router := mustRouter(t, 4321)
+	chunk, err := router.GenerateChunk(1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	granite, tuff := 0, 0
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		switch block.Name {
+		case "minecraft:granite":
+			granite++
+		case "minecraft:tuff":
+			tuff++
+		}
+	})
+	if granite == 0 || tuff == 0 {
+		t.Fatalf("矿脉没有生成预期岩石：granite=%d tuff=%d", granite, tuff)
+	}
+}

@@ -105,7 +105,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 
 - **原版算法主世界**（`world_seed`）：主世界使用 `internal/world/vanilla` 的
   Noise Router、密度函数、含水层、表面规则、cave/canyon 雕刻器、全部群系地物
-  与基础 jigsaw 结构；深层为深板岩，海平面约 Y=62，群系按原版多噪声群系源
+  与基础 jigsaw 结构；深层为深板岩、矿脉（铜/铁），海平面约 Y=62，群系按原版多噪声群系源
   采样并随区块下发。同种子同坐标结果恒定。树木/geode/dripstone 等仍有已记录
   的近似，要塞/矿洞/末地城尚未实现；旧版 gmcs 自研生成器已移除，旧存档不会
   自动转换。

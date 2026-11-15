@@ -80,6 +80,7 @@ func main() {
 	features := flag.Bool("features", true, "对比时是否运行群系地物")
 	structures := flag.Bool("structures", true, "对比时是否运行结构")
 	featureFilter := flag.String("feature-filter", "", "只执行名称包含该子串的群系地物（空表示全部）")
+	oreVeins := flag.Bool("ore-veins", true, "是否启用原版矿脉（ore_veins_enabled）")
 	onlyCarver := flag.String("only-carver", "", "只保留指定雕刻器（用于逐类对比）")
 	flag.Parse()
 	if *mca == "" && *dumpNode == "" && !*listNodes && *gridNode == "" {
@@ -243,6 +244,15 @@ func main() {
 	}
 	if *featureFilter != "" {
 		data.BiomeFeatures = filterBiomeFeatures(data.BiomeFeatures, *featureFilter)
+	}
+	if !*oreVeins {
+		var raw map[string]any
+		if json.Unmarshal(data.NoiseSettings["minecraft:overworld"], &raw) == nil {
+			raw["ore_veins_enabled"] = false
+			if encoded, err := json.Marshal(raw); err == nil {
+				data.NoiseSettings["minecraft:overworld"] = encoded
+			}
+		}
 	}
 	router, err := vanilla.NewRouter(data, "minecraft:overworld", *seed)
 	if err != nil {

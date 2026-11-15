@@ -1581,3 +1581,6 @@ BenchmarkVanillaGeneratorChunk-20   ~62 ms/op    8.3 MB/op    52,784 allocs/op
 - 纯地形对拍（种子 4321，区块 (0,0)，关闭地物/雕刻器/结构）：
   5/98304 不一致；开启雕刻器后 (0..2,0) 合计约 5780/294912 不一致，
   仍存在 carver 残差。
+
+- 原版矿脉接入后，`BenchmarkGenerateChunk` 仍约 55 ms/区块（矿脉密度函数复用
+  区块插值 lattice）；与官方纯矿脉参考世界对比约 93/196608 方块不一致。

@@ -187,6 +187,16 @@ func (s *ChunkSampler) Solid(x, y, z int) bool {
 // Aquifer 返回该区块的含水层判定器（首次调用时构造并缓存）。
 // 含水层与密度采样共享同一个求值器，因此必须先通过该 sampler 求密度，
 // 二者才会看到一致的内插值网格。
+// Field 求值 Router 中的命名密度函数。区块 sampler 已为 interpolated 节点
+// 建立 lattice，因此 vein_toggle/vein_ridged 等可以复用同一套插值结果。
+func (s *ChunkSampler) Field(name string, x, y, z int) float64 {
+	node, ok := s.router.nodes[name]
+	if !ok {
+		return 0
+	}
+	return s.evaluator.Evaluate(node, Context{X: x, Y: y, Z: z})
+}
+
 func (s *ChunkSampler) Aquifer() *Aquifer {
 	if s.aquifer == nil {
 		s.aquifer = newAquifer(s)
