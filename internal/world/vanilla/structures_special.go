@@ -283,6 +283,19 @@ func (r *structureRuntime) buildMineshaft(seed int64, originX, originZ int, def 
 	_ = router
 	start := &structureStart{}
 	builder := newSpecialBlockBuilder()
+	// 官方 MineshaftPieces 的起始房间（d）是 7–13 格见方的房间，
+	// 四个方向随机开口；这里先铺出中心大厅，再接入走廊队列。
+	roomX, roomZ := 7+random.nextIntBounded(6), 7+random.nextIntBounded(6)
+	builder.fill(startX-roomX/2, startY-1, startZ-roomZ/2, startX+roomX/2, startY-1, startZ+roomZ/2, planks)
+	builder.fill(startX-roomX/2, startY, startZ-roomZ/2, startX+roomX/2, startY+2, startZ+roomZ/2, airState)
+	for x := startX - roomX/2; x <= startX+roomX/2; x++ {
+		builder.set(x, startY+3, startZ-roomZ/2, planks)
+		builder.set(x, startY+3, startZ+roomZ/2, planks)
+	}
+	for z := startZ - roomZ/2; z <= startZ+roomZ/2; z++ {
+		builder.set(startX-roomX/2, startY+3, z, planks)
+		builder.set(startX+roomX/2, startY+3, z, planks)
+	}
 	type segment struct {
 		x, y, z int
 		dir     int
@@ -407,10 +420,29 @@ func (r *structureRuntime) buildStronghold(seed int64, originX, originZ int, rou
 			x += dir[0]
 			z += dir[1]
 		}
-		// 支路房间。
-		root.fill(x-3, startY-1, z-3, x+3, startY+4, z+3, stone)
-		root.fill(x-2, startY, z-2, x+2, startY+3, z+2, airState)
-		root.set(x, startY+1, z, cracked)
+		// 支路房间：分别近似图书馆、监狱与普通房间。
+		switch i {
+		case 0: // 图书馆
+			root.fill(x-4, startY-1, z-4, x+4, startY+5, z+4, stone)
+			root.fill(x-3, startY, z-3, x+3, startY+4, z+3, airState)
+			for bx := x - 3; bx <= x+3; bx++ {
+				root.set(bx, startY, z-3, SurfaceBlock{Name: "minecraft:bookshelf"})
+				root.set(bx, startY+1, z-3, SurfaceBlock{Name: "minecraft:bookshelf"})
+			}
+			root.setEntity(x+3, startY, z+2, SurfaceBlock{Name: "minecraft:chest", Properties: map[string]string{"facing": "west", "waterlogged": "false"}},
+				GeneratedBlockEntity{Type: "minecraft:chest", LootTable: "minecraft:chests/stronghold_library", Data: nbtCompound{"id": "minecraft:chest"}})
+		case 1: // 监狱
+			root.fill(x-4, startY-1, z-4, x+4, startY+5, z+4, stone)
+			root.fill(x-3, startY, z-3, x+3, startY+4, z+3, airState)
+			for cell := -3; cell <= 3; cell += 2 {
+				root.fill(x+cell, startY, z-3, x+cell, startY+3, z-3, SurfaceBlock{Name: "minecraft:iron_bars"})
+			}
+			root.set(x, startY+1, z, cracked)
+		default:
+			root.fill(x-3, startY-1, z-3, x+3, startY+4, z+3, stone)
+			root.fill(x-2, startY, z-2, x+2, startY+3, z+2, airState)
+			root.set(x, startY+1, z, cracked)
+		}
 	}
 	// 传送门房间：中央 3×3 岩浆池和末地传送门框架。
 	px, pz := startX, startZ
