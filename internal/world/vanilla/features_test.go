@@ -508,3 +508,47 @@ func TestGeodeExactPlacesLayers(t *testing.T) {
 		}
 	}
 }
+
+func TestRootSystemPlacesRootedDirtAndHangingRoots(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed := router.features.placed["minecraft:rooted_azalea_tree"]
+	if placed.extra == nil {
+		t.Fatal("rooted_azalea_tree 没有解析为 root_system")
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := 50; y < 70; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:stone"})
+			}
+			for y := 70; y < 80; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:air"})
+			}
+		}
+	}
+	random := newWorldgenRandom()
+	random.setSeed(2024)
+	router.placeRootSystem(chunk, random.legacyRandom, placed.extra.config, 8, 70, 8)
+	rooted, hanging := 0, 0
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		switch block.Name {
+		case "minecraft:rooted_dirt":
+			rooted++
+		case "minecraft:hanging_roots":
+			hanging++
+		}
+	})
+	if rooted == 0 {
+		t.Fatal("根系统没有放置缠根泥土")
+	}
+	if hanging == 0 {
+		t.Fatal("根系统没有放置悬挂根")
+	}
+}

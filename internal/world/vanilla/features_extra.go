@@ -1087,22 +1087,6 @@ func (r *Router) placeSculkPatch(chunk *GeneratedChunk, random *legacyRandom, ra
 	}
 }
 
-func (r *Router) placeRootSystem(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
-	// 杜鹃树根系统：在树周围替换可替换方块为缠根泥土，并向下延伸根须。
-	radius := random.nextIntBounded(3) + 1
-	for dx := -radius; dx <= radius; dx++ {
-		for dz := -radius; dz <= radius; dz++ {
-			if dx*dx+dz*dz > radius*radius {
-				continue
-			}
-			px, pz := x+dx, z+dz
-			if chunk.InRange(px, y, pz) && chunk.BlockAt(px, y, pz).IsAir() {
-				chunk.SetBlock(px, y, pz, SurfaceBlock{Name: "minecraft:rooted_dirt"})
-			}
-		}
-	}
-}
-
 func (r *Router) placeVoidStartPlatform(chunk *GeneratedChunk, x, y, z int) {
 	centerX := chunk.ChunkX*16 + 8
 	centerZ := chunk.ChunkZ*16 + 8

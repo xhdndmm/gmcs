@@ -81,6 +81,7 @@ func main() {
 	structures := flag.Bool("structures", true, "对比时是否运行结构")
 	featureFilter := flag.String("feature-filter", "", "只执行名称包含该子串的群系地物（空表示全部）")
 	oreVeins := flag.Bool("ore-veins", true, "是否启用原版矿脉（ore_veins_enabled）")
+	dumpBlock := flag.String("dumpblock", "", "打印指定方块在官方与生成结果中的前若干坐标")
 	onlyCarver := flag.String("only-carver", "", "只保留指定雕刻器（用于逐类对比）")
 	flag.Parse()
 	if *mca == "" && *dumpNode == "" && !*listNodes && *gridNode == "" {
@@ -455,6 +456,31 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "生成区块 (%d,%d) 失败: %v\n", pos.x, pos.z, err)
 			os.Exit(1)
+		}
+		if *dumpBlock != "" {
+			printed := 0
+			for y := setting.MinY; y < setting.MinY+setting.Height && printed < 10; y++ {
+				for z := 0; z < 16 && printed < 10; z++ {
+					for x := 0; x < 16 && printed < 10; x++ {
+						index := ((y - setting.MinY) * 256) + (z * 16) + x
+						if index < len(official) && official[index] == *dumpBlock {
+							fmt.Printf("官方 %s (%d,%d,%d)\n", *dumpBlock, pos.x*16+x, y, pos.z*16+z)
+							printed++
+						}
+					}
+				}
+			}
+			printed = 0
+			for y := setting.MinY; y < setting.MinY+setting.Height && printed < 10; y++ {
+				for z := 0; z < 16 && printed < 10; z++ {
+					for x := 0; x < 16 && printed < 10; x++ {
+						if chunk.BlockAt(pos.x*16+x, y, pos.z*16+z).Name == *dumpBlock {
+							fmt.Printf("gmcs %s (%d,%d,%d)\n", *dumpBlock, pos.x*16+x, y, pos.z*16+z)
+							printed++
+						}
+					}
+				}
+			}
 		}
 		mismatches := 0
 		examples := 0
