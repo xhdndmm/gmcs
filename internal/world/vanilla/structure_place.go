@@ -4,6 +4,11 @@
 
 package vanilla
 
+import (
+	"fmt"
+	"strings"
+)
+
 // templateRotation 是结构模板的 0/90/180/270 度旋转。
 type templateRotation int
 
@@ -47,7 +52,17 @@ func placeTemplate(chunk *GeneratedChunk, template *structureTemplate, originX, 
 			continue
 		}
 		state := template.Palette[block.State]
-		if state.Name == "minecraft:structure_void" || state.Name == "minecraft:jigsaw" || state.Name == "minecraft:structure_block" {
+		if state.Name == "minecraft:jigsaw" {
+			// jigsaw 方块在最终结构中变成 final_state；空/缺省时保留空气。
+			if final, ok := nbtStringValue(block.NBT["final_state"]); ok {
+				if parsed, err := parseSimpleBlockState(final); err == nil {
+					state = parsed
+				}
+			} else {
+				continue
+			}
+		}
+		if state.Name == "minecraft:structure_void" || state.Name == "minecraft:structure_block" {
 			continue
 		}
 		pos := transformTemplatePos(block.Pos, template.Size, rotation, mirror)
@@ -61,6 +76,25 @@ func placeTemplate(chunk *GeneratedChunk, template *structureTemplate, originX, 
 			chunk.SetBlockEntity(x, y, z, entity)
 		}
 	}
+}
+
+func parseSimpleBlockState(value string) (SurfaceBlock, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return SurfaceBlock{}, fmt.Errorf("空方块状态")
+	}
+	properties := map[string]string{}
+	if index := strings.IndexByte(value, '['); index >= 0 && strings.HasSuffix(value, "]") {
+		propertiesText := value[index+1 : len(value)-1]
+		value = value[:index]
+		for _, entry := range strings.Split(propertiesText, ",") {
+			keyValue := strings.SplitN(entry, "=", 2)
+			if len(keyValue) == 2 {
+				properties[strings.TrimSpace(keyValue[0])] = strings.TrimSpace(keyValue[1])
+			}
+		}
+	}
+	return SurfaceBlock{Name: qualify(value), Properties: properties}, nil
 }
 
 // templateCornerAirCount 统计模板四角在目标位置是否为空气，用于化石等结构

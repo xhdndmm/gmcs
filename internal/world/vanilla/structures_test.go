@@ -338,3 +338,19 @@ func TestBeardThinFillsSupportBelowTemplate(t *testing.T) {
 		}
 	}
 }
+
+func TestJigsawFinalStateReplacesJigsaw(t *testing.T) {
+	template := &structureTemplate{
+		Size:    [3]int{1, 1, 1},
+		Palette: []SurfaceBlock{{Name: "minecraft:jigsaw"}},
+		Blocks: []templateBlock{{
+			Pos: [3]int{0, 0, 0}, State: 0,
+			NBT: nbtCompound{"id": "minecraft:jigsaw", "final_state": "minecraft:oak_planks"},
+		}},
+	}
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	placeTemplate(chunk, template, 2, 64, 3, rotateNone, false, newLegacyRandom(1))
+	if got := chunk.BlockAt(2, 64, 3).Name; got != "minecraft:oak_planks" {
+		t.Fatalf("jigsaw final_state = %s", got)
+	}
+}
