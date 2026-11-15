@@ -181,6 +181,8 @@ type mobRecord struct {
 
 // saveEntities 把全部维度中的生物、掉落物与箭矢写入各自目录（原子写入）。
 func (s *Server) saveEntities() error {
+	s.entitySaveMu.Lock()
+	defer s.entitySaveMu.Unlock()
 	type dimFile struct {
 		dim    world.Dimension
 		mobs   []mobRecord

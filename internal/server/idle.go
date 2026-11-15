@@ -20,7 +20,8 @@ import (
 //	                     区块帧缓存和实体跟踪表；
 //	阶段 2（默认 2m）：  保存生物/掉落物/箭矢/经验球后清空实体表；
 //	阶段 3（默认 5m）：  关闭并移除下界/末地等非主世界维度，释放世界对象、
-//	                     生成器池、区域文件句柄与区块 worker。
+//	                     生成器池、区域文件句柄与区块 worker；
+//	阶段 4（默认 15m）： 关闭包括主世界在内的全部维度；玩家再次加入时按需重建。
 //
 // 有玩家重新加入时 idle 计时归零；下一阶段不会继续执行。阶段时间可在测试中
 // 直接覆盖，生产默认值在 newServer 中设置。
@@ -36,6 +37,8 @@ func (s *Server) resetIdleRelease() {
 // advanceIdleRelease 推进空闲释放阶段。调用方应在“当前没有已加入玩家”时
 // 调用；now 可注入测试时间。
 func (s *Server) advanceIdleRelease(now time.Time) {
+	s.idleReleaseMu.Lock()
+	defer s.idleReleaseMu.Unlock()
 	s.idleMu.Lock()
 	if s.idleSince.IsZero() {
 		s.idleSince = now
@@ -50,6 +53,9 @@ func (s *Server) advanceIdleRelease(now time.Time) {
 	}
 	if s.idleStage3Delay > 0 && elapsed >= s.idleStage3Delay && desired < 3 {
 		desired = 3
+	}
+	if s.idleStage4Delay > 0 && elapsed >= s.idleStage4Delay && desired < 4 {
+		desired = 4
 	}
 	if desired <= s.idleStage {
 		s.idleMu.Unlock()
@@ -76,14 +82,15 @@ func (s *Server) advanceIdleRelease(now time.Time) {
 				slog.Info("空闲服务器释放实体缓存", "stage", 2)
 			}
 		case 3:
-			s.releaseIdleDimensionsStage3()
+			s.releaseIdleWorldDimensions(false)
 			slog.Info("空闲服务器关闭空闲维度", "stage", 3)
+		case 4:
+			s.releaseIdleWorldDimensions(true)
+			slog.Info("空闲服务器关闭全部维度", "stage", 4)
 		}
 	}
 }
 
-// releaseIdleRuntimeCaches 清除只对在线交互有意义的运行时索引。区块本身已经
-// 在 unloadAllChunks 中释放；这里避免这些索引继续持有已卸载区块的坐标/状态。
 // hasJoinedIdlePlayers 报告当前是否已有完成加入流程的玩家。
 func (s *Server) hasJoinedIdlePlayers() bool {
 	for _, player := range s.playerSnapshot() {
@@ -94,6 +101,8 @@ func (s *Server) hasJoinedIdlePlayers() bool {
 	return false
 }
 
+// releaseIdleRuntimeCaches 清除只对在线交互有意义的运行时索引。区块本身已经
+// 在 unloadAllChunks 中释放；这里避免这些索引继续持有已卸载区块的坐标/状态。
 func (s *Server) releaseIdleRuntimeCaches() {
 	s.hopperMu.Lock()
 	clear(s.hoppers)
@@ -177,10 +186,10 @@ func (s *Server) releaseIdleEntities() error {
 	return nil
 }
 
-// releaseIdleDimensionsStage3 关闭并移除没有玩家的非主世界维度。主世界保留，
-// 因为出生点、命令与服务器启动状态默认依赖它；下界/末地会在下次访问时
+// releaseIdleWorldDimensions 关闭并移除没有玩家的维度。includeOverworld 为 false
+// 时保留主世界；为 true 时连主世界也关闭（阶段 4）。维度会在下次访问时
 // 通过 worldFor 重新创建并加载实体。
-func (s *Server) releaseIdleDimensionsStage3() {
+func (s *Server) releaseIdleWorldDimensions(includeOverworld bool) {
 	if s.hasJoinedIdlePlayers() {
 		return
 	}
@@ -191,7 +200,7 @@ func (s *Server) releaseIdleDimensionsStage3() {
 	s.worldMu.Lock()
 	targets := make([]target, 0, len(s.worlds))
 	for dim, gameWorld := range s.worlds {
-		if dim == world.DimensionOverworld {
+		if dim == world.DimensionOverworld && !includeOverworld {
 			continue
 		}
 		targets = append(targets, target{dim: dim, world: gameWorld})

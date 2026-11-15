@@ -49,6 +49,8 @@ type Server struct {
 	// 实体数据按维度惰性加载（维度世界首次创建时加载该维度的 entities.json）。
 	entityLoadMu   sync.Mutex
 	entitiesLoaded map[world.Dimension]bool
+	// entitySaveMu 串行化 entities.json 的原子写入（自动保存与空闲释放可能并发）。
+	entitySaveMu sync.Mutex
 
 	// keepAliveInterval 等测试钩子之外的最小构造同样可用。
 	mu      sync.Mutex
@@ -97,14 +99,17 @@ type Server struct {
 	unloadNow chan struct{}
 
 	// 空闲资源逐级释放：服务器没有已加入玩家时，按 idleStage1Delay /
-	// idleStage2Delay / idleStage3Delay 依次释放运行时缓存、实体和空闲维度。
-	// 任一值为 0 表示禁用对应阶段；默认值见 newServer。
+	// idleStage2Delay / idleStage3Delay / idleStage4Delay 依次释放运行时缓存、
+	// 实体、非主世界维度和全部维度。任一值为 0 表示禁用对应阶段；默认值见 newServer。
 	idleMu          sync.Mutex
 	idleSince       time.Time
 	idleStage       int
 	idleStage1Delay time.Duration
 	idleStage2Delay time.Duration
 	idleStage3Delay time.Duration
+	idleStage4Delay time.Duration
+	// idleReleaseMu 串行化阶段释放，避免周期卸载与显式调用同时保存实体/关闭世界。
+	idleReleaseMu sync.Mutex
 
 	// playerAutosaveInterval 是玩家数据的周期保存间隔；<= 0 时禁用
 	// （测试可显式调用 saveAllPlayerData 驱动）。
@@ -544,6 +549,7 @@ func newServer(cfg config.Config, overworldGenerator world.Generator) (*Server, 
 		idleStage1Delay:        30 * time.Second,
 		idleStage2Delay:        2 * time.Minute,
 		idleStage3Delay:        5 * time.Minute,
+		idleStage4Delay:        15 * time.Minute,
 		playerAutosaveInterval: defaultPlayerAutosaveInterval,
 		borderHalfSize:         float64(cfg.WorldBorderSize) / 2,
 		defaultGameMode:        uint8(gameMode),
@@ -768,7 +774,9 @@ func (s *Server) registerPlayer(player *session) []*session {
 	s.mu.Unlock()
 	// 玩家重新加入会取消空闲释放进度；若实体曾在空闲阶段被清空，
 	// 重新加载该维度持久化的实体。
+	s.idleReleaseMu.Lock()
 	s.resetIdleRelease()
+	s.idleReleaseMu.Unlock()
 	s.ensureEntitiesLoaded(player.dimensionID())
 	return others
 }

@@ -93,4 +93,21 @@ func TestIdleReleaseStages(t *testing.T) {
 	if stillOpen {
 		t.Fatal("阶段 3 后下界世界仍被保留")
 	}
+
+	// 阶段 4：关闭包括主世界在内的全部维度；再次访问时按需重建。
+	instance.idleMu.Lock()
+	instance.idleStage4Delay = time.Nanosecond
+	instance.idleMu.Unlock()
+	if err := instance.unloadFarChunks(); err != nil {
+		t.Fatal(err)
+	}
+	instance.worldMu.RLock()
+	worldCount := len(instance.worlds)
+	instance.worldMu.RUnlock()
+	if worldCount != 0 {
+		t.Fatalf("阶段 4 后仍保留 %d 个世界对象", worldCount)
+	}
+	if rebuilt := instance.worldFor(world.DimensionOverworld); rebuilt == nil {
+		t.Fatal("阶段 4 后主世界无法按需重建")
+	}
 }
