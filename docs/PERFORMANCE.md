@@ -1587,6 +1587,7 @@ BenchmarkVanillaGeneratorChunk-20   ~62 ms/op    8.3 MB/op    52,784 allocs/op
 - 结构方块实体/战利品表、矿洞/要塞、2×2 树干接入后，当前完整生成基准
   约 112 ms/区块（10 次采样；首次运行含 3×3 邻域地物缓存构建，单次可超过
   500 ms；`BenchmarkGenerateChunkWarm` 热路径约 54 ms/区块、16 MB/op）。
+  地物跨区块缓存可通过 `Router.SetRegionFeaturesEnabled(false)` 关闭用于诊断。
   冷路径内存约 29 MB/op；这是性能回归，仍需后续 profile 优化。
   连续相邻区块生成会复用已计算的地物结果，真实区域生成的平均成本低于单区块
   冷启动基准。

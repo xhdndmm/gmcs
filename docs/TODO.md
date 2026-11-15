@@ -1279,9 +1279,9 @@
     `structure/*.nbt`；实现 NBT（全部标签类型）、结构模板 palette/blocks、
     template_pool 元素与 jigsaw 方块实体元数据解析。
   - [~] **结构运行时**：已实现 `random_spread` 结构集、jigsaw 起点/连接展开、
-    模板旋转/镜像、跨区块写入、基础 `block_rot`/`rule(random_block_match)`
-    processor、按结构 `project_start_to_heightmap` 生成地形高度（通过无结构
-    地形区块缓存）；已能生成 jigsaw 类结构（如村庄）。
+    模板旋转/镜像、跨区块写入、基础 processor、jigsaw `final_state` 替换、
+    按结构 `project_start_to_heightmap` 生成地形高度（通过无结构地形区块
+    缓存）；已能生成 jigsaw 类结构（如村庄）。
   - [~] **末地城基础拼装**：已加入 `end_city` 分支，用官方
     base_floor/second_floor_1/third_floor_1/third_roof 模板拼装；桥梁、
     塔楼递归、船、末影龙/折跃门 NBT 仍未完整移植。
@@ -1330,8 +1330,9 @@
         placer 与跨区块树冠冲突顺序仍未完成。
       - geode 已移植分层阈值、裂缝、invalid_blocks、potential placements 与
         LegacyRandomSource NormalNoise；仍需逐方块对拍验证；
-      - iceberg、dripstone、sculk patch、end spike、monster room 的复杂几何
-        仍不完整；root system 已加入悬挂根/根柱但未逐方块对拍；折跃门已接入
+      - iceberg 已按 IcebergFeature 主流程重写（上下冰体、椭圆/密度边界、雪层），
+        仍未逐方块对拍；dripstone、sculk patch、end spike、monster room 的
+        复杂几何仍不完整；root system 已加入悬挂根/根柱但未逐方块对拍；折跃门已接入
         ExitPortal 方块实体与 v10 存储持久化，但实体生成/末影龙联动仍未完成；
       - 地物逐方块对比仍有差异；例如 ore_tuff 单地物在区块 (0,0) 仍有
         约 1854/98304 差异，说明 feature index/随机流或 ore 放置细节仍未收敛。
