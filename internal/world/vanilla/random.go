@@ -100,6 +100,10 @@ func (r *legacyRandom) nextLong() int64 {
 	return int64(r.nextInt())<<32 + int64(r.nextInt())
 }
 
+func (r *legacyRandom) nextBoolean() bool {
+	return r.next(1) != 0
+}
+
 func (r *legacyRandom) nextFloat() float32 {
 	return float32(r.next(24)) / (1 << 24)
 }

@@ -392,9 +392,8 @@ func overlapsAny(piece structurePiece, pieces []structurePiece) bool {
 }
 
 func (r *structureRuntime) buildEndCity(seed int64, originX, originZ int, router *Router) *structureStart {
-	// EndCityPieces 的基础拼装：base_floor -> second_floor_1 ->
-	// third_floor_1 -> third_roof，再按随机选择塔楼类型。
-	// 桥梁/船/塔楼递归尚未完整移植，但保证末地城方块进入区块。
+	// 复刻 EndCityPieces 的基础生成器：基础房间 -> 二/三层 -> 顶，
+	// 然后递归生成塔楼/桥梁/胖塔；船只在桥生成器内按原版概率出现。
 	random := newLegacyRandom(seed + int64(originX)*17 + int64(originZ)*31)
 	rotation := templateRotation(random.nextIntBounded(4))
 	startX, startZ := originX*16+8, originZ*16+8
@@ -418,22 +417,145 @@ func (r *structureRuntime) buildEndCity(seed int64, originX, originZ int, router
 		return &start.pieces[len(start.pieces)-1]
 	}
 	base := add("minecraft:end_city/base_floor", nil, [3]int{}, rotation)
-	if base == nil {
-		return nil
-	}
 	second := add("minecraft:end_city/second_floor_1", base, [3]int{-1, 0, -1}, rotation)
-	if second == nil {
-		return nil
-	}
 	third := add("minecraft:end_city/third_floor_1", second, [3]int{-1, 4, -1}, rotation)
-	if third == nil {
-		return nil
-	}
 	top := add("minecraft:end_city/third_roof", third, [3]int{-1, 8, -1}, rotation)
 	if top == nil {
 		return nil
 	}
+	// TOWER_GENERATOR；原版 tower generator 本身会继续递归。
+	r.endCityTower(start, add, top, rotation, 1, random)
 	return start
+}
+
+func (r *structureRuntime) endCityTower(start *structureStart, add func(string, *structurePiece, [3]int, templateRotation) *structurePiece, parent *structurePiece, rotation templateRotation, depth int, random *legacyRandom) {
+	if parent == nil || depth > 8 {
+		return
+	}
+	base := add("minecraft:end_city/tower_base", parent, [3]int{3 + random.nextIntBounded(2), -3, 3 + random.nextIntBounded(2)}, rotation)
+	if base == nil {
+		return
+	}
+	piece := add("minecraft:end_city/tower_piece", base, [3]int{0, 7, 0}, rotation)
+	if piece == nil {
+		return
+	}
+	branch := (*structurePiece)(nil)
+	if random.nextIntBounded(3) == 0 {
+		branch = piece
+	}
+	pieces := 1 + random.nextIntBounded(3)
+	for i := 0; i < pieces; i++ {
+		piece = add("minecraft:end_city/tower_piece", piece, [3]int{0, 4, 0}, rotation)
+		if piece == nil {
+			return
+		}
+		if i < pieces-1 && random.nextBoolean() {
+			branch = piece
+		}
+	}
+	if branch != nil {
+		for _, direction := range []struct {
+			offset [3]int
+			rot    templateRotation
+		}{
+			{[3]int{1, -1, 0}, rotateNone},
+			{[3]int{6, -1, 1}, rotateClockwise90},
+			{[3]int{0, -1, 5}, rotate180},
+			{[3]int{5, -1, 6}, rotateCounterClockwise90},
+		} {
+			if !random.nextBoolean() {
+				continue
+			}
+			end := add("minecraft:end_city/bridge_end", branch, direction.offset, rotation)
+			if end == nil {
+				continue
+			}
+			r.endCityBridge(start, add, end, rotation, depth+1, random)
+		}
+		piece = add("minecraft:end_city/tower_top", piece, [3]int{-1, 4, -1}, rotation)
+	} else if depth == 7 {
+		piece = add("minecraft:end_city/tower_top", piece, [3]int{-1, 4, -1}, rotation)
+	} else {
+		r.endCityFatTower(start, add, piece, rotation, depth+1, random)
+	}
+	_ = piece
+}
+
+func (r *structureRuntime) endCityBridge(start *structureStart, add func(string, *structurePiece, [3]int, templateRotation) *structurePiece, parent *structurePiece, rotation templateRotation, depth int, random *legacyRandom) {
+	if parent == nil || depth > 8 {
+		return
+	}
+	length := random.nextIntBounded(4) + 1
+	piece := add("minecraft:end_city/bridge_piece", parent, [3]int{0, 0, -4}, rotation)
+	if piece == nil {
+		return
+	}
+	verticalOffset := 0
+	for i := 0; i < length; i++ {
+		if random.nextBoolean() {
+			piece = add("minecraft:end_city/bridge_piece", piece, [3]int{0, verticalOffset, -4}, rotation)
+			verticalOffset = 0
+			continue
+		}
+		if random.nextBoolean() {
+			piece = add("minecraft:end_city/bridge_steep_stairs", piece, [3]int{0, verticalOffset, -4}, rotation)
+		} else {
+			piece = add("minecraft:end_city/bridge_gentle_stairs", piece, [3]int{0, verticalOffset, -8}, rotation)
+		}
+		verticalOffset = 4
+		if piece == nil {
+			return
+		}
+	}
+	if piece == nil {
+		return
+	}
+	if random.nextIntBounded(maximum(1, 10-depth)) != 0 {
+		r.endCityTower(start, add, piece, rotation, depth+1, random)
+	} else {
+		add("minecraft:end_city/ship", piece, [3]int{-8 + random.nextIntBounded(8), verticalOffset, -70 + random.nextIntBounded(10)}, rotation)
+	}
+	add("minecraft:end_city/bridge_end", piece, [3]int{4, verticalOffset, 0}, rotation)
+}
+
+func (r *structureRuntime) endCityFatTower(start *structureStart, add func(string, *structurePiece, [3]int, templateRotation) *structurePiece, parent *structurePiece, rotation templateRotation, depth int, random *legacyRandom) {
+	if parent == nil || depth > 8 {
+		return
+	}
+	piece := add("minecraft:end_city/fat_tower_base", parent, [3]int{-3, 4, -3}, rotation)
+	piece = add("minecraft:end_city/fat_tower_middle", piece, [3]int{0, 4, 0}, rotation)
+	for i := 0; i < 2 && random.nextIntBounded(3) != 0; i++ {
+		piece = add("minecraft:end_city/fat_tower_middle", piece, [3]int{0, 8, 0}, rotation)
+		if piece == nil {
+			return
+		}
+		for _, direction := range []struct {
+			offset [3]int
+			rot    templateRotation
+		}{
+			{[3]int{4, -1, 0}, rotateNone},
+			{[3]int{12, -1, 4}, rotateClockwise90},
+			{[3]int{0, -1, 8}, rotate180},
+			{[3]int{8, -1, 12}, rotateCounterClockwise90},
+		} {
+			if !random.nextBoolean() {
+				continue
+			}
+			end := add("minecraft:end_city/bridge_end", piece, direction.offset, rotation)
+			if end != nil {
+				r.endCityBridge(start, add, end, rotation, depth+1, random)
+			}
+		}
+	}
+	add("minecraft:end_city/fat_tower_top", piece, [3]int{-2, 8, -2}, rotation)
+}
+
+func maximum(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func rotateHorizontalOffset(x, z int, rotation templateRotation) (int, int) {
