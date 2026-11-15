@@ -237,6 +237,12 @@ func (s *Server) chunkPacket(dim world.Dimension, pos world.ChunkPos, chunk *wor
 			slog.Error("构造区块帧失败", "error", err)
 			return nil
 		}
+		// 空闲释放阶段可能在本编码进行期间清空缓存；重新初始化，
+		// 避免向 nil map/order 写入。
+		if s.chunkPackets.order == nil {
+			s.chunkPackets.entries = make(map[chunkPacketKey]*list.Element)
+			s.chunkPackets.order = list.New()
+		}
 		entry := &chunkPacketEntry{key: key, chunk: chunk, rev: rev, frame: frame}
 		s.chunkPackets.entries[key] = s.chunkPackets.order.PushFront(entry)
 		if s.chunkPackets.order.Len() > chunkPacketCacheMax {
@@ -317,10 +323,14 @@ func (s *Server) unloadFarChunks() error {
 		})
 	}
 	if len(centers) == 0 {
-		// 服务器没有已加入玩家：释放全部区块（含区块帧缓存），
-		// 避免空闲服务器长期占用跑图积攒的区块内存。
-		return s.unloadAllChunks()
+		// 服务器没有已加入玩家：先立即释放全部区块（含区块帧缓存），
+		// 再按空闲持续时间逐级释放运行时缓存、实体和空闲维度。
+		err := s.unloadAllChunks()
+		s.advanceIdleRelease(time.Now())
+		return err
 	}
+	// 有玩家在线：取消尚未完成的空闲释放进度。
+	s.resetIdleRelease()
 	var firstErr error
 	for dim, dimCenters := range centers {
 		gameWorld := s.worldFor(dim)

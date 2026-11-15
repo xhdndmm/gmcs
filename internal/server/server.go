@@ -96,6 +96,16 @@ type Server struct {
 	// 使空闲服务器立即释放区块资源而不必等待下一个扫描周期。
 	unloadNow chan struct{}
 
+	// 空闲资源逐级释放：服务器没有已加入玩家时，按 idleStage1Delay /
+	// idleStage2Delay / idleStage3Delay 依次释放运行时缓存、实体和空闲维度。
+	// 任一值为 0 表示禁用对应阶段；默认值见 newServer。
+	idleMu          sync.Mutex
+	idleSince       time.Time
+	idleStage       int
+	idleStage1Delay time.Duration
+	idleStage2Delay time.Duration
+	idleStage3Delay time.Duration
+
 	// playerAutosaveInterval 是玩家数据的周期保存间隔；<= 0 时禁用
 	// （测试可显式调用 saveAllPlayerData 驱动）。
 	playerAutosaveInterval time.Duration
@@ -531,6 +541,9 @@ func newServer(cfg config.Config, overworldGenerator world.Generator) (*Server, 
 		chunkUnloadGrace:       defaultChunkUnloadGrace,
 		dimensionIdleGrace:     defaultDimensionIdleGrace,
 		unloadNow:              make(chan struct{}, 1),
+		idleStage1Delay:        30 * time.Second,
+		idleStage2Delay:        2 * time.Minute,
+		idleStage3Delay:        5 * time.Minute,
 		playerAutosaveInterval: defaultPlayerAutosaveInterval,
 		borderHalfSize:         float64(cfg.WorldBorderSize) / 2,
 		defaultGameMode:        uint8(gameMode),
@@ -746,13 +759,17 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 // registerPlayer 把玩家加入在线列表，返回当前在线的其他玩家。
 func (s *Server) registerPlayer(player *session) []*session {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	others := make([]*session, 0, len(s.players))
 	for _, other := range s.players {
 		others = append(others, other)
 	}
 	s.players[player.uuid] = player
 	s.publishPlayersSnapshotLocked()
+	s.mu.Unlock()
+	// 玩家重新加入会取消空闲释放进度；若实体曾在空闲阶段被清空，
+	// 重新加载该维度持久化的实体。
+	s.resetIdleRelease()
+	s.ensureEntitiesLoaded(player.dimensionID())
 	return others
 }
 
