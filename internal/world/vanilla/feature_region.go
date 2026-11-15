@@ -32,6 +32,12 @@ func newFeatureResultCache(limit int) *featureResultCache {
 	}
 }
 
+func (c *featureResultCache) peek(key chunkCoord) *featureResultEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.entries[key]
+}
+
 func (c *featureResultCache) get(key chunkCoord) *featureResultEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -78,9 +84,11 @@ func (r *Router) ensureFeatureResult(chunkX, chunkZ int, base *GeneratedChunk, b
 		}
 		chunk.capture = result.writes
 		chunk.captureEntities = result.entities
+		chunk.captureOutside = true
 		r.applyFeatures(chunk, biomes)
 		chunk.capture = nil
 		chunk.captureEntities = nil
+		chunk.captureOutside = false
 		entry.result = result
 	})
 	return entry.result
@@ -97,8 +105,6 @@ func (r *Router) applyRegionFeatures(chunk *GeneratedChunk, biomes *BiomeSource)
 		r.applyFeatures(chunk, biomes)
 		return
 	}
-	neighbors := make([]*featureResult, 0, 8)
-	var center *featureResult
 	apply := func(result *featureResult) {
 		if result == nil {
 			return
@@ -114,20 +120,19 @@ func (r *Router) applyRegionFeatures(chunk *GeneratedChunk, biomes *BiomeSource)
 			}
 		}
 	}
+	// 邻域只重放越界写入；当前区块自身最后执行，保持其地物优先级。
 	for dz := -1; dz <= 1; dz++ {
 		for dx := -1; dx <= 1; dx++ {
 			if dx == 0 && dz == 0 {
-				center = r.ensureFeatureResult(chunk.ChunkX, chunk.ChunkZ, chunk, biomes)
 				continue
 			}
-			if result := r.ensureFeatureResult(chunk.ChunkX+dx, chunk.ChunkZ+dz, nil, biomes); result != nil {
-				neighbors = append(neighbors, result)
-			}
+			apply(r.ensureFeatureResult(chunk.ChunkX+dx, chunk.ChunkZ+dz, nil, biomes))
 		}
 	}
-	// 当前区块自己的结果最后应用，避免邻域地物覆盖中心区块自身地物。
-	for _, result := range neighbors {
-		apply(result)
+	key := chunkCoord{x: chunk.ChunkX, z: chunk.ChunkZ}
+	if entry := r.featureCache.peek(key); entry != nil && entry.result != nil {
+		r.applyFeatures(chunk, biomes)
+		return
 	}
-	apply(center)
+	r.ensureFeatureResult(chunk.ChunkX, chunk.ChunkZ, chunk, biomes)
 }

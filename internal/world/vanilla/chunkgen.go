@@ -28,6 +28,9 @@ type GeneratedChunk struct {
 	// 用于跨区块地物的 region 级结果缓存。
 	capture         map[[3]int]SurfaceBlock
 	captureEntities map[[3]int]GeneratedBlockEntity
+	// captureOutside 只记录越界写入，用于跨区块地物缓存；区块自身写入不需要
+	// 在邻域重放。
+	captureOutside bool
 }
 
 // NewGeneratedChunk 创建一个全空气的区块。
@@ -77,7 +80,7 @@ func (c *GeneratedChunk) BlockAt(x, y, z int) SurfaceBlock {
 
 // SetBlock 写入方块并同步高度图（WORLD_SURFACE_WG：最高非空气方块）。
 func (c *GeneratedChunk) SetBlock(x, y, z int, block SurfaceBlock) {
-	if c.capture != nil {
+	if c.capture != nil && (!c.captureOutside || !c.InRange(x, y, z)) {
 		c.capture[[3]int{x, y, z}] = block
 	}
 	if !c.InRange(x, y, z) {

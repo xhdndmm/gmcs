@@ -632,3 +632,38 @@ func TestRegionFeatureCacheDeterministic(t *testing.T) {
 		}
 	})
 }
+
+func TestRegionFeaturesApplyNeighborWrites(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	localRouter, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localRouter.SetStructuresEnabled(false)
+	localBase, biomes, err := localRouter.generateBaseChunk(3, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localRouter.applyFeatures(localBase, biomes)
+	globalRouter, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalRouter.SetStructuresEnabled(false)
+	global, err := globalRouter.GenerateChunk(3, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	differences := 0
+	localBase.ForEachBlock(func(x, y, z int, block SurfaceBlock) {
+		if global.BlockAt(x, y, z).Name != block.Name {
+			differences++
+		}
+	})
+	if differences == 0 {
+		t.Fatal("region 地物没有把邻域越界写入合并到当前区块")
+	}
+}
