@@ -55,6 +55,9 @@ type BlockEntity struct {
 	TypeID int32
 	// Items 是容器槽位（顺序即槽位顺序）；nil 表示空容器。
 	Items []ContainerItem
+	// LootTable 是结构战利品表（由生成器/转换工具保留；服务器打开容器时
+	// 尚未按原版延迟求值）。
+	LootTable string
 	// BurnRemaining / BurnTotal 是熔炉类方块的燃料剩余/总时长（tick）。
 	BurnRemaining int32
 	BurnTotal     int32
@@ -83,7 +86,7 @@ type BlockEntity struct {
 
 // Empty 报告方块实体是否没有任何内容（槽位全空且无处理进度）。
 func (b BlockEntity) Empty() bool {
-	if b.GatewayExact || b.GatewayExit != [3]int{} || b.SpawnerEntity != "" || b.SpawnerDelay > 0 || b.SpawnerMinDelay > 0 || b.SpawnerMaxDelay > 0 || b.FrontText != [4]string{} || b.BackText != [4]string{} || b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 || b.TransferCooldown > 0 {
+	if b.LootTable != "" || b.GatewayExact || b.GatewayExit != [3]int{} || b.SpawnerEntity != "" || b.SpawnerDelay > 0 || b.SpawnerMinDelay > 0 || b.SpawnerMaxDelay > 0 || b.FrontText != [4]string{} || b.BackText != [4]string{} || b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 || b.TransferCooldown > 0 {
 		return false
 	}
 	for _, slot := range b.Items {
@@ -251,8 +254,8 @@ func appendBlockEntityNBT(dst []byte, entity BlockEntity) []byte {
 		return append(dst, 0x0A, 0x00, 0x00)
 	}
 	dst = append(dst, 0x0A, 0x00, 0x00) // TAG_Compound + 空名
-	if names := registry.SyncEntryNames("minecraft:block_entity_type"); int(entity.TypeID) >= 0 && int(entity.TypeID) < len(names) {
-		dst = appendNBTString(dst, "id", names[entity.TypeID])
+	if name, ok := registry.StaticEntryName("minecraft:block_entity_type", entity.TypeID); ok {
+		dst = appendNBTString(dst, "id", name)
 	}
 	if entity.SpawnerEntity != "" {
 		dst = append(dst, 0x0A)

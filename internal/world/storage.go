@@ -117,7 +117,7 @@ const (
 	// v5 追加槽位药水 ID 与酿造台进度，v6 追加槽位耐久/铁砧惩罚/自定义名称，
 	// v7 追加槽位附魔列表，v8 追加槽位纹饰图案/材质名，v9 追加漏斗传送冷却，
 	// v10 追加末地折跃门目标。
-	chunkVersion = 11
+	chunkVersion = 12
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 	// maxStoredNameLength 是容器槽位自定义名称的存储长度上限（协议字符串上限）。
@@ -402,6 +402,7 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 	for _, entity := range chunk.blockEntities {
 		size += 31 + len(entity.Items)*10
 		size += len(entity.SpawnerEntity) + 2 + 5*5
+		size += len(entity.LootTable) + 2
 		for _, line := range entity.FrontText {
 			size += len(line) + 2
 		}
@@ -515,6 +516,8 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 			offset += binary.PutUvarint(dst[offset:], uint64(len(line)))
 			offset += copy(dst[offset:], line)
 		}
+		offset += binary.PutUvarint(dst[offset:], uint64(len(entity.LootTable)))
+		offset += copy(dst[offset:], entity.LootTable)
 	}
 	return offset
 }
@@ -836,6 +839,9 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint1
 				if entity.BackText[index], offset, err = readStoredName(payload, offset, "告示牌背面文本"); err != nil {
 					return 0, err
 				}
+			}
+			if entity.LootTable, offset, err = readStoredName(payload, offset, "战利品表"); err != nil {
+				return 0, err
 			}
 		}
 		if chunk.blockEntities == nil {

@@ -82,12 +82,13 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 		chunk.setBlockStateDirect(blockX&15, blockY, blockZ&15, state)
 	})
 	generated.ForEachBlockEntity(func(blockX, blockY, blockZ int, entity vanilla.GeneratedBlockEntity) {
-		typeID, ok := registry.SyncEntryID("minecraft:block_entity_type", entity.Type)
+		typeID, ok := registry.StaticEntryID("minecraft:block_entity_type", entity.Type)
 		if !ok {
 			return
 		}
 		blockEntity := BlockEntity{
 			TypeID:          typeID,
+			LootTable:       entity.LootTable,
 			SpawnerEntity:   entity.SpawnerEntity,
 			SpawnerDelay:    int32(entity.SpawnerDelay),
 			SpawnerMinDelay: int32(entity.SpawnerMinDelay),

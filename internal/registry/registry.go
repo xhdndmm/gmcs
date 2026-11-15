@@ -241,6 +241,25 @@ func StaticEntryID(registryName, entry string) (int32, bool) {
 	return id, ok
 }
 
+// staticNameIndex 是静态注册表的反向索引（注册表名 → ID → 条目名）。
+var staticNameIndex = sync.OnceValue(func() map[string]map[int32]string {
+	index := make(map[string]map[int32]string, len(StaticEntryIDs))
+	for name, entries := range StaticEntryIDs {
+		byID := make(map[int32]string, len(entries))
+		for entry, id := range entries {
+			byID[id] = entry
+		}
+		index[name] = byID
+	}
+	return index
+})
+
+// StaticEntryName 查询静态注册表 ID 对应的条目名。
+func StaticEntryName(registryName string, id int32) (string, bool) {
+	name, ok := staticNameIndex()[registryName][id]
+	return name, ok
+}
+
 // syncIndex 是同步注册表的反向索引（注册表名 → 条目 → ID）。
 var syncIndex = sync.OnceValue(func() map[string]map[string]int32 {
 	index := make(map[string]map[string]int32, len(syncEntries))
