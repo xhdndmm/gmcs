@@ -41,6 +41,7 @@ type structureSetDefinition struct {
 	Count           int
 	Distance        int
 	Spread          int
+	PreferredBiomes string
 	Structures      []weightedStructure
 }
 
@@ -170,15 +171,16 @@ func loadStructureRuntime() (*structureRuntime, error) {
 			raw := data.StructureSets[setName]
 			var encoded struct {
 				Placement struct {
-					Type            string  `json:"type"`
-					Spacing         int     `json:"spacing"`
-					Separation      int     `json:"separation"`
-					Salt            int     `json:"salt"`
-					Frequency       float64 `json:"frequency"`
-					FrequencyMethod string  `json:"frequency_reduction_method"`
-					Count           int     `json:"count"`
-					Distance        int     `json:"distance"`
-					Spread          int     `json:"spread"`
+					Type            string          `json:"type"`
+					Spacing         int             `json:"spacing"`
+					Separation      int             `json:"separation"`
+					Salt            int             `json:"salt"`
+					Frequency       float64         `json:"frequency"`
+					FrequencyMethod string          `json:"frequency_reduction_method"`
+					Count           int             `json:"count"`
+					Distance        int             `json:"distance"`
+					Spread          int             `json:"spread"`
+					PreferredBiomes json.RawMessage `json:"preferred_biomes"`
 				} `json:"placement"`
 				Structures []struct {
 					Structure string `json:"structure"`
@@ -203,6 +205,7 @@ func loadStructureRuntime() (*structureRuntime, error) {
 				Count:           encoded.Placement.Count,
 				Distance:        encoded.Placement.Distance,
 				Spread:          encoded.Placement.Spread,
+				PreferredBiomes: parseBiomeList(encoded.Placement.PreferredBiomes),
 			}
 			if set.Frequency <= 0 {
 				set.Frequency = 1

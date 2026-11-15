@@ -5,8 +5,12 @@
 package vanilla
 
 import (
+	"encoding/json"
 	"math"
 	"sort"
+	"strings"
+
+	"gmcs/internal/registry"
 )
 
 // structureFrequencyAllows 复刻 StructurePlacement 的频率过滤。
@@ -29,13 +33,41 @@ func structureFrequencyAllows(seed int64, set structureSetDefinition, chunkX, ch
 	}
 }
 
+func parseBiomeList(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var names []string
+	if json.Unmarshal(raw, &names) == nil {
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			parts = append(parts, qualify(name))
+		}
+		return strings.Join(parts, "|")
+	}
+	var name string
+	if json.Unmarshal(raw, &name) == nil {
+		return qualify(name)
+	}
+	return ""
+}
+
 func (r *structureRuntime) ringOrigins(seed int64, setIndex int, set structureSetDefinition) [][2]int {
+	return r.ringOriginsWithBiomes(seed, setIndex, set, nil)
+}
+
+func (r *structureRuntime) ringOriginsWithBiomes(seed int64, setIndex int, set structureSetDefinition, biomes *BiomeSource) [][2]int {
 	r.ringMu.Lock()
 	defer r.ringMu.Unlock()
 	if r.rings == nil {
 		r.rings = make(map[int][][2]int)
 	}
-	if origins, ok := r.rings[setIndex]; ok {
+	// 带群系偏好时不能复用无群系计算出的普通环；单独缓存。
+	cacheKey := setIndex
+	if biomes != nil && set.PreferredBiomes != "" {
+		cacheKey = setIndex + 100000
+	}
+	if origins, ok := r.rings[cacheKey]; ok {
 		return origins
 	}
 	count := set.Count
@@ -60,7 +92,11 @@ func (r *structureRuntime) ringOrigins(seed int64, setIndex int, set structureSe
 		radius := float64(4*distance+distance*ring*6) + (random.nextDouble()-0.5)*float64(distance)*2.5
 		x := int(math.Round(math.Cos(angle) * radius))
 		z := int(math.Round(math.Sin(angle) * radius))
-		origins = append(origins, [2]int{floorDiv(x, 16), floorDiv(z, 16)})
+		origin := [2]int{floorDiv(x, 16), floorDiv(z, 16)}
+		if biomes != nil && set.PreferredBiomes != "" {
+			origin = r.nearPreferredBiome(biomes, origin, set.PreferredBiomes)
+		}
+		origins = append(origins, origin)
 		angle += math.Pi * 2 / float64(perRing)
 		inRing++
 		if inRing == perRing {
@@ -76,8 +112,46 @@ func (r *structureRuntime) ringOrigins(seed int64, setIndex int, set structureSe
 			angle += random.nextDouble() * math.Pi * 2
 		}
 	}
-	r.rings[setIndex] = origins
+	r.rings[cacheKey] = origins
 	return origins
+}
+
+// nearPreferredBiome 在环原点附近寻找 preferred_biomes 指定的群系。
+// 原版在生物群系源上寻找最近的偏好群系，半径受 placement 约束；这里
+// 使用 8 区块半径，避免一次生成 128 个要塞时扫描过大。
+func (r *structureRuntime) nearPreferredBiome(biomes *BiomeSource, origin [2]int, preferred string) [2]int {
+	matches := func(name string) bool {
+		for _, entry := range strings.Split(preferred, "|") {
+			if strings.HasPrefix(entry, "#") {
+				id, ok := registry.SyncEntryID("minecraft:worldgen/biome", name)
+				if ok && registry.WorldgenBiomeInTag(strings.TrimPrefix(entry, "#"), id) {
+					return true
+				}
+				continue
+			}
+			if entry == name {
+				return true
+			}
+		}
+		return false
+	}
+	if matches(biomes.BiomeAtBlock(origin[0]*16+8, 64, origin[1]*16+8)) {
+		return origin
+	}
+	best, bestDistance := origin, 1<<30
+	for dz := -8; dz <= 8; dz++ {
+		for dx := -8; dx <= 8; dx++ {
+			cx, cz := origin[0]+dx, origin[1]+dz
+			distance := dx*dx + dz*dz
+			if distance >= bestDistance {
+				continue
+			}
+			if matches(biomes.BiomeAtBlock(cx*16+8, 64, cz*16+8)) {
+				best, bestDistance = [2]int{cx, cz}, distance
+			}
+		}
+	}
+	return best
 }
 
 func (r *Router) applyConcentricStructures(chunk *GeneratedChunk, setIndex int, set structureSetDefinition, biomes *BiomeSource) {
@@ -87,7 +161,7 @@ func (r *Router) applyConcentricStructures(chunk *GeneratedChunk, setIndex int, 
 	}
 	// 要塞 pieces 可能跨越 origin 周围数个区块；使用 24 区块半径覆盖。
 	const radius = 24
-	for _, origin := range runtime.ringOrigins(r.seed, setIndex, set) {
+	for _, origin := range runtime.ringOriginsWithBiomes(r.seed, setIndex, set, biomes) {
 		if origin[0] < chunk.ChunkX-radius || origin[0] > chunk.ChunkX+radius ||
 			origin[1] < chunk.ChunkZ-radius || origin[1] > chunk.ChunkZ+radius {
 			continue
