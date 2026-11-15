@@ -117,3 +117,34 @@ func BenchmarkFindPathUnreachable(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkSaveChunkPayload 衡量单区块落盘（区域文件读改写 + fsync + rename）。
+// 使用临时目录，重复写同一槽位，覆盖“未更新槽位流式复制”的常见路径。
+func BenchmarkSaveChunkPayload(b *testing.B) {
+	dir := b.TempDir()
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
+	payloads := map[ChunkPos][]byte{{X: 0, Z: 0}: compressedPayload(b, chunk)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := SavePayloads(dir, payloads); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkLoadChunkPayload 衡量单区块磁盘加载 + v13 解码（不含生成）。
+func BenchmarkLoadChunkPayload(b *testing.B) {
+	dir := b.TempDir()
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
+	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 0, Z: 0}: compressedPayload(b, chunk)}); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := LoadChunk(dir, 0, 0); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -21,9 +22,9 @@ import (
 // regionFileCache 是打开的区域文件句柄缓存（磁盘缓存）：读路径反复
 // open/close 同一区域文件的系统调用开销可省；句柄按 LRU 有界。
 //
-// 句柄归还/淘汰时不立即 Close：可能有读者正持引用（ReadAt 并发安全），
-// 交由 GC 终结器回收，避免关闭正在使用的句柄。写入（重命名替换）后
-// 调用 dropRegion 丢弃缓存项，后续读取会重新打开新文件。
+// 缓存项使用引用计数：读者持有期间即使发生 LRU 淘汰、写入替换或
+// ReleaseRegionHandles，也不会关闭正在 ReadAt/复制的文件；最后一个引用
+// 归还时才真正 Close，避免旧实现依赖 GC 回收 fd 造成的句柄堆积。
 type regionFileCache struct {
 	mu      sync.Mutex
 	entries map[string]*list.Element
@@ -31,8 +32,10 @@ type regionFileCache struct {
 }
 
 type regionFileEntry struct {
-	path string
-	file *os.File
+	path    string
+	file    *os.File
+	refs    int
+	retired bool // 已从缓存移除，等待最后一个引用释放
 }
 
 // regionCacheMax 是缓存的区域文件句柄上限（每个句柄占一个 fd）。
@@ -43,45 +46,75 @@ var regionCache = &regionFileCache{
 	order:   list.New(),
 }
 
-// openRegion 返回区域文件句柄（缓存复用）；调用方不得 Close。
-func openRegion(path string) (*os.File, error) {
+// openRegion 获取区域文件句柄并增加引用；调用方必须调用 entry.release()。
+func openRegion(path string) (*regionFileEntry, error) {
 	regionCache.mu.Lock()
 	defer regionCache.mu.Unlock()
 	if elem, ok := regionCache.entries[path]; ok {
 		regionCache.order.MoveToFront(elem)
-		return elem.Value.(*regionFileEntry).file, nil
+		entry := elem.Value.(*regionFileEntry)
+		entry.refs++
+		return entry, nil
 	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	entry := &regionFileEntry{path: path, file: file}
+	entry := &regionFileEntry{path: path, file: file, refs: 1}
 	regionCache.entries[path] = regionCache.order.PushFront(entry)
 	if regionCache.order.Len() > regionCacheMax {
 		oldest := regionCache.order.Back()
-		entry = oldest.Value.(*regionFileEntry)
+		retire := oldest.Value.(*regionFileEntry)
 		regionCache.order.Remove(oldest)
-		delete(regionCache.entries, entry.path)
-		// 不立即 Close（可能有读者持有）；GC 终结器会回收。
+		delete(regionCache.entries, retire.path)
+		retire.retired = true
+		if retire.refs == 0 {
+			_ = retire.file.Close()
+		}
 	}
-	return file, nil
+	return entry, nil
 }
 
-// dropRegion 丢弃缓存的句柄（写入重命名后调用）。
+// release 归还一次引用；缓存项已淘汰/替换时关闭最后一个引用。
+func (e *regionFileEntry) release() {
+	regionCache.mu.Lock()
+	defer regionCache.mu.Unlock()
+	if e.refs > 0 {
+		e.refs--
+	}
+	if e.refs == 0 && e.retired {
+		_ = e.file.Close()
+	}
+}
+
+// dropRegion 丢弃缓存的句柄（写入重命名后调用）；正在读取的引用会保持
+// 旧文件打开，直到 release。
 func dropRegion(path string) {
 	regionCache.mu.Lock()
 	defer regionCache.mu.Unlock()
 	if elem, ok := regionCache.entries[path]; ok {
+		entry := elem.Value.(*regionFileEntry)
 		regionCache.order.Remove(elem)
 		delete(regionCache.entries, path)
+		entry.retired = true
+		if entry.refs == 0 {
+			_ = entry.file.Close()
+		}
 	}
 }
 
-// ReleaseRegionHandles 清空全部缓存句柄（服务器空闲时释放 fd 引用）；
-// 与淘汰一致不立即 Close（可能有读者持有），交由 GC 终结器回收。
+// ReleaseRegionHandles 清空全部缓存句柄（服务器空闲时释放 fd）；
+// 活跃引用在 release 时关闭，避免关闭正在使用的文件。
 func ReleaseRegionHandles() {
 	regionCache.mu.Lock()
 	defer regionCache.mu.Unlock()
+	for elem := regionCache.order.Front(); elem != nil; elem = elem.Next() {
+		entry := elem.Value.(*regionFileEntry)
+		entry.retired = true
+		if entry.refs == 0 {
+			_ = entry.file.Close()
+		}
+	}
 	regionCache.entries = make(map[string]*list.Element)
 	regionCache.order.Init()
 }
@@ -93,7 +126,14 @@ func ReleaseRegionHandles() {
 // 区块负载为 gmcs 自有格式（不是原版 NBT，不能与原版互读）：
 //
 //	magic "GMCS" (4B) | version u16 | x i32 | z i32 | 24 × section
-//	section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）4096 × u16 方块状态
+//	section: flags u8（bit0 = 含方块数据）| biome u16 |（可选）方块状态
+//	(version 13+) 方块状态使用调色板 + 位流：
+//	  bits u8（0 = 单值，1/2/4/8 = 调色板索引，16 = 直接状态）
+//	  bits == 0：state uvarint
+//	  bits <= 8：paletteCount uvarint | paletteCount × state uvarint |
+//	             ceil(4096×bits/64) × u64（小端位流，条目连续）
+//	  bits == 16：ceil(4096×16/64) × u64（直接状态位流）
+//	(version 1–12) 方块状态为 4096 × u16 大端（旧格式，读取兼容）
 //	(version 4+) 16 × u16 群系网格（4×4 列分辨率，索引见 biomeCellIndex）
 //	(version 2+) blockEntityCount varint | 每项: index uvarint | type varint
 //	  | slotCount varint | slotCount × (itemID varint, count varint[, potionID varint]
@@ -105,19 +145,27 @@ func ReleaseRegionHandles() {
 // version 5 起槽位携带药水 ID、方块实体携带酿造台进度；
 // version 6 起槽位携带耐久损耗、铁砧累积惩罚与自定义名称；
 // version 7 起槽位携带附魔列表；
-// version 8 起槽位携带纹饰图案与材质名。
-// 所有多字节整数均为大端；负载使用 zlib 压缩（区域文件压缩类型 2）。
+// version 8 起槽位携带纹饰图案与材质名；
+// version 9 起携带漏斗传送冷却，version 10 起携带末地折跃门目标，
+// version 11 起携带刷怪笼/告示牌/战利品表，version 12 起携带 LootTable。
+// 头部、坐标、群系与旧版方块状态为大端；v13 位流按 little-endian u64 存储。
+// 负载使用 zlib 压缩（区域文件压缩类型 2）。
 const (
-	regionShift   = 5
-	regionSize    = 1 << regionShift // 32 个区块
-	sectorSize    = 4096
-	headerSectors = 2
-	// chunkVersion 是当前存储负载版本：v11 追加刷怪笼/告示牌 NBT，v10 追加折跃门，
+	// maxConcurrentRegionSaves 限制一次批量保存中并行重写区域文件的数量：
+	// 不同区域文件互不共享数据，并行可掩盖 fsync/磁盘延迟；上限避免
+	// 一次 Flush 产生无界 goroutine 与过多页缓存压力。
+	maxConcurrentRegionSaves = 4
+	regionShift              = 5
+	regionSize               = 1 << regionShift // 32 个区块
+	sectorSize               = 4096
+	headerSectors            = 2
+	// chunkVersion 是当前存储负载版本：v13 使用调色板/位流的 section 方块
+	// 编码（减小磁盘体积）；v11 追加刷怪笼/告示牌 NBT，v10 追加折跃门，
 	// v4 追加 4×4 群系网格（section 内的 biome 字段仅作兼容保留），
 	// v5 追加槽位药水 ID 与酿造台进度，v6 追加槽位耐久/铁砧惩罚/自定义名称，
 	// v7 追加槽位附魔列表，v8 追加槽位纹饰图案/材质名，v9 追加漏斗传送冷却，
 	// v10 追加末地折跃门目标。
-	chunkVersion = 12
+	chunkVersion = 13
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 	// maxStoredNameLength 是容器槽位自定义名称的存储长度上限（协议字符串上限）。
@@ -144,25 +192,27 @@ func regionPath(dir string, x, z int) string {
 // 对大区域文件产生“整区解压”的内存峰值。
 func loadChunkPayload(dir string, x, z int) ([]byte, error) {
 	path := regionPath(dir, x, z)
-	file, err := openRegion(path)
+	handle, err := openRegion(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	defer handle.release()
+	file := handle.file
 
 	slot := regionSlot(x, z)
 	var location [4]byte
 	if _, err := file.ReadAt(location[:], int64(slot)*4); err != nil {
 		return nil, fmt.Errorf("区域文件 %s 读取位置表失败：%w", path, err)
 	}
-	entry := binary.BigEndian.Uint32(location[:])
-	if entry == 0 {
+	locationEntry := binary.BigEndian.Uint32(location[:])
+	if locationEntry == 0 {
 		return nil, nil
 	}
-	offset := int64(entry>>8) * sectorSize
-	sectors := int64(entry & 0xFF)
+	offset := int64(locationEntry>>8) * sectorSize
+	sectors := int64(locationEntry & 0xFF)
 	if sectors == 0 {
 		return nil, fmt.Errorf("区域文件 %s 槽位 %d 的位置表项无效", path, slot)
 	}
@@ -189,24 +239,46 @@ func loadChunkPayload(dir string, x, z int) ([]byte, error) {
 	return payload, nil
 }
 
+// zeroSector 用于补零，避免每个槽位都分配一个临时切片。
+var zeroSector [sectorSize]byte
+
+func writeZeroPadding(out *os.File, count int) error {
+	for count > 0 {
+		n := count
+		if n > len(zeroSector) {
+			n = len(zeroSector)
+		}
+		if _, err := out.Write(zeroSector[:n]); err != nil {
+			return err
+		}
+		count -= n
+	}
+	return nil
+}
+
 // saveRegion 把若干槽位的新负载写入区域文件：未更新的槽位从原文件按
 // 原始压缩数据复制（不解压、不重新压缩）。先写临时文件并 fsync，
 // 再重命名，避免崩溃造成部分写入。
 // payloads 必须是 zlib 压缩后的区块负载。
 func saveRegion(path string, payloads map[int][]byte) error {
-	old, err := openRegion(path)
+	oldEntry, err := openRegion(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		old = nil
+		oldEntry = nil
+	}
+	var old *os.File
+	if oldEntry != nil {
+		defer oldEntry.release()
+		old = oldEntry.file
 	}
 
 	const slotCount = regionSize * regionSize
 	var locations, timestamps [slotCount]uint32
 	if old != nil {
 		header := make([]byte, headerSectors*sectorSize)
-		if _, err := io.ReadFull(old, header); err != nil {
+		if _, err := old.ReadAt(header, 0); err != nil {
 			return fmt.Errorf("区域文件 %s 头部读取失败：%w", path, err)
 		}
 		for slot := 0; slot < slotCount; slot++ {
@@ -256,7 +328,7 @@ func saveRegion(path string, payloads map[int][]byte) error {
 				return fail(err)
 			}
 			if pad := sectorCount*sectorSize - 4 - total; pad > 0 {
-				if _, err := out.Write(make([]byte, pad)); err != nil {
+				if err := writeZeroPadding(out, pad); err != nil {
 					return fail(err)
 				}
 			}
@@ -275,31 +347,33 @@ func saveRegion(path string, payloads map[int][]byte) error {
 		if sectors == 0 {
 			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的位置表项无效", path, slot))
 		}
-		var length [4]byte
-		if _, err := old.ReadAt(length[:], offset); err != nil {
+		var header [5]byte
+		if _, err := old.ReadAt(header[:4], offset); err != nil {
 			return fail(fmt.Errorf("区域文件 %s 槽位 %d 读取负载头失败：%w", path, slot, err))
 		}
-		total := int64(binary.BigEndian.Uint32(length[:]))
+		total := int64(binary.BigEndian.Uint32(header[:4]))
 		if total < 2 || total > sectors*sectorSize-4 {
 			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的负载长度 %d 越界", path, slot, total))
 		}
-		stored := make([]byte, 4+total)
-		copy(stored, length[:])
-		if _, err := old.ReadAt(stored[4:], offset+4); err != nil {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 读取负载失败：%w", path, slot, err))
+		if _, err := old.ReadAt(header[4:], offset+4); err != nil {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 读取压缩类型失败：%w", path, slot, err))
 		}
-		if stored[4] != 2 {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 使用了不支持的压缩类型 %d", path, slot, stored[4]))
+		if header[4] != 2 {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 使用了不支持的压缩类型 %d", path, slot, header[4]))
 		}
-		sectorCount := uint32((len(stored) + sectorSize - 1) / sectorSize)
+		sectorCount := uint32((4 + total + sectorSize - 1) / sectorSize)
 		if sectorCount > 255 {
 			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的区块负载过大", path, slot))
 		}
-		if _, err := out.Write(stored); err != nil {
+		if _, err := out.Write(header[:]); err != nil {
 			return fail(err)
 		}
-		if pad := int(sectorCount)*sectorSize - len(stored); pad > 0 {
-			if _, err := out.Write(make([]byte, pad)); err != nil {
+		// 未更新的槽位直接流式复制压缩数据，避免为每个区块分配缓冲区。
+		if _, err := io.CopyN(out, io.NewSectionReader(old, offset+5, total-1), total-1); err != nil {
+			return fail(fmt.Errorf("区域文件 %s 槽位 %d 复制负载失败：%w", path, slot, err))
+		}
+		if pad := int(sectorCount)*sectorSize - 4 - int(total); pad > 0 {
+			if err := writeZeroPadding(out, pad); err != nil {
 				return fail(err)
 			}
 		}
@@ -373,12 +447,44 @@ func SavePayloads(dir string, payloads map[ChunkPos][]byte) error {
 		}
 		slots[regionSlot(pos.X, pos.Z)] = payload
 	}
-	for path, slots := range byRegion {
-		if err := saveRegion(path, slots); err != nil {
-			return err
-		}
+	paths := make([]string, 0, len(byRegion))
+	for path := range byRegion {
+		paths = append(paths, path)
 	}
-	return nil
+	// 固定顺序便于诊断；并行只改变 I/O 调度，不改变每个区域的内容。
+	sort.Strings(paths)
+	if len(paths) == 1 {
+		return saveRegion(paths[0], byRegion[paths[0]])
+	}
+	workers := maxConcurrentRegionSaves
+	if workers > len(paths) {
+		workers = len(paths)
+	}
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				if err := saveRegion(path, byRegion[path]); err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+				}
+			}
+		}()
+	}
+	for _, path := range paths {
+		jobs <- path
+	}
+	close(jobs)
+	wg.Wait()
+	return firstErr
 }
 
 // encodeChunkPayload 把区块编码为存储负载（未压缩）。
@@ -391,7 +497,7 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 	size := 14 + SectionCount*3 + 16*2 // 32 字节群系网格
 	for _, s := range chunk.sections {
 		if s != nil && !s.storage.allAir() {
-			size += SectionVolume * 2
+			size += compactSectionSize(&s.storage)
 		}
 	}
 	// 方块实体：数量前缀 + 每项 1 字节坐标 + type/槽位数的 varint 上限，
@@ -431,7 +537,7 @@ func encodeChunkPayload(chunk *Chunk) []byte {
 		binary.BigEndian.PutUint16(payload[offset+1:offset+3], chunk.biomes[biomeCellIndex(2, 2)])
 		offset += 3
 		if flags&1 != 0 {
-			offset = writeSectionPayload(payload, offset, &s.storage)
+			offset = writeCompactSection(payload, offset, &s.storage)
 		}
 	}
 	// 群系网格（4×4 列分辨率）。
@@ -522,37 +628,64 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 	return offset
 }
 
-// writeSectionPayload 把 v1 存储格式的 section 方块数据
-// （4096 个方块状态 × u16 大端）写入 dst 的 offset 处，返回新偏移。
-// 按存储位宽分派展开，避免逐方块调用 at() 的 switch 与调色板查找开销。
-func writeSectionPayload(dst []byte, offset int, st *sectionStorage) int {
-	switch st.bits {
-	case 0:
-		// uniform：重复写同一对字节。
-		high, low := byte(st.uniform>>8), byte(st.uniform)
-		for i := 0; i < SectionVolume; i++ {
-			dst[offset] = high
-			dst[offset+1] = low
-			offset += 2
-		}
-	case 16:
-		// 直接存储：每个 uint64 含 4 个 16 位状态，直接展开。
+// uvarintSize 返回 v 的 uvarint 编码长度。仅用于精确分配负载缓冲。
+func uvarintSize(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
+}
+
+// compactSectionSize 返回 v13 调色板/位流 section 的编码大小。
+func compactSectionSize(st *sectionStorage) int {
+	if st.bits == 0 {
+		return 1 + uvarintSize(uint64(st.uniform))
+	}
+	if state, uniform := st.uniformState(); uniform {
+		return 1 + uvarintSize(uint64(state))
+	}
+	if st.bits == 16 {
+		return 1 + SectionVolume*2
+	}
+	size := 1 + uvarintSize(uint64(len(st.palette)))
+	for _, state := range st.palette {
+		size += uvarintSize(uint64(state))
+	}
+	return size + SectionVolume*int(st.bits)/8
+}
+
+// writeCompactSection 把 v13 格式的 section 方块数据写入 dst 的 offset 处，
+// 返回新偏移。小端 uint64 位流与运行时 sectionStorage 的布局一致，
+// 因此常见路径可直接复制 data，无需逐方块重新打包。
+func writeCompactSection(dst []byte, offset int, st *sectionStorage) int {
+	if st.bits == 0 {
+		dst[offset] = 0
+		return offset + 1 + binary.PutUvarint(dst[offset+1:], uint64(st.uniform))
+	}
+	if state, uniform := st.uniformState(); uniform {
+		dst[offset] = 0
+		return offset + 1 + binary.PutUvarint(dst[offset+1:], uint64(state))
+	}
+	if st.bits == 16 {
+		dst[offset] = 16
+		offset++
 		for _, word := range st.data {
-			binary.BigEndian.PutUint16(dst[offset:offset+2], uint16(word>>48))
-			binary.BigEndian.PutUint16(dst[offset+2:offset+4], uint16(word>>32))
-			binary.BigEndian.PutUint16(dst[offset+4:offset+6], uint16(word>>16))
-			binary.BigEndian.PutUint16(dst[offset+6:offset+8], uint16(word))
+			binary.LittleEndian.PutUint64(dst[offset:], word)
 			offset += 8
 		}
-	default:
-		bits := int(st.bits)
-		mask := uint64(1)<<uint(bits) - 1
-		for _, word := range st.data {
-			for shift := 0; shift < 64; shift += bits {
-				binary.BigEndian.PutUint16(dst[offset:offset+2], st.palette[(word>>uint(shift))&mask])
-				offset += 2
-			}
-		}
+		return offset
+	}
+	dst[offset] = st.bits
+	offset++
+	offset += binary.PutUvarint(dst[offset:], uint64(len(st.palette)))
+	for _, state := range st.palette {
+		offset += binary.PutUvarint(dst[offset:], uint64(state))
+	}
+	for _, word := range st.data[:SectionVolume*int(st.bits)/64] {
+		binary.LittleEndian.PutUint64(dst[offset:], word)
+		offset += 8
 	}
 	return offset
 }
@@ -594,21 +727,14 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 		if flags&1 == 0 {
 			continue
 		}
-		need := SectionVolume * 2
-		if offset+need > len(payload) {
-			return nil, fmt.Errorf("区块负载截断于 section %d 的方块数据", index)
+		var err error
+		if version >= 13 {
+			offset, err = decodeCompactSection(payload, offset, chunk, index)
+		} else {
+			offset, err = decodeLegacySection(payload, offset, chunk, index)
 		}
-		s := &section{}
-		// 顺序解码为紧凑存储：全空气保持零值；其余方块走增量维护。
-		for i := 0; i < SectionVolume; i++ {
-			state := binary.BigEndian.Uint16(payload[offset+2*i : offset+2*i+2])
-			if state != AirBlock {
-				s.setBlock(i, state)
-			}
-		}
-		offset += need
-		if !s.storage.allAir() {
-			chunk.sections[index] = s
+		if err != nil {
+			return nil, err
 		}
 	}
 	if version >= 4 {
@@ -632,6 +758,87 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 		return nil, fmt.Errorf("区块负载尾部有 %d 字节多余数据", len(payload)-offset)
 	}
 	return chunk, nil
+}
+
+// decodeLegacySection 解析 v1–v12 的 4096 × u16 方块状态。
+func decodeLegacySection(payload []byte, offset int, chunk *Chunk, index int) (int, error) {
+	need := SectionVolume * 2
+	if offset+need > len(payload) {
+		return 0, fmt.Errorf("区块负载截断于 section %d 的方块数据", index)
+	}
+	s := &section{}
+	// 顺序解码为紧凑存储：全空气保持零值；其余方块走增量维护。
+	for i := 0; i < SectionVolume; i++ {
+		state := binary.BigEndian.Uint16(payload[offset+2*i : offset+2*i+2])
+		if state != AirBlock {
+			s.setBlock(i, state)
+		}
+	}
+	if !s.storage.allAir() {
+		chunk.sections[index] = s
+	}
+	return offset + need, nil
+}
+
+// decodeCompactSection 解析 v13 调色板/位流 section。
+func decodeCompactSection(payload []byte, offset int, chunk *Chunk, index int) (int, error) {
+	if offset >= len(payload) {
+		return 0, fmt.Errorf("区块负载截断于 section %d 的位宽", index)
+	}
+	bits := payload[offset]
+	offset++
+	if bits != 0 && bits != 1 && bits != 2 && bits != 4 && bits != 8 && bits != 16 {
+		return 0, fmt.Errorf("section %d 的位宽 %d 无效", index, bits)
+	}
+	st := sectionStorage{bits: bits}
+	if bits == 0 {
+		state, size := binary.Uvarint(payload[offset:])
+		if size <= 0 || state > 0xFFFF {
+			return 0, fmt.Errorf("section %d 的单值状态无效", index)
+		}
+		offset += size
+		st.uniform = uint16(state)
+	} else {
+		if bits != 16 {
+			count, size := binary.Uvarint(payload[offset:])
+			if size <= 0 || count == 0 || count > uint64(1)<<bits {
+				return 0, fmt.Errorf("section %d 的调色板数量 %d 无效", index, count)
+			}
+			offset += size
+			st.palette = make([]uint16, count)
+			for i := range st.palette {
+				state, size := binary.Uvarint(payload[offset:])
+				if size <= 0 || state > 0xFFFF {
+					return 0, fmt.Errorf("section %d 的调色板条目无效", index)
+				}
+				offset += size
+				st.palette[i] = uint16(state)
+			}
+		}
+		words := SectionVolume * int(bits) / 64
+		if offset+words*8 > len(payload) {
+			return 0, fmt.Errorf("区块负载截断于 section %d 的位流", index)
+		}
+		st.data = make([]uint64, words)
+		for i := range st.data {
+			st.data[i] = binary.LittleEndian.Uint64(payload[offset:])
+			offset += 8
+		}
+	}
+
+	s := &section{storage: st}
+	for i := 0; i < SectionVolume; i++ {
+		if bits != 0 && bits != 16 && int(st.wordAt(i)) >= len(st.palette) {
+			return 0, fmt.Errorf("section %d 的调色板索引越界", index)
+		}
+		if st.at(i) != AirBlock {
+			s.nonAir++
+		}
+	}
+	if s.nonAir > 0 {
+		chunk.sections[index] = s
+	}
+	return offset, nil
 }
 
 // decodeBlockEntities 解析版本 2+ 负载中的方块实体部分

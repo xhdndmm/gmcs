@@ -6,6 +6,7 @@ package world
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,7 +14,7 @@ import (
 )
 
 // compressedPayload 返回区块的 zlib 压缩存储负载（SavePayloads 的输入格式）。
-func compressedPayload(t *testing.T, chunk *Chunk) []byte {
+func compressedPayload(t testing.TB, chunk *Chunk) []byte {
 	t.Helper()
 	payload, err := zlibCompress(encodeChunkPayload(chunk))
 	if err != nil {
@@ -257,5 +258,161 @@ func TestZlibDecompressLimit(t *testing.T) {
 	}
 	if !bytes.Equal(decoded, big) {
 		t.Fatal("round trip mismatch")
+	}
+}
+
+// TestCompactSectionRoundTrip 覆盖 v13 调色板/位流 section：单值、普通调色板
+// 以及调色板超过 256 项时的直接 16 位存储。
+func TestCompactSectionRoundTrip(t *testing.T) {
+	chunk := NewChunk(2, -3)
+	chunk.SetBlockState(0, WorldMinY, 0, StoneBlock) // 单值 section
+	for i := 0; i < 300; i++ {
+		x, z := i&15, (i>>4)&15
+		y := WorldMinY + SectionSize + i/256
+		chunk.SetBlockState(x, y, z, uint16(i+1))
+	}
+	decoded, err := decodeChunkPayload(encodeChunkPayload(chunk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sectionIndex := 0; sectionIndex < SectionCount; sectionIndex++ {
+		for x := 0; x < SectionSize; x++ {
+			for z := 0; z < SectionSize; z++ {
+				for localY := 0; localY < SectionSize; localY++ {
+					y := WorldMinY + sectionIndex*SectionSize + localY
+					want := chunk.GetBlockState(x, y, z)
+					if got := decoded.GetBlockState(x, y, z); got != want {
+						t.Fatalf("(%d,%d,%d)：got %d, want %d", x, y, z, got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestCompactSectionRejectsPaletteIndexOverflow(t *testing.T) {
+	// bits=2、调色板只有 1 项，但位流第一个索引为 1：必须报错而不是越界 panic。
+	payload := []byte{2, 1, 7}
+	payload = append(payload, make([]byte, SectionVolume*2/8)...)
+	payload[3] = 1
+	if _, err := decodeCompactSection(payload, 0, NewChunk(0, 0), 0); err == nil {
+		t.Fatal("expected palette index error")
+	}
+}
+
+// TestDecodeLegacyV12Payload 确认 v13 改动没有破坏旧地图读取。
+func TestDecodeLegacyV12Payload(t *testing.T) {
+	chunk := FlatGenerator{}.GenerateChunk(4, -2)
+	payload := legacyV12PayloadForTest(chunk)
+	decoded, err := decodeChunkPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sectionIndex := 0; sectionIndex < SectionCount; sectionIndex++ {
+		for x := 0; x < SectionSize; x++ {
+			for z := 0; z < SectionSize; z++ {
+				y := WorldMinY + sectionIndex*SectionSize
+				want := chunk.GetBlockState(x, y, z)
+				if got := decoded.GetBlockState(x, y, z); got != want {
+					t.Fatalf("(%d,%d,%d)：got %d, want %d", x, y, z, got, want)
+				}
+			}
+		}
+	}
+}
+
+func legacyV12PayloadForTest(chunk *Chunk) []byte {
+	chunk.mu.RLock()
+	defer chunk.mu.RUnlock()
+	size := 14 + SectionCount*3 + 32 + 5
+	for _, s := range chunk.sections {
+		if s != nil && !s.storage.allAir() {
+			size += SectionVolume * 2
+		}
+	}
+	payload := make([]byte, size)
+	copy(payload, "GMCS")
+	binary.BigEndian.PutUint16(payload[4:6], 12)
+	binary.BigEndian.PutUint32(payload[6:10], uint32(int32(chunk.X)))
+	binary.BigEndian.PutUint32(payload[10:14], uint32(int32(chunk.Z)))
+	offset := 14
+	for _, s := range chunk.sections {
+		var flags byte
+		if s != nil && !s.storage.allAir() {
+			flags = 1
+		}
+		payload[offset] = flags
+		binary.BigEndian.PutUint16(payload[offset+1:offset+3], chunk.biomes[biomeCellIndex(2, 2)])
+		offset += 3
+		if flags == 1 {
+			for i := 0; i < SectionVolume; i++ {
+				binary.BigEndian.PutUint16(payload[offset:offset+2], s.storage.at(i))
+				offset += 2
+			}
+		}
+	}
+	for i := 0; i < 16; i++ {
+		binary.BigEndian.PutUint16(payload[offset:offset+2], chunk.biomes[i])
+		offset += 2
+	}
+	offset = writeBlockEntities(payload, offset, chunk)
+	return payload[:offset]
+}
+
+func TestSavePayloadsManyRegionsConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	payloads := make(map[ChunkPos][]byte)
+	for i := 0; i < 8; i++ {
+		chunk := FlatGenerator{}.GenerateChunk(i*32, i*32)
+		payloads[ChunkPos{X: i * 32, Z: i * 32}] = compressedPayload(t, chunk)
+	}
+	if err := SavePayloads(dir, payloads); err != nil {
+		t.Fatal(err)
+	}
+	for pos := range payloads {
+		chunk, err := LoadChunk(dir, pos.X, pos.Z)
+		if err != nil || chunk == nil {
+			t.Fatalf("(%d,%d) 未保存成功: %v", pos.X, pos.Z, err)
+		}
+		if got := chunk.GetBlockState(0, FlatGroundLevel, 0); got != GrassBlock {
+			t.Fatalf("(%d,%d) 方块丢失: %d", pos.X, pos.Z, got)
+		}
+	}
+}
+
+func TestRegionHandleReferenceCount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "r.0.0.mca")
+	if err := os.WriteFile(path, make([]byte, headerSectors*sectorSize), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := openRegion(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropRegion(path)
+	if _, err := entry.file.Stat(); err != nil {
+		t.Fatalf("有引用时文件被提前关闭: %v", err)
+	}
+	entry.release()
+	entry.release() // 防御性重复归还不应把引用减成负数或 panic
+	if _, err := entry.file.Stat(); err == nil {
+		t.Fatal("最后一个引用归还后文件仍未关闭")
+	}
+}
+
+func TestDecodeCompactSectionRejectsMalformed(t *testing.T) {
+	cases := [][]byte{
+		{},           // 缺少 bits
+		{3},          // 非法位宽
+		{1},          // 缺少调色板数量
+		{2, 0},       // 调色板数量为 0
+		{2, 1, 0x80}, // 调色板 uvarint 截断
+		{16, 1, 2},   // 直接存储位流截断
+		append([]byte{1, 2, 7, 8}, make([]byte, 64)...), // 位流只有 64 字节，应为 64×8 字节
+	}
+	for i, payload := range cases {
+		if _, err := decodeCompactSection(payload, 0, NewChunk(0, 0), i); err == nil {
+			t.Errorf("case %d: expected error", i)
+		}
 	}
 }

@@ -17,13 +17,32 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
 	regionSize    = 32
 	sectorSize    = 4096
 	headerSectors = 2
+	// maxRegionChunkPayload 限制单个区块解压后的 NBT 大小，防止压缩炸弹。
+	maxRegionChunkPayload = 64 << 20
 )
+
+var zeroSector [sectorSize]byte
+
+func writeZeroPadding(file *os.File, count int) error {
+	for count > 0 {
+		n := count
+		if n > len(zeroSector) {
+			n = len(zeroSector)
+		}
+		if _, err := file.Write(zeroSector[:n]); err != nil {
+			return err
+		}
+		count -= n
+	}
+	return nil
+}
 
 type regionChunk struct {
 	x, z int
@@ -60,7 +79,7 @@ func readRegion(path string) (map[int][]byte, error) {
 		if total < 2 || total > count*sectorSize-4 {
 			return nil, fmt.Errorf("区域 %s 槽位 %d 长度越界", path, slot)
 		}
-		payload := make([]byte, 1+total-1)
+		payload := make([]byte, total)
 		if _, err := file.ReadAt(payload, sector+4); err != nil {
 			return nil, err
 		}
@@ -73,7 +92,7 @@ func readRegion(path string) (map[int][]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			data, err = io.ReadAll(reader)
+			data, err = io.ReadAll(io.LimitReader(reader, maxRegionChunkPayload+1))
 			_ = reader.Close()
 			if err != nil {
 				return nil, err
@@ -83,7 +102,7 @@ func readRegion(path string) (map[int][]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			data, err = io.ReadAll(reader)
+			data, err = io.ReadAll(io.LimitReader(reader, maxRegionChunkPayload+1))
 			_ = reader.Close()
 			if err != nil {
 				return nil, err
@@ -92,6 +111,9 @@ func readRegion(path string) (map[int][]byte, error) {
 			data = append([]byte(nil), raw...)
 		default:
 			return nil, fmt.Errorf("区域 %s 槽位 %d 压缩类型 %d 不受支持", path, slot, compression)
+		}
+		if len(data) > maxRegionChunkPayload {
+			return nil, fmt.Errorf("区域 %s 槽位 %d 解压后超过上限 %d 字节", path, slot, maxRegionChunkPayload)
 		}
 		result[slot] = data
 	}
@@ -145,7 +167,7 @@ func writeRegion(path string, payloads map[int][]byte) error {
 			return fail(err)
 		}
 		if pad := sectorCount*sectorSize - 4 - total; pad > 0 {
-			if _, err := file.Write(make([]byte, pad)); err != nil {
+			if err := writeZeroPadding(file, pad); err != nil {
 				return fail(err)
 			}
 		}
@@ -167,6 +189,9 @@ func writeRegion(path string, payloads map[int][]byte) error {
 	if _, err := file.Write(timestamps[:]); err != nil {
 		return fail(err)
 	}
+	if err := file.Sync(); err != nil {
+		return fail(err)
+	}
 	if err := file.Close(); err != nil {
 		return err
 	}
@@ -174,19 +199,39 @@ func writeRegion(path string, payloads map[int][]byte) error {
 		_ = os.Remove(temp)
 		return err
 	}
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = dir.Sync()
+		_ = dir.Close()
+	}
 	return nil
 }
 
+var (
+	mapConvertBufferPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	mapConvertWriterPool = sync.Pool{New: func() any { return zlib.NewWriter(io.Discard) }}
+)
+
+// zlibCompress 复用压缩器与输出缓冲，批量转换时避免每个区块分配
+// zlib.Writer 的窗口/哈希表。
 func zlibCompress(data []byte) ([]byte, error) {
-	var buffer bytes.Buffer
-	writer := zlib.NewWriter(&buffer)
-	if _, err := writer.Write(data); err != nil {
-		return nil, err
+	buffer := mapConvertBufferPool.Get().(*bytes.Buffer)
+	buffer.Reset()
+	writer := mapConvertWriterPool.Get().(*zlib.Writer)
+	writer.Reset(buffer)
+	_, err := writer.Write(data)
+	if err == nil {
+		err = writer.Close()
 	}
-	if err := writer.Close(); err != nil {
-		return nil, err
+	mapConvertWriterPool.Put(writer)
+	var compressed []byte
+	if err == nil {
+		compressed = append([]byte(nil), buffer.Bytes()...)
 	}
-	return buffer.Bytes(), nil
+	if buffer.Cap() > maxRegionChunkPayload {
+		buffer = new(bytes.Buffer)
+	}
+	mapConvertBufferPool.Put(buffer)
+	return compressed, err
 }
 
 // listRegions 按区域坐标列出目录中的 r.<x>.<z>.mca。

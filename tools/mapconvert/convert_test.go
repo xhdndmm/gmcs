@@ -118,3 +118,23 @@ func TestConversionRoundTripDirectories(t *testing.T) {
 		t.Fatalf("往返后区块/方块丢失: %#v", loaded)
 	}
 }
+
+func TestDecodeNBTRejectsOversizedList(t *testing.T) {
+	// 根 compound、空名称，字段 "x" 是 list<byte>，长度 2^31-1 但没有元素。
+	buf := []byte{tagCompound, 0, 0}
+	buf = append(buf, tagList, 0, 1, 'x', tagByte, 0x7f, 0xff, 0xff, 0xff)
+	if _, err := decodeNBT(buf); err == nil {
+		t.Fatal("expected oversized list error")
+	}
+}
+
+func TestDecodeNBTRejectsDeepNesting(t *testing.T) {
+	buf := []byte{tagCompound, 0, 0}
+	for i := 0; i < maxNBTDepth+2; i++ {
+		buf = append(buf, tagCompound, 0, 0)
+	}
+	buf = append(buf, tagEnd)
+	if _, err := decodeNBT(buf); err == nil {
+		t.Fatal("expected nesting depth error")
+	}
+}

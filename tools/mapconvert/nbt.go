@@ -32,21 +32,28 @@ const (
 
 const (
 	maxNBTDepth    = 512
-	maxNBTElements = 1 << 24
+	maxNBTElements = 1 << 20
+	maxNBTPayload  = 64 << 20
 )
 
 type compound map[string]any
 
 func decodeGzipOrRaw(raw []byte) (compound, error) {
+	if len(raw) > maxNBTPayload {
+		return nil, fmt.Errorf("NBT 输入超过上限 %d 字节", maxNBTPayload)
+	}
 	if len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
 		reader, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, fmt.Errorf("解压 NBT: %w", err)
 		}
-		payload, err := io.ReadAll(reader)
+		payload, err := io.ReadAll(io.LimitReader(reader, maxNBTPayload+1))
 		_ = reader.Close()
 		if err != nil {
 			return nil, err
+		}
+		if len(payload) > maxNBTPayload {
+			return nil, fmt.Errorf("NBT 解压后超过上限 %d 字节", maxNBTPayload)
 		}
 		raw = payload
 	}
@@ -172,6 +179,11 @@ func (d *nbtDecoder) list(depth int) ([]any, error) {
 	}
 	if length < 0 || length > maxNBTElements {
 		return nil, fmt.Errorf("NBT 列表长度非法：%d", length)
+	}
+	// 每个元素至少占 1 字节；先按剩余输入拒绝伪造的超大长度，
+	// 避免在解压炸弹/损坏文件上预分配巨量 []any。
+	if int64(length) > int64(d.remaining()) {
+		return nil, fmt.Errorf("NBT 列表长度 %d 超过剩余数据", length)
 	}
 	values := make([]any, 0, length)
 	for i := int32(0); i < length; i++ {
