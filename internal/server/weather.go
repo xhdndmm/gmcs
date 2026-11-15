@@ -262,7 +262,7 @@ func (s *Server) broadcastToOverworld(packet []byte, players []*session) {
 // weatherJoinPackets 返回玩家进入主世界时需要补发的天气包。
 // 原版只在天气变化时广播（ServerLevel.advanceWeatherCycle），新加入的玩家
 // 依赖随后的变化包；gmcs 在进入世界时主动同步一次，避免中途加入的客户端
-// 在雨停前看不到雨（差异记录于 docs/MIGRATION.md）。
+// 在雨停前看不到雨。
 func (s *Server) weatherJoinPackets() [][]byte {
 	if !s.weatherEnabled {
 		return nil

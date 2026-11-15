@@ -812,7 +812,7 @@
   - 客户端同步：`rainLevel`/`thunderLevel` 以 0.01 步进逼近 0/1 并 clamp，
     值变化时广播 Game Event 7（雨强度）/8（雷强度）；下雨状态翻转时广播
     Game Event 1（开始）/2（停止）并补发一次强度；进入世界时额外同步一次
-    当前天气（原版只在变化时广播，差异见 MIGRATION）；
+    当前天气（原版只在变化时广播）；
   - `isRainingAt`（`Level.getPrecipitationAt`）：未下雨、维度不是主世界、
     区块未加载、**群系不降水**（沙漠/热带草原/恶地）、上方有阻挡方块时为否；
     天空暴露用“有碰撞形状”近似 `Heightmap.MOTION_BLOCKING`（水/火/草/花不阻挡降水）；

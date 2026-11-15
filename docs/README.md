@@ -592,7 +592,7 @@ docs                文档（贡献指南、迁移指南、TODO、性能基准�
 - [docs/TODO.md](TODO.md)：进度、待办与已知限制（路线图）
 - [docs/PERFORMANCE.md](PERFORMANCE.md)：性能基准与复现方式
 - [docs/CONTRIBUTING.md](CONTRIBUTING.md)：贡献指南（开发环境、测试与提交流程）
-- [docs/MIGRATION.md](MIGRATION.md)：迁移指南（升级、更换 Minecraft 版本、与原版互迁）
+- [docs/MIGRATION.md](MIGRATION.md)：gmcs 与原版服务器地图互迁教程
 - [docs/MAP_CONVERT.md](MAP_CONVERT.md)：gmcs 与原版 Anvil 区域地图转换工具
 
 ## 许可证

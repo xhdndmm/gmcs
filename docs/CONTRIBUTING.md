@@ -31,7 +31,7 @@
 - `go test -race` 需要 CGO 与受支持的平台；不支持时使用
   `scripts/test.sh --no-race`
 - 只有"更换 Minecraft 版本、重新生成数据"才需要 Java（官方服务端 jar）与
-  官方客户端 jar，步骤见 [MIGRATION.md](MIGRATION.md) 第 3 节
+  官方客户端 jar，步骤见本指南第 3 节
 
 常用命令：
 
@@ -65,12 +65,76 @@ profile；`go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s
 可模拟并发客户端并输出进入世界耗时、流量与包类型分布（方法见
 [PERFORMANCE.md](PERFORMANCE.md) 3.7）。
 
-## 3. 项目结构
+## 3. 更换 / 升级 Minecraft 版本（开发流程）
+
+本节是开发流程，不是玩家存档迁移教程。玩家地图在 gmcs 与原版之间迁移见
+[MIGRATION.md](MIGRATION.md)。
+
+调整目标 Minecraft 版本时按顺序执行：
+
+1. **准备数据源**：目标版本的官方客户端 jar 与服务端 jar。
+
+2. **生成数据报告**（需要 Java）：
+
+   ```bash
+   java -DbundlerMainClass=net.minecraft.data.Main \
+     -jar server.jar --reports
+   ```
+
+3. **重新生成注册表数据**：
+
+   ```bash
+   go run ./tools/genregistries \
+     -jar <client.jar> \
+     -reports generated/reports/registries.json \
+     -blocks generated/reports/blocks.json \
+     -items generated/reports/items.json
+   ```
+
+   会更新 `internal/registry/` 下的 `data_generated.go`、`blocks_generated.go`、
+   `items_generated.go`、`static_ids_generated.go` 与 `item_components_generated.go`
+   （后者含食物数值与按物品的堆叠上限；省略 `-items` 时不更新）。
+   **不要手改生成文件**，需要调整时修改 `tools/genregistries`。
+
+4. **更新协议常量与版本信息**：
+   - `internal/config`：默认 `protocol_version`（当前 774）、`version_name`、`motd`
+   - `internal/protocol`：数据包 ID 常量、Configuration 阶段的协商内容
+     （Known Packs、Registry Data 等）
+   - `internal/world`：区块格式、section 数量、调色板/高度图等版本相关编码
+   - 依赖生成数据的 ID（方块状态、物品、实体类型、声音、伤害类型等）无需手改
+
+5. **核对版本差异**：对照官方协议文档与第三方实现（ViaVersion、
+   node-minecraft-protocol、minecraft-data 等）逐项核对本仓库使用的包与字段。
+   已知历史变更点示例：
+   - 1.21.2 起实体速度与位置使用 LpVec3 打包；
+   - 1.21.5 起调色板数据数组不再带长度前缀；
+   - 后续版本可能新增字段（如 section fluid count）——gmcs 当前按 1.21.11 处理，
+     升级时必须逐项确认；
+   - 版本差异应集中实现（版本特定实现/能力抽象），不要散落大量的
+     `if version >= ...`。
+
+6. **同步地图转换工具**：若方块状态、section 高度、Anvil 区块字段或 DataVersion
+   变化，更新 `tools/mapconvert`，并更新 [MAP_CONVERT.md](MAP_CONVERT.md) 的
+   目标版本与限制说明。
+
+7. **验证**：
+   - `scripts/test.sh` 全绿（含 race）
+   - 数据相关测试：`internal/registry/lookup_test.go`、`internal/world` 编码测试
+   - 地图转换往返测试：`go test ./tools/mapconvert`
+   - 用目标版本客户端实机联机：登录 → 配置 → 进入世界 → 区块渲染 → 基础交互
+
+8. **更新文档**：
+   - README：适配版本、协议号、命令/配置变化
+   - TODO 头部：当前适配版本与已知限制
+   - 本指南：版本差异与数据生成步骤
+   - [PERFORMANCE.md](PERFORMANCE.md)：环境说明与必要的新基准
+
+## 4. 项目结构
 
 | 路径 | 职责 | 注意点 |
 | --- | --- | --- |
 | `cmd/gmcs` | 入口：加载配置、启动服务器 | 新增启动参数需同步 README |
-| `internal/config` | 配置结构、JSON 持久化与校验 | 新字段需同步 README 配置表与 MIGRATION 字段演化表 |
+| `internal/config` | 配置结构、JSON 持久化与校验 | 新字段需同步 README 配置表 |
 | `internal/protocol` | 协议编解码（握手/登录/配置/Play、NBT、Slot、加密等） | 数据包 ID 与格式严格对应 1.21.11（协议 774） |
 | `internal/registry` | 注册表、方块状态、物品与静态 ID 数据 | `*_generated.go` 由工具生成，禁止手改 |
 | `cmd/gmcsload` | 负载压测客户端（离线模式模拟并发玩家） | 仅用于测试/基准，不参与服务器运行 |
@@ -79,30 +143,31 @@ profile；`go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s
 | `internal/server` | 会话生命周期、世界循环、实体/战斗、命令 | 并发与生命周期集中在这里 |
 | `tools/genregistries` | 数据生成器 | 调整数据管线时改它并重新生成 |
 | `tools/vandump` | 临时抓包客户端（连接官方服务器并转储 Play 阶段数据包） | 仅用于兼容性验证（对照官方服务端实测编码），不参与服务器运行 |
+| `tools/mapconvert` | gmcs 与原版 Anvil 区域地图双向转换工具 | 只转换区块，不处理 level.dat/POI/实体，见 [MAP_CONVERT.md](MAP_CONVERT.md) |
 | `scripts` | 构建与测试脚本 | 新增检查请同步 CI（`.github/workflows/ci.yml`） |
-| `docs` | 文档 | 更新场景见第 6 节 |
+| `docs` | 文档 | 更新场景见第 7 节 |
 
-## 4. 修改约定
+## 5. 修改约定
 
-### 4.1 保持 diff 清晰
+### 5.1 保持 diff 清晰
 
 - 只改与任务直接相关的文件；不做无关重构或大规模格式化
 - 不覆盖工作区中未提交的改动；提交前先看 `git status` / `git diff`
 - 不删除无关文件；不重写整个文件只为了改几行
 
-### 4.2 错误处理
+### 5.2 错误处理
 
 - 认真处理 error：返回、包装（`%w`）或记录；运行时路径禁止 `panic`
 - 禁止无理由的 `_ = err`，也不要吞掉错误后返回空值
 
-### 4.3 并发
+### 5.3 并发
 
 - 禁止无界 goroutine（每包、每实体、每连接直接 `go func()`）；使用 worker、
   有界队列或明确归属（ownership）模型
 - 明确数据归属：例如会话读写由会话自身串行化，生物状态由 `entityMu` 保护
 - 修改并发代码后必须运行 `go test -race ./...`
 
-### 4.4 性能
+### 5.4 性能
 
 - 不以"感觉更快"作为论据；用 `go test -bench` 或 profile 验证
 - 关键路径（区块生成/编码、实体包、Tick）避免无谓分配；缓冲能复用就复用
@@ -110,21 +175,21 @@ profile；`go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s
 - 性能改动应给出优化前后数据（记录到 [PERFORMANCE.md](PERFORMANCE.md)），
   并证明协议输出不变（可用对照测试，如 `TestPackIndirectMatchesPackBits`）
 
-### 4.5 协议与版本
+### 5.5 协议与版本
 
 - 协议实现必须严格对应目标版本（当前 1.21.11 / 774）；不猜测字段顺序与编码
 - 不同版本差异应集中管理（版本特定实现/能力抽象），不要散落
   `if version >= ...`
 - 协议相关修改必须附带测试；无法确认真实行为时，明确说明不确定性并实验验证
 
-### 4.6 生成文件
+### 5.6 生成文件
 
 - `internal/registry/*_generated.go` 由 `tools/genregistries` 生成，禁止手改
-- 数据源与重新生成方式见 [MIGRATION.md](MIGRATION.md) 第 3 节
+- 数据源与重新生成方式见本指南第 3 节
 
-## 5. 测试要求
+## 6. 测试要求
 
-### 5.1 什么时候必须加测试
+### 6.1 什么时候必须加测试
 
 | 改动类型 | 最低要求 |
 | --- | --- |
@@ -134,7 +199,7 @@ profile；`go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s
 | 并发 | `go test -race` 通过；必要时增加并发用例 |
 | 性能优化 | benchmark + 优化前后数据 |
 
-### 5.2 测试写法
+### 6.2 测试写法
 
 - 与被测代码同包（`xxx_test.go`），优先表格驱动
 - 集成测试通过真实 TCP 会话进行；`internal/server` 的测试提供了 `joinServer`
@@ -143,27 +208,27 @@ profile；`go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s
 - 测试不得依赖真实网络（显式集成测试监听 localhost 除外），不得依赖时序巧合
 - benchmark 放在 `benchmark_test.go`，命名 `BenchmarkXxx`，避免与被测目标无关的开销
 
-### 5.3 验证与汇报
+### 6.3 验证与汇报
 
 - 提交前至少运行 `scripts/test.sh`（若未运行，必须在汇报中明确说明）
 - 汇报时区分：已完成 / 已验证 / 未验证 / 已知限制（AGENTS.md §27）
 
-## 6. 文档要求
+## 7. 文档要求
 
 代码行为变化时同步更新对应文档：
 
 | 改动 | 需要更新 |
 | --- | --- |
-| 新增/修改配置字段 | README 配置表；MIGRATION 字段演化表 |
+| 新增/修改配置字段 | README 配置表 |
 | 新增/修改命令 | README 内置命令表 |
 | 可观察行为变化、限制解除或新增 | README 对应章节；TODO 已知限制 |
 | 性能优化/新增 benchmark | PERFORMANCE.md |
-| 协议号、适配版本变化 | README、TODO 头部、MIGRATION |
-| 新增文件格式或存储变化 | MIGRATION 兼容性一览 |
+| 协议号、适配版本变化 | README、TODO 头部、本指南第 3 节 |
+| 新增文件格式或存储变化 | 相关存储文档；玩家地图互迁见 MIGRATION.md |
 
-## 7. 提交与 PR
+## 8. 提交与 PR
 
-### 7.1 提交信息
+### 8.1 提交信息
 
 - 风格：`<type>: <简述>`，type 常用 `feat` / `fix` / `perf` / `refactor` /
   `test` / `chore` / `docs`；简述可用中文或英文
@@ -180,7 +245,7 @@ perf: 区块编码热路径优化（调色板线性查找 + 缓冲预分配）
 已验证：scripts/test.sh（含 race）、go test -bench=. ./internal/world/
 ```
 
-### 7.2 PR 流程
+### 8.2 PR 流程
 
 1. 新建分支并提交改动；
 2. 确保 CI（GitHub Actions：gofmt、vet、单元测试、race、交叉编译矩阵）全绿；
@@ -190,6 +255,6 @@ perf: 区块编码热路径优化（调色板线性查找 + 缓冲预分配）
 大型改动（协议重构、存储格式变化、架构调整）请先开 Issue 说明方案，避免返工。
 提交入口：<https://github.com/xhdndmm/gmcs>。
 
-## 8. 许可证
+## 9. 许可证
 
 项目使用 [MIT License](../LICENSE)。提交贡献即表示同意以相同许可证发布。
