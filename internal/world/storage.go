@@ -192,6 +192,19 @@ func regionPath(dir string, x, z int) string {
 // 对大区域文件产生“整区解压”的内存峰值。
 func loadChunkPayload(dir string, x, z int) ([]byte, error) {
 	path := regionPath(dir, x, z)
+	lock := regionLock(path)
+	// 崩溃后遗留的日志必须先重放。快速路径只做一次 stat；正常读取不会
+	// 与保存并发（保存持有同一分片的写锁）。
+	if regionHasJournal(path) {
+		lock.Lock()
+		err := recoverRegion(path)
+		lock.Unlock()
+		if err != nil {
+			return nil, err
+		}
+	}
+	lock.RLock()
+	defer lock.RUnlock()
 	handle, err := openRegion(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -239,175 +252,187 @@ func loadChunkPayload(dir string, x, z int) ([]byte, error) {
 	return payload, nil
 }
 
-// zeroSector 用于补零，避免每个槽位都分配一个临时切片。
-var zeroSector [sectorSize]byte
+// maxRegionSectors 是区域位置表中 24 位扇区偏移的上限。
+const maxRegionSectors = 1 << 24
 
-func writeZeroPadding(out *os.File, count int) error {
-	for count > 0 {
-		n := count
-		if n > len(zeroSector) {
-			n = len(zeroSector)
-		}
-		if _, err := out.Write(zeroSector[:n]); err != nil {
-			return err
-		}
-		count -= n
+// scanRegionUsed 返回头部引用的扇区位图、最大已用扇区，并校验旧头部
+// 不指向文件范围之外。位图多留一个槽位便于追加分配。
+func scanRegionUsed(header []byte, fileSize int64) ([]bool, uint32, error) {
+	if len(header) != regionHeaderSize {
+		return nil, 0, fmt.Errorf("区域头部长度 %d 无效", len(header))
 	}
-	return nil
+	if fileSize < 0 {
+		return nil, 0, fmt.Errorf("区域文件大小 %d 无效", fileSize)
+	}
+	fileSectors := uint32((fileSize + sectorSize - 1) / sectorSize)
+	if fileSectors > maxRegionSectors {
+		return nil, 0, fmt.Errorf("区域文件扇区数 %d 过大", fileSectors)
+	}
+	if fileSize > 0 && fileSize < int64(regionHeaderSize) {
+		return nil, 0, fmt.Errorf("区域文件长度 %d 小于头部", fileSize)
+	}
+	size := int(fileSectors)
+	if size < headerSectors {
+		size = headerSectors
+	}
+	used := make([]bool, size+1)
+	maxUsed := uint32(headerSectors)
+	for slot := 0; slot < regionSize*regionSize; slot++ {
+		entry := binary.BigEndian.Uint32(header[slot*4:])
+		if entry == 0 {
+			continue
+		}
+		offset := entry >> 8
+		count := entry & 0xFF
+		if count == 0 || offset < headerSectors {
+			return nil, 0, fmt.Errorf("区域槽位 %d 的位置表项无效", slot)
+		}
+		end := offset + count
+		if end > fileSectors || end > maxRegionSectors {
+			return nil, 0, fmt.Errorf("区域槽位 %d 超出文件范围", slot)
+		}
+		if int(end) >= len(used) {
+			used = append(used, make([]bool, int(end)-len(used)+1)...)
+		}
+		for sector := offset; sector < end; sector++ {
+			used[sector] = true
+		}
+		if end > maxUsed {
+			maxUsed = end
+		}
+	}
+	return used, maxUsed, nil
 }
 
-// saveRegion 把若干槽位的新负载写入区域文件：未更新的槽位从原文件按
-// 原始压缩数据复制（不解压、不重新压缩）。先写临时文件并 fsync，
-// 再重命名，避免崩溃造成部分写入。
-// payloads 必须是 zlib 压缩后的区块负载。
-func saveRegion(path string, payloads map[int][]byte) error {
-	oldEntry, err := openRegion(path)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
+// findFreeSectors 在 used 中寻找第一个连续 count 个空闲扇区；找不到返回 -1。
+func findFreeSectors(used []bool, count int) int {
+	for start := headerSectors; start+count <= len(used); start++ {
+		free := true
+		for i := 0; i < count; i++ {
+			if used[start+i] {
+				free = false
+				break
+			}
 		}
-		oldEntry = nil
+		if free {
+			return start
+		}
 	}
-	var old *os.File
+	return -1
+}
+
+// saveRegion 以 copy-on-write + sidecar 日志增量更新区域文件：
+// 新负载写入旧头部未引用的扇区，提交头部后旧扇区自然变成空闲区，
+// 后续保存可复用；文件末尾的空闲扇区在提交后 truncate 回收。
+func saveRegion(path string, payloads map[int][]byte) error {
+	lock := regionLock(path)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := recoverRegion(path); err != nil {
+		return err
+	}
+	if len(payloads) == 0 {
+		return nil
+	}
+
+	oldEntry, err := openRegion(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	var (
+		oldFile  *os.File
+		fileSize int64
+		header   = make([]byte, regionHeaderSize)
+	)
 	if oldEntry != nil {
 		defer oldEntry.release()
-		old = oldEntry.file
-	}
-
-	const slotCount = regionSize * regionSize
-	var locations, timestamps [slotCount]uint32
-	if old != nil {
-		header := make([]byte, headerSectors*sectorSize)
-		if _, err := old.ReadAt(header, 0); err != nil {
+		oldFile = oldEntry.file
+		info, err := oldFile.Stat()
+		if err != nil {
+			return err
+		}
+		fileSize = info.Size()
+		if fileSize < int64(regionHeaderSize) {
+			return fmt.Errorf("区域文件 %s 长度 %d 小于头部", path, fileSize)
+		}
+		if _, err := oldFile.ReadAt(header, 0); err != nil {
 			return fmt.Errorf("区域文件 %s 头部读取失败：%w", path, err)
 		}
-		for slot := 0; slot < slotCount; slot++ {
-			locations[slot] = binary.BigEndian.Uint32(header[slot*4:])
-			timestamps[slot] = binary.BigEndian.Uint32(header[slotCount*4+slot*4:])
-		}
 	}
-
-	temp := path + ".tmp"
-	out, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	used, maxUsed, err := scanRegionUsed(header, fileSize)
 	if err != nil {
-		return err
+		return fmt.Errorf("区域文件 %s: %w", path, err)
 	}
-	fail := func(err error) error {
-		_ = out.Close()
-		_ = os.Remove(temp)
-		return err
-	}
-
-	// 头部占位（位置表与时间戳表在末尾回填）。
-	if _, err := out.Write(make([]byte, headerSectors*sectorSize)); err != nil {
-		return fail(err)
+	nextSector := uint32((fileSize + sectorSize - 1) / sectorSize)
+	if nextSector < headerSectors {
+		nextSector = headerSectors
 	}
 
-	var (
-		nextSector = uint32(headerSectors)
-		now        = uint32(time.Now().Unix())
-	)
-	// 逐槽位写出：新负载直接写压缩数据，旧槽位保留原始压缩数据。
-	for slot := 0; slot < slotCount; slot++ {
-		if payload, ok := payloads[slot]; ok {
-			// 负载 = 4 字节长度（含压缩类型字节）+ 1 字节压缩类型 + 压缩数据。
-			total := 1 + len(payload)
-			sectorCount := (4 + total + sectorSize - 1) / sectorSize
-			if sectorCount > 255 {
-				return fail(fmt.Errorf("区域文件 %s 槽位 %d 的区块负载过大（压缩后 %d 字节）", path, slot, len(payload)))
-			}
-			var length [4]byte
-			binary.BigEndian.PutUint32(length[:], uint32(total))
-			if _, err := out.Write(length[:]); err != nil {
-				return fail(err)
-			}
-			if _, err := out.Write([]byte{2}); err != nil { // zlib
-				return fail(err)
-			}
-			if _, err := out.Write(payload); err != nil {
-				return fail(err)
-			}
-			if pad := sectorCount*sectorSize - 4 - total; pad > 0 {
-				if err := writeZeroPadding(out, pad); err != nil {
-					return fail(err)
-				}
-			}
-			locations[slot] = nextSector<<8 | uint32(sectorCount)
-			timestamps[slot] = now
+	slots := make([]int, 0, len(payloads))
+	for slot := range payloads {
+		if slot < 0 || slot >= regionSize*regionSize {
+			return fmt.Errorf("区域 %s 槽位 %d 越界", path, slot)
+		}
+		slots = append(slots, slot)
+	}
+	sort.Ints(slots)
+
+	now := uint32(time.Now().Unix())
+	writes := make([]regionWrite, 0, len(slots))
+	for _, slot := range slots {
+		payload := payloads[slot]
+		total := 1 + len(payload)
+		stored := 4 + total
+		sectorCount := (stored + sectorSize - 1) / sectorSize
+		if sectorCount == 0 || sectorCount > 255 {
+			return fmt.Errorf("区域文件 %s 槽位 %d 的区块负载过大（压缩后 %d 字节）", path, slot, len(payload))
+		}
+		start := findFreeSectors(used, sectorCount)
+		if start < 0 {
+			start = int(nextSector)
 			nextSector += uint32(sectorCount)
-			continue
-		}
-		if locations[slot] == 0 || old == nil {
-			continue
-		}
-		// 未更新的槽位：原样复制旧数据（不解压、不重新压缩）。
-		entry := locations[slot]
-		offset := int64(entry>>8) * sectorSize
-		sectors := int64(entry & 0xFF)
-		if sectors == 0 {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的位置表项无效", path, slot))
-		}
-		var header [5]byte
-		if _, err := old.ReadAt(header[:4], offset); err != nil {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 读取负载头失败：%w", path, slot, err))
-		}
-		total := int64(binary.BigEndian.Uint32(header[:4]))
-		if total < 2 || total > sectors*sectorSize-4 {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的负载长度 %d 越界", path, slot, total))
-		}
-		if _, err := old.ReadAt(header[4:], offset+4); err != nil {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 读取压缩类型失败：%w", path, slot, err))
-		}
-		if header[4] != 2 {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 使用了不支持的压缩类型 %d", path, slot, header[4]))
-		}
-		sectorCount := uint32((4 + total + sectorSize - 1) / sectorSize)
-		if sectorCount > 255 {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 的区块负载过大", path, slot))
-		}
-		if _, err := out.Write(header[:]); err != nil {
-			return fail(err)
-		}
-		// 未更新的槽位直接流式复制压缩数据，避免为每个区块分配缓冲区。
-		if _, err := io.CopyN(out, io.NewSectionReader(old, offset+5, total-1), total-1); err != nil {
-			return fail(fmt.Errorf("区域文件 %s 槽位 %d 复制负载失败：%w", path, slot, err))
-		}
-		if pad := int(sectorCount)*sectorSize - 4 - int(total); pad > 0 {
-			if err := writeZeroPadding(out, pad); err != nil {
-				return fail(err)
+			if nextSector > maxRegionSectors {
+				return fmt.Errorf("区域文件 %s 空间不足", path)
+			}
+			if start+sectorCount > len(used) {
+				used = append(used, make([]bool, start+sectorCount-len(used))...)
 			}
 		}
-		locations[slot] = nextSector<<8 | uint32(sectorCount)
-		nextSector += uint32(sectorCount)
-	}
+		if start < headerSectors || start+sectorCount > maxRegionSectors {
+			return fmt.Errorf("区域文件 %s 槽位 %d 的扇区分配无效", path, slot)
+		}
+		for i := 0; i < sectorCount; i++ {
+			used[start+i] = true
+		}
+		end := uint32(start + sectorCount)
+		if end > maxUsed {
+			maxUsed = end
+		}
+		if end > nextSector {
+			nextSector = end
+		}
+		data := make([]byte, sectorCount*sectorSize)
+		binary.BigEndian.PutUint32(data[:4], uint32(total))
+		data[4] = 2 // zlib
+		copy(data[5:], payload)
+		writes = append(writes, regionWrite{offset: int64(start) * sectorSize, data: data})
 
-	// 回填位置表与时间戳表。
-	header := make([]byte, headerSectors*sectorSize)
-	for slot := 0; slot < slotCount; slot++ {
-		binary.BigEndian.PutUint32(header[slot*4:], locations[slot])
-		binary.BigEndian.PutUint32(header[slotCount*4+slot*4:], timestamps[slot])
+		binary.BigEndian.PutUint32(header[slot*4:], uint32(start)<<8|uint32(sectorCount))
+		binary.BigEndian.PutUint32(header[regionSize*regionSize*4+slot*4:], now)
 	}
-	if _, err := out.WriteAt(header, 0); err != nil {
-		return fail(err)
+	finalSize := int64(maxUsed) * sectorSize
+	if err := writeRegionJournal(path, header, finalSize, writes); err != nil {
+		return fmt.Errorf("写入区域日志 %s: %w", path, err)
 	}
-	if err := out.Sync(); err != nil {
-		return fail(err)
+	if err := applyRegionJournal(path, header, finalSize, writes); err != nil {
+		// 保留日志，下一次读取/保存会重放。
+		return fmt.Errorf("应用区域日志 %s: %w", path, err)
 	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(temp)
-		return err
+	if err := os.Remove(regionJournalPath(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("删除区域日志 %s: %w", path, err)
 	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
-		return err
-	}
-	// 重命名替换了文件：丢弃缓存的旧句柄，后续读取打开新文件。
+	syncDir(path)
 	dropRegion(path)
-	// 尽力同步目录项，保证重命名本身落盘；失败不影响正确性。
-	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
-	}
 	return nil
 }
 

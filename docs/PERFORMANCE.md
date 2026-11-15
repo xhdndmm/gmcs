@@ -59,8 +59,8 @@ v13 把 section 从旧的 4096 × u16 改为调色板 + 连续位流。真实主
 | `BenchmarkEncodeCompressedChunkPayload`（超平坦） | ≈4.5 µs/op | ≈1.4 KB/op | 2 |
 | `BenchmarkEncodeGeneratedChunkPayload`（真实区块） | ≈11.2 µs/op | 57,344 B/op | 1 |
 | `BenchmarkCompressGeneratedChunkPayload`（真实区块） | ≈530 µs/op | ≈22 KB/op | 1 |
-| `BenchmarkSaveChunkPayload` | ≈18.5 µs/op | ≈9.6 KB/op | 21 |
-| `BenchmarkLoadChunkPayload` | ≈21.5 µs/op | ≈44.6 KB/op | 19 |
+| `BenchmarkSaveChunkPayload` | ≈27 µs/op | ≈32 KB/op | 48 |
+| `BenchmarkLoadChunkPayload` | ≈22.5 µs/op | ≈45 KB/op | 23 |
 
 ### 2.2 其他关键路径（最近一次记录）
 
@@ -176,9 +176,15 @@ r.<regionX>.<regionZ>.mca
 ```
 
 - 只读取目标槽位的位置表项和对应扇区，不整区解压；
-- 保存采用临时文件 + fsync + rename，避免崩溃留下半写文件；
-- 未修改槽位从旧文件流式复制压缩数据，不重复解压/压缩；
-- 不同区域文件最多 4 路并行重写（`maxConcurrentRegionSaves`）；
+- 保存采用 **copy-on-write + sidecar 日志**：新负载写入旧头部未引用的空闲
+  扇区或文件末尾，完整新头部/写入列表/最终大小先写入 `.journal`（临时文件 +
+  fsync + rename），再按“数据 → 头部 → truncate”修改区域文件，最后删除日志；
+- 崩溃后若日志存在，下次读取/保存先幂等重放；旧头部在提交前仍指向旧扇区，
+  因此不会读到半写数据；
+- 旧槽位释放的扇区会在后续保存中优先复用；提交后若最大已用扇区下降，
+  文件会被 truncate 回收尾部空间；
+- 不同区域文件最多 4 路并行重写（`maxConcurrentRegionSaves`），同一区域
+  的读写用分片锁串行化；
 - 区域文件句柄有 32 项 LRU 缓存，引用计数保证淘汰/替换时不关闭正在读取的
   句柄，空闲释放会真正关闭 fd 而不是等待 GC。
 

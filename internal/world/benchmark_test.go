@@ -119,7 +119,7 @@ func BenchmarkFindPathUnreachable(b *testing.B) {
 }
 
 // BenchmarkSaveChunkPayload 衡量单区块落盘（区域文件读改写 + fsync + rename）。
-// 使用临时目录，重复写同一槽位，覆盖“未更新槽位流式复制”的常见路径。
+// 使用临时目录，重复写同一槽位，覆盖增量写入/空闲扇区复用的常见路径。
 func BenchmarkSaveChunkPayload(b *testing.B) {
 	dir := b.TempDir()
 	chunk := FlatGenerator{}.GenerateChunk(0, 0)

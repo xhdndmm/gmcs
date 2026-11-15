@@ -416,3 +416,150 @@ func TestDecodeCompactSectionRejectsMalformed(t *testing.T) {
 		}
 	}
 }
+
+func TestRegionJournalRecovery(t *testing.T) {
+	dir := t.TempDir()
+	chunk := FlatGenerator{}.GenerateChunk(0, 0)
+	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 0, Z: 0}: compressedPayload(t, chunk)}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "r.0.0.mca")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(original) <= regionHeaderSize || (len(original)-regionHeaderSize)%sectorSize != 0 {
+		t.Fatalf("区域文件长度不符合测试前提: %d", len(original))
+	}
+	header := append([]byte(nil), original[:regionHeaderSize]...)
+	write := regionWrite{offset: regionHeaderSize, data: append([]byte(nil), original[regionHeaderSize:]...)}
+	if err := writeRegionJournal(path, header, int64(len(original)), []regionWrite{write}); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟日志已落盘但区域文件只写了一部分：头部与数据被破坏。
+	if err := os.WriteFile(path, make([]byte, len(original)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadChunk(dir, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || loaded.GetBlockState(0, FlatGroundLevel, 0) != GrassBlock {
+		t.Fatal("日志恢复后区块内容错误")
+	}
+	if _, err := os.Stat(regionJournalPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("恢复后日志仍存在: %v", err)
+	}
+}
+
+func TestRegionIncrementalReusesFreedSectors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "r.0.0.mca")
+	small := func(x, z int) []byte {
+		chunk := NewChunk(x, z)
+		chunk.SetBlockState(1, WorldMinY+100, 1, StoneBlock)
+		return compressedPayload(t, chunk)
+	}
+	if err := SavePayloads(dir, map[ChunkPos][]byte{
+		{X: 0, Z: 0}: small(0, 0),
+		{X: 1, Z: 0}: small(1, 0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, regionHeaderSize)
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.ReadAt(header, 0); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	_ = file.Close()
+	oldEntry := binary.BigEndian.Uint32(header[0*4:])
+	oldOffset := oldEntry >> 8
+
+	// 更新槽位 0：旧扇区在提交前必须保持可达，因此新数据写到别处；
+	// 提交后旧扇区成为空闲区。
+	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 0, Z: 0}: small(0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	// 新槽位应该优先复用刚释放的槽位 0 扇区，而不是无限追加。
+	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 2, Z: 0}: small(2, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	header = make([]byte, regionHeaderSize)
+	file, err = os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.ReadAt(header, 0); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	_ = file.Close()
+	newEntry := binary.BigEndian.Uint32(header[2*4:])
+	if got := newEntry >> 8; got != oldOffset {
+		t.Fatalf("新槽位没有复用空闲扇区：old=%d new=%d", oldOffset, got)
+	}
+	for _, pos := range []ChunkPos{{X: 0, Z: 0}, {X: 1, Z: 0}, {X: 2, Z: 0}} {
+		loaded, err := LoadChunk(dir, pos.X, pos.Z)
+		if err != nil || loaded == nil {
+			t.Fatalf("区块 (%d,%d) 丢失: %v", pos.X, pos.Z, err)
+		}
+		if loaded.GetBlockState(1, WorldMinY+100, 1) != StoneBlock {
+			t.Fatalf("区块 (%d,%d) 内容错误", pos.X, pos.Z)
+		}
+	}
+}
+
+func TestRegionIncrementalTruncatesTrailingFreeSectors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "r.0.0.mca")
+	small := func(x, z int) []byte {
+		chunk := NewChunk(x, z)
+		chunk.SetBlockState(1, WorldMinY+100, 1, StoneBlock)
+		return compressedPayload(t, chunk)
+	}
+	if err := SavePayloads(dir, map[ChunkPos][]byte{
+		{X: 0, Z: 0}: small(0, 0),
+		{X: 1, Z: 0}: small(1, 0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 更新槽位 0，使旧槽位 0 的扇区成为空洞；再人为在文件末尾追加空闲扇区。
+	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 0, Z: 0}: small(0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(make([]byte, 2*sectorSize)); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// 更新槽位 1：应复用前面的空洞，并在提交后 truncate 掉尾部空闲扇区。
+	if err := SavePayloads(dir, map[ChunkPos][]byte{{X: 1, Z: 0}: small(1, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before.Size()+2*sectorSize {
+		t.Fatalf("尾部空闲扇区未回收: before=%d after=%d", before.Size(), after.Size())
+	}
+	for _, pos := range []ChunkPos{{X: 0, Z: 0}, {X: 1, Z: 0}} {
+		if loaded, err := LoadChunk(dir, pos.X, pos.Z); err != nil || loaded == nil {
+			t.Fatalf("区块 (%d,%d) 丢失: %v", pos.X, pos.Z, err)
+		}
+	}
+}
