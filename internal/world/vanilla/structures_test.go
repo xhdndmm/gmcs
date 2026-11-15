@@ -129,7 +129,7 @@ func TestEndCityBaseAssembly(t *testing.T) {
 		switch piece.name {
 		case "minecraft:end_city/base_floor":
 			foundBase = true
-		case "minecraft:end_city/third_roof":
+		case "minecraft:end_city/base_roof", "minecraft:end_city/second_roof", "minecraft:end_city/third_roof":
 			foundRoof = true
 		}
 	}

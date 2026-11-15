@@ -48,6 +48,8 @@ func (r *structureRuntime) applyProcessorList(template *structureTemplate, name 
 			Type      string          `json:"processor_type"`
 			Integrity float32         `json:"integrity"`
 			Rottable  json.RawMessage `json:"rottable_blocks"`
+			Value     json.RawMessage `json:"value"`
+			Blocks    json.RawMessage `json:"blocks"`
 			Rules     []struct {
 				InputPredicate struct {
 					PredicateType string            `json:"predicate_type"`
@@ -88,6 +90,26 @@ func (r *structureRuntime) applyProcessorList(template *structureTemplate, name 
 					continue
 				}
 				if random.nextFloat() > processor.Integrity {
+					clone.Blocks[i].State = -1
+				}
+			}
+		case "minecraft:protected_blocks":
+			protected := parseBlockList(processor.Value)
+			for i := range clone.Blocks {
+				if clone.Blocks[i].State < 0 || clone.Blocks[i].State >= len(clone.Palette) {
+					continue
+				}
+				if processorMatches(protected, clone.Palette[clone.Blocks[i].State].Name) {
+					clone.Blocks[i].State = -1
+				}
+			}
+		case "minecraft:block_ignore":
+			ignored := parseBlockList(processor.Blocks)
+			for i := range clone.Blocks {
+				if clone.Blocks[i].State < 0 || clone.Blocks[i].State >= len(clone.Palette) {
+					continue
+				}
+				if processorMatches(ignored, clone.Palette[clone.Blocks[i].State].Name) {
 					clone.Blocks[i].State = -1
 				}
 			}
@@ -192,4 +214,24 @@ func processorMatches(blocks map[string]struct{}, name string) bool {
 		}
 	}
 	return false
+}
+
+// parseBlockList 解析 processor 的字符串/字符串数组字段。
+func parseBlockList(raw json.RawMessage) map[string]struct{} {
+	result := map[string]struct{}{}
+	if len(raw) == 0 {
+		return result
+	}
+	var single string
+	if json.Unmarshal(raw, &single) == nil {
+		result[qualify(single)] = struct{}{}
+		return result
+	}
+	var many []string
+	if json.Unmarshal(raw, &many) == nil {
+		for _, value := range many {
+			result[qualify(value)] = struct{}{}
+		}
+	}
+	return result
 }

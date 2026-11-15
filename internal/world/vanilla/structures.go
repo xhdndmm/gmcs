@@ -508,9 +508,21 @@ func (r *structureRuntime) buildEndCity(seed int64, originX, originZ int, router
 		return &start.pieces[len(start.pieces)-1]
 	}
 	base := add("minecraft:end_city/base_floor", nil, [3]int{}, rotation)
-	second := add("minecraft:end_city/second_floor_1", base, [3]int{-1, 0, -1}, rotation)
-	third := add("minecraft:end_city/third_floor_1", second, [3]int{-1, 4, -1}, rotation)
-	top := add("minecraft:end_city/third_roof", third, [3]int{-1, 8, -1}, rotation)
+	if base == nil {
+		return nil
+	}
+	var top *structurePiece
+	switch random.nextIntBounded(3) {
+	case 0:
+		top = add("minecraft:end_city/base_roof", base, [3]int{-1, 4, -1}, rotation)
+	case 1:
+		second := add("minecraft:end_city/second_floor_2", base, [3]int{-1, 0, -1}, rotation)
+		top = add("minecraft:end_city/second_roof", second, [3]int{-1, 8, -1}, rotation)
+	default:
+		second := add("minecraft:end_city/second_floor_2", base, [3]int{-1, 0, -1}, rotation)
+		third := add("minecraft:end_city/third_floor_2", second, [3]int{-1, 4, -1}, rotation)
+		top = add("minecraft:end_city/third_roof", third, [3]int{-1, 8, -1}, rotation)
+	}
 	if top == nil {
 		return nil
 	}
