@@ -1584,3 +1584,4 @@ BenchmarkVanillaGeneratorChunk-20   ~62 ms/op    8.3 MB/op    52,784 allocs/op
 
 - 原版矿脉接入后，`BenchmarkGenerateChunk` 仍约 55 ms/区块（矿脉密度函数复用
   区块插值 lattice）；与官方纯矿脉参考世界对比约 93/196608 方块不一致。
+- 晶洞使用独立 LegacyRandomSource NormalNoise；已加入分层/裂缝/晶芽放置测试。

@@ -1326,7 +1326,8 @@
       - 树木仍使用单干+团状树冠近似，未完整移植全部 trunk/foliage placer、
         tree decorators、minimum_size 碰撞与跨区块树冠；mangrove/cherry
         专属形态未完成。
-      - geode 只实现分层球体，未移植裂缝、invalid_blocks、inner placements；
+      - geode 已移植分层阈值、裂缝、invalid_blocks、potential placements 与
+        LegacyRandomSource NormalNoise；仍需逐方块对拍验证；
       - iceberg、dripstone、sculk patch、root system、end spike/gateway、
         monster room 的方块实体/复杂几何仍不完整；
       - 地物逐方块对比仍有差异；例如 ore_tuff 单地物在区块 (0,0) 仍有
