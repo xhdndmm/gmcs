@@ -158,6 +158,9 @@ func convertVanilla2GMCS(opts convertOptions) error {
 			converted++
 		}
 		if len(out) > 0 {
+			if err := os.MkdirAll(dstDim, 0o755); err != nil {
+				return err
+			}
 			if err := world.SavePayloads(dstDim, out); err != nil {
 				return fmt.Errorf("写入 gmcs 区域 %s: %w", dstDim, err)
 			}
