@@ -3114,8 +3114,18 @@ func (r *Router) placeOre(chunk *GeneratedChunk, random *legacyRandom, configura
 	minZ := originZ - spreadBound - radius
 	sizeX := 2 * (spreadBound + radius)
 	sizeY := 2 * (2 + radius)
-	// OCEAN_FLOOR 高度检查：原版只在源点高度低于/等于包围盒底部时跳过。
-	if minY > chunk.HeightAt(originX, originZ) {
+	// 原版遍历整个包围盒的 x/z，只有在全部列的地表高度都低于包围盒
+	// 底部时才放弃；不能只检查源点。
+	validColumn := false
+	for checkX := minX; checkX <= minX+sizeX && !validColumn; checkX++ {
+		for checkZ := minZ; checkZ <= minZ+sizeX; checkZ++ {
+			if minY <= chunk.HeightAt(checkX, checkZ) {
+				validColumn = true
+				break
+			}
+		}
+	}
+	if !validColumn {
 		return
 	}
 	targetCount := configuration.size
