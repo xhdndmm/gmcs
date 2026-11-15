@@ -102,3 +102,34 @@ func TestEndCityTemplatesExist(t *testing.T) {
 		}
 	}
 }
+
+func TestEndCityBaseAssembly(t *testing.T) {
+	runtime, err := loadStructureRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:end", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := runtime.buildEndCity(4321, 40, 72, router)
+	if start == nil || len(start.pieces) < 4 {
+		t.Fatalf("末地城基础拼装失败：%+v", start)
+	}
+	foundBase, foundRoof := false, false
+	for _, piece := range start.pieces {
+		switch piece.name {
+		case "minecraft:end_city/base_floor":
+			foundBase = true
+		case "minecraft:end_city/third_roof":
+			foundRoof = true
+		}
+	}
+	if !foundBase || !foundRoof {
+		t.Fatalf("末地城缺少基础/顶部模板：%+v", start.pieces)
+	}
+}
