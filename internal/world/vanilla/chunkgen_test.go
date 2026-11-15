@@ -327,6 +327,31 @@ func TestBiomeSourceCoversAllBiomes(t *testing.T) {
 	}
 }
 
+// BenchmarkGenerateChunkWarm 度量 3×3 邻域地物缓存已构建后的单区块成本。
+func BenchmarkGenerateChunkWarm(b *testing.B) {
+	data, err := Load()
+	if err != nil {
+		b.Fatalf("加载数据失败：%v", err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 1234)
+	if err != nil {
+		b.Fatalf("构造路由表失败：%v", err)
+	}
+	// 预热中心区块与 8 个邻域地物结果。
+	for i := 0; i < 2; i++ {
+		if _, err := router.GenerateChunk(62, 62); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := router.GenerateChunk(62, 62); err != nil {
+			b.Fatalf("生成失败：%v", err)
+		}
+	}
+}
+
 // BenchmarkGenerateChunk 度量完整区块生成（密度 + 含水层 + 地表规则）的耗时。
 func BenchmarkGenerateChunk(b *testing.B) {
 	data, err := Load()
