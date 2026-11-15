@@ -3107,10 +3107,12 @@ func (r *Router) placeOre(chunk *GeneratedChunk, random *legacyRandom, configura
 	z2 := float64(originZ) - math.Cos(float64(angle))*float64(spread)
 	y1 := float64(originY + random.nextIntBounded(3) - 2)
 	y2 := float64(originY + random.nextIntBounded(3) - 2)
-	minX := originX - int(math.Floor(float64(spread))) - radius
+	// 原版 bgj.d(float) 是 ceil，不能使用 floor；包围盒与 visited 索引都依赖它。
+	spreadBound := int(math.Ceil(float64(spread)))
+	minX := originX - spreadBound - radius
 	minY := originY - 2 - radius
-	minZ := originZ - int(math.Floor(float64(spread))) - radius
-	sizeX := 2 * (int(math.Floor(float64(spread))) + radius)
+	minZ := originZ - spreadBound - radius
+	sizeX := 2 * (spreadBound + radius)
 	sizeY := 2 * (2 + radius)
 	// OCEAN_FLOOR 高度检查：原版只在源点高度低于/等于包围盒底部时跳过。
 	if minY > chunk.HeightAt(originX, originZ) {
@@ -3209,7 +3211,7 @@ func (r *Router) placeOre(chunk *GeneratedChunk, random *legacyRandom, configura
 func (r *Router) oreTargetMatches(target oreTarget, block SurfaceBlock) bool {
 	if target.tag != "" {
 		if state, err := registry.BlockStateID(block.Name); err == nil {
-			return registry.BlockTagContains(target.tag, state)
+			return registry.BlockTagContains(strings.TrimPrefix(target.tag, "#"), state)
 		}
 		return false
 	}
