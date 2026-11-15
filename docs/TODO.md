@@ -1259,12 +1259,10 @@
         避免把未生成完的区块误当成空气；
       - 修正区块生成顺序为原版 `NOISE → SURFACE → CARVERS`（此前先 carver 后
         surface，会在雕刻后的洞穴口重新铺地表方块）。
-    - [ ] **逐方块对比仍有残差**：种子 4321、仅 cave 的官方参考区块
-      (0,0)≈47 / 98,304、(1,0)≈180 / 98,304、(0..5,0) 合计≈1,133 / 589,824；
-      仅 extra 合计≈340 / 589,824，仅 canyon 合计≈280 / 589,824。
-      但三类同时启用时 (0..5,0) 合计≈8,204 / 589,824，远大于单类之和，
-      说明多 carver 的起始索引/mask 交互仍有未对齐处。残差集中在
-      `water → stone`（gmcs 少雕出含水洞穴）与 `air → deepslate`（少雕出洞穴）。
+    - [~] **逐方块对比仍有残差**：种子 4321、仅 cave 的 cave 参考区块
+      (0,0) 约 47 / 98,304；仅 canyon 约 47 / 98,304。此前的多 carver
+      残差统计混用了不同 datapack 参考世界，不能直接相加。当前残差集中在
+      `water → stone`，以及 canyon 的含水/岩浆段。
       已确认 carver 起始判定与官方 Java 序列逐项一致，因此剩余差异在隧道内部、
       流体替换或多 carver 同源区块交互；**不声称已与原版完全一致**。
       已排除“未生成完的官方区块”造成的假差异（vancmp 现在过滤非 full 区块）。
@@ -1337,7 +1335,8 @@
         约 1854/98304 差异，说明 feature index/随机流或 ore 放置细节仍未收敛。
       - 已新增区块地物结果缓存，执行中心区块及 3×3 邻域地物并合并越界写入；
         连续区块生成时复用结果。仍不是原版完整 region worker，且树冠写入的
-        冲突顺序与官方不完全一致。
+        冲突顺序与官方不完全一致；首次邻域冷启动成本较高。
+      - 新增 fancy/cherry/mangrove 的简化分枝放置；不是逐类完整 placer。
     - [x] `environment_scan`、`surface_relative_threshold_filter`、`random_offset`
       与复合 block predicate（all_of/any_of/not/inside_world_bounds）已实现；
       地下岩浆湖与部分洞穴植被不再被标记为 unsupported。
