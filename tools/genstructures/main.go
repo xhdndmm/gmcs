@@ -44,7 +44,8 @@ func main() {
 			strings.HasPrefix(name, base+"worldgen/structure_set/") ||
 			strings.HasPrefix(name, base+"worldgen/template_pool/") ||
 			strings.HasPrefix(name, base+"worldgen/processor_list/") ||
-			strings.HasPrefix(name, base+"structure/") {
+			strings.HasPrefix(name, base+"structure/") ||
+			strings.HasPrefix(name, base+"loot_table/") {
 			entries = append(entries, name)
 		}
 	}

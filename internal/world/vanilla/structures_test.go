@@ -1,6 +1,10 @@
 package vanilla
 
-import "testing"
+import (
+	"testing"
+
+	"gmcs/internal/registry"
+)
 
 func TestVillageJigsawStart(t *testing.T) {
 	runtime, err := loadStructureRuntime()
@@ -131,5 +135,91 @@ func TestEndCityBaseAssembly(t *testing.T) {
 	}
 	if !foundBase || !foundRoof {
 		t.Fatalf("末地城缺少基础/顶部模板：%+v", start.pieces)
+	}
+}
+
+func TestTemplateBlockEntityItems(t *testing.T) {
+	template := &structureTemplate{
+		Size: [3]int{1, 1, 1},
+		Palette: []SurfaceBlock{
+			{Name: "minecraft:chest", Properties: map[string]string{"facing": "north"}},
+		},
+		Blocks: []templateBlock{{
+			Pos: [3]int{0, 0, 0}, State: 0,
+			NBT: nbtCompound{
+				"id": "minecraft:chest",
+				"Items": []any{
+					nbtCompound{"id": "minecraft:golden_apple", "count": int8(1), "Slot": int8(13)},
+					nbtCompound{"id": "minecraft:bread", "Count": int8(3)},
+				},
+			},
+		}},
+	}
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	placeTemplate(chunk, template, 3, 64, 4, rotateNone, false, newLegacyRandom(1))
+	entity, ok := chunk.BlockEntityAt(3, 64, 4)
+	if !ok {
+		t.Fatal("模板箱子没有生成方块实体")
+	}
+	if entity.Type != "minecraft:chest" || len(entity.Items) != 2 {
+		t.Fatalf("方块实体数据不符：%+v", entity)
+	}
+	if entity.Items[0].Name != "minecraft:golden_apple" || entity.Items[0].Count != 1 {
+		t.Fatalf("第一个物品不符：%+v", entity.Items[0])
+	}
+	if entity.Items[1].Name != "minecraft:bread" || entity.Items[1].Count != 3 {
+		t.Fatalf("第二个物品不符：%+v", entity.Items[1])
+	}
+}
+
+func TestGenerateBlockEntityFromLootTableNBT(t *testing.T) {
+	entity, ok := generatedBlockEntityFromNBT("minecraft:chest", nbtCompound{
+		"id":        "minecraft:chest",
+		"LootTable": "minecraft:chests/end_city_treasure",
+	})
+	if !ok || entity.LootTable != "minecraft:chests/end_city_treasure" {
+		t.Fatalf("战利品表 NBT 未保留：%+v, ok=%v", entity, ok)
+	}
+}
+
+func TestLootTableEvaluatesEndCityTreasure(t *testing.T) {
+	data, err := LoadStructureData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := data.LootTables["minecraft:chests/end_city_treasure"]; !ok {
+		t.Fatal("缺少 end_city_treasure 战利品表")
+	}
+	items := data.LootItems("minecraft:chests/end_city_treasure", newLegacyRandom(4321))
+	if len(items) == 0 {
+		t.Fatal("战利品表没有生成物品")
+	}
+	for _, item := range items {
+		if item.Name == "" || item.Count <= 0 {
+			t.Fatalf("非法战利品条目：%+v", item)
+		}
+		if _, err := registry.ItemID(item.Name); err != nil {
+			t.Fatalf("战利品物品未收录：%s", item.Name)
+		}
+	}
+}
+
+func TestTemplateLootTableBlockEntity(t *testing.T) {
+	template := &structureTemplate{
+		Size:    [3]int{1, 1, 1},
+		Palette: []SurfaceBlock{{Name: "minecraft:chest"}},
+		Blocks: []templateBlock{{
+			Pos: [3]int{0, 0, 0}, State: 0,
+			NBT: nbtCompound{"id": "minecraft:chest", "LootTable": "minecraft:chests/abandoned_mineshaft"},
+		}},
+	}
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	placeTemplate(chunk, template, 3, 64, 4, rotateNone, false, newLegacyRandom(99))
+	entity, ok := chunk.BlockEntityAt(3, 64, 4)
+	if !ok {
+		t.Fatal("战利品箱没有生成方块实体")
+	}
+	if entity.Type != "minecraft:chest" || len(entity.Items) == 0 || entity.LootTable == "" {
+		t.Fatalf("战利品箱数据不符：%+v", entity)
 	}
 }

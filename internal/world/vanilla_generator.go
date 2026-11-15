@@ -72,6 +72,21 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 		}
 		chunk.setBlockStateDirect(blockX&15, blockY, blockZ&15, state)
 	})
+	generated.ForEachBlockEntity(func(blockX, blockY, blockZ int, entity vanilla.GeneratedBlockEntity) {
+		typeID, ok := registry.SyncEntryID("minecraft:block_entity_type", entity.Type)
+		if !ok {
+			return
+		}
+		blockEntity := BlockEntity{TypeID: typeID}
+		for _, generatedItem := range entity.Items {
+			itemID, err := registry.ItemID(generatedItem.Name)
+			if err != nil {
+				continue
+			}
+			blockEntity.Items = append(blockEntity.Items, ContainerItem{ItemID: itemID, Count: int32(generatedItem.Count)})
+		}
+		chunk.SetBlockEntity(blockX&15, blockY, blockZ&15, blockEntity)
+	})
 	chunk.SetBiomeGrid(g.biomeGrid(session, minX, minZ))
 	return chunk
 }

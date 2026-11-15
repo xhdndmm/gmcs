@@ -41,7 +41,7 @@ func transformedSize(size [3]int, rotation templateRotation) [3]int {
 }
 
 // placeTemplate 把一个结构模板按旋转/镜像写入区块；越界部分裁掉。
-func placeTemplate(chunk *GeneratedChunk, template *structureTemplate, originX, originY, originZ int, rotation templateRotation, mirror bool) {
+func placeTemplate(chunk *GeneratedChunk, template *structureTemplate, originX, originY, originZ int, rotation templateRotation, mirror bool, random *legacyRandom) {
 	for _, block := range template.Blocks {
 		if block.State < 0 || block.State >= len(template.Palette) {
 			continue
@@ -51,7 +51,15 @@ func placeTemplate(chunk *GeneratedChunk, template *structureTemplate, originX, 
 			continue
 		}
 		pos := transformTemplatePos(block.Pos, template.Size, rotation, mirror)
-		chunk.SetBlock(originX+pos[0], originY+pos[1], originZ+pos[2], state)
+		x, y, z := originX+pos[0], originY+pos[1], originZ+pos[2]
+		chunk.SetBlock(x, y, z, state)
+		if entity, ok := generatedBlockEntityFromNBT(state.Name, block.NBT); ok {
+			entity.Type = blockEntityTypeName(entity.Type)
+			if random != nil {
+				initLootBlockEntity(&entity, random)
+			}
+			chunk.SetBlockEntity(x, y, z, entity)
+		}
 	}
 }
 

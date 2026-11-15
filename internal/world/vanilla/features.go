@@ -1977,7 +1977,7 @@ func (r *Router) placeFossil(chunk *GeneratedChunk, random *legacyRandom, config
 	if empty := templateCornerAirCount(chunk, template, x, y, z, rotation, false); empty > configuration.maxEmptyCorners {
 		return
 	}
-	placeTemplate(chunk, template, x, y, z, rotation, false)
+	placeTemplate(chunk, template, x, y, z, rotation, false, random)
 	if len(configuration.overlayStructures) == 0 {
 		return
 	}
@@ -1986,7 +1986,7 @@ func (r *Router) placeFossil(chunk *GeneratedChunk, random *legacyRandom, config
 	if err != nil || overlay == nil {
 		return
 	}
-	placeTemplate(chunk, overlay, x, y, z, rotation, false)
+	placeTemplate(chunk, overlay, x, y, z, rotation, false, random)
 }
 
 func (r *Router) placeMultiface(chunk *GeneratedChunk, random *legacyRandom, configuration multifaceConfiguration, x, y, z int) {

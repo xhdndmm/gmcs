@@ -21,8 +21,9 @@ type GeneratedChunk struct {
 	MinY   int
 	Height int
 
-	blocks  []SurfaceBlock
-	heights [256]int
+	blocks        []SurfaceBlock
+	heights       [256]int
+	blockEntities map[[3]int]GeneratedBlockEntity
 }
 
 // NewGeneratedChunk 创建一个全空气的区块。

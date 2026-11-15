@@ -22,6 +22,7 @@ type structureData struct {
 	StructureSets  map[string]json.RawMessage
 	TemplatePools  map[string]json.RawMessage
 	ProcessorLists map[string]json.RawMessage
+	LootTables     map[string]json.RawMessage
 	Templates      map[string][]byte
 }
 
@@ -57,6 +58,7 @@ func loadStructureData() (*structureData, error) {
 		StructureSets:  make(map[string]json.RawMessage),
 		TemplatePools:  make(map[string]json.RawMessage),
 		ProcessorLists: make(map[string]json.RawMessage),
+		LootTables:     make(map[string]json.RawMessage),
 		Templates:      make(map[string][]byte),
 	}
 	for {
@@ -84,6 +86,8 @@ func loadStructureData() (*structureData, error) {
 			data.TemplatePools[structureKey(name, "worldgen/template_pool/", ".json")] = raw
 		case strings.HasPrefix(name, "worldgen/processor_list/"):
 			data.ProcessorLists[structureKey(name, "worldgen/processor_list/", ".json")] = raw
+		case strings.HasPrefix(name, "loot_table/"):
+			data.LootTables[structureKey(name, "loot_table/", ".json")] = raw
 		case strings.HasPrefix(name, "structure/"):
 			data.Templates[structureKey(name, "structure/", ".nbt")] = raw
 		}

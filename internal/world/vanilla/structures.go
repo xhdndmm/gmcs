@@ -219,7 +219,8 @@ func (r *Router) applyStructures(chunk *GeneratedChunk, biomes *BiomeSource) {
 					continue
 				}
 				for _, piece := range start.pieces {
-					placeTemplate(chunk, piece.template, piece.origin[0], piece.origin[1], piece.origin[2], piece.rotation, piece.mirror)
+					random := newLegacyRandom(r.seed + int64(piece.origin[0])*31 + int64(piece.origin[1])*17 + int64(piece.origin[2])*13)
+					placeTemplate(chunk, piece.template, piece.origin[0], piece.origin[1], piece.origin[2], piece.rotation, piece.mirror, random)
 				}
 			}
 		}
