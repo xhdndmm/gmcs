@@ -424,6 +424,17 @@ func (s *Server) travelThroughEndGateway(player *session, x, y, z float64, yaw, 
 	}
 	targetZ := z
 	end := s.worldFor(world.DimensionEnd)
+	// 生成阶段的 end_gateway 方块实体携带 ExitPortal；有目标时优先使用。
+	for _, dy := range []float64{0, 1} {
+		bx := int(math.Floor(x))
+		by := int(math.Floor(y + dy))
+		bz := int(math.Floor(z))
+		if entity, err := end.BlockEntityAt(bx, by, bz); err == nil && entity.GatewayExit != [3]int{} {
+			targetX = float64(entity.GatewayExit[0]) + 0.5
+			targetZ = float64(entity.GatewayExit[2]) + 0.5
+			break
+		}
+	}
 	s.ensureEndPlatform(end, int(math.Floor(targetX)), int(math.Floor(targetZ)))
 	s.playPortalSound(player, x, y, z)
 	if err := player.teleportTo(world.DimensionEnd, targetX, endPlatformY, targetZ, yaw, pitch); err != nil {

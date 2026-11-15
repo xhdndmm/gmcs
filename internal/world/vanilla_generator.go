@@ -78,6 +78,14 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 			return
 		}
 		blockEntity := BlockEntity{TypeID: typeID}
+		if entity.Type == "minecraft:end_gateway" {
+			if exact, ok := entity.Data["exact"].(bool); ok {
+				blockEntity.GatewayExact = exact
+			}
+			if exit, ok := generatedInts(entity.Data["exit"]); ok && len(exit) == 3 {
+				blockEntity.GatewayExit = [3]int{exit[0], exit[1], exit[2]}
+			}
+		}
 		for _, generatedItem := range entity.Items {
 			itemID, err := registry.ItemID(generatedItem.Name)
 			if err != nil {
@@ -119,6 +127,29 @@ func (g *VanillaGenerator) biomeGrid(session *vanilla.Router, minX, minZ int) [1
 }
 
 // surfaceBlockState 把原版生成结果的注册名/属性映射为 gmcs 的方块状态 ID。
+func generatedInts(value any) ([]int, bool) {
+	list, ok := value.([]any)
+	if !ok || len(list) == 0 {
+		return nil, false
+	}
+	result := make([]int, 0, len(list))
+	for _, entry := range list {
+		switch number := entry.(type) {
+		case int32:
+			result = append(result, int(number))
+		case int64:
+			result = append(result, int(number))
+		case int:
+			result = append(result, number)
+		case float64:
+			result = append(result, int(number))
+		default:
+			return nil, false
+		}
+	}
+	return result, true
+}
+
 func surfaceBlockState(block vanilla.SurfaceBlock) (uint16, bool) {
 	if len(block.Properties) != 0 {
 		if id, ok := registry.BlockStateWithProps(block.Name, block.Properties); ok {

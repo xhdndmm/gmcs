@@ -919,6 +919,19 @@ func (r *Router) placeEndGateway(chunk *GeneratedChunk, random *legacyRandom, ra
 		return
 	}
 	chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:end_gateway"})
+	entity := GeneratedBlockEntity{Type: "minecraft:end_gateway"}
+	var encoded struct {
+		Exact bool  `json:"exact"`
+		Exit  []int `json:"exit"`
+	}
+	if json.Unmarshal(raw, &encoded) == nil {
+		entity.Data = nbtCompound{"exact": encoded.Exact}
+		if len(encoded.Exit) == 3 {
+			entity.Data["exit"] = []any{int32(encoded.Exit[0]), int32(encoded.Exit[1]), int32(encoded.Exit[2])}
+		}
+	}
+	chunk.SetBlockEntity(x, y, z, entity)
+	_ = random
 }
 
 func (r *Router) placeIceberg(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {

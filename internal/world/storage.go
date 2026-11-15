@@ -115,8 +115,9 @@ const (
 	// chunkVersion 是当前存储负载版本：v2 追加方块实体，v3 追加熔炉进度，
 	// v4 追加 4×4 群系网格（section 内的 biome 字段仅作兼容保留），
 	// v5 追加槽位药水 ID 与酿造台进度，v6 追加槽位耐久/铁砧惩罚/自定义名称，
-	// v7 追加槽位附魔列表，v8 追加槽位纹饰图案/材质名，v9 追加漏斗传送冷却。
-	chunkVersion = 9
+	// v7 追加槽位附魔列表，v8 追加槽位纹饰图案/材质名，v9 追加漏斗传送冷却，
+	// v10 追加末地折跃门目标。
+	chunkVersion = 10
 	// maxChunkPayload 是解压后区块负载的大小上限（防压缩炸弹）。
 	maxChunkPayload = 1 << 20
 	// maxStoredNameLength 是容器槽位自定义名称的存储长度上限（协议字符串上限）。
@@ -484,6 +485,15 @@ func writeBlockEntities(dst []byte, offset int, chunk *Chunk) int {
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.BrewFuel)))
 		// 漏斗传送冷却（v9；非漏斗为 0，仍写出以保证格式统一）。
 		offset += binary.PutUvarint(dst[offset:], uint64(uint32(entity.TransferCooldown)))
+		// 末地折跃门目标（v10；非折跃门为 0）。
+		gatewayFlags := uint64(0)
+		if entity.GatewayExact {
+			gatewayFlags = 1
+		}
+		offset += binary.PutUvarint(dst[offset:], gatewayFlags)
+		for _, coordinate := range entity.GatewayExit {
+			offset += binary.PutUvarint(dst[offset:], uint64(uint32(coordinate)))
+		}
 	}
 	return offset
 }
@@ -603,7 +613,8 @@ func decodeChunkPayload(payload []byte) (*Chunk, error) {
 // decodeBlockEntities 解析版本 2+ 负载中的方块实体部分
 // （v3 起含熔炉进度，v5 起槽位含药水 ID 且含酿造台进度，
 // v6 起槽位含耐久/铁砧惩罚/名称，v7 起槽位含附魔列表，
-// v8 起槽位含纹饰图案/材质名，v9 起含漏斗传送冷却）。
+// v8 起槽位含纹饰图案/材质名，v9 起含漏斗传送冷却，
+// v10 起含末地折跃门 ExitPortal/exact）。
 func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint16) (int, error) {
 	count, size := binary.Uvarint(payload[offset:])
 	if size <= 0 {
@@ -765,6 +776,22 @@ func decodeBlockEntities(payload []byte, offset int, chunk *Chunk, version uint1
 			}
 			offset += size
 			entity.TransferCooldown = int32(uint32(value))
+		}
+		if version >= 10 {
+			flags, size := binary.Uvarint(payload[offset:])
+			if size <= 0 {
+				return 0, fmt.Errorf("折跃门标记字段无效")
+			}
+			offset += size
+			entity.GatewayExact = flags&1 != 0
+			for i := range entity.GatewayExit {
+				value, size := binary.Uvarint(payload[offset:])
+				if size <= 0 {
+					return 0, fmt.Errorf("折跃门目标字段无效")
+				}
+				offset += size
+				entity.GatewayExit[i] = int(int32(uint32(value)))
+			}
 		}
 		if chunk.blockEntities == nil {
 			chunk.blockEntities = make(map[int]BlockEntity)

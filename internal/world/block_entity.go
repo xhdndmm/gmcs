@@ -62,11 +62,14 @@ type BlockEntity struct {
 	// TransferCooldown 是漏斗的剩余传送冷却（tick；原版 TransferCooldown）。
 	// 非漏斗方块为 0。
 	TransferCooldown int32
+	// GatewayExit / GatewayExact 是末地折跃门的 ExitPortal 目标与 exact 标记。
+	GatewayExit  [3]int
+	GatewayExact bool
 }
 
 // Empty 报告方块实体是否没有任何内容（槽位全空且无处理进度）。
 func (b BlockEntity) Empty() bool {
-	if b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 || b.TransferCooldown > 0 {
+	if b.GatewayExact || b.GatewayExit != [3]int{} || b.BurnRemaining > 0 || b.CookProgress > 0 || b.BrewTime > 0 || b.BrewFuel > 0 || b.TransferCooldown > 0 {
 		return false
 	}
 	for _, slot := range b.Items {
