@@ -322,16 +322,20 @@ func TestDarkOakTreeGenerated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chunk, err := router.GenerateChunk(501, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
 	found := false
-	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
-		if block.Name == "minecraft:dark_oak_log" || block.Name == "minecraft:dark_oak_leaves" {
-			found = true
+	// 深色森林地物包含随机 selector 与多种树；新增枝干 placer 会改变随机流，
+	// 因此在一小片深色森林中查找，而不是假定固定区块一定有深色橡木。
+	for chunkX := 501; chunkX <= 506 && !found; chunkX++ {
+		chunk, err := router.GenerateChunk(chunkX, 1)
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
+		chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+			if block.Name == "minecraft:dark_oak_log" || block.Name == "minecraft:dark_oak_leaves" {
+				found = true
+			}
+		})
+	}
 	if !found {
 		t.Fatal("深色森林区块没有生成深色橡木")
 	}

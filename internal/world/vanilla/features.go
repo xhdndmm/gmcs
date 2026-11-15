@@ -258,6 +258,13 @@ type treeConfiguration struct {
 	minimumUpperLimit   int
 	minClippedHeight    int
 	minimumThreeLayers  bool
+	extraBranchSteps    intProvider
+	extraBranchLength   intProvider
+	branchProbability   float32
+	branchCount         intProvider
+	branchHorizontal    intProvider
+	branchStartTop      int
+	branchEndTop        int
 	decorators          []treeDecorator
 }
 
@@ -1295,10 +1302,17 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			} `json:"entries"`
 		} `json:"foliage_provider"`
 		TrunkPlacer struct {
-			Type        string `json:"type"`
-			BaseHeight  int    `json:"base_height"`
-			HeightRandA int    `json:"height_rand_a"`
-			HeightRandB int    `json:"height_rand_b"`
+			Type              string          `json:"type"`
+			BaseHeight        int             `json:"base_height"`
+			HeightRandA       int             `json:"height_rand_a"`
+			HeightRandB       int             `json:"height_rand_b"`
+			ExtraBranchSteps  json.RawMessage `json:"extra_branch_steps"`
+			ExtraBranchLength json.RawMessage `json:"extra_branch_length"`
+			BranchProbability float32         `json:"place_branch_per_log_probability"`
+			BranchCount       json.RawMessage `json:"branch_count"`
+			BranchHorizontal  json.RawMessage `json:"branch_horizontal_length"`
+			BranchStartTop    json.RawMessage `json:"branch_start_offset_from_top"`
+			BranchEndTop      json.RawMessage `json:"branch_end_offset_from_top"`
 		} `json:"trunk_placer"`
 		MinimumSize struct {
 			Type             string `json:"type"`
@@ -1395,8 +1409,23 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 		minimumUpperLimit:   encoded.MinimumSize.UpperLimit,
 		minimumThreeLayers:  encoded.MinimumSize.Type == "minecraft:three_layers_feature_size",
 		minClippedHeight:    intValueOrZero(encoded.MinimumSize.MinClippedHeight),
+		extraBranchSteps:    parseOptionalIntProviderOrZero(encoded.TrunkPlacer.ExtraBranchSteps),
+		extraBranchLength:   parseOptionalIntProviderOrZero(encoded.TrunkPlacer.ExtraBranchLength),
+		branchProbability:   encoded.TrunkPlacer.BranchProbability,
+		branchCount:         parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchCount),
+		branchHorizontal:    parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchHorizontal),
+		branchStartTop:      parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchStartTop).sample(newLegacyRandom(0)),
+		branchEndTop:        parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchEndTop).sample(newLegacyRandom(0)),
 		decorators:          decorators,
 	}, nil
+}
+
+func parseOptionalIntProviderOrZero(raw json.RawMessage) intProvider {
+	provider, err := parseOptionalIntProvider(raw, 0)
+	if err != nil {
+		return intProvider{kind: "constant"}
+	}
+	return provider
 }
 
 func intValueOrZero(value *int) int {
@@ -2882,6 +2911,12 @@ func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configur
 			}
 		}
 	}
+	// upwards_branching / cherry / fancy 的枝干近似。
+	if configuration.trunkType == "minecraft:upwards_branching_trunk_placer" ||
+		configuration.trunkType == "minecraft:cherry_trunk_placer" ||
+		configuration.trunkType == "minecraft:fancy_trunk_placer" {
+		r.placeTreeBranches(chunk, random, configuration, x, y, z, height)
+	}
 	// 深色橡木/巨型树在主干顶部向外分叉；简单增加两层树干。
 	if width == 2 && configuration.trunkType != "minecraft:mega_jungle_trunk_placer" {
 		for offset := height - 2; offset < height; offset++ {
@@ -2915,6 +2950,44 @@ func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configur
 		r.placeBlobFoliage(chunk, random, configuration, leafX, y, leafZ, height, &leaves)
 	}
 	r.applyTreeDecorators(chunk, random, configuration, x, y, z, height, leaves)
+}
+
+func (r *Router) placeTreeBranches(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int) {
+	branchCount := 1
+	if configuration.branchCount.kind != "" {
+		branchCount = configuration.branchCount.sample(random)
+	}
+	if branchCount <= 0 {
+		branchCount = 1
+	}
+	if branchCount > 3 {
+		branchCount = 3
+	}
+	for branch := 0; branch < branchCount; branch++ {
+		startY := y + height - 2 - random.nextIntBounded(2)
+		length := 2
+		if configuration.branchHorizontal.kind != "" {
+			length = configuration.branchHorizontal.sample(random)
+		}
+		if length < 1 {
+			length = 1
+		}
+		directions := [][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+		direction := directions[random.nextIntBounded(4)]
+		bx, bz := x, z
+		by := startY
+		for step := 0; step < length; step++ {
+			bx += direction[0]
+			bz += direction[1]
+			by++
+			if chunk.InRange(bx, by, bz) {
+				chunk.SetBlock(bx, by, bz, configuration.trunk)
+			}
+		}
+		if chunk.InRange(bx, by+1, bz) {
+			r.placeFoliageLayer(chunk, random, configuration, bx, by+1, bz, 1, &[]featurePosition{})
+		}
+	}
 }
 
 func (r *Router) applyTreeDecorators(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves []featurePosition) {
