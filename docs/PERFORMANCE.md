@@ -1,15 +1,22 @@
 # 性能基准
 
-本文件记录 gmcs 关键路径的 Go micro-benchmark 方法与实测结果。
+本文件记录 gmcs 关键路径的 Go micro-benchmark 方法与实测结果，并保留历次
+优化记录用于追溯。**当前值以第 2 节为准**；第 3 节起是历史记录，数字反映当时
+版本，不应与最新快照直接混用。
 
-> 说明：这些数字是**开发机参考基线**，用于发现回归与对比优化前后差异，
-> 不代表真实服务器吞吐。真实多玩家负载压测仍在计划中（见第 4 节）。
+- [1. 环境与复现](#1-环境与复现)
+- [2. 当前基准快照](#2-当前基准快照实测)
+  - [2.1 地图存储 v13](#21-地图存储-v13本次)
+  - [2.2 其他关键路径](#22-其他关键路径最近一次记录)
+- [2.3 地图存储算法（v13）](#23-地图存储算法v13)
+- [3. 优化记录（历史）](#3-优化记录)
+- [4. 尚未覆盖](#4-尚未覆盖)
 
 ## 1. 环境与复现
 
 - 环境：Linux amd64，12th Gen Intel(R) Core(TM) i7-12700F（20 逻辑核心），Go 1.27
-- **更新于 2026-10-05**：第 2 节与第 3.3 节随最新代码全部复测；
-  表中为 `-count=6` 中位数（压缩基准 `-count=3`）。
+- **更新于 2026-11-15**：第 2.1 节为 v13 地图存储最新实测；第 2.2 节为
+  最近一次关键路径记录（`-count=3` 中位数）。历史记录保留原始测量条件。
 - internal 包基准未启用 PGO（内置 PGO 配置 `cmd/gmcs/default.pgo` 仅影响
   主程序构建）；PGO 对照见第 3.3 节。
 - 所有 benchmark 均为单进程、单线程逻辑（`-cpu` 未指定），数字随硬件与
@@ -31,27 +38,53 @@ go test -run=^$ -bench=. -benchmem ./...
 已移除，下文历史数据中的“种子地形”基准为旧实现记录；生产主世界区块基准见
 `BenchmarkVanillaGeneratorChunk`（3.45）。
 
+### 2.1 地图存储 v13（本次）
+
+v13 把 section 从旧的 4096 × u16 改为调色板 + 连续位流。真实主世界区块抽样
+（区块坐标、种子 1234）：
+
+| 区块 | v12 未压缩 | v12 zlib | **v13 未压缩** | **v13 zlib** | zlib 变化 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| (0,0) | 65,655 B | 3,031 B | 15,612 B | 2,322 B | -23.4% |
+| (62,62) | 188,535 B | 25,229 B | 51,913 B | 21,101 B | -16.4% |
+| (63,63) | 180,343 B | 22,510 B | 46,712 B | 18,635 B | -17.2% |
+| (100,-100) | 65,655 B | 3,234 B | 15,619 B | 2,532 B | -21.7% |
+| **合计** | **500,188 B** | **54,004 B** | **129,856 B** | **44,590 B** | **-17.4%** |
+
+未压缩负载合计减少 **74.0%**。存储路径基准：
+
+| Benchmark | 耗时 | 内存 | 分配 |
+| --- | ---: | ---: | ---: |
+| `BenchmarkEncodeChunkPayload`（超平坦） | ≈0.39 µs/op | 1,280 B/op | 1 |
+| `BenchmarkEncodeCompressedChunkPayload`（超平坦） | ≈4.5 µs/op | ≈1.4 KB/op | 2 |
+| `BenchmarkEncodeGeneratedChunkPayload`（真实区块） | ≈11.2 µs/op | 57,344 B/op | 1 |
+| `BenchmarkCompressGeneratedChunkPayload`（真实区块） | ≈530 µs/op | ≈22 KB/op | 1 |
+| `BenchmarkSaveChunkPayload` | ≈18.5 µs/op | ≈9.6 KB/op | 21 |
+| `BenchmarkLoadChunkPayload` | ≈21.5 µs/op | ≈44.6 KB/op | 19 |
+
+### 2.2 其他关键路径（最近一次记录）
+
 | Benchmark | 包 | 耗时 | 内存 | 分配次数 |
 | --- | --- | --- | --- | --- |
-| `BenchmarkEncodeChunkDataPacket` | world | ≈81.9 µs/op | 159,676 B/op | 2 allocs/op |
-| `BenchmarkAppendChunkDataPacketReuse` | world | ≈49.0 µs/op | 6 B/op | 0 allocs/op |
-| `BenchmarkEncodeChunkPayload` | world | ≈65.1 µs/op | 98,304 B/op | 1 allocs/op |
-| `BenchmarkEncodeCompressedChunkPayload` | world | ≈267 µs/op | ≈112 KB/op | 2 allocs/op |
+| `BenchmarkEncodeChunkDataPacket` | world | ≈29.2 µs/op | ≈66 KB/op | 1 alloc |
+| `BenchmarkAppendChunkDataPacketReuse` | world | ≈18.1 µs/op | 0 B/op | 0 allocs |
+| `BenchmarkEncodeChunkPayload` | world | ≈0.39 µs/op | 1,280 B/op | 1 alloc |
+| `BenchmarkEncodeCompressedChunkPayload` | world | ≈4.5 µs/op | ≈1.4 KB/op | 2 allocs |
 | `BenchmarkEncodeEntityPositionSync` | protocol | ≈6.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkEncodeAddEntity` | protocol | ≈53.7 ns/op | 80 B/op | 1 allocs/op |
 | `BenchmarkWritePacketWithCompression`（60 KB） | protocol | ≈70–75 µs/op | 17–250 B/op | 1 allocs/op |
-| `BenchmarkServerTick`（32 生物） | server | ≈18.5 µs/op | 48 B/op | 1 allocs/op |
-| `BenchmarkServerTickManyPlayers`（32 生物 + 100 玩家） | server | ≈332 µs/op | ≈3.8 KB/op | 32 allocs/op |
-| `BenchmarkItemTick`（128 掉落物） | server | ≈30.9 µs/op | 92 B/op | 2 allocs/op |
-| `BenchmarkItemMergeScan`（256 掉落物） | server | ≈208 µs/op | 14.7 KB/op | 229 allocs/op |
+| `BenchmarkServerTick`（32 生物） | server | ≈14.2 µs/op | 97 B/op | 1 alloc |
+| `BenchmarkServerTickManyPlayers`（32 生物 + 100 玩家） | server | ≈299 µs/op | ≈5.1 KB/op | 26 allocs |
+| `BenchmarkItemTick`（128 掉落物） | server | ≈27.5 µs/op | 28 B/op | 1 alloc |
+| `BenchmarkItemMergeScan`（256 掉落物） | server | ≈62.3 µs/op | 46 B/op | 1 alloc |
 | `BenchmarkEntityInsideBlocks`（32 包围盒） | server | ≈1.35 µs/op | 0 B/op | 0 allocs/op |
-| `BenchmarkHopperTick`（64 漏斗，持续搬运） | server | ≈35.8 µs/op | ≈48.6 KB/op | 50 allocs/op |
-| `BenchmarkHopperChunkScan`（1 区块 16 漏斗） | server | ≈36.4 µs/op | 720 B/op | 4 allocs/op |
-| `BenchmarkHopperScan`（64 漏斗全量扫描） | server | ≈251 µs/op | 3.0 KB/op | 7 allocs/op |
-| `BenchmarkFindPath`（绕墙 ≈32 步） | world | ≈7.6 µs/op | 769 B/op | 1 allocs/op |
-| `BenchmarkFindPathUnreachable`（512 节点耗尽） | world | ≈16.5 µs/op | 0 B/op | 0 allocs/op |
-| `BenchmarkCollides`（单盒相交检测） | world | ≈50.1 ns/op | 0 B/op | 0 allocs/op |
-| `BenchmarkClipMove`（单轴扫掠裁剪） | world | ≈94.2 ns/op | 0 B/op | 0 allocs/op |
+| `BenchmarkHopperTick`（64 漏斗，持续搬运） | server | ≈37.4 µs/op | ≈48.6 KB/op | 50 allocs |
+| `BenchmarkHopperChunkScan`（1 区块 16 漏斗） | server | ≈33.7 µs/op | 720 B/op | 4 allocs |
+| `BenchmarkHopperScan`（64 漏斗全量扫描） | server | ≈135 µs/op | 3.0 KB/op | 7 allocs |
+| `BenchmarkFindPath`（绕墙 ≈32 步） | world | ≈7.7 µs/op | 769 B/op | 1 alloc |
+| `BenchmarkFindPathUnreachable`（512 节点耗尽） | world | ≈16.6 µs/op | 0 B/op | 0 allocs |
+| `BenchmarkCollides`（单盒相交检测） | world | ≈50 ns/op | 0 B/op | 0 allocs |
+| `BenchmarkClipMove`（单轴扫掠裁剪） | world | ≈94 ns/op | 0 B/op | 0 allocs |
 | `BenchmarkLightningTickClear`（非雷暴） | server | ≈20.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkLightningTickThunder`（4 玩家雷暴） | server | ≈74.7 ns/op | 0 B/op | 0 allocs/op |
 | `BenchmarkImprovedNoise`（单个 perlin 八度） | vanilla | ≈32.8 ns/op | 0 B/op | 0 allocs/op |
@@ -116,7 +149,73 @@ go test -run=^$ -bench=. -benchmem ./...
 推算（基于上表，仅供规划参考）：视距 10 进入世界需发送 21×21＝441 个区块，
 按编码 49 µs/区块计算约 22 ms 纯编码时间（不含地形生成与网络 IO）。
 
-## 3. 优化记录
+### 2.3 地图存储算法（v13）
+
+#### 运行时 section 存储
+
+`internal/world/section.go` 不为每个方块分配对象，也不使用固定的 8 KiB
+`[]uint16`：
+
+- **单值（bits=0）**：整个 16³ section 是同一种方块，零数组分配；
+- **调色板 + 位流（bits=1/2/4/8）**：只保存用到的方块状态，索引按 1/2/4/8
+  位紧密打包到 `[]uint64`；
+- **直接存储（bits=16）**：调色板超过 256 项时存全局状态 ID。
+
+位宽只在调色板容量不足时增长；8 位满时先清理未使用调色板项，避免无谓升级。
+方块修改增量维护非空气计数，网络编码与磁盘编码都直接读取该表示。
+
+#### 区域文件（`.mca`）布局
+
+`internal/world/storage.go` 使用与原版区域文件兼容的外层布局：
+
+```text
+r.<regionX>.<regionZ>.mca
+├─ 4 KiB 位置表     1024 × (24-bit 扇区偏移 + 8-bit 扇区数)
+├─ 4 KiB 时间戳表   1024 × Unix 秒
+└─ 4 KiB 对齐的区块负载（zlib，压缩类型 2）
+```
+
+- 只读取目标槽位的位置表项和对应扇区，不整区解压；
+- 保存采用临时文件 + fsync + rename，避免崩溃留下半写文件；
+- 未修改槽位从旧文件流式复制压缩数据，不重复解压/压缩；
+- 不同区域文件最多 4 路并行重写（`maxConcurrentRegionSaves`）；
+- 区域文件句柄有 32 项 LRU 缓存，引用计数保证淘汰/替换时不关闭正在读取的
+  句柄，空闲释放会真正关闭 fd 而不是等待 GC。
+
+#### GMCS 区块负载 v13
+
+```text
+"GMCS" | version=13 u16 | x i32 | z i32
+24 × section:
+  flags u8（bit0 = 有方块）| biome u16
+  if flags&1:
+    bits u8
+      bits=0 : state uvarint（单值）
+      bits≤8 : paletteCount uvarint
+               paletteCount × state uvarint
+               ceil(4096 × bits / 64) × u64（小端连续位流）
+      bits=16: ceil(4096 × 16 / 64) × u64
+16 × u16 群系网格（4×4 列，32 B）
+blockEntityCount uvarint | 方块实体数据
+```
+
+调色板条目使用 uvarint；单值 section 不写位流；v1–v12 旧地图仍可读取。
+zlib 使用标准库默认级别，复用 writer/buffer 对象池，优先稳定压缩率。
+
+#### 原版 Anvil 转换
+
+`tools/mapconvert` 只转换区块，不复制完整存档：
+
+1. 读取 Anvil 位置表/扇区，按 gzip、zlib 或未压缩类型解压；
+2. 解析 NBT，读取 `sections[].block_states` 与 `biomes` 调色板容器；
+3. 将方块状态映射到 gmcs 注册表 ID，写入 `world.Chunk`；
+4. 写回时用 gmcs v13 编码 + zlib，并通过 `world.SavePayloads` 合并区域文件；
+5. 反向转换按 Anvil 调色板容器写回 `block_states`、`biomes` 和基础方块实体。
+
+未转换：`level.dat`、POI、实体、玩家数据、结构引用、3D 群系、光照和完整
+物品 NBT 组件。详细字段与目录规则见 [`MAP_CONVERT.md`](MAP_CONVERT.md)。
+
+## 3. 优化记录（历史）
 
 ### 3.1 区块编码重构（c58bd09，当时实测）
 
@@ -1492,18 +1591,6 @@ BenchmarkTryPrecipitationNoSnow-20       51.14 ns/op     0 B/op   0 allocs/op   
 后不再变化）。与原版“每区块每 tick 一列（视距 10 约 441 列/tick）”相比，
 抽样量为 1/7，因此积雪/结冰更慢——这是刻意的性能取舍，不是遗漏。
 
-## 4. 尚未覆盖- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）
-  ——已用 `cmd/gmcsload` 做单机 50 玩家、100 玩家 × 5 分钟与 100 玩家 × 3 分钟
-  loopback 压测（见 3.7、3.13、3.18），真实网络 / 真实客户端渲染仍待验证
-- `go tool trace` 调度与阻塞分析
-- 区块保存/加载（区域文件读写）路径的 benchmark
-- 端到端连接压测（真实 socket + 加密 + 多包交织；当前仅覆盖编解码与压缩）
-- 内存随在线时长/跑图的持续观测（已有：区块卸载演示与快照测量、3.26 的
-  80 秒稳态 RSS/峰值观测、多玩家 loopback 压测的内存对比（3.7/3.13/3.18）；
-  数小时级长时间运行与真实网络下的内存行为仍待观测）
-- 掉落物高密度场景的物理与广播（合并扫描已有 `BenchmarkItemMergeScan` 覆盖，
-  见 3.17；广播路径与长时间运行的内存增长仍待观测）
-
 ### 3.45 原版生成器接线与雕刻器修正（本批，单次测量，不是稳定基线）
 
 本批没有做性能优化，只记录当前数据，避免把“能跑”当成“性能结论”。
@@ -1571,7 +1658,7 @@ BenchmarkVanillaGeneratorChunk-20   ~62 ms/op    8.3 MB/op    52,784 allocs/op
 需要重新评估采样策略与 FeatureSorter 索引一致性。
 
 
-## 3.47 原版结构/地物对齐后的区块生成性能
+### 3.47 原版结构/地物对齐后的区块生成性能
 
 - 2026-11-15，种子 4321，`BenchmarkGenerateChunk`：约 55 ms/区块、
   16.5 MB/op、84k allocs/op。
@@ -1595,3 +1682,16 @@ BenchmarkVanillaGeneratorChunk-20   ~62 ms/op    8.3 MB/op    52,784 allocs/op
   连续相邻区块生成会复用已计算的地物结果，真实区域生成的平均成本低于单区块
   冷启动基准。
 - 晶洞使用独立 LegacyRandomSource NormalNoise；已加入分层/裂缝/晶芽放置测试。
+
+## 4. 尚未覆盖
+
+- 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；
+  已用 `cmd/gmcsload` 做单机 50/100 玩家 loopback 压测（见 3.7、3.13、3.18），
+  真实网络与真实客户端渲染仍待验证
+- `go tool trace` 调度与阻塞分析
+- 区块保存/加载 benchmark：已补充 `BenchmarkSaveChunkPayload` /
+  `BenchmarkLoadChunkPayload`（见 2.1），区域文件并发写路径仍可继续压测
+- 端到端连接压测（真实 socket + 加密 + 多包交织；当前仅覆盖编解码与压缩）
+- 内存随在线时长/跑图的持续观测（已有 3.26 的 80 秒稳态观测和多玩家 loopback；
+  数小时级运行仍待观测）
+- 掉落物高密度场景的广播路径与长时间内存增长

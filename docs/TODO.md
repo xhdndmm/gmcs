@@ -144,14 +144,19 @@
 - [x] pprof 诊断监听（配置 `pprof_address`，默认关闭；`/debug/pprof/*` 提供 CPU/内存分析）
 
 - [x] 负载压测工具（`cmd/gmcsload`：离线模式模拟并发客户端，输出进入世界耗时、
-  收包量、流量与包类型分布；单机 50 玩家实测见 docs/PERFORMANCE.md 3.7）
+  收包量、流量与包类型分布；单机 50 玩家实测见 PERFORMANCE.md）
 
 - [x] 区块紧凑存储（section 调色板 + 位流；每区块内存 ≈72 KiB → ≈9 KiB，
   1600 区块 HeapAlloc ≈111.9 MiB → ≈12.3 MiB；生成/编码同步提速，实测见
-  docs/PERFORMANCE.md 3.8）
+  PERFORMANCE.md）
 
-- [x] 区块存储管线优化（按槽位读取不整区解压、保存时未更新槽位按原始压缩数据复制、
-  压缩器对象池、精确大小写入；保存编码+压缩分配 ≈1.39 MB/区块 → ≈129 KB/区块）
+- [x] 区块存储管线优化（按槽位读取不整区解压、保存时未更新槽位流式复制、
+  压缩器对象池、精确大小写入、区域文件最多 4 路并行保存；保存编码+压缩
+  分配 ≈1.39 MB/区块 → ≈129 KB/区块）
+
+- [x] 区块磁盘格式 v13：section 调色板 + 连续位流（uvarint 调色板、单值 section
+  省略位流、16 位直接存储），真实区块未压缩负载约 -74%、zlib 后约 -17%；
+  保留 v1–v12 读取兼容，`tools/mapconvert` 自动使用新格式（见 PERFORMANCE.md）
 
 - [x] 容器交互与方块实体（箱子/陷阱箱/木桶/发射器/投掷器/漏斗/潜影盒 17 色；
   打开/关闭窗口、取放/Shift 快速移动/数字键交换/创造复制/Q 丢弃/拖拽分发/双击收集、
@@ -183,7 +188,7 @@
   掉落物统一按实际上限处理）
 
 - [x] 移动广播零分配（实体包编码精确预分配、Append 变体 + sync.Pool 缓冲复用；
-  EncodeEntityPositionSync 0 分配、ServerTick 分配 −92%，实测见 docs/PERFORMANCE.md 3.9）
+  EncodeEntityPositionSync 0 分配、ServerTick 分配 −92%，实测见 PERFORMANCE.md）
 
 - [x] 合成系统（玩家物品栏 2×2 与工作台 3×3：有序/无序/标签配方匹配（706 有序、304 无序、
   116 烹饪，由 `tools/genregistries` 从官方 recipe 数据生成）、结果槽实时计算、
@@ -275,7 +280,7 @@
 - [x] 异步区块预生成：进入世界/跨区块发送前由 8 个 worker 并行生成并去重（请求 future），
   主流程只等待结果；预生成与同步生成结果一致性测试
 
-- [x] 长时多玩家压测（100 玩家 5 分钟 loopback，结果见 docs/PERFORMANCE.md 3.7）
+- [x] 长时多玩家压测（100 玩家 5 分钟 loopback，结果见 PERFORMANCE.md）
 
 - [x] 修复区块包调色板容器线上布局错误：5–7 位网络的方块状态数据数组改为与客户端
   BitStorage 一致的“每 long 独立”打包（长度 = ceil(4096/(64/bits))）；此前按连续位流
@@ -354,7 +359,7 @@
 - [x] 实体进入方块与方块读取热路径：`Entity.checkInsideBlocks` 等价扫描
   （边界 1e-7 收缩）+ 状态数组查表过滤；世界层新增区块读锁快路径与按列批量读取
   （`world.LoadedColumn`/`Chunk.CopyColumn`，区块只解析/加锁一次）；压力板扫描
-  46 ns/实体（`BenchmarkEntityInsideBlocks`，见 PERFORMANCE.md 3.15）
+  46 ns/实体（`BenchmarkEntityInsideBlocks`，见 PERFORMANCE.md）
 
 - [x] 配方体系扩展：`tools/genregistries` 新增 stonecutting（254 条）与
   smithing_transform（12 条下界合金升级）配方生成；切石机与锻造台窗口
@@ -439,7 +444,7 @@
   漏斗面规则（输入只允许上方插入、产出只允许下方抽出）；level 随方块状态
   随区块持久化；（含 `TestComposter*`/`TestCompostChances` 测试）
 
-- [x] Tick 热路径优化（以 CPU/分配 profile 定位，实测见 docs/PERFORMANCE.md 3.17）：
+- [x] Tick 热路径优化（以 CPU/分配 profile 定位，实测见 PERFORMANCE.md）：
   A* 寻路改为复用工作区（开放寻址表 + 显式堆，无逐节点堆分配与接口装箱；
   单次搜索 78 µs→7.6 µs、969→1 allocs）；`Chunk.Column`/`ChunkLoaded`/`worldFor`
   读锁快路径；tickMobs/tickItems/tickXPOrbs 临时切片复用（ServerTick 85→1 allocs）；
@@ -479,7 +484,7 @@
 
 - [x] 长时负载复测（单机 loopback，默认配置、视距 10）：100 玩家 × 3 分钟
   100/100 成功、无断开、服务器日志 0 ERROR/WARN；100 玩家 × 60 秒采样服务器
-  CPU ≈1.12 核、VmHWM 76.6 MB（数据与阶段说明见 PERFORMANCE.md 3.18）
+  CPU ≈1.12 核、VmHWM 76.6 MB（数据与阶段说明见 PERFORMANCE.md）
 
 - [x] 掉落物持久化完善：速度、存活时间（Age）与拾取延迟随 entities.json 保存（对照
   原版 `ItemEntity` 的存档字段 Age/PickupDelay，速度属于实体基础字段）；读取时对
@@ -567,7 +572,7 @@
   `TestEnvironmentBoxOverlapIgnites`（边缘生物/玩家被相邻火方块点燃）与
   `TestEnvironmentBoxDoesNotOverreach`（不重叠不点燃）
 
-- [x] 并发与热路径性能批次（见 docs/PERFORMANCE.md 3.25）：
+- [x] 并发与热路径性能批次（见 PERFORMANCE.md）：
   方块状态类别位表（`StateKindOf`，替换 tick 热路径的字符串 map 查找）；
   玩家位置/维度/死亡状态改为原子快照（`playerPose` + atomic，消除实体 Tick
   每 mob × 每玩家的 `stateMu` 争用）；`mobKinds` 数组化、`worldFor` 无锁快照；
@@ -582,7 +587,7 @@
   容器点击 / 创造模式物品操作 / Tab 补全令牌桶限流（与移动/聊天一致的
   防洪泛策略）
 
-- [x] 内存装载/释放与预加载批次（见 docs/PERFORMANCE.md 3.26）：
+- [x] 内存装载/释放与预加载批次（见 PERFORMANCE.md）：
   卸载宽限（区块连续远离超过 15 秒才卸载，边界来回移动不再反复
   加载/卸载/写盘）；无玩家维度空闲 30 秒后释放全部区块（切维度后旧
   维度不再长期占用内存，快速切回无需重建）；预取范围扩大为视距+1
@@ -741,7 +746,7 @@
     `TestBlockStateAgeRoundTrip`）；
   - 新增基准 `BenchmarkCropTick`（1 作物 + 1 耕地）与
     `BenchmarkCropTick256`（16×16 农田），实测见
-    [PERFORMANCE.md](PERFORMANCE.md) 3.33。
+    PERFORMANCE.md。
 
 - [x] 方块放置形态批次：
   - 台阶（`StairBlock.getStateForPlacement`）：facing = 玩家水平朝向，
@@ -843,7 +848,7 @@
     `TestTryPrecipitationFreezesWater`、`TestTryPrecipitationDesertNoSnow`、
     `TestIsRainingAtRespectsBiomePrecipitation`；
   - 新增基准 `BenchmarkWeatherTick`（稳态）与 `BenchmarkWeatherTickTransition`
-    （状态翻转 + 3 个包编码），实测见 [PERFORMANCE.md](PERFORMANCE.md) 3.35。
+    （状态翻转 + 3 个包编码），实测见 PERFORMANCE.md。
 
 - [x] 可开合方块音效批次：
   - 门/活板门/栅栏门开合广播 Sound Effect 包（方块类别、音量 1、音高
@@ -1389,7 +1394,7 @@
   建议作为独立批次实施，不要与行为修复混在一起。
 
 - [ ] 真实网络环境的负载与长时间稳定性测试（工具与单机 loopback 基线已有，
-  见 PERFORMANCE.md 3.7、3.13、3.18）
+  见 PERFORMANCE.md）
 
 - [ ] **TNT 爆炸后客户端断线（未定位）**：用户报告“TNT 点燃爆炸后丢失连接，
   提示网络协议错误”。已用 1.21.11 客户端 jar + 客户端映射（`client.txt`）逐字节
@@ -1415,8 +1420,9 @@
 
 - 非同步世界生成注册表（worldgen/structure 等）的标签不发送，依赖客户端本地数据包
 
-- 区块负载为 gmcs 自定义格式：区域文件框架（头部、扇区、zlib）与原版一致，
-  但负载不是原版 NBT（含自有的方块实体槽位编码），不能与原版服务器互读
+- 区块负载为 gmcs 自定义格式 v13：区域文件框架（头部、扇区、zlib）与原版一致，
+  负载使用调色板/位流 section（v1–v12 仍可读取），但不是原版 NBT，
+  不能与原版服务器直接互读；`tools/mapconvert` 可双向转换
 
 - 区块光照固定全亮（无光照引擎）；heightmap 已随区块发送（WORLD_SURFACE/MOTION_BLOCKING）
 
