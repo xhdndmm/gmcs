@@ -401,7 +401,9 @@ func (c *carvingContext) doCarveCanyon(definition carverDefinition, seed int64, 
 	for step := 0; step < length; step++ {
 		radius := 1.5 + float64(float32(math.Sin(math.Pi*float64(float32(step)/float32(length))))*thickness)
 		horizontalRadius := radius * float64(definition.shape.horizontalRadiusFactor.sample(random))
-		verticalRadius := canyonVerticalRadius(definition, random, radius*float64(yScale), float32(length), float32(step))
+		// CanyonWorldCarver.doCarve 的垂直半径基准是“已乘水平因子后的半径”
+		// 再乘 yScale；不能拿未乘水平因子的 radius 直接乘 yScale。
+		verticalRadius := canyonVerticalRadius(definition, random, horizontalRadius*float64(yScale), float32(length), float32(step))
 		cosPitch := float32(math.Cos(float64(verticalRotation)))
 		x += float64(float32(math.Cos(float64(yaw))) * cosPitch)
 		y += float64(float32(math.Sin(float64(verticalRotation))))
@@ -429,14 +431,14 @@ func (c *carvingContext) doCarveCanyon(definition carverDefinition, seed int64, 
 	}
 }
 
-func canyonVerticalRadius(definition carverDefinition, random *legacyRandom, yScale float64, length, step float32) float64 {
+func canyonVerticalRadius(definition carverDefinition, random *legacyRandom, baseRadius float64, length, step float32) float64 {
 	// 原版 CanyonWorldCarver.updateVerticalRadius 使用 Mth.floor 的分段函数：
 	//   f = 1.0F - floor(0.5F - step / length) * 2.0F
 	// 因此 f 在隧道前半段为 1，后半段为 3，而不是线性插值。
 	progress := 1 - float32(math.Floor(float64(float32(0.5)-step/length)))*2
 	factor := definition.shape.verticalRadiusDefaultFactor + definition.shape.verticalRadiusCenterFactor*progress
 	jitter := float32(0.75) + random.nextFloat()*0.25
-	return yScale * float64(factor*jitter)
+	return baseRadius * float64(factor*jitter)
 }
 
 // canReachChunk 对应 WorldCarver.canReach：判断隧道剩余长度是否仍可能触及本区块。

@@ -315,3 +315,26 @@ func TestMineshaftFrequencyFilter(t *testing.T) {
 		t.Fatalf("矿洞频率过滤结果异常：%d/%d", allowed, samples)
 	}
 }
+
+func TestBeardThinFillsSupportBelowTemplate(t *testing.T) {
+	template := &structureTemplate{
+		Size:    [3]int{1, 1, 1},
+		Palette: []SurfaceBlock{{Name: "minecraft:stone_bricks"}},
+		Blocks:  []templateBlock{{Pos: [3]int{0, 0, 0}, State: 0}},
+	}
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := 40; y <= 50; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:stone"})
+			}
+		}
+	}
+	piece := structurePiece{origin: [3]int{8, 64, 8}, template: template, terrainAdaptation: "minecraft:beard_thin"}
+	adaptStructureTerrain(chunk, piece)
+	for y := 51; y < 64; y++ {
+		if got := chunk.BlockAt(8, y, 8).Name; got != "minecraft:stone" {
+			t.Fatalf("beard_thin 支撑 y=%d = %s", y, got)
+		}
+	}
+}

@@ -72,12 +72,13 @@ type structureStart struct {
 }
 
 type structurePiece struct {
-	name       string
-	template   *structureTemplate
-	origin     [3]int
-	rotation   templateRotation
-	mirror     bool
-	connectors []pieceConnector
+	name              string
+	template          *structureTemplate
+	origin            [3]int
+	rotation          templateRotation
+	mirror            bool
+	connectors        []pieceConnector
+	terrainAdaptation string
 	// 专用生成器（矿洞/要塞）直接提供绝对坐标方块，template 为 nil。
 	size   [3]int
 	blocks []structureBlockPlacement
@@ -261,6 +262,7 @@ func (r *Router) applyStructures(chunk *GeneratedChunk, biomes *BiomeSource) {
 						placeStructureBlocks(chunk, piece)
 						continue
 					}
+					adaptStructureTerrain(chunk, piece)
 					random := newLegacyRandom(r.seed + int64(piece.origin[0])*31 + int64(piece.origin[1])*17 + int64(piece.origin[2])*13)
 					placeTemplate(chunk, piece.template, piece.origin[0], piece.origin[1], piece.origin[2], piece.rotation, piece.mirror, random)
 				}
@@ -335,6 +337,7 @@ func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int
 		startY = -64
 	}
 	piece := makePiece(r, element.Location, template, startX, startY, startZ, rotation, mirror, element.Processors, random)
+	piece.terrainAdaptation = def.TerrainAdaptation
 	start := &structureStart{pieces: []structurePiece{piece}}
 	center := [3]int{startX, startY, startZ}
 	queue := []structurePiece{piece}
@@ -359,6 +362,7 @@ func (r *structureRuntime) buildStart(seed int64, setIndex, originX, originZ int
 				if !ok {
 					continue
 				}
+				targetPiece.terrainAdaptation = def.TerrainAdaptation
 				start.pieces = append(start.pieces, targetPiece)
 				next = append(next, targetPiece)
 			}
