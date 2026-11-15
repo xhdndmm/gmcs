@@ -1267,7 +1267,8 @@
       流体替换或多 carver 同源区块交互；**不声称已与原版完全一致**。
       已排除“未生成完的官方区块”造成的假差异（vancmp 现在过滤非 full 区块）。
     - [x] 新增回归测试：canyon 垂直半径分段函数、雕刻椭球使用 `y-0.5` 中心。
-      当前 BenchmarkGenerateChunk 尚未给出稳定基线，不作为性能结论。
+      `BenchmarkGenerateChunk` 冷路径约 112 ms，`BenchmarkGenerateChunkWarm`
+      热路径约 54 ms；区域缓存首次邻域构建仍有明显冷启动成本。
   - [x] **下界原版生成**：复用 `Router` 的 noise settings / density / surface_rule /
     carver / feature 与 nether 多噪声群系参数表；基岩顶按维度边界补齐。
   - [x] **末地原版地形**：复用 end noise settings / density / surface_rule；
@@ -1324,13 +1325,14 @@
       fixed_placement。
     - [~] **已知近似/残差**：
       - 树木已支持 2×2 巨型/深色橡木主干、two/three_layers minimum_size
-        基础空间检查和 trunk_vine/leave_vine/cocoa 装饰器；复杂分叉
-        fancy/forking/cherry/mangrove 形态与跨区块树冠仍未完成。
+        基础空间检查、trunk_vine/leave_vine/cocoa 装饰器，以及
+        fancy/cherry/mangrove 的简化分枝放置；完整 fancy/forking/cherry
+        placer 与跨区块树冠冲突顺序仍未完成。
       - geode 已移植分层阈值、裂缝、invalid_blocks、potential placements 与
         LegacyRandomSource NormalNoise；仍需逐方块对拍验证；
       - iceberg、dripstone、sculk patch、end spike、monster room 的复杂几何
-        仍不完整；root system 已加入悬挂根/根柱但未逐方块对拍；折跃门仅有
-        方块传送，ExitPortal NBT 未接入；
+        仍不完整；root system 已加入悬挂根/根柱但未逐方块对拍；折跃门已接入
+        ExitPortal 方块实体与 v10 存储持久化，但实体生成/末影龙联动仍未完成；
       - 地物逐方块对比仍有差异；例如 ore_tuff 单地物在区块 (0,0) 仍有
         约 1854/98304 差异，说明 feature index/随机流或 ore 放置细节仍未收敛。
       - 已新增区块地物结果缓存，执行中心区块及 3×3 邻域地物并合并越界写入；
