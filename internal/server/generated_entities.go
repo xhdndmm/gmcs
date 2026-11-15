@@ -64,6 +64,9 @@ func (s *Server) spawnGeneratedFrame(entity world.PendingEntity) {
 		Facing: entity.Facing,
 	}
 	s.entityMu.Lock()
+	if s.frames == nil {
+		s.frames = make(map[int32]*frameEntity)
+	}
 	s.frames[frame.ID] = frame
 	targets := s.markTrackedNearbyLocked(frame.Dim, frame.X, frame.Z, nil, frame.ID)
 	s.entityMu.Unlock()
