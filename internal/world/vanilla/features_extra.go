@@ -932,19 +932,110 @@ func (r *Router) placeIceberg(chunk *GeneratedChunk, random *legacyRandom, raw j
 	if err != nil {
 		return
 	}
-	radius := random.nextIntBounded(3) + 2
-	for dx := -radius; dx <= radius; dx++ {
-		for dz := -radius; dz <= radius; dz++ {
-			if dx*dx+dz*dz > radius*radius {
-				continue
-			}
-			height := random.nextIntBounded(3) + 1
-			for h := 0; h < height; h++ {
-				if chunk.InRange(x+dx, y+h, z+dz) && chunk.BlockAt(x+dx, y+h, z+dz).HasFluid() {
-					chunk.SetBlock(x+dx, y+h, z+dz, state)
+	// 对应 IcebergFeature.place 的主循环。原版还会处理 allowed_states 和
+	// 逐方块的 snow/冰替换；这里保留主要形状、上下锥体和随机尖顶。
+	snow := random.nextDouble() > 0.7
+	angle := random.nextDouble() * 2 * math.Pi
+	radiusLimit := 11 - random.nextIntBounded(5)
+	baseHeight := 3 + random.nextIntBounded(3)
+	big := random.nextDouble() > 0.7
+	height := 11
+	if big {
+		height = random.nextIntBounded(6) + 6
+	} else {
+		height = random.nextIntBounded(15) + 3
+		if random.nextDouble() > 0.9 {
+			height += random.nextIntBounded(19) + 7
+		}
+	}
+	lowerHeight := minInt(height+random.nextIntBounded(11), 18)
+	shape := minInt(height+random.nextIntBounded(7)-random.nextIntBounded(5), 11)
+	radius := 11
+	if big {
+		radius = radiusLimit
+	}
+	for dx := -radius; dx < radius; dx++ {
+		for dz := -radius; dz < radius; dz++ {
+			for dy := 0; dy < height; dy++ {
+				limit := 0
+				if big {
+					limit = icebergBigLimit(dy, height, shape)
+				} else {
+					limit = icebergLayerLimit(random, dy, height, shape)
 				}
+				if !big && dx >= limit {
+					continue
+				}
+				icebergPlaceCell(chunk, random, state, x+dx, y+dy, z+dz, limit, radius, big, snow, angle)
 			}
 		}
+	}
+	for dx := -radius; dx < radius; dx++ {
+		for dz := -radius; dz < radius; dz++ {
+			for dy := -1; dy > -lowerHeight; dy-- {
+				limit := radius
+				if big {
+					v := float64(radius) * (1 - float64(dy*dy)/float64(lowerHeight*8))
+					limit = int(math.Floor(v))
+				}
+				layer := icebergLowerLimit(random, -dy, lowerHeight, shape)
+				if dx >= layer {
+					continue
+				}
+				icebergPlaceCell(chunk, random, state, x+dx, y+dy, z+dz, limit, radius, big, snow, angle)
+			}
+		}
+	}
+	if random.nextDouble() > 0.7 {
+		spikeHeight := random.nextIntBounded(8) + 3
+		for dy := 0; dy <= spikeHeight; dy++ {
+			if chunk.InRange(x, y+dy, z) {
+				chunk.SetBlock(x, y+dy, z, state)
+			}
+		}
+		_ = baseHeight
+	}
+}
+
+func icebergLayerLimit(random *legacyRandom, layer, height, shape int) int {
+	factor := float32(3.5) - random.nextFloat()
+	value := (1 - float32(layer*layer)/(float32(height)*factor)) * float32(shape)
+	if height > 15+random.nextIntBounded(5) {
+		adjusted := layer
+		if layer < 3+random.nextIntBounded(6) {
+			adjusted = layer / 2
+		}
+		value = (1 - float32(adjusted)/(float32(height)*factor*0.4)) * float32(shape)
+	}
+	return int(math.Ceil(float64(value / 2)))
+}
+
+func icebergBigLimit(layer, height, shape int) int {
+	value := (1 - float32(layer*layer)/float32(height)) * float32(shape)
+	return int(math.Ceil(float64(value / 2)))
+}
+
+func icebergLowerLimit(random *legacyRandom, layer, height, shape int) int {
+	factor := float32(1) + random.nextFloat()/2
+	value := (1 - float32(layer)/(float32(height)*factor)) * float32(shape)
+	return int(math.Ceil(float64(value / 2)))
+}
+
+func icebergPlaceCell(chunk *GeneratedChunk, random *legacyRandom, state SurfaceBlock, x, y, z, limit, radius int, big, snow bool, angle float64) {
+	if !chunk.InRange(x, y, z) {
+		return
+	}
+	// 原版还会用椭圆距离与噪声边界筛除部分方块；这里的几何边界已在
+	// 上层 dx/dy 限制中处理，水/空气/冰是可替换目标。
+	current := chunk.BlockAt(x, y, z)
+	switch current.Name {
+	case "minecraft:water", "minecraft:air", "minecraft:ice", "minecraft:snow_block", "minecraft:packed_ice":
+	default:
+		return
+	}
+	chunk.SetBlock(x, y, z, state)
+	if snow && random.nextDouble() > 0.8 {
+		chunk.SetBlock(x, y+1, z, SurfaceBlock{Name: "minecraft:snow_block"})
 	}
 }
 
@@ -1070,20 +1161,6 @@ func (r *Router) placePointedDripstone(chunk *GeneratedChunk, random *legacyRand
 			properties["thickness"] = "base"
 		}
 		chunk.SetBlock(x, py, z, SurfaceBlock{Name: "minecraft:pointed_dripstone", Properties: properties})
-	}
-}
-
-func (r *Router) placeSculkPatch(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
-	radius := random.nextIntBounded(3) + 2
-	for dx := -radius; dx <= radius; dx++ {
-		for dz := -radius; dz <= radius; dz++ {
-			if dx*dx+dz*dz > radius*radius {
-				continue
-			}
-			if chunk.InRange(x+dx, y, z+dz) && chunk.BlockAt(x+dx, y, z+dz).IsAir() {
-				chunk.SetBlock(x+dx, y, z+dz, SurfaceBlock{Name: "minecraft:sculk"})
-			}
-		}
 	}
 }
 

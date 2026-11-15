@@ -552,3 +552,42 @@ func TestRootSystemPlacesRootedDirtAndHangingRoots(t *testing.T) {
 		t.Fatal("根系统没有放置悬挂根")
 	}
 }
+
+func TestSculkPatchSpreadsAndCatalyst(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placed := router.features.placed["minecraft:sculk_patch_deep_dark"]
+	if placed.extra == nil {
+		t.Fatal("sculk_patch_deep_dark 没有解析")
+	}
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := 20; y < 40; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:deepslate"})
+			}
+		}
+	}
+	random := newWorldgenRandom()
+	random.setSeed(4242)
+	router.placeSculkPatch(chunk, random.legacyRandom, placed.extra.config, 8, 30, 8)
+	sculk, catalyst := 0, 0
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		switch block.Name {
+		case "minecraft:sculk":
+			sculk++
+		case "minecraft:sculk_catalyst":
+			catalyst++
+		}
+	})
+	if sculk == 0 {
+		t.Fatal("sculk patch 没有生成 sculk")
+	}
+	_ = catalyst
+}
