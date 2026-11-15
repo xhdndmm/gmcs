@@ -33,6 +33,7 @@ type Router struct {
 	configuredCache    map[string]placedFeature
 	structureTerrain   map[chunkCoord]*GeneratedChunk
 	structuresEnabled  bool
+	featureCache       *featureResultCache
 }
 
 type chunkCoord struct{ x, z int }
@@ -55,6 +56,7 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		biomeSetCache:    make(map[chunkCoord]map[string]struct{}),
 		configuredCache:  make(map[string]placedFeature),
 		structureTerrain: make(map[chunkCoord]*GeneratedChunk),
+		featureCache:     newFeatureResultCache(96),
 	}
 	carvers, err := parseCarverDefinitions(data)
 	if err != nil {
@@ -117,6 +119,7 @@ func (r *Router) NewSession() *Router {
 		configuredCache:    make(map[string]placedFeature),
 		structureTerrain:   make(map[chunkCoord]*GeneratedChunk),
 		structuresEnabled:  r.structuresEnabled,
+		featureCache:       r.featureCache,
 	}
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
 	session.evaluator.finalDensity = session.nodes["final_density"]

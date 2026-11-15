@@ -626,7 +626,7 @@ func (r *structureRuntime) startHeight(router *Router, def structureDefinition, 
 		chunk, ok := router.structureTerrain[key]
 		if !ok {
 			var err error
-			chunk, err = router.generateChunkInternal(key.x, key.z, false)
+			chunk, _, err = router.generateBaseChunk(key.x, key.z)
 			if err != nil {
 				return 64
 			}

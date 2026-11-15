@@ -78,6 +78,9 @@ func generatedBlockEntityFromNBT(name string, data nbtCompound) (GeneratedBlockE
 
 // SetBlockEntity 设置生成区块中的方块实体；越界坐标忽略。
 func (c *GeneratedChunk) SetBlockEntity(x, y, z int, entity GeneratedBlockEntity) {
+	if c.captureEntities != nil {
+		c.captureEntities[[3]int{x, y, z}] = entity
+	}
 	if !c.InRange(x, y, z) {
 		return
 	}

@@ -591,3 +591,44 @@ func TestSculkPatchSpreadsAndCatalyst(t *testing.T) {
 	}
 	_ = catalyst
 }
+
+func TestFeatureResultCaptureIncludesOutOfChunkWrites(t *testing.T) {
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	captured := map[[3]int]SurfaceBlock{}
+	chunk.capture = captured
+	chunk.SetBlock(15, 64, 15, SurfaceBlock{Name: "minecraft:stone"})
+	chunk.SetBlock(16, 64, 15, SurfaceBlock{Name: "minecraft:oak_leaves"})
+	if got := captured[[3]int{16, 64, 15}]; got.Name != "minecraft:oak_leaves" {
+		t.Fatalf("越界写入没有进入 capture: %+v", got)
+	}
+	if chunk.InRange(16, 64, 15) {
+		t.Fatal("越界坐标不应落在区块内")
+	}
+}
+
+func TestRegionFeatureCacheDeterministic(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.SetStructuresEnabled(false)
+	first, err := router.GenerateChunk(12, -3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 先清空缓存，第二次从头生成；结果必须与缓存路径一致。
+	router.featureCache = newFeatureResultCache(96)
+	second, err := router.GenerateChunk(12, -3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.ForEachBlock(func(x, y, z int, block SurfaceBlock) {
+		if got := second.BlockAt(x, y, z); got.Name != block.Name {
+			t.Fatalf("region 缓存导致不一致 (%d,%d,%d): %s != %s", x, y, z, block.Name, got.Name)
+		}
+	})
+}

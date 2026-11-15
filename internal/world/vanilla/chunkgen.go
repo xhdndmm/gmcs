@@ -24,6 +24,10 @@ type GeneratedChunk struct {
 	blocks        []SurfaceBlock
 	heights       [256]int
 	blockEntities map[[3]int]GeneratedBlockEntity
+	// capture 非 nil 时记录所有 SetBlock/SetBlockEntity 调用，包括越界写入，
+	// 用于跨区块地物的 region 级结果缓存。
+	capture         map[[3]int]SurfaceBlock
+	captureEntities map[[3]int]GeneratedBlockEntity
 }
 
 // NewGeneratedChunk 创建一个全空气的区块。
@@ -73,6 +77,9 @@ func (c *GeneratedChunk) BlockAt(x, y, z int) SurfaceBlock {
 
 // SetBlock 写入方块并同步高度图（WORLD_SURFACE_WG：最高非空气方块）。
 func (c *GeneratedChunk) SetBlock(x, y, z int, block SurfaceBlock) {
+	if c.capture != nil {
+		c.capture[[3]int{x, y, z}] = block
+	}
 	if !c.InRange(x, y, z) {
 		return
 	}
@@ -124,7 +131,7 @@ func (r *Router) GenerateChunk(chunkX, chunkZ int) (*GeneratedChunk, error) {
 	return r.generateChunkInternal(chunkX, chunkZ, true)
 }
 
-func (r *Router) generateChunkInternal(chunkX, chunkZ int, withStructures bool) (*GeneratedChunk, error) {
+func (r *Router) generateBaseChunk(chunkX, chunkZ int) (*GeneratedChunk, *BiomeSource, error) {
 	setting := r.setting
 	chunk := NewGeneratedChunk(chunkX, chunkZ, setting.MinY, setting.Height)
 	sampler := r.NewChunkSampler(chunkX, chunkZ)
@@ -168,20 +175,20 @@ func (r *Router) generateChunkInternal(chunkX, chunkZ int, withStructures bool) 
 
 	biomes, err := r.Biomes()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// 原版 ChunkStatus 顺序为 NOISE → SURFACE → CARVERS：
 	// 表面规则先于雕刻器执行，雕刻出的洞穴/峡谷不会被重新铺上草/沙/水。
 	system, err := NewSurfaceSystem(sampler)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if system != nil {
 		system.BuildSurface(chunk, biomes)
 		chunk.RecalculateHeights()
 	}
 	if err := r.carveChunk(chunk, sampler, biomes); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if setting.Name == "minecraft:nether" {
 		// 原版下界基岩顶位于噪声设置高度范围的最高一层（y=127）。
@@ -194,8 +201,20 @@ func (r *Router) generateChunkInternal(chunkX, chunkZ int, withStructures bool) 
 			}
 		}
 	}
-	// 原版顺序：CARVERS → FEATURES → STRUCTURES。
-	r.applyFeatures(chunk, biomes)
+	chunk.RecalculateHeights()
+	return chunk, biomes, nil
+}
+
+// generateChunkInternal 生成基础地形/雕刻器后，按 region 缓存应用 3×3
+// 邻域地物写入，再放置当前区块结构。
+func (r *Router) generateChunkInternal(chunkX, chunkZ int, withStructures bool) (*GeneratedChunk, error) {
+	chunk, biomes, err := r.generateBaseChunk(chunkX, chunkZ)
+	if err != nil {
+		return nil, err
+	}
+	if r.features != nil {
+		r.applyRegionFeatures(chunk, biomes)
+	}
 	if withStructures {
 		r.applyStructures(chunk, biomes)
 	}
