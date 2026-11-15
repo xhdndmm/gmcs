@@ -1288,9 +1288,10 @@
     塔楼递归、船、末影龙/折跃门 NBT 仍未完整移植。
   - [~] **结构运行时剩余**：已加入矿洞/要塞专用生成器、`concentric_rings`
     结构集、矿洞 `legacy_type_3` 频率过滤、结构模板方块实体与基础战利品表、
-    末地折跃门方块传送；仍未完成 `beard_thin/beard_box/bury` 精确地形适配、
-    完整 processor_list、结构 spawner/告示牌等 NBT、结构 start 持久化以及
-    更严格的 jigsaw 连接器/包围盒对齐。
+    末地折跃门方块传送；已加入 `beard_thin/beard_box/bury` 的生成后支撑近似
+    （不是原版 Beardifier 密度偏移）。仍未完成完整 processor_list、结构
+    spawner/告示牌等 NBT、结构 start 持久化以及更严格的 jigsaw
+    连接器/包围盒对齐。
   - [~] **阶段 4c：地物（矿物/树木/植被/lakes）与结构**；
     - [x] 数据管线：提取 configured_feature、placed_feature 与群系 11 阶段
       地物引用；校验群系→放置地物→配置地物引用完整。
@@ -1334,7 +1335,9 @@
         方块传送，ExitPortal NBT 未接入；
       - 地物逐方块对比仍有差异；例如 ore_tuff 单地物在区块 (0,0) 仍有
         约 1854/98304 差异，说明 feature index/随机流或 ore 放置细节仍未收敛。
-      - 跨区块树干/树冠按当前区块裁切。
+      - 已新增区块地物结果缓存，执行中心区块及 3×3 邻域地物并合并越界写入；
+        连续区块生成时复用结果。仍不是原版完整 region worker，且树冠写入的
+        冲突顺序与官方不完全一致。
     - [x] `environment_scan`、`surface_relative_threshold_filter`、`random_offset`
       与复合 block predicate（all_of/any_of/not/inside_world_bounds）已实现；
       地下岩浆湖与部分洞穴植被不再被标记为 unsupported。
