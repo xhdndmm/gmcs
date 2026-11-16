@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 )
 
 // Router 是某个噪声设置（维度）的路由表求值入口。
@@ -16,26 +17,36 @@ import (
 // 求值器。提供密度值层面的能力（final_density / Solid）；含水层的逐方块判定见
 // aquifer.go（ChunkSampler.Substance），表面规则、雕刻器与地物属于后续阶段。
 type Router struct {
-	data               *Data
-	registry           *NoiseRegistry
-	setting            NoiseSetting
-	seed               int64
-	evaluator          *Evaluator
-	nodes              map[string]*Node
-	keys               []string
-	biomes             *BiomeSource
-	named              map[string]*Node
-	carvers            map[string]carverDefinition
-	biomeCarvers       map[string][]string
-	carverReplaceables map[string]struct{}
-	features           *featureRegistry
-	biomeSetCache      map[chunkCoord]map[string]struct{}
-	configuredCache    map[string]placedFeature
-	structureTerrain   map[chunkCoord]*GeneratedChunk
-	structuresEnabled  bool
-	regionsEnabled     bool
-	structureCacheDir  string
-	featureCache       *featureResultCache
+	data                  *Data
+	registry              *NoiseRegistry
+	setting               NoiseSetting
+	seed                  int64
+	evaluator             *Evaluator
+	nodes                 map[string]*Node
+	keys                  []string
+	biomes                *BiomeSource
+	named                 map[string]*Node
+	carvers               map[string]carverDefinition
+	biomeCarvers          map[string][]string
+	carverReplaceables    map[string]struct{}
+	features              *featureRegistry
+	biomeSetCache         map[chunkCoord]map[string]struct{}
+	configuredCache       map[string]placedFeature
+	structureTerrain      map[chunkCoord]*GeneratedChunk
+	structureTerrainOrder []chunkCoord
+	structuresEnabled     bool
+	regionsEnabled        bool
+	structureCacheDir     string
+	featureCache          *featureResultCache
+	// surfaceCache 缓存从 noise_setting.surface_rule 解析出的不可变规则；
+	// 每个区块都会用到同一规则，不能每次 generateBaseChunk 重新解析。
+	surfaceCache *surfaceRuleCache
+}
+
+type surfaceRuleCache struct {
+	once sync.Once
+	rule surfaceRule
+	err  error
 }
 
 type chunkCoord struct{ x, z int }
@@ -60,6 +71,7 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		structureTerrain: make(map[chunkCoord]*GeneratedChunk),
 		regionsEnabled:   true,
 		featureCache:     newFeatureResultCache(96),
+		surfaceCache:     &surfaceRuleCache{},
 	}
 	carvers, err := parseCarverDefinitions(data)
 	if err != nil {
@@ -125,6 +137,7 @@ func (r *Router) NewSession() *Router {
 		regionsEnabled:     r.regionsEnabled,
 		structureCacheDir:  r.structureCacheDir,
 		featureCache:       r.featureCache,
+		surfaceCache:       r.surfaceCache,
 	}
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
 	session.evaluator.finalDensity = session.nodes["final_density"]

@@ -162,3 +162,19 @@ func TestVanillaEndGeneratorChunk(t *testing.T) {
 		t.Fatalf("末地主岛顶层 = %d, want end stone", got)
 	}
 }
+
+// TestVanillaSpawnHintSkipsOcean 校验出生点搜索的廉价提示：种子 4321 的
+// (0,0) 位于海洋，必须被跳过；实际出生点附近必须允许继续做完整区块判定。
+// 若将来群系数据/种子变化导致这两个坐标改变，测试需要同步更新。
+func TestVanillaSpawnHintSkipsOcean(t *testing.T) {
+	generator, err := NewVanillaGenerator(4321)
+	if err != nil {
+		t.Fatalf("NewVanillaGenerator: %v", err)
+	}
+	if generator.SpawnHint(0, 0) {
+		t.Fatal("种子 4321 的海洋原点不应被当作出生点候选")
+	}
+	if !generator.SpawnHint(-48, 176) {
+		t.Fatal("种子 4321 的实际出生点附近应允许完整区块判定")
+	}
+}

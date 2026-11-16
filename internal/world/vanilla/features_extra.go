@@ -146,34 +146,61 @@ func featureReplaceable(block SurfaceBlock) bool {
 }
 
 func (r *Router) placeSimpleRandomSelector(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
-	var encoded struct {
-		Features []json.RawMessage `json:"features"`
+	key := string(raw)
+	refs, ok := r.features.simpleSelectorCache.Load(key)
+	if !ok {
+		var encoded struct {
+			Features []json.RawMessage `json:"features"`
+		}
+		if json.Unmarshal(raw, &encoded) != nil || len(encoded.Features) == 0 {
+			return
+		}
+		parsed := make([]*featureRef, 0, len(encoded.Features))
+		for _, entry := range encoded.Features {
+			ref, err := r.cachedFeatureRef(entry)
+			if err != nil {
+				return
+			}
+			parsed = append(parsed, ref)
+		}
+		r.features.simpleSelectorCache.Store(key, parsed)
+		refs = parsed
 	}
-	if json.Unmarshal(raw, &encoded) != nil || len(encoded.Features) == 0 {
+	choices := refs.([]*featureRef)
+	if len(choices) == 0 {
 		return
 	}
-	ref, err := parseFeatureRef(encoded.Features[random.nextIntBounded(len(encoded.Features))])
-	if err != nil {
-		return
-	}
+	ref := choices[random.nextIntBounded(len(choices))]
 	r.applyFeatureRef(chunk, random, ref, x, y, z)
 }
 
 func (r *Router) placeRandomBooleanSelector(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
-	var encoded struct {
-		True  json.RawMessage `json:"feature_true"`
-		False json.RawMessage `json:"feature_false"`
+	key := string(raw)
+	refs, ok := r.features.booleanSelectorCache.Load(key)
+	if !ok {
+		var encoded struct {
+			True  json.RawMessage `json:"feature_true"`
+			False json.RawMessage `json:"feature_false"`
+		}
+		if json.Unmarshal(raw, &encoded) != nil {
+			return
+		}
+		trueRef, err := r.cachedFeatureRef(encoded.True)
+		if err != nil {
+			return
+		}
+		falseRef, err := r.cachedFeatureRef(encoded.False)
+		if err != nil {
+			return
+		}
+		pair := [2]*featureRef{falseRef, trueRef}
+		r.features.booleanSelectorCache.Store(key, pair)
+		refs = pair
 	}
-	if json.Unmarshal(raw, &encoded) != nil {
-		return
-	}
-	chosen := encoded.False
+	pair := refs.([2]*featureRef)
+	ref := pair[0]
 	if random.nextIntBounded(2) == 0 {
-		chosen = encoded.True
-	}
-	ref, err := parseFeatureRef(chosen)
-	if err != nil {
-		return
+		ref = pair[1]
 	}
 	r.applyFeatureRef(chunk, random, ref, x, y, z)
 }

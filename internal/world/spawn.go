@@ -14,6 +14,11 @@ import "math"
 
 // spawnHint 报告生成器给出的候选列是否值得生成区块验证。
 func spawnHint(generator Generator, dimension Dimension, x, z int) bool {
+	// 原版生成器的 SurfaceY 需要完整生成区块；先用廉价群系提示排除海洋，
+	// 否则出生点搜索会为大量海洋候选列重复生成整块地形。
+	if hint, ok := generator.(interface{ SpawnHint(int, int) bool }); ok {
+		return hint.SpawnHint(x, z)
+	}
 	height := generator.SurfaceY(x, z)
 	switch dimension {
 	case DimensionNether:

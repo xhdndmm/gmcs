@@ -69,12 +69,6 @@ type SurfaceSystem struct {
 // NewSurfaceSystem 为给定区块采样器建立地表系统（与含水层共享求值器状态）。
 func NewSurfaceSystem(s *ChunkSampler) (*SurfaceSystem, error) {
 	setting := s.setting
-	var raw struct {
-		SurfaceRule json.RawMessage `json:"surface_rule"`
-	}
-	if err := json.Unmarshal(setting.Raw, &raw); err != nil {
-		return nil, err
-	}
 	registry := s.evaluator.noises
 	system := &SurfaceSystem{
 		setting:                 setting,
@@ -96,15 +90,43 @@ func NewSurfaceSystem(s *ChunkSampler) (*SurfaceSystem, error) {
 	clayRandom := registry.FromHashOf("clay_bands")
 	system.clayBands = buildClayBands(clayRandom)
 
-	if len(raw.SurfaceRule) == 0 {
-		return nil, nil
+	rule, err := s.router.surfaceRule()
+	if err != nil {
+		return nil, err
 	}
-	rule, problems := parseSurfaceRule(registry, setting.Name+"/surface_rule", raw.SurfaceRule)
-	if len(problems) > 0 {
-		return nil, surfaceError(problems[0])
+	if rule == nil {
+		return nil, nil
 	}
 	system.rule = rule
 	return system, nil
+}
+
+// surfaceRule 解析并缓存 noise_setting.surface_rule。规则只依赖数据与噪声
+// 注册表，与具体区块无关；缓存后每个区块不再重复 JSON 解码和规则树构建。
+func (r *Router) surfaceRule() (surfaceRule, error) {
+	cache := r.surfaceCache
+	if cache == nil {
+		cache = &surfaceRuleCache{}
+	}
+	cache.once.Do(func() {
+		var raw struct {
+			SurfaceRule json.RawMessage `json:"surface_rule"`
+		}
+		if err := json.Unmarshal(r.setting.Raw, &raw); err != nil {
+			cache.err = err
+			return
+		}
+		if len(raw.SurfaceRule) == 0 {
+			return
+		}
+		rule, problems := parseSurfaceRule(r.registry, r.setting.Name+"/surface_rule", raw.SurfaceRule)
+		if len(problems) > 0 {
+			cache.err = surfaceError(problems[0])
+			return
+		}
+		cache.rule = rule
+	})
+	return cache.rule, cache.err
 }
 
 // surfaceError 把解析问题转成 error。

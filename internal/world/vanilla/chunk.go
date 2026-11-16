@@ -82,7 +82,9 @@ func (r *Router) NewChunkSampler(chunkX, chunkZ int) *ChunkSampler {
 		originZ:   chunkZ * 16,
 	}
 	r.evaluator.ResetInterpolationCache()
-	r.evaluator.grids = make(map[*Node]*denseGrid)
+	if r.evaluator.grids == nil {
+		r.evaluator.grids = make(map[*Node]*denseGrid)
+	}
 
 	// 后序遍历收集 interpolated 节点：内层先算，外层取角点时直接命中内层网格。
 	seen := make(map[*Node]bool)
@@ -141,17 +143,18 @@ func (s *ChunkSampler) buildGrid(node *Node) *denseGrid {
 		panic(fmt.Sprintf("grid allocation size overflows int: countX=%d countY=%d countZ=%d", countX, countY, countZ))
 	}
 	size := xy * countZ
-	grid := &denseGrid{
-		originX:    s.originX,
-		originY:    s.setting.MinY,
-		originZ:    s.originZ,
-		countX:     countX,
-		countY:     countY,
-		countZ:     countZ,
-		cellWidth:  cellWidth,
-		cellHeight: cellHeight,
-		data:       make([]float64, size),
+	grid := s.evaluator.grids[node]
+	if grid == nil || len(grid.data) != size {
+		grid = &denseGrid{data: make([]float64, size)}
 	}
+	grid.originX = s.originX
+	grid.originY = s.setting.MinY
+	grid.originZ = s.originZ
+	grid.countX = countX
+	grid.countY = countY
+	grid.countZ = countZ
+	grid.cellWidth = cellWidth
+	grid.cellHeight = cellHeight
 	for iy := 0; iy < countY; iy++ {
 		y := s.setting.MinY + iy*cellHeight
 		for ix := 0; ix < countX; ix++ {

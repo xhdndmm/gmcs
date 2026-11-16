@@ -1689,6 +1689,44 @@ BenchmarkVanillaGeneratorChunk-20   ~62 ms/op    8.3 MB/op    52,784 allocs/op
   冷启动基准。
 - 晶洞使用独立 LegacyRandomSource NormalNoise；已加入分层/裂缝/晶芽放置测试。
 
+### 3.48 区块生成缓存复用与登录分块发送（2026-11-16，实测）
+
+本批针对“登录慢、进入世界后 CPU/内存异常”做了两类修改：
+
+1. **生成热路径复用缓存**：
+   - `Evaluator.ResetInterpolationCache` 改为 `clear` 复用 map；interpolated
+     的 `denseGrid` 按节点复用缓冲区；
+   - 内嵌 `configured_feature`、`simple_random_selector`、
+     `random_boolean_selector` 的 JSON 解析结果按原始 JSON 缓存；
+   - `surface_rule` 每个噪声设置只解析一次，不再每区块重新解码/构建规则树；
+   - 结构 start 全局缓存限制为 256 项，结构高度用的基础地形缓存限制为
+     16 个区块，避免探索时无限增长。
+
+种子 4321（与旧记录同机对比）：
+
+```text
+BenchmarkGenerateChunk-20           86 ms/op    10.6 MB/op    18,369 allocs/op
+BenchmarkGenerateChunkWarm-20       39 ms/op     4.8 MB/op     9,550 allocs/op
+BenchmarkVanillaGeneratorChunk-20  170 ms/op    20.5 MB/op    58,869 allocs/op
+```
+
+旧记录为热路径约 55 ms、16 MB/op、84k allocs/op；冷路径约 363 ms、82 MB/op。
+注意 `BenchmarkVanillaGeneratorChunk` 仍逐个生成不同坐标，包含首次邻域地物
+构建成本；这些数字是本次单机测量，不是稳定基线。
+
+2. **登录分块发送**：视距 > 3 时 `syncChunks` 只同步发送中心 3 环（7×7）区块，
+其余区块放入后台 `streamChunks` 队列，按 Chunk Batch 分批发送；预取窗口
+限制为“立即发送数 + 64”，避免登录瞬间把整个视距一次性压入生成队列。
+小视距（≤3，测试路径）保持一次性发送。
+3. **出生点搜索**：`FindSpawn` 不再对每个候选列调用完整 `SurfaceY`。原版生成器
+提供基于群系源的 `SpawnHint`，先跳过海洋/河流候选；种子 4321 下搜索从
+48.8 秒降到 1.7 秒（临时测量，生成区块 4 个）。`spawnPositionFor` 也不再
+持有 `worldMu` 进行搜索，慢搜索不会阻塞其他维度/区块加载。
+
+正确性侧：纯密度符号与官方地形 datapack 世界对比仍为 0/884736 不一致；
+关闭地物/雕刻器/结构后的地表规则残差约 226/884736。完整世界（含官方地物、
+矿脉、雕刻器、结构）仍有明显残差，本批没有改变这一事实。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；

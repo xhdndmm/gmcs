@@ -97,9 +97,11 @@ func NewEvaluatorWithCells(noises *NoiseRegistry, cellWidth, cellHeight int) *Ev
 // ResetInterpolationCache 清空 interpolated 的角点与单元格缓存。区块生成时应当
 // 每区块调用一次，否则缓存会随生成范围无限增长（值本身可重算，清空不影响结果）。
 func (e *Evaluator) ResetInterpolationCache() {
-	e.corners = make(map[cornerKey]float64)
-	e.cells = make(map[cellKey][2][2][2]float64)
-	e.columns = make(map[columnKey]float64)
+	// 复用 map 容量：区块生成会反复填充同样规模的列缓存（约数万项），
+	// 每区块重新 make 会把整个容量丢弃并重新分配/扩容。
+	clear(e.corners)
+	clear(e.cells)
+	clear(e.columns)
 }
 
 // NoiseRegistry 返回求值器使用的噪声注册表。

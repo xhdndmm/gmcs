@@ -25,6 +25,14 @@ type featureRegistry struct {
 	// featureSteps 是原版 FeatureSorter 对全部群系求出的全局 step 顺序。
 	// 每个 step 内的下标就是 setFeatureSeed 使用的 feature index。
 	featureSteps []featureOrderStep
+
+	// 运行时 JSON 缓存：simple_random_selector / random_boolean_selector
+	// 的内嵌 feature 以及内嵌 configured_feature 在每次放置时都会重复解析。
+	// 这些定义在数据加载后不再变化，按原始 JSON 字节缓存解析结果。
+	refCache             sync.Map // string -> *featureRef
+	inlineConfigured     sync.Map // string -> placedFeature
+	simpleSelectorCache  sync.Map // string -> []*featureRef
+	booleanSelectorCache sync.Map // string -> [2]*featureRef
 }
 
 type featureOrderStep struct {
@@ -2568,6 +2576,20 @@ func (r *Router) parseConfiguredFeature(placed placedFeature, config json.RawMes
 	return placed
 }
 
+// cachedFeatureRef 解析并缓存内嵌 feature 引用。
+func (r *Router) cachedFeatureRef(raw json.RawMessage) (*featureRef, error) {
+	key := string(raw)
+	if cached, ok := r.features.refCache.Load(key); ok {
+		return cached.(*featureRef), nil
+	}
+	ref, err := parseFeatureRef(raw)
+	if err != nil {
+		return nil, err
+	}
+	r.features.refCache.Store(key, ref)
+	return ref, nil
+}
+
 func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, ref *featureRef, x, y, z int) {
 	if len(ref.inline) == 0 {
 		if nested, ok := r.features.placed[ref.name]; ok {
@@ -2616,23 +2638,27 @@ func (r *Router) applyFeatureRef(chunk *GeneratedChunk, random *legacyRandom, re
 		}
 	}
 	if len(raw) != 0 {
-		var configured struct {
-			Type   string          `json:"type"`
-			Config json.RawMessage `json:"config"`
-		}
-		if err := json.Unmarshal(raw, &configured); err != nil {
-			return
-		}
-		placed = placedFeature{feature: ref.name, kind: qualify(configured.Type), placements: ref.placements, supported: true}
-		parsed := r.parseConfiguredFeature(placed, configured.Config)
-		if !parsed.supported {
-			return
-		}
-		placed = parsed
-		if len(ref.inline) == 0 {
+		key := string(raw)
+		if cached, ok := r.features.inlineConfigured.Load(key); ok {
+			placed = cached.(placedFeature)
+			placed.placements = ref.placements
+		} else {
+			var configured struct {
+				Type   string          `json:"type"`
+				Config json.RawMessage `json:"config"`
+			}
+			if err := json.Unmarshal(raw, &configured); err != nil {
+				return
+			}
+			placed = placedFeature{feature: ref.name, kind: qualify(configured.Type), placements: ref.placements, supported: true}
+			parsed := r.parseConfiguredFeature(placed, configured.Config)
+			if !parsed.supported {
+				return
+			}
+			placed = parsed
 			cached := placed
 			cached.placements = nil
-			r.configuredCache[ref.name] = cached
+			r.features.inlineConfigured.Store(key, cached)
 		}
 	}
 

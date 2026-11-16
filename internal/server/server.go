@@ -42,6 +42,7 @@ type Server struct {
 	// 读多写少（tick 热路径按实体取世界），使用读写锁。
 	// worldsCache 是 worlds 的无锁读快照（见 publishWorldsCacheLocked）。
 	worldMu     sync.RWMutex
+	spawnMu     sync.Mutex
 	worlds      map[world.Dimension]*world.World
 	worldsCache atomic.Pointer[[3]*world.World]
 	spawns      map[world.Dimension]spawnPoint
@@ -424,25 +425,39 @@ func (s *Server) worldForLocked(dim world.Dimension) *world.World {
 
 // spawnPositionFor 返回维度出生点（脚部世界坐标），惰性计算并缓存。
 func (s *Server) spawnPositionFor(dim world.Dimension) (x, y, z float64) {
+	// spawnMu 串行化出生点搜索（可能生成多个区块），但不持有 worldMu：
+	// 搜索期间其他维度/区块加载不能被一个慢速出生点阻塞。
+	s.spawnMu.Lock()
+	defer s.spawnMu.Unlock()
+
 	s.worldMu.Lock()
-	defer s.worldMu.Unlock()
 	if point, ok := s.spawns[dim]; ok {
+		s.worldMu.Unlock()
 		return point.x, point.y, point.z
 	}
 	if s.spawns == nil {
 		s.spawns = make(map[world.Dimension]spawnPoint)
 	}
 	gameWorld := s.worldForLocked(dim)
+	s.worldMu.Unlock()
 	if gameWorld == nil {
 		return 0, world.FlatSpawnY, 0
 	}
+
 	x, y, z, ok := gameWorld.FindSpawn(s.borderHalfSize)
 	if !ok {
 		// 搜索范围内没有可用地势：回退到原点上方（生成器给出的高度）。
 		x, y, z = 0.5, float64(gameWorld.SurfaceY(0, 0)+1), 0.5
 		slog.Warn("未在搜索范围内找到出生点，回退到原点", "dimension", dim)
 	}
-	s.spawns[dim] = spawnPoint{x: x, y: y, z: z}
+
+	s.worldMu.Lock()
+	if point, exists := s.spawns[dim]; exists {
+		x, y, z = point.x, point.y, point.z
+	} else {
+		s.spawns[dim] = spawnPoint{x: x, y: y, z: z}
+	}
+	s.worldMu.Unlock()
 	return x, y, z
 }
 

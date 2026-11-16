@@ -1637,7 +1637,7 @@ func (s *Server) respawnPlayer(player *session) {
 	// 重生后客户端会清空世界：重置区块记录并重发出生点视距内的区块。
 	centerX := int(math.Floor(spawnX)) >> 4
 	centerZ := int(math.Floor(spawnZ)) >> 4
-	player.sentChunks = make(map[world.ChunkPos]struct{})
+	player.resetChunkTracking()
 	if err := player.writePacket(protocol.EncodeSetCenterChunk(int32(centerX), int32(centerZ))); err != nil {
 		return
 	}

@@ -20,55 +20,28 @@ import (
 // 区块流式加载：玩家视距内的区块持续保持已发送状态；
 // 跨区块移动时增量发送新区块，并卸载超出 视距+2 的旧区块。
 //
-// 状态（sentChunks/centerChunk）由会话 goroutine 串行访问：
-// 进入世界、移动处理、重生流程都在同一 goroutine 中执行。
+// sentChunks / chunkQueue 由会话 goroutine 与后台区块流 worker 共享，
+// 统一由 session.chunkMu 保护；centerChunk 仅由会话 goroutine 访问。
 
 // viewDistance 返回该会话使用的区块视距（正方形半径）。
 func (s *session) viewDistance() int {
 	return s.server.config.ViewDistance
 }
 
-// syncChunks 确保以 (centerX, centerZ) 为中心、半径为视距的区块均已发送，
-// 区块按由近到远的顺序发送（环序）；新发送的区块用 Chunk Batch Start/Finished
-// 标注为一批（客户端据此估算加载速度并回报期望速率，见
-// ServerboundChunkBatchReceived）。最后卸载超出 视距+2 的区块。
+// syncChunks 同步发送 (centerX, centerZ) 附近的核心区块，并把视距内其余
+// 尚未发送的区块排入后台流队列。
 //
-// 注意：与速度节流不同，当前实现仍在一批内立即发送全部区块（不按客户端
-// 回报的 chunksPerTick 暂停），重连/重生后的大量区块会一次性写出。
+// 进入世界时只同步发送中心附近的一小圈区块（默认半径 3），其余区块交给
+// 后台流 worker 分批发送。这样玩家不必等待 400+ 个区块全部生成/编码完成
+// 才进入世界，CPU 与内存峰值也由一次性突发放平为持续小批。
+// 视距 <= 3（测试/小视距服务器）仍一次性发送全部区块，保持原有行为。
 func (s *session) syncChunks(centerX, centerZ int) error {
 	radius := s.viewDistance()
 	dim := s.dimensionID()
 	gameWorld := s.server.worldFor(dim)
 
-	// 先把视距内尚未发送的区块按由近到远提交给异步预生成 worker 池：
-	// 多个区块并行生成，随后逐环发送时依次等待各自结果（首个环通常
-	// 已经生成完毕，显著缩短进入世界的等待时间）。
-	//
-	// 预取范围比实际发送范围多一圈（视距+1）：玩家跨区块时，新环带的
-	// 区块（下一次发送的对象）已在后台加载/生成完毕，发送路径无需等待
-	// 磁盘/生成器（额外的一圈都仍在卸载半径（视距+4）内，不会被重复
-	// 卸载/加载）。
-	prefetchRadius := radius + 1
-	prefetch := make([]world.ChunkPos, 0, (2*prefetchRadius+1)*(2*prefetchRadius+1))
-	for ring := 0; ring <= prefetchRadius; ring++ {
-		for dx := -ring; dx <= ring; dx++ {
-			for dz := -ring; dz <= ring; dz++ {
-				if max(absInt(dx), absInt(dz)) != ring {
-					continue
-				}
-				pos := world.ChunkPos{X: centerX + dx, Z: centerZ + dz}
-				if _, ok := s.sentChunks[pos]; ok {
-					continue
-				}
-				prefetch = append(prefetch, pos)
-			}
-		}
-	}
-	if len(prefetch) > 0 {
-		gameWorld.Prefetch(prefetch)
-	}
-
-	batch := 0
+	// 按由近到远的环序收集尚未发送的区块。
+	missing := make([]world.ChunkPos, 0, (2*radius+1)*(2*radius+1))
 	for ring := 0; ring <= radius; ring++ {
 		for dx := -ring; dx <= ring; dx++ {
 			for dz := -ring; dz <= ring; dz++ {
@@ -76,45 +49,214 @@ func (s *session) syncChunks(centerX, centerZ int) error {
 					continue
 				}
 				pos := world.ChunkPos{X: centerX + dx, Z: centerZ + dz}
-				if _, ok := s.sentChunks[pos]; ok {
-					continue
+				if !s.chunkSent(pos) {
+					missing = append(missing, pos)
 				}
-				chunk, err := gameWorld.Chunk(pos.X, pos.Z)
-				if err != nil {
-					return err
-				}
-				if batch == 0 {
-					if err := s.writePacket(protocol.EncodeChunkBatchStart()); err != nil {
-						return err
-					}
-				}
-				// 共享压缩帧：同一批/跟随的多名玩家复用同一份只读字节，
-				// 免去逐连接重复编码与压缩。
-				frame := s.server.chunkPacket(dim, pos, chunk)
-				if err := s.writeFrame(frame); err != nil {
-					return err
-				}
-				s.sentChunks[pos] = struct{}{}
-				batch++
 			}
 		}
+	}
+
+	const immediateRadius = 3
+	const streamPrefetchAhead = 64
+	immediate := len(missing)
+	if radius > immediateRadius {
+		immediate = 0
+		for _, pos := range missing {
+			if absInt(pos.X-centerX) <= immediateRadius && absInt(pos.Z-centerZ) <= immediateRadius {
+				immediate++
+			}
+		}
+	}
+	// 预取范围包含视距外多一圈，玩家跨区块时新环带已在后台生成。
+	prefetchPositions := missing
+	for dx := -(radius + 1); dx <= radius+1; dx++ {
+		for dz := -(radius + 1); dz <= radius+1; dz++ {
+			if max(absInt(dx), absInt(dz)) != radius+1 {
+				continue
+			}
+			pos := world.ChunkPos{X: centerX + dx, Z: centerZ + dz}
+			if !s.chunkSent(pos) {
+				prefetchPositions = append(prefetchPositions, pos)
+			}
+		}
+	}
+	prefetch := immediate + streamPrefetchAhead
+	if prefetch > len(prefetchPositions) {
+		prefetch = len(prefetchPositions)
+	}
+	if prefetch > 0 {
+		gameWorld.Prefetch(prefetchPositions[:prefetch])
+	}
+
+	batch := 0
+	for _, pos := range missing[:immediate] {
+		chunk, err := gameWorld.Chunk(pos.X, pos.Z)
+		if err != nil {
+			return err
+		}
+		if batch == 0 {
+			if err := s.writePacket(protocol.EncodeChunkBatchStart()); err != nil {
+				return err
+			}
+		}
+		// 共享压缩帧：同一批/跟随的多名玩家复用同一份只读字节，
+		// 免去逐连接重复编码与压缩。
+		frame := s.server.chunkPacket(dim, pos, chunk)
+		if err := s.writeFrame(frame); err != nil {
+			return err
+		}
+		s.markChunkSent(pos)
+		batch++
 	}
 	if batch > 0 {
 		if err := s.writePacket(protocol.EncodeChunkBatchFinished(int32(batch))); err != nil {
 			return err
 		}
 	}
+
+	// 其余区块由流 worker 发送；新中心会递增 generation 让旧 worker 退出。
+	s.chunkMu.Lock()
+	s.chunkStreamGen++
+	gen := s.chunkStreamGen
+	s.chunkQueue = append(s.chunkQueue[:0], missing[immediate:]...)
+	hasQueue := len(s.chunkQueue) > 0
+	s.chunkMu.Unlock()
+	if hasQueue {
+		go s.streamChunks(gen, dim)
+	}
+
+	// 视距外多 2 圈的区块才遗忘，避免跨边界往返反复发送。
 	limit := radius + 2
-	for pos := range s.sentChunks {
+	for _, pos := range s.chunkSentSnapshot() {
 		if absInt(pos.X-centerX) > limit || absInt(pos.Z-centerZ) > limit {
 			if err := s.writePacket(protocol.EncodeForgetLevelChunk(int32(pos.X), int32(pos.Z))); err != nil {
 				return err
 			}
-			delete(s.sentChunks, pos)
+			s.forgetChunkSent(pos)
 		}
 	}
 	s.centerChunk = world.ChunkPos{X: centerX, Z: centerZ}
 	return nil
+}
+
+// streamChunks 后台分块发送剩余区块；generation 改变或会话结束时退出。
+// 每次发送一个区块并用 Chunk Batch Start/Finished 包裹。
+func (s *session) streamChunks(gen uint64, dim world.Dimension) {
+	gameWorld := s.server.worldFor(dim)
+	for {
+		select {
+		case <-s.chunkStop:
+			return
+		default:
+		}
+		s.chunkMu.Lock()
+		if gen != s.chunkStreamGen || len(s.chunkQueue) == 0 {
+			s.chunkMu.Unlock()
+			return
+		}
+		pos := s.chunkQueue[0]
+		s.chunkQueue = s.chunkQueue[1:]
+		aheadEnd := min(len(s.chunkQueue), 32)
+		ahead := append([]world.ChunkPos(nil), s.chunkQueue[:aheadEnd]...)
+		s.chunkMu.Unlock()
+
+		if len(ahead) > 0 {
+			gameWorld.Prefetch(ahead)
+		}
+		if s.chunkSent(pos) {
+			continue
+		}
+		chunk, err := gameWorld.Chunk(pos.X, pos.Z)
+		if err != nil {
+			return
+		}
+		select {
+		case <-s.chunkStop:
+			return
+		default:
+		}
+		// 加载期间可能发生维度切换/重生；旧 generation 不再发送或标记，
+		// 否则新维度的同名区块坐标会被误认为已发送。
+		s.chunkMu.Lock()
+		current := gen == s.chunkStreamGen
+		s.chunkMu.Unlock()
+		if !current {
+			return
+		}
+		if err := s.writePacket(protocol.EncodeChunkBatchStart()); err != nil {
+			_ = s.conn.Close()
+			return
+		}
+		if err := s.writeFrame(s.server.chunkPacket(dim, pos, chunk)); err != nil {
+			_ = s.conn.Close()
+			return
+		}
+		if err := s.writePacket(protocol.EncodeChunkBatchFinished(1)); err != nil {
+			_ = s.conn.Close()
+			return
+		}
+		s.markChunkSentIf(gen, pos)
+	}
+}
+
+func (s *session) chunkSent(pos world.ChunkPos) bool {
+	s.chunkMu.Lock()
+	defer s.chunkMu.Unlock()
+	_, ok := s.sentChunks[pos]
+	return ok
+}
+
+func (s *session) markChunkSent(pos world.ChunkPos) {
+	s.chunkMu.Lock()
+	s.sentChunks[pos] = struct{}{}
+	s.chunkMu.Unlock()
+}
+
+// markChunkSentIf 只在 generation 仍有效时标记，避免旧流 worker 在维度/
+// 中心切换后污染新的已发送集合。
+func (s *session) markChunkSentIf(gen uint64, pos world.ChunkPos) bool {
+	s.chunkMu.Lock()
+	defer s.chunkMu.Unlock()
+	if gen != s.chunkStreamGen {
+		return false
+	}
+	s.sentChunks[pos] = struct{}{}
+	return true
+}
+
+func (s *session) forgetChunkSent(pos world.ChunkPos) {
+	s.chunkMu.Lock()
+	delete(s.sentChunks, pos)
+	s.chunkMu.Unlock()
+}
+
+func (s *session) chunkSentSnapshot() []world.ChunkPos {
+	s.chunkMu.Lock()
+	defer s.chunkMu.Unlock()
+	positions := make([]world.ChunkPos, 0, len(s.sentChunks))
+	for pos := range s.sentChunks {
+		positions = append(positions, pos)
+	}
+	return positions
+}
+
+// resetChunkTracking 清空已发送记录与待发送队列（切换维度/重生/首次进入）。
+func (s *session) resetChunkTracking() {
+	s.chunkMu.Lock()
+	s.chunkStreamGen++
+	s.sentChunks = make(map[world.ChunkPos]struct{})
+	s.chunkQueue = nil
+	s.chunkMu.Unlock()
+}
+
+// stopChunkStream 停止后台区块流 worker；可重复调用。
+func (s *session) stopChunkStream() {
+	if s.chunkStop == nil {
+		return
+	}
+	s.chunkStreamOnce.Do(func() {
+		close(s.chunkStop)
+	})
 }
 
 // updateChunks 在玩家跨越区块边界时增量同步区块；写失败时关闭连接。

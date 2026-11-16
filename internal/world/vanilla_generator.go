@@ -6,6 +6,7 @@ package world
 
 import (
 	"log/slog"
+	"strings"
 	"sync"
 
 	"gmcs/internal/registry"
@@ -190,6 +191,22 @@ func surfaceBlockState(block vanilla.SurfaceBlock) (uint16, bool) {
 		return id, true
 	}
 	return 0, false
+}
+
+// SpawnHint 是 world.FindSpawn 的可选廉价提示：用群系源跳过海洋/河流，
+// 避免为每个出生点候选列生成完整区块。原版出生点搜索不会在海洋中心落地。
+func (g *VanillaGenerator) SpawnHint(x, z int) bool {
+	if g.dimension != DimensionOverworld {
+		return true
+	}
+	session := g.pool.Get().(*vanilla.Router)
+	defer g.pool.Put(session)
+	source, err := session.Biomes()
+	if err != nil {
+		return true // 群系不可用时交给完整区块判定
+	}
+	name := source.BiomeAtBlock(x, 64, z)
+	return !strings.Contains(name, "ocean") && !strings.Contains(name, "river")
 }
 
 // SurfaceY 实现 Generator。原版生成器没有独立的纯函数高度图，

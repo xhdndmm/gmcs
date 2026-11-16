@@ -92,9 +92,16 @@ type session struct {
 	// chatGlobalIndex 是发给该客户端的聊天序号（每个连接独立递增）。
 	chatGlobalIndex int32
 
-	// 区块流式加载状态（由会话 goroutine 串行访问）。
-	sentChunks  map[world.ChunkPos]struct{}
-	centerChunk world.ChunkPos
+	// 区块流式加载状态：sentChunks / chunkQueue 由会话 goroutine 与后台
+	// 区块流 worker 共同访问，统一由 chunkMu 保护；centerChunk 仅会话
+	// goroutine 访问。
+	chunkMu         sync.Mutex
+	sentChunks      map[world.ChunkPos]struct{}
+	chunkQueue      []world.ChunkPos
+	chunkStreamGen  uint64
+	chunkStop       chan struct{}
+	chunkStreamOnce sync.Once
+	centerChunk     world.ChunkPos
 	// desiredChunksPerTick 是客户端通过 Chunk Batch Received 回报的期望
 	// 每 tick 区块数（仅记录，当前不做节流）。
 	desiredChunksPerTick float32
@@ -293,6 +300,7 @@ func newSession(server *Server, conn net.Conn, protocolVersion int32) *session {
 		saturation:      playerSaturation,
 		envAirSynced:    maxPlayerAir,
 		sentChunks:      make(map[world.ChunkPos]struct{}),
+		chunkStop:       make(chan struct{}),
 		// 附魔种子与原版一致在会话创建时随机初始化（Player.enchantmentSeed）。
 		enchantmentSeed: int32(server.nextRandom()),
 		// 破坏进度缓存与原版一致初始为 -1（下一次发送不跳过 0）。
@@ -1367,7 +1375,7 @@ func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch fl
 
 	centerX := int(math.Floor(x)) >> 4
 	centerZ := int(math.Floor(z)) >> 4
-	s.sentChunks = make(map[world.ChunkPos]struct{})
+	s.resetChunkTracking()
 
 	packets := make([][]byte, 0, 3)
 	if previous != dim {
@@ -1461,6 +1469,7 @@ func (s *session) runPlay() {
 	others := s.server.registerPlayer(s)
 	defer s.server.unregisterPlayer(s)
 	defer s.server.savePlayerData(s)
+	defer s.stopChunkStream()
 
 	// 进入世界的前置包。
 	packets := [][]byte{

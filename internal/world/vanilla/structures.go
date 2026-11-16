@@ -52,16 +52,21 @@ type weightedStructure struct {
 }
 
 type structureRuntime struct {
-	data    *structureData
-	defs    map[string]structureDefinition
-	sets    []structureSetDefinition
-	pools   map[string]*templatePool
-	poolMu  sync.Mutex
-	cache   sync.Map // structureStartKey -> *structureStart
-	ringMu  sync.Mutex
-	rings   map[int][][2]int
-	storeMu sync.Mutex
-	store   *structureStartStore
+	data   *structureData
+	defs   map[string]structureDefinition
+	sets   []structureSetDefinition
+	pools  map[string]*templatePool
+	poolMu sync.Mutex
+	// cache 只缓存最近展开的 structure start。结构 start 可能包含矿洞/要塞的
+	// 数千个方块，若按探索范围无限保留会持续占用内存；磁盘持久化仍负责
+	// 跨重启一致性，缓存只是热路径加速。
+	cacheMu    sync.Mutex
+	cache      map[structureStartKey]*structureStart
+	cacheOrder []structureStartKey
+	ringMu     sync.Mutex
+	rings      map[int][][2]int
+	storeMu    sync.Mutex
+	store      *structureStartStore
 }
 
 type structureStartKey struct {
@@ -123,6 +128,7 @@ func loadStructureRuntime() (*structureRuntime, error) {
 			data:  data,
 			defs:  make(map[string]structureDefinition),
 			pools: make(map[string]*templatePool),
+			cache: make(map[structureStartKey]*structureStart),
 		}
 		for name, raw := range data.Structures {
 			var encoded struct {
@@ -297,22 +303,45 @@ func randomSpreadOrigin(seed int64, set structureSetDefinition, cellX, cellZ int
 	return x, z
 }
 
+const structureStartCacheLimit = 256
+
+func (r *structureRuntime) cacheGet(key structureStartKey) (*structureStart, bool) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	start, ok := r.cache[key]
+	return start, ok
+}
+
+func (r *structureRuntime) cachePut(key structureStartKey, start *structureStart) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	if _, exists := r.cache[key]; !exists {
+		r.cacheOrder = append(r.cacheOrder, key)
+	}
+	r.cache[key] = start
+	for len(r.cacheOrder) > structureStartCacheLimit {
+		oldest := r.cacheOrder[0]
+		r.cacheOrder = r.cacheOrder[1:]
+		delete(r.cache, oldest)
+	}
+}
+
 func (r *structureRuntime) cachedStart(seed int64, setIndex, originX, originZ int, biomes *BiomeSource, router *Router) *structureStart {
 	key := structureStartKey{seed: seed, set: setIndex, originX: originX, originZ: originZ}
-	if cached, ok := r.cache.Load(key); ok {
-		return cached.(*structureStart)
+	if cached, ok := r.cacheGet(key); ok {
+		return cached
 	}
 	// 先尝试磁盘 start；没有时再构建。原版 start 会在区块状态中持久化，
 	// 这里用独立目录保存展开后的 pieces，保证重启前后一致。
 	if start, ok := r.startStore().load(key, r); ok {
-		r.cache.Store(key, start)
+		r.cachePut(key, start)
 		return start
 	}
 	start := r.buildStart(seed, setIndex, originX, originZ, biomes, router)
 	if start == nil {
 		return nil
 	}
-	r.cache.Store(key, start)
+	r.cachePut(key, start)
 	r.startStore().save(key, start)
 	return start
 }
@@ -707,6 +736,13 @@ func (r *structureRuntime) startHeight(router *Router, def structureDefinition, 
 				return 64
 			}
 			router.structureTerrain[key] = chunk
+			router.structureTerrainOrder = append(router.structureTerrainOrder, key)
+			const terrainCacheLimit = 16
+			for len(router.structureTerrainOrder) > terrainCacheLimit {
+				oldest := router.structureTerrainOrder[0]
+				router.structureTerrainOrder = router.structureTerrainOrder[1:]
+				delete(router.structureTerrain, oldest)
+			}
 		}
 		heightmap := def.ProjectStart
 		if heightmap == "" {
