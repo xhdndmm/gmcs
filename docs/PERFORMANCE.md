@@ -1727,6 +1727,35 @@ BenchmarkVanillaGeneratorChunk-20  170 ms/op    20.5 MB/op    58,869 allocs/op
 关闭地物/雕刻器/结构后的地表规则残差约 226/884736。完整世界（含官方地物、
 矿脉、雕刻器、结构）仍有明显残差，本批没有改变这一事实。
 
+### 3.49 复杂树木放置器与真实 gmcsload 压测（2026-11-16）
+
+本批把 fancy/forking/dark oak/giant/mega jungle/cherry/mangrove 等复杂树木
+树干与树冠放置器按 1.21.11 反编译实现，并将随机数消费顺序改为原版
+`height → foliageHeight → foliageRadius → trunk → foliage`。新增
+`TestComplexTreePlacersProduceCanopy`；仍在 `go test ./...` 与 `-race` 中通过。
+
+生成基准（种子 4321，同机单次）：
+
+```text
+BenchmarkGenerateChunkWarm-20   约 39 ms/op   4.9 MB/op   9.5k allocs/op
+BenchmarkGenerateChunk-20       约 86 ms/op   10.8 MB/op  18.3k allocs/op
+```
+
+真实 `cmd/gmcsload` loopback（服务器 `view_distance=6`、离线模式、固定种子 4321、
+全新世界；移动间隔 50 ms，视距区块持续增量发送）：
+
+| 客户端 | 成功进入 | 压测时长 | RSS 峰值 | 结果 |
+| ---: | ---: | ---: | ---: | --- |
+| 20 | 20/20 | 20 s | 约 252 MB | 无断线/错误日志 |
+| 50 | 50/50 | 25 s | 约 257 MB | 无断线/错误日志 |
+
+这是单机 loopback 观测值，不代表公网延迟、真实客户端渲染或长时间运行；
+压测结束后空闲释放按阶段回落到约 43–64 MB。
+
+正确性侧仍未收敛：carver 与官方“仅 cave”参考世界仍有约 1.5% 方块差异；
+完整官方世界残差约 8.6%（含官方地物/矿脉/雕刻器/结构）。本批没有声称
+“区块生成已与原版完全一致”。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；

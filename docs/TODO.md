@@ -1309,7 +1309,12 @@
       生成 ore/scattered_ore；跨区块部分裁切到当前区块。
     - [x] 部分树木与植被：支持 `straight_trunk_placer` + `blob_foliage_placer`
       / `spruce_foliage_placer` / `pine_foliage_placer`（橡树/桦树/丛林树/
-      云杉/松树）、`random_selector`、`random_patch`、`flower`、
+      云杉/松树），以及按 1.21.11 反编译逐条移植的 `forking` + acacia、
+      `fancy` + fancy、`dark_oak` + dark oak、`giant` + mega pine、
+      `mega_jungle` + mega jungle、`upwards_branching` + random spread、
+      `bending` + random spread、`cherry` 树干/树叶放置器；随机数消费顺序
+      改为原版 `height → foliageHeight → foliageRadius → trunk → foliage`；
+      `random_selector`、`random_patch`、`flower`、
       `simple_block`、`spring_feature`、`seagrass`、`lake`、
       `vegetation_patch`/`waterlogged_vegetation_patch`、`block_pile`、`disk`、
       `bamboo`、`kelp`、`multiface_growth`、`fossil`（基础模板放置）、
@@ -1334,10 +1339,11 @@
       int provider、biased/very_biased height provider、count_on_every_layer、
       fixed_placement。
     - [~] **已知近似/残差**：
-      - 树木已支持 2×2 巨型/深色橡木主干、two/three_layers minimum_size
-        基础空间检查、trunk_vine/leave_vine/cocoa 装饰器，以及
-        fancy/cherry/mangrove 的简化分枝放置；完整 fancy/forking/cherry
-        placer 与跨区块树冠冲突顺序仍未完成。
+      - 树木已移植 fancy/forking/dark oak/giant/mega jungle/cherry/
+        upwards branching/bending 的树干与树冠放置器，随机数消费顺序按
+        `TreeFeature.doPlace` 对齐；仍缺 `attached_to_leaves`、`beehive`、
+        `alter_ground` 等树装饰器的完整 NBT/碰撞规则，以及跨区块树冠
+        冲突顺序的逐方块对拍。
       - geode 已移植分层阈值、裂缝、invalid_blocks、potential placements 与
         LegacyRandomSource NormalNoise；仍需逐方块对拍验证；
       - iceberg 已按 IcebergFeature 主流程重写（上下冰体、椭圆/密度边界、雪层），
@@ -1349,7 +1355,8 @@
       - 已新增区块地物结果缓存，执行中心区块及 3×3 邻域地物并合并越界写入；
         连续区块生成时复用结果。仍不是原版完整 region worker，且树冠写入的
         冲突顺序与官方不完全一致；首次邻域冷启动成本较高。
-      - 新增 fancy/cherry/mangrove 的简化分枝放置；不是逐类完整 placer。
+      - 复杂树干/树叶放置器的几何已移植，但跨区块树冠冲突、树叶
+        `distance` 更新和部分装饰器仍未与原版逐方块一致。
     - [x] `environment_scan`、`surface_relative_threshold_filter`、`random_offset`
       与复合 block predicate（all_of/any_of/not/inside_world_bounds）已实现；
       地下岩浆湖与部分洞穴植被不再被标记为 unsupported。

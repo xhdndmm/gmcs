@@ -319,7 +319,7 @@ func (c *carvingContext) carveCaves(definition carverDefinition, sourceX, source
 }
 
 func caveThickness(random *worldgenRandom) float32 {
-	thickness := random.nextFloat() + random.nextFloat()*2
+	thickness := random.nextFloat()*2 + random.nextFloat()
 	if random.nextIntBounded(10) == 0 {
 		thickness *= random.nextFloat()*random.nextFloat()*3 + 1
 	}

@@ -245,35 +245,47 @@ type blockPredicate struct {
 }
 
 type treeConfiguration struct {
-	trunk               SurfaceBlock
-	leaves              SurfaceBlock
-	baseHeight          int
-	heightRandA         int
-	heightRandB         int
-	foliageType         string
-	foliageRadius       intProvider
-	foliageOffset       intProvider
-	foliageHeight       int
-	foliageHeightRandom intProvider
-	foliageTrunkHeight  intProvider
-	trunkType           string
-	twoLayers           bool
-	threeLayers         bool
-	minimumSizeLimit    int
-	minimumLower        int
-	minimumMiddle       int
-	minimumUpper        int
-	minimumUpperLimit   int
-	minClippedHeight    int
-	minimumThreeLayers  bool
-	extraBranchSteps    intProvider
-	extraBranchLength   intProvider
-	branchProbability   float32
-	branchCount         intProvider
-	branchHorizontal    intProvider
-	branchStartTop      int
-	branchEndTop        int
-	decorators          []treeDecorator
+	trunk                     SurfaceBlock
+	leaves                    SurfaceBlock
+	baseHeight                int
+	heightRandA               int
+	heightRandB               int
+	foliageType               string
+	foliageRadius             intProvider
+	foliageOffset             intProvider
+	foliageHeight             int
+	foliageHeightRandom       intProvider
+	randomSpreadHeight        intProvider
+	foliageTrunkHeight        intProvider
+	crownHeight               intProvider
+	leafPlacementAttempts     int
+	cherryWideBottom          float32
+	cherryCorner              float32
+	cherryHanging             float32
+	cherryHangingExt          float32
+	trunkType                 string
+	twoLayers                 bool
+	threeLayers               bool
+	minimumSizeLimit          int
+	minimumLower              int
+	minimumMiddle             int
+	minimumUpper              int
+	minimumUpperLimit         int
+	minClippedHeight          int
+	minimumThreeLayers        bool
+	extraBranchSteps          intProvider
+	extraBranchLength         intProvider
+	branchProbability         float32
+	branchCount               intProvider
+	branchHorizontal          intProvider
+	branchStartTop            int
+	branchEndTop              int
+	branchStartProvider       intProvider
+	branchSecondStartProvider intProvider
+	branchEndProvider         intProvider
+	minHeightForLeaves        int
+	bendLength                intProvider
+	decorators                []treeDecorator
 }
 
 type treeDecorator struct {
@@ -1310,17 +1322,20 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			} `json:"entries"`
 		} `json:"foliage_provider"`
 		TrunkPlacer struct {
-			Type              string          `json:"type"`
-			BaseHeight        int             `json:"base_height"`
-			HeightRandA       int             `json:"height_rand_a"`
-			HeightRandB       int             `json:"height_rand_b"`
-			ExtraBranchSteps  json.RawMessage `json:"extra_branch_steps"`
-			ExtraBranchLength json.RawMessage `json:"extra_branch_length"`
-			BranchProbability float32         `json:"place_branch_per_log_probability"`
-			BranchCount       json.RawMessage `json:"branch_count"`
-			BranchHorizontal  json.RawMessage `json:"branch_horizontal_length"`
-			BranchStartTop    json.RawMessage `json:"branch_start_offset_from_top"`
-			BranchEndTop      json.RawMessage `json:"branch_end_offset_from_top"`
+			Type               string          `json:"type"`
+			BaseHeight         int             `json:"base_height"`
+			HeightRandA        int             `json:"height_rand_a"`
+			HeightRandB        int             `json:"height_rand_b"`
+			ExtraBranchSteps   json.RawMessage `json:"extra_branch_steps"`
+			ExtraBranchLength  json.RawMessage `json:"extra_branch_length"`
+			BranchProbability  float32         `json:"place_branch_per_log_probability"`
+			BranchCount        json.RawMessage `json:"branch_count"`
+			BranchHorizontal   json.RawMessage `json:"branch_horizontal_length"`
+			BranchStartTop     json.RawMessage `json:"branch_start_offset_from_top"`
+			BranchSecondStart  json.RawMessage `json:"second_branch_start_offset_from_top"`
+			BranchEndTop       json.RawMessage `json:"branch_end_offset_from_top"`
+			MinHeightForLeaves int             `json:"min_height_for_leaves"`
+			BendLength         json.RawMessage `json:"bend_length"`
 		} `json:"trunk_placer"`
 		MinimumSize struct {
 			Type             string `json:"type"`
@@ -1336,11 +1351,18 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			Probability float32 `json:"probability"`
 		} `json:"decorators"`
 		FoliagePlacer struct {
-			Type        string          `json:"type"`
-			Radius      json.RawMessage `json:"radius"`
-			Height      json.RawMessage `json:"height"`
-			Offset      json.RawMessage `json:"offset"`
-			TrunkHeight json.RawMessage `json:"trunk_height"`
+			Type                   string          `json:"type"`
+			Radius                 json.RawMessage `json:"radius"`
+			Height                 json.RawMessage `json:"height"`
+			Offset                 json.RawMessage `json:"offset"`
+			TrunkHeight            json.RawMessage `json:"trunk_height"`
+			CrownHeight            json.RawMessage `json:"crown_height"`
+			FoliageHeight          json.RawMessage `json:"foliage_height"`
+			LeafPlacementAttempts  int             `json:"leaf_placement_attempts"`
+			WideBottomLayerHole    float32         `json:"wide_bottom_layer_hole_chance"`
+			CornerHole             float32         `json:"corner_hole_chance"`
+			HangingLeaves          float32         `json:"hanging_leaves_chance"`
+			HangingLeavesExtension float32         `json:"hanging_leaves_extension_chance"`
 		} `json:"foliage_placer"`
 	}
 	if err := json.Unmarshal(raw, &encoded); err != nil {
@@ -1391,40 +1413,65 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 	if err != nil {
 		return nil, nil
 	}
+	crownHeight, _ := parseOptionalIntProvider(encoded.FoliagePlacer.CrownHeight, 0)
+	randomSpreadHeight, _ := parseOptionalIntProvider(encoded.FoliagePlacer.FoliageHeight, 0)
+	branchStart, _ := parseOptionalIntProvider(encoded.TrunkPlacer.BranchStartTop, 0)
+	branchSecond, _ := parseOptionalIntProvider(encoded.TrunkPlacer.BranchSecondStart, 0)
+	branchEnd, _ := parseOptionalIntProvider(encoded.TrunkPlacer.BranchEndTop, 0)
+	bendLength, _ := parseOptionalIntProvider(encoded.TrunkPlacer.BendLength, 0)
+	if trunkType == "minecraft:cherry_trunk_placer" && branchSecond.kind == "" {
+		// 原版 CherryTrunkPlacer 的第二分支起点 = UniformInt.of(min, max-1)。
+		branchSecond = branchStart
+		if branchSecond.kind == "minecraft:uniform" && branchSecond.maximum > branchSecond.minimum {
+			branchSecond.maximum--
+		}
+	}
 	decorators := make([]treeDecorator, 0, len(encoded.Decorators))
 	for _, rawDecorator := range encoded.Decorators {
 		decorators = append(decorators, treeDecorator{kind: qualify(rawDecorator.Type), probability: rawDecorator.Probability})
 	}
 	return &treeConfiguration{
-		trunk:               trunk,
-		leaves:              leaves,
-		baseHeight:          encoded.TrunkPlacer.BaseHeight,
-		heightRandA:         encoded.TrunkPlacer.HeightRandA,
-		heightRandB:         encoded.TrunkPlacer.HeightRandB,
-		foliageType:         foliageType,
-		foliageRadius:       radius,
-		foliageOffset:       offset,
-		foliageHeight:       foliageHeight,
-		foliageHeightRandom: foliageHeightRandom,
-		foliageTrunkHeight:  trunkHeight,
-		trunkType:           trunkType,
-		twoLayers:           encoded.MinimumSize.Type == "minecraft:two_layers_feature_size",
-		threeLayers:         encoded.MinimumSize.Type == "minecraft:three_layers_feature_size",
-		minimumSizeLimit:    encoded.MinimumSize.Limit,
-		minimumLower:        encoded.MinimumSize.LowerSize,
-		minimumMiddle:       encoded.MinimumSize.MiddleSize,
-		minimumUpper:        encoded.MinimumSize.UpperSize,
-		minimumUpperLimit:   encoded.MinimumSize.UpperLimit,
-		minimumThreeLayers:  encoded.MinimumSize.Type == "minecraft:three_layers_feature_size",
-		minClippedHeight:    intValueOrZero(encoded.MinimumSize.MinClippedHeight),
-		extraBranchSteps:    parseOptionalIntProviderOrZero(encoded.TrunkPlacer.ExtraBranchSteps),
-		extraBranchLength:   parseOptionalIntProviderOrZero(encoded.TrunkPlacer.ExtraBranchLength),
-		branchProbability:   encoded.TrunkPlacer.BranchProbability,
-		branchCount:         parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchCount),
-		branchHorizontal:    parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchHorizontal),
-		branchStartTop:      parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchStartTop).sample(newLegacyRandom(0)),
-		branchEndTop:        parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchEndTop).sample(newLegacyRandom(0)),
-		decorators:          decorators,
+		trunk:                     trunk,
+		leaves:                    leaves,
+		baseHeight:                encoded.TrunkPlacer.BaseHeight,
+		heightRandA:               encoded.TrunkPlacer.HeightRandA,
+		heightRandB:               encoded.TrunkPlacer.HeightRandB,
+		foliageType:               foliageType,
+		foliageRadius:             radius,
+		foliageOffset:             offset,
+		foliageHeight:             foliageHeight,
+		foliageTrunkHeight:        trunkHeight,
+		trunkType:                 trunkType,
+		twoLayers:                 encoded.MinimumSize.Type == "minecraft:two_layers_feature_size",
+		threeLayers:               encoded.MinimumSize.Type == "minecraft:three_layers_feature_size",
+		minimumSizeLimit:          encoded.MinimumSize.Limit,
+		minimumLower:              encoded.MinimumSize.LowerSize,
+		minimumMiddle:             encoded.MinimumSize.MiddleSize,
+		minimumUpper:              encoded.MinimumSize.UpperSize,
+		minimumUpperLimit:         encoded.MinimumSize.UpperLimit,
+		minimumThreeLayers:        encoded.MinimumSize.Type == "minecraft:three_layers_feature_size",
+		minClippedHeight:          intValueOrZero(encoded.MinimumSize.MinClippedHeight),
+		extraBranchSteps:          parseOptionalIntProviderOrZero(encoded.TrunkPlacer.ExtraBranchSteps),
+		extraBranchLength:         parseOptionalIntProviderOrZero(encoded.TrunkPlacer.ExtraBranchLength),
+		branchProbability:         encoded.TrunkPlacer.BranchProbability,
+		branchCount:               parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchCount),
+		branchHorizontal:          parseOptionalIntProviderOrZero(encoded.TrunkPlacer.BranchHorizontal),
+		branchStartProvider:       branchStart,
+		branchSecondStartProvider: branchSecond,
+		branchEndProvider:         branchEnd,
+		branchStartTop:            branchStart.constant,
+		branchEndTop:              branchEnd.constant,
+		minHeightForLeaves:        encoded.TrunkPlacer.MinHeightForLeaves,
+		bendLength:                bendLength,
+		crownHeight:               crownHeight,
+		foliageHeightRandom:       foliageHeightRandom,
+		randomSpreadHeight:        randomSpreadHeight,
+		leafPlacementAttempts:     encoded.FoliagePlacer.LeafPlacementAttempts,
+		cherryWideBottom:          encoded.FoliagePlacer.WideBottomLayerHole,
+		cherryCorner:              encoded.FoliagePlacer.CornerHole,
+		cherryHanging:             encoded.FoliagePlacer.HangingLeaves,
+		cherryHangingExt:          encoded.FoliagePlacer.HangingLeavesExtension,
+		decorators:                decorators,
 	}, nil
 }
 
@@ -2873,6 +2920,32 @@ func treeMinimumWidth(configuration treeConfiguration, treeHeight, layer int) in
 // blob/spruce/pine 树叶放置器。2×2 树干已支持；复杂分叉树仍退化为
 // 2×2 主干，minimum_size 只做基础空间检查。
 func (r *Router) placeTree(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z int) {
+	switch configuration.trunkType {
+	case "minecraft:forking_trunk_placer":
+		r.placeForkingTree(chunk, random, configuration, x, y, z)
+		return
+	case "minecraft:fancy_trunk_placer":
+		r.placeFancyTree(chunk, random, configuration, x, y, z)
+		return
+	case "minecraft:dark_oak_trunk_placer":
+		r.placeDarkOakTree(chunk, random, configuration, x, y, z)
+		return
+	case "minecraft:giant_trunk_placer":
+		r.placeGiantTree(chunk, random, configuration, x, y, z)
+		return
+	case "minecraft:mega_jungle_trunk_placer":
+		r.placeMegaJungleTree(chunk, random, configuration, x, y, z)
+		return
+	case "minecraft:upwards_branching_trunk_placer":
+		r.placeUpwardsTree(chunk, random, configuration, x, y, z)
+		return
+	case "minecraft:bending_trunk_placer":
+		r.placeBendingTree(chunk, random, configuration, x, y, z)
+		return
+	case "minecraft:cherry_trunk_placer":
+		r.placeCherryTree(chunk, random, configuration, x, y, z)
+		return
+	}
 	height := configuration.baseHeight + random.nextIntBounded(configuration.heightRandA+1) + random.nextIntBounded(configuration.heightRandB+1)
 	if height <= 0 || y+height+configuration.foliageHeight >= chunk.MinY+chunk.Height {
 		return
@@ -3101,65 +3174,53 @@ func (r *Router) applyTreeDecorators(chunk *GeneratedChunk, random *legacyRandom
 
 func (r *Router) placeBlobFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves *[]featurePosition) {
 	radius := configuration.foliageRadius.sample(random)
-	if radius <= 0 {
-		radius = 2
-	}
+	offset := configuration.foliageOffset.sample(random)
 	foliageHeight := configuration.foliageHeight
 	if foliageHeight <= 0 {
 		foliageHeight = 3
 	}
-	top := y + height - 1
-	for layer := 0; layer < foliageHeight; layer++ {
-		layerRadius := radius - 1 - layer/2
-		if layerRadius < 0 {
-			layerRadius = 0
+	attachment := treeAttachment{x: x, y: y + height, z: z}
+	baseY := attachment.y + offset
+	for layer := 0; layer <= foliageHeight; layer++ {
+		rowRadius := radius + attachment.radiusOffset - 1 - layer/2
+		if rowRadius < 0 {
+			rowRadius = 0
 		}
-		layerY := top - layer
-		for dx := -layerRadius; dx <= layerRadius; dx++ {
-			for dz := -layerRadius; dz <= layerRadius; dz++ {
-				if dx*dx+dz*dz > layerRadius*layerRadius+1 {
-					continue
-				}
-				if layerRadius > 0 && absFeatureInt(dx) == layerRadius && absFeatureInt(dz) == layerRadius && random.nextIntBounded(2) == 0 {
-					continue
-				}
-				target := chunk.BlockAt(x+dx, layerY, z+dz)
-				if !target.IsAir() && target.Name != configuration.leaves.Name {
-					continue
-				}
-				chunk.SetBlock(x+dx, layerY, z+dz, configuration.leaves)
-				*leaves = append(*leaves, featurePosition{x: x + dx, y: layerY, z: z + dz})
-			}
-		}
+		r.placeTreeLeavesRow(chunk, random, configuration, attachment, x, baseY-layer, z, rowRadius, leaves, func(dx, dz int) bool {
+			return absFeatureInt(dx) == rowRadius && absFeatureInt(dz) == rowRadius && (random.nextIntBounded(2) == 0 || layer == 0)
+		})
 	}
 }
 
 func (r *Router) placeSpruceFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves *[]featurePosition) {
-	top := y + height - 1
-	start := height - configuration.foliageTrunkHeight.sample(random)
-	if start < 4 {
-		start = 4
+	foliageHeight := height - configuration.foliageTrunkHeight.sample(random)
+	if foliageHeight < 4 {
+		foliageHeight = 4
 	}
-	baseRadius := configuration.foliageRadius.sample(random)
-	radius := random.nextIntBounded(2)
-	nextRadius := 1
-	limit := 0
-	for layerY := top; layerY >= top-start; layerY-- {
-		r.placeFoliageLayer(chunk, random, configuration, x, layerY, z, radius, leaves)
-		if radius >= nextRadius {
-			radius = limit
-			limit = 1
-			if nextRadius+1 < baseRadius+1 {
-				nextRadius++
+	radius := configuration.foliageRadius.sample(random)
+	offset := configuration.foliageOffset.sample(random)
+	attachment := treeAttachment{x: x, y: y + height, z: z}
+	baseY := attachment.y + offset
+	current := random.nextIntBounded(2)
+	limit := 1
+	step := 0
+	for dy := 0; dy >= -foliageHeight; dy-- {
+		r.placeTreeLeavesRow(chunk, random, configuration, attachment, x, baseY+dy, z, current, leaves, func(dx, dz int) bool {
+			return absFeatureInt(dx) == current && absFeatureInt(dz) == current && current > 0
+		})
+		if current >= limit {
+			current = step
+			step = 1
+			if limit < radius+attachment.radiusOffset {
+				limit++
 			}
 		} else {
-			radius++
+			current++
 		}
 	}
 }
 
 func (r *Router) placePineFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves *[]featurePosition) {
-	top := y + height - 1
 	foliageHeight := configuration.foliageHeightRandom.sample(random)
 	if foliageHeight <= 0 {
 		foliageHeight = configuration.foliageHeight
@@ -3167,14 +3228,19 @@ func (r *Router) placePineFoliage(chunk *GeneratedChunk, random *legacyRandom, c
 	if foliageHeight <= 0 {
 		foliageHeight = 3
 	}
-	baseRadius := configuration.foliageRadius.sample(random)
-	radius := 0
-	for layerY := top; layerY >= top-foliageHeight; layerY-- {
-		r.placeFoliageLayer(chunk, random, configuration, x, layerY, z, radius, leaves)
-		if radius >= 1 && layerY == top-foliageHeight+1 {
-			radius--
-		} else if radius < baseRadius+1 {
-			radius++
+	radius := configuration.foliageRadius.sample(random) + random.nextIntBounded(maxInt(height+1, 1))
+	offset := configuration.foliageOffset.sample(random)
+	attachment := treeAttachment{x: x, y: y + height, z: z}
+	baseY := attachment.y + offset
+	current := 0
+	for dy := 0; dy >= -foliageHeight; dy-- {
+		r.placeTreeLeavesRow(chunk, random, configuration, attachment, x, baseY+dy, z, current, leaves, func(dx, dz int) bool {
+			return absFeatureInt(dx) == current && absFeatureInt(dz) == current && current > 0
+		})
+		if current >= 1 && dy == -foliageHeight+1 {
+			current--
+		} else if current < radius+attachment.radiusOffset {
+			current++
 		}
 	}
 }
@@ -3218,7 +3284,9 @@ func (r *Router) placeOre(chunk *GeneratedChunk, random *legacyRandom, configura
 	validColumn := false
 	for checkX := minX; checkX <= minX+sizeX && !validColumn; checkX++ {
 		for checkZ := minZ; checkZ <= minZ+sizeX; checkZ++ {
-			if minY <= chunk.HeightAt(checkX, checkZ) {
+			// 原版用 OCEAN_FLOOR_WG：水面/流体不算地表。用最高非流体
+			// 非空气方块判断，避免水下矿石被错误跳过或过早处理。
+			if minY <= oceanFloorHeight(chunk, checkX, checkZ) {
 				validColumn = true
 				break
 			}
@@ -3350,6 +3418,21 @@ func hasAirExposure(chunk *GeneratedChunk, x, y, z int) bool {
 		}
 	}
 	return false
+}
+
+// oceanFloorHeight 复刻 Heightmap.Types.OCEAN_FLOOR_WG：从世界顶向下找
+// 最高非空气且非流体方块。
+func oceanFloorHeight(chunk *GeneratedChunk, x, z int) int {
+	if x < chunk.MinX || x >= chunk.MinX+16 || z < chunk.MinZ || z >= chunk.MinZ+16 {
+		return chunk.MinY - 1
+	}
+	for y := chunk.MinY + chunk.Height - 1; y >= chunk.MinY; y-- {
+		block := chunk.BlockAt(x, y, z)
+		if !block.IsAir() && !block.HasFluid() {
+			return y
+		}
+	}
+	return chunk.MinY - 1
 }
 
 func lerpFloat64(t, a, b float64) float64 {
