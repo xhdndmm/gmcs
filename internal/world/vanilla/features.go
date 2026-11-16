@@ -291,6 +291,11 @@ type treeConfiguration struct {
 type treeDecorator struct {
 	kind        string
 	probability float32
+	tries       int
+	radius      int
+	height      int
+	provider    *stateProvider
+	directions  []string
 }
 
 type intProvider struct {
@@ -1347,8 +1352,14 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			MinClippedHeight *int   `json:"min_clipped_height"`
 		} `json:"minimum_size"`
 		Decorators []struct {
-			Type        string  `json:"type"`
-			Probability float32 `json:"probability"`
+			Type               string          `json:"type"`
+			Probability        float32         `json:"probability"`
+			Tries              int             `json:"tries"`
+			Radius             int             `json:"radius"`
+			Height             int             `json:"height"`
+			BlockStateProvider json.RawMessage `json:"block_state_provider"`
+			Provider           json.RawMessage `json:"provider"`
+			Directions         []string        `json:"directions"`
 		} `json:"decorators"`
 		FoliagePlacer struct {
 			Type                   string          `json:"type"`
@@ -1428,7 +1439,24 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 	}
 	decorators := make([]treeDecorator, 0, len(encoded.Decorators))
 	for _, rawDecorator := range encoded.Decorators {
-		decorators = append(decorators, treeDecorator{kind: qualify(rawDecorator.Type), probability: rawDecorator.Probability})
+		decorator := treeDecorator{
+			kind:        qualify(rawDecorator.Type),
+			probability: rawDecorator.Probability,
+			tries:       rawDecorator.Tries,
+			radius:      rawDecorator.Radius,
+			height:      rawDecorator.Height,
+			directions:  rawDecorator.Directions,
+		}
+		providerRaw := rawDecorator.BlockStateProvider
+		if len(providerRaw) == 0 {
+			providerRaw = rawDecorator.Provider
+		}
+		if len(providerRaw) != 0 {
+			if provider, providerErr := parseStateProvider(providerRaw); providerErr == nil {
+				decorator.provider = &provider
+			}
+		}
+		decorators = append(decorators, decorator)
 	}
 	return &treeConfiguration{
 		trunk:                     trunk,
@@ -3167,6 +3195,90 @@ func (r *Router) applyTreeDecorators(chunk *GeneratedChunk, random *legacyRandom
 					facing = "east"
 				}
 				chunk.SetBlock(px, trunkY, pz, SurfaceBlock{Name: "minecraft:cocoa", Properties: map[string]string{"age": fmt.Sprintf("%d", random.nextIntBounded(3)), "facing": facing}})
+			}
+		case "minecraft:place_on_ground", "minecraft:alter_ground":
+			if decorator.provider == nil {
+				continue
+			}
+			radius := decorator.radius
+			if radius <= 0 {
+				radius = 2
+			}
+			tries := decorator.tries
+			if tries <= 0 {
+				tries = 64
+			}
+			for attempt := 0; attempt < tries; attempt++ {
+				tx := x + random.nextIntBounded(radius*2+1) - radius
+				tz := z + random.nextIntBounded(radius*2+1) - radius
+				ty := y
+				if decorator.height > 0 {
+					ty += random.nextIntBounded(decorator.height*2+1) - decorator.height
+				}
+				if !chunk.InRange(tx, ty+1, tz) || !treeCanReplace(chunk.BlockAt(tx, ty+1, tz)) {
+					continue
+				}
+				if !isSolidBlock(chunk.BlockAt(tx, ty, tz)) {
+					continue
+				}
+				chunk.SetBlock(tx, ty+1, tz, decorator.provider.sample(random))
+			}
+		case "minecraft:attached_to_leaves":
+			if decorator.provider == nil || len(decorator.directions) == 0 {
+				continue
+			}
+			excluded := make(map[[3]int]struct{})
+			for _, leaf := range leaves {
+				direction := decorator.directions[random.nextIntBounded(len(decorator.directions))]
+				dx, dy, dz := 0, 0, 0
+				switch direction {
+				case "down":
+					dy = -1
+				case "up":
+					dy = 1
+				case "north":
+					dz = -1
+				case "south":
+					dz = 1
+				case "west":
+					dx = -1
+				case "east":
+					dx = 1
+				default:
+					continue
+				}
+				tx, ty, tz := leaf.x+dx, leaf.y+dy, leaf.z+dz
+				if _, blocked := excluded[[3]int{tx, ty, tz}]; blocked || random.nextFloat() >= decorator.probability {
+					continue
+				}
+				if !chunk.InRange(tx, ty, tz) || !treeCanReplace(chunk.BlockAt(tx, ty, tz)) {
+					continue
+				}
+				chunk.SetBlock(tx, ty, tz, decorator.provider.sample(random))
+				excluded[[3]int{tx, ty, tz}] = struct{}{}
+			}
+		case "minecraft:beehive":
+			if len(leaves) == 0 || random.nextFloat() >= decorator.probability {
+				continue
+			}
+			for _, leaf := range leaves {
+				for _, dir := range [][3]int{{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}} {
+					tx, ty, tz := leaf.x+dir[0], leaf.y, leaf.z+dir[2]
+					if !chunk.InRange(tx, ty, tz) || !chunk.BlockAt(tx, ty, tz).IsAir() {
+						continue
+					}
+					facing := "north"
+					switch dir {
+					case [3]int{0, 0, 1}:
+						facing = "south"
+					case [3]int{-1, 0, 0}:
+						facing = "west"
+					case [3]int{1, 0, 0}:
+						facing = "east"
+					}
+					chunk.SetBlock(tx, ty, tz, SurfaceBlock{Name: "minecraft:bee_nest", Properties: map[string]string{"facing": facing, "honey_level": "0"}})
+					return
+				}
 			}
 		}
 	}
