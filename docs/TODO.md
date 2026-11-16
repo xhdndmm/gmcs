@@ -1229,11 +1229,13 @@
         - 端到端（密度+含水层+表面规则）：`5 / 98304` 不一致（99.995%）。
       - 回归测试：`TestDensityMatchesOfficialSnapshot`
         （`testdata/official_density_0_0.bin.gz` 为官方密度符号位图）。
-    - [ ] **已知限制**：`temperature` 条件尚未完全等价原版——原版这里用
-      `FROZEN_TEMPERATURE_NOISE` 与 `TEMPERATURE_NOISE`（`PerlinSimplexNoise`）
-      修正温度，本实现只用群系基础温度。影响面：冰冻海洋的结冰范围比原版偏大
-      （该条件在 overworld 规则树里只用于冰冻海洋分支）。补齐需要先实现
-      `SimplexNoise` / `PerlinSimplexNoise` / `LegacyRandomSource`。
+    - [x] `temperature` 条件已补齐 `SimplexNoise` / `PerlinSimplexNoise`：
+      复刻 2D/3D SimplexNoise、PerlinSimplexNoise 的八度随机流与
+      `consumeCount`，并使用原版固定种子 1234/3456/2345 的
+      `TEMPERATURE_NOISE` / `FROZEN_TEMPERATURE_NOISE` / `BIOME_INFO_NOISE`；
+      实现 `Biome.getHeightAdjustedTemperature` 的 FROZEN 修正与海平面 +17
+      高度修正。新增 `TestBiomeSimplexNoiseDeterministic` 与
+      `TestBiomeTemperatureModifierFrozen`。
     - [ ] **未验证**：区块 (0,0) 之外仍有约 0~450 个方块的残差（洞穴/含水层
       边界、表面规则边缘），尚未逐个定位；只对拍了种子 4321、坐标
       (-4..3, -4..3) 范围内的区块。

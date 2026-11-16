@@ -313,17 +313,30 @@ func (c *surfaceContext) steep() bool {
 }
 
 // coldEnoughToSnow 等价原版 Biome.coldEnoughToSnow：温度是否低于 0.15。
-//
-// **已知限制**（见 docs/TODO.md）：原版这里有两处 PerlinSimplexNoise：
-//   - FROZEN 温度修正器：温度 <= 0 时用 FROZEN_TEMPERATURE_NOISE 代替基础温度；
-//   - 高度修正：方块高于海平面 + 17 时用 TEMPERATURE_NOISE 降温。
-//
-// 本实现尚未移植 PerlinSimplexNoise，因此这两处退化为"直接用群系基础温度"。
-// overworld 地表规则里 temperature 只用在冰冻海洋分支（方块高度不超过
-// 海平面 + 17，高度修正分支不触发），但 FROZEN 噪声项缺失会让冰冻海洋
-// 一律判定为"冷"，结冰范围比原版偏大。
+// 包含 FROZEN 温度修正器与高于海平面 17 格的高度修正，噪声种子分别为
+// 3456/2345/1234（见 Biome 静态字段）。
 func (c *surfaceContext) coldEnoughToSnow() bool {
-	return c.climate.temperature < 0.15
+	return c.heightAdjustedTemperature() < 0.15
+}
+
+// heightAdjustedTemperature 对应 Biome.getHeightAdjustedTemperature。
+func (c *surfaceContext) heightAdjustedTemperature() float32 {
+	temperature := c.climate.temperature
+	if c.climate.frozen {
+		x := float64(c.blockX)
+		z := float64(c.blockZ)
+		frozen := biomeFrozenTemperatureNoise.Value(x*0.05, z*0.05, false) * 7
+		info := frozen + biomeInfoNoise.Value(x*0.2, z*0.2, false)
+		if info < 0.3 && biomeInfoNoise.Value(x*0.09, z*0.09, false) < 0.8 {
+			temperature = 0.2
+		}
+	}
+	limit := c.system.seaLevel + 17
+	if c.blockY > limit {
+		noise := float32(biomeTemperatureNoise.Value(float64(c.blockX)/8, float64(c.blockZ)/8, false) * 8)
+		temperature -= (noise + float32(c.blockY) - float32(limit)) * 0.05 / 40
+	}
+	return temperature
 }
 
 // lerp2 等价原版 Mth.lerp2。

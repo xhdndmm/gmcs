@@ -100,6 +100,13 @@ func (r *legacyRandom) nextLong() int64 {
 	return int64(r.nextInt())<<32 + int64(r.nextInt())
 }
 
+// consumeCount 对应 RandomSource.consumeCount：跳过 count 个无界 nextInt。
+func (r *legacyRandom) consumeCount(count int) {
+	for i := 0; i < count; i++ {
+		r.nextInt()
+	}
+}
+
 func (r *legacyRandom) nextBoolean() bool {
 	return r.next(1) != 0
 }
