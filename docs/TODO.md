@@ -1353,8 +1353,9 @@
       - geode 已移植分层阈值、裂缝、invalid_blocks、potential placements 与
         LegacyRandomSource NormalNoise；仍需逐方块对拍验证；
       - iceberg 已按 IcebergFeature 主流程重写（上下冰体、椭圆/密度边界、雪层），
-        仍未逐方块对拍；dripstone、sculk patch、end spike、monster room 的
-        复杂几何仍不完整；root system 已加入悬挂根/根柱但未逐方块对拍；折跃门已接入
+        仍未逐方块对拍；dripstone/sculk patch 已加入支撑面检查，修复了实际
+        测试中的大量悬空方块，但复杂几何仍不完整；end spike、monster room
+        仍需逐方块对拍；root system 已加入悬挂根/根柱但未逐方块对拍；折跃门已接入
         ExitPortal 方块实体与 v10 存储持久化，但实体生成/末影龙联动仍未完成；
       - 地物逐方块对比仍有差异；例如 ore_tuff 单地物在区块 (0,0) 仍有
         约 1854/98304 差异，说明 feature index/随机流或 ore 放置细节仍未收敛。
@@ -1384,6 +1385,13 @@
       processor_list 全类型、jigsaw 包围盒、Beardifier、地下结构）；carver
       多类交互残差尚未收敛；真实客户端渲染与数小时级运行验证未做。
 
+- [x] 实际测试中的悬空 sculk/滴水石/草花已修复：sculk 增加 `canSpreadFrom`
+  与支撑检查、滴水石增加洞穴支撑搜索、`simple_block` 增加地表支撑检查、
+  `SetBlock` 清空顶部方块时同步降低高度图；具体见 `docs/PERFORMANCE.md` §3.50。
+  仍保留树木跨区块顺序、树叶 `distance` 和部分装饰器的近似。
+- [x] 空闲内存释放：清理生成器地物/高度缓存、结构高度缓存改为高度图、
+  空闲阶段主动 `FreeOSMemory`；20 客户端压测退出后 RSS 从约 242 MB 回落到
+  约 55 MB（单机 loopback，非公网长时间验证）。
 - [ ] 完整移动物理（碰撞形状/逐轴碰撞/潜行边缘保护/悬空上升限制/游泳/台阶已完成；
   余下：服务端重力模拟与客户端预测回滚）
 

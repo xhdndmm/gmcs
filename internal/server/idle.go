@@ -6,6 +6,7 @@ package server
 
 import (
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"gmcs/internal/world"
@@ -74,6 +75,9 @@ func (s *Server) advanceIdleRelease(now time.Time) {
 		switch stage {
 		case 1:
 			s.releaseIdleRuntimeCaches()
+			// 无玩家时主动把已释放堆页归还 OS，避免 RSS 长时间停留在
+			// 探索/生成峰值；该调用只发生在一次空闲阶段切换时。
+			debug.FreeOSMemory()
 			slog.Info("空闲服务器释放运行时缓存", "stage", 1)
 		case 2:
 			if err := s.releaseIdleEntities(); err != nil {
@@ -86,6 +90,7 @@ func (s *Server) advanceIdleRelease(now time.Time) {
 			slog.Info("空闲服务器关闭空闲维度", "stage", 3)
 		case 4:
 			s.releaseIdleWorldDimensions(true)
+			debug.FreeOSMemory()
 			slog.Info("空闲服务器关闭全部维度", "stage", 4)
 		}
 	}

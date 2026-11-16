@@ -2503,7 +2503,61 @@ func (r *Router) placeSimple(chunk *GeneratedChunk, random *legacyRandom, simple
 	if !chunk.InRange(x, y, z) || !chunk.BlockAt(x, y, z).IsAir() {
 		return
 	}
-	chunk.SetBlock(x, y, z, simple.provider.sample(random))
+	state := simple.provider.sample(random)
+	if !simpleBlockCanSurvive(chunk, state, x, y, z) {
+		return
+	}
+	chunk.SetBlock(x, y, z, state)
+	// 原版 DoublePlantBlock 会同时放置上半部分；此前只放了下半部分，
+	// 留下“只有一格高”的悬空植物。这里补上 upper 状态。
+	if state.Name == "minecraft:tall_grass" || state.Name == "minecraft:large_fern" ||
+		state.Name == "minecraft:sunflower" || state.Name == "minecraft:lilac" ||
+		state.Name == "minecraft:rose_bush" || state.Name == "minecraft:peony" {
+		upper := SurfaceBlock{Name: state.Name, Properties: map[string]string{}}
+		for key, value := range state.Properties {
+			upper.Properties[key] = value
+		}
+		upper.Properties["half"] = "upper"
+		if chunk.InRange(x, y+1, z) && chunk.BlockAt(x, y+1, z).IsAir() {
+			chunk.SetBlock(x, y+1, z, upper)
+		}
+	}
+}
+
+// simpleBlockCanSurvive 近似原版 BlockState.canSurvive 对常见地表植物的
+// 约束。关键点是：不能只检查目标位置是空气；草/花/矮植物必须站在可支撑
+// 的地面方块上。缺少这项检查会让 random_patch 在不同高度的地形之间扩散时
+// 生成大量悬空草。
+func simpleBlockCanSurvive(chunk *GeneratedChunk, state SurfaceBlock, x, y, z int) bool {
+	switch state.Name {
+	case "minecraft:short_grass", "minecraft:fern", "minecraft:bush",
+		"minecraft:dandelion", "minecraft:poppy", "minecraft:blue_orchid",
+		"minecraft:allium", "minecraft:azure_bluet", "minecraft:red_tulip",
+		"minecraft:orange_tulip", "minecraft:white_tulip", "minecraft:pink_tulip",
+		"minecraft:oxeye_daisy", "minecraft:cornflower", "minecraft:lily_of_the_valley",
+		"minecraft:wither_rose", "minecraft:torchflower", "minecraft:pink_petals",
+		"minecraft:wildflowers", "minecraft:leaf_litter", "minecraft:dead_bush",
+		"minecraft:brown_mushroom", "minecraft:red_mushroom":
+		below := chunk.BlockAt(x, y-1, z)
+		switch below.Name {
+		case "minecraft:grass_block", "minecraft:dirt", "minecraft:coarse_dirt",
+			"minecraft:podzol", "minecraft:moss_block", "minecraft:rooted_dirt",
+			"minecraft:mud", "minecraft:muddy_mangrove_roots", "minecraft:farmland",
+			"minecraft:mycelium", "minecraft:sand", "minecraft:red_sand":
+			return true
+		default:
+			return false
+		}
+	case "minecraft:tall_grass", "minecraft:large_fern", "minecraft:sunflower",
+		"minecraft:lilac", "minecraft:rose_bush", "minecraft:peony":
+		return simpleBlockCanSurvive(chunk, SurfaceBlock{Name: "minecraft:short_grass"}, x, y, z) &&
+			chunk.BlockAt(x, y+1, z).IsAir()
+	case "minecraft:glow_lichen", "minecraft:sculk_vein":
+		return false
+	default:
+		// 其余 simple block（海带、甘蔗、普通方块等）由各自运行时处理。
+		return true
+	}
 }
 
 func (r *Router) placeSelector(chunk *GeneratedChunk, random *legacyRandom, selector selectorConfiguration, x, y, z int) {

@@ -728,27 +728,51 @@ func rotateHorizontalOffset(x, z int, rotation templateRotation) (int, int) {
 func (r *structureRuntime) startHeight(router *Router, def structureDefinition, x, z int) int {
 	if def.ProjectStart != "" || def.Type == "minecraft:end_city" {
 		key := chunkCoord{x: x >> 4, z: z >> 4}
-		chunk, ok := router.structureTerrain[key]
+		heightmap := def.ProjectStart
+		if heightmap == "" {
+			heightmap = "WORLD_SURFACE_WG"
+		}
+		entry, ok := router.structureTerrain[key]
+		var generatedChunk *GeneratedChunk
 		if !ok {
-			var err error
-			chunk, _, err = router.generateBaseChunk(key.x, key.z)
+			// 只缓存 16×16 的高度图，而不是整块 GeneratedChunk。
+			// 一个完整区块约 3 MB（字符串方块状态），16 块就是 ~48 MB/会话；
+			// 高度图每块只有 2 KB，能避免结构生成把常驻内存推高。
+			chunk, _, err := router.generateBaseChunk(key.x, key.z)
 			if err != nil {
 				return 64
 			}
-			router.structureTerrain[key] = chunk
+			generatedChunk = chunk
+			entry = make(map[string]*[256]int)
+			router.structureTerrain[key] = entry
 			router.structureTerrainOrder = append(router.structureTerrainOrder, key)
-			const terrainCacheLimit = 16
+			const terrainCacheLimit = 64
 			for len(router.structureTerrainOrder) > terrainCacheLimit {
 				oldest := router.structureTerrainOrder[0]
 				router.structureTerrainOrder = router.structureTerrainOrder[1:]
 				delete(router.structureTerrain, oldest)
 			}
 		}
-		heightmap := def.ProjectStart
-		if heightmap == "" {
-			heightmap = "WORLD_SURFACE_WG"
+		heights, ok := entry[heightmap]
+		if !ok {
+			// 同一区块的第二种 heightmap 才需要重新生成基础地形。
+			chunk := generatedChunk
+			if chunk == nil {
+				var err error
+				chunk, _, err = router.generateBaseChunk(key.x, key.z)
+				if err != nil {
+					return 64
+				}
+			}
+			heights = new([256]int)
+			for lz := 0; lz < 16; lz++ {
+				for lx := 0; lx < 16; lx++ {
+					heights[lz*16+lx] = chunkHeightmap(chunk, key.x*16+lx, key.z*16+lz, heightmap)
+				}
+			}
+			entry[heightmap] = heights
 		}
-		return chunkHeightmap(chunk, x, z, heightmap) + 1
+		return heights[(z&15)*16+(x&15)] + 1
 	}
 	if def.StartHeight.Absolute != nil {
 		return *def.StartHeight.Absolute

@@ -1756,6 +1756,57 @@ BenchmarkGenerateChunk-20       约 86 ms/op   10.8 MB/op  18.3k allocs/op
 完整官方世界残差约 8.6%（含官方地物/矿脉/雕刻器/结构）。本批没有声称
 “区块生成已与原版完全一致”。
 
+
+### 3.50 实际测试中的悬空方块与空闲内存释放修复（2026-11-17）
+
+实际进入世界后观察到地表上方出现大量不属于原版地形的方块，并伴随退出后
+内存不回落。逐项定位后修复了以下问题：
+
+1. **sculk patch 悬空生成**：`sculkReplaceable(air)` 曾返回 true，且没有
+   `SculkPatchFeature.canSpreadFrom` 检查；`height_range` 在 y=0..256 随机
+   选点后，空气也会被写成 sculk。现在空气/水之外还需有完整碰撞面，且
+   催化剂/稀有生长物必须有下方支撑；回归测试
+   `TestSculkPatchDoesNotReplaceAir`。在种子 4321、225 个区块的扫描中，
+   该修复移除了约 12.6 万个悬空 sculk 方块。
+2. **滴水石悬空柱**：`large_dripstone`/`dripstone_cluster` 原先直接从随机
+   高度向上堆方块；现在要求起点是空气/水，并用
+   `findDripstoneSupport` 找到洞穴顶/底，只在支撑面之间生成；`pointed_dripstone`
+   也必须有贴附面。新增 `TestLargeDripstoneDoesNotFloatInAir`。
+3. **草/花等 simple block 缺少 canSurvive**：`SimpleBlockFeature` 原版会检查
+   目标方块的支撑；此前只检查目标位置是空气，导致 `random_patch` 从高地形
+   向低地形扩散时在空气中生成草、花、矮植物。现在对常见地表植物检查
+   下方草/土/沙等支撑，并补齐双格植物上半部分；新增
+   `TestSimpleBlockRequiresGroundSupport`。同一 225 区块扫描中，悬空草/花
+   从约 2600 个降为 0，剩余高于基础地形的方块均为树木/树叶/蜂巢等树木地物。
+4. **高度图只增不减**：`GeneratedChunk.SetBlock` 清空最高方块时现在会同步
+   降低高度图；否则后续 `heightmap` 地物会按已经不存在的高点放置。新增
+   `TestSetBlockAirLowersHeightmap`。
+5. **空闲内存释放**：
+   - `featureResultCache` 增加 `clear()`；`Router.ClearCaches()` 清空地物结果
+     和区块级临时缓存；
+   - `VanillaGenerator.ReleaseCaches()` 清空 `heights` 与共享地物缓存，
+     `unloadAllChunks` 在每个空闲世界卸载后调用；
+   - 结构高度缓存从“16 个完整 `GeneratedChunk`（每块约 3 MB）”改为
+     “64 个 16×16 高度图（每块约 2 KB）”；
+   - 每个生成会话结束调用 `ClearTransientCaches()`，不再让 `sync.Pool`
+     长期持有结构高度图/群系集合；
+   - 空闲阶段 1/4 调用一次 `debug.FreeOSMemory()`，把已释放堆页归还 OS。
+
+实测（`cmd/gmcsload`，20 客户端、10 秒、全新世界、`view_distance=6`）：
+
+```text
+压测结束 RSS 峰值       约 242 MB
+退出后 ~30 秒（阶段 1） 约 55 MB
+之后 2 分钟稳定在       约 55 MB
+```
+
+该测量是单机 loopback，不是公网/真实客户端长时间测试；但确认空闲释放
+不再停留在生成峰值。
+
+仍需强调的是：上述修复针对“悬空且不属于原版地形”的方块；复杂树木的
+跨区块树冠顺序、树叶 `distance` 更新和部分装饰器仍未逐方块对齐，
+carver/结构/矿脉残差也仍然存在。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；

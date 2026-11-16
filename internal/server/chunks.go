@@ -608,6 +608,7 @@ func (s *Server) unloadAllChunks() error {
 				slog.Info("空闲服务器释放区块", "dimension", dim, "count", len(unloaded))
 			}
 			remaining += gameWorld.ChunkCount()
+			gameWorld.ReleaseCaches()
 		}
 		if remaining == 0 {
 			break

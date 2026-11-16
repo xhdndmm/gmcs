@@ -1,6 +1,7 @@
 package vanilla
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -580,7 +581,7 @@ func TestSculkPatchSpreadsAndCatalyst(t *testing.T) {
 	}
 	random := newWorldgenRandom()
 	random.setSeed(4242)
-	router.placeSculkPatch(chunk, random.legacyRandom, placed.extra.config, 8, 30, 8)
+	router.placeSculkPatch(chunk, random.legacyRandom, placed.extra.config, 8, 40, 8)
 	sculk, catalyst := 0, 0
 	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
 		switch block.Name {
@@ -704,5 +705,65 @@ func TestIcebergPlacesIceInWater(t *testing.T) {
 	})
 	if count == 0 {
 		t.Fatal("冰山没有生成冰方块")
+	}
+}
+
+func TestSculkPatchDoesNotReplaceAir(t *testing.T) {
+	router := mustRouter(t, 4321)
+	chunk := NewGeneratedChunk(0, 0, router.setting.MinY, router.setting.Height)
+	for x := 0; x < 16; x++ {
+		for z := 0; z < 16; z++ {
+			for y := 20; y < 40; y++ {
+				chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:deepslate"})
+			}
+		}
+	}
+	random := newWorldgenRandom()
+	random.setSeed(4242)
+	router.placeSculkPatch(chunk, random.legacyRandom,
+		json.RawMessage(`{"charge_count":10,"amount_per_charge":32,"spread_attempts":64,"spread_rounds":1,"growth_rounds":0,"catalyst_chance":0.5,"extra_rare_growths":0}`),
+		8, 80, 8)
+	sculk := 0
+	chunk.ForEachBlock(func(_, y, _ int, block SurfaceBlock) {
+		if y > 40 && block.Name == "minecraft:sculk" {
+			sculk++
+		}
+	})
+	if sculk != 0 {
+		t.Fatalf("空气中生成了 %d 个 sculk", sculk)
+	}
+}
+
+func TestSimpleBlockRequiresGroundSupport(t *testing.T) {
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	simple := simpleBlockConfiguration{provider: stateProvider{entries: []weightedState{{
+		state: SurfaceBlock{Name: "minecraft:short_grass"}, weight: 1,
+	}}}}
+	random := newLegacyRandom(1)
+	router := mustRouter(t, 1)
+	router.placeSimple(chunk, random, simple, 8, 80, 8)
+	if !chunk.BlockAt(8, 80, 8).IsAir() {
+		t.Fatal("空中不应生成短草")
+	}
+	chunk.SetBlock(8, 79, 8, SurfaceBlock{Name: "minecraft:grass_block"})
+	router.placeSimple(chunk, random, simple, 8, 80, 8)
+	if chunk.BlockAt(8, 80, 8).Name != "minecraft:short_grass" {
+		t.Fatal("有地面支撑时应生成短草")
+	}
+}
+
+func TestLargeDripstoneDoesNotFloatInAir(t *testing.T) {
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	router := mustRouter(t, 1)
+	random := newLegacyRandom(1)
+	router.placeLargeDripstone(chunk, random, nil, 8, 80, 8)
+	placed := 0
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		if block.Name == "minecraft:dripstone_block" || block.Name == "minecraft:pointed_dripstone" {
+			placed++
+		}
+	})
+	if placed != 0 {
+		t.Fatalf("无洞穴支撑时生成了 %d 个滴水石方块", placed)
 	}
 }

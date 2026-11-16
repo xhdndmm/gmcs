@@ -110,8 +110,24 @@ func (c *GeneratedChunk) SetBlock(x, y, z int, block SurfaceBlock) {
 	}
 	c.blocks[c.index(x, y, z)] = block
 	slot := (z-c.MinZ)*16 + (x - c.MinX)
-	if !block.IsAir() && y > c.heights[slot] {
-		c.heights[slot] = y
+	if !block.IsAir() {
+		if y > c.heights[slot] {
+			c.heights[slot] = y
+		}
+		return
+	}
+	// 清空最高方块时必须同步降低高度图。原版 Heightmap 会在 setBlock
+	// 更新追踪列；如果这里只增不减，后续 heightmap 地物（草、花、树）
+	// 会按已经不存在的高点放置，形成地表上方的悬空植物。
+	if y == c.heights[slot] {
+		top := c.MinY - 1
+		for candidate := y - 1; candidate >= c.MinY; candidate-- {
+			if !c.blocks[c.index(x, candidate, z)].IsAir() {
+				top = candidate
+				break
+			}
+		}
+		c.heights[slot] = top
 	}
 }
 

@@ -38,6 +38,15 @@ func (c *featureResultCache) peek(key chunkCoord) *featureResultEntry {
 	return c.entries[key]
 }
 
+// clear 丢弃所有已完成/进行中的结果引用。进行中的 entry 仍可由其调用方
+// 安全完成，只是不再留在缓存里；本方法用锁保证与 get/peek 并发安全。
+func (c *featureResultCache) clear() {
+	c.mu.Lock()
+	c.entries = make(map[chunkCoord]*featureResultEntry)
+	c.order = nil
+	c.mu.Unlock()
+}
+
 func (c *featureResultCache) get(key chunkCoord) *featureResultEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -393,3 +393,20 @@ func TestOreVeinsAddGraniteAndTuff(t *testing.T) {
 		t.Fatalf("矿脉没有生成预期岩石：granite=%d tuff=%d", granite, tuff)
 	}
 }
+
+func TestSetBlockAirLowersHeightmap(t *testing.T) {
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	chunk.SetBlock(3, 64, 5, SurfaceBlock{Name: "minecraft:stone"})
+	chunk.SetBlock(3, 65, 5, SurfaceBlock{Name: "minecraft:short_grass"})
+	if got := chunk.HeightAt(3, 5); got != 65 {
+		t.Fatalf("HeightAt = %d, want 65", got)
+	}
+	chunk.SetBlock(3, 65, 5, SurfaceBlock{Name: "minecraft:air"})
+	if got := chunk.HeightAt(3, 5); got != 64 {
+		t.Fatalf("清空顶部方块后 HeightAt = %d, want 64", got)
+	}
+	chunk.SetBlock(3, 64, 5, SurfaceBlock{Name: "minecraft:air"})
+	if got := chunk.HeightAt(3, 5); got != chunk.MinY-1 {
+		t.Fatalf("清空整列后 HeightAt = %d, want %d", got, chunk.MinY-1)
+	}
+}

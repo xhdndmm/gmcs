@@ -32,7 +32,7 @@ type Router struct {
 	features              *featureRegistry
 	biomeSetCache         map[chunkCoord]map[string]struct{}
 	configuredCache       map[string]placedFeature
-	structureTerrain      map[chunkCoord]*GeneratedChunk
+	structureTerrain      map[chunkCoord]map[string]*[256]int
 	structureTerrainOrder []chunkCoord
 	structuresEnabled     bool
 	regionsEnabled        bool
@@ -68,7 +68,7 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		named:            make(map[string]*Node),
 		biomeSetCache:    make(map[chunkCoord]map[string]struct{}),
 		configuredCache:  make(map[string]placedFeature),
-		structureTerrain: make(map[chunkCoord]*GeneratedChunk),
+		structureTerrain: make(map[chunkCoord]map[string]*[256]int),
 		regionsEnabled:   true,
 		featureCache:     newFeatureResultCache(96),
 		surfaceCache:     &surfaceRuleCache{},
@@ -132,7 +132,7 @@ func (r *Router) NewSession() *Router {
 		features:           r.features,
 		biomeSetCache:      make(map[chunkCoord]map[string]struct{}),
 		configuredCache:    make(map[string]placedFeature),
-		structureTerrain:   make(map[chunkCoord]*GeneratedChunk),
+		structureTerrain:   make(map[chunkCoord]map[string]*[256]int),
 		structuresEnabled:  r.structuresEnabled,
 		regionsEnabled:     r.regionsEnabled,
 		structureCacheDir:  r.structureCacheDir,
@@ -142,6 +142,23 @@ func (r *Router) NewSession() *Router {
 	session.evaluator = NewEvaluatorWithCells(r.registry, r.setting.CellWidth, r.setting.CellHeight)
 	session.evaluator.finalDensity = session.nodes["final_density"]
 	return session
+}
+
+// ClearTransientCaches 丢弃只服务于单个区块生成过程的缓存。Router 会话在
+// 生成结束后调用它，避免 sync.Pool 长期持有结构高度图/群系集合等临时对象。
+func (r *Router) ClearTransientCaches() {
+	r.structureTerrain = make(map[chunkCoord]map[string]*[256]int)
+	r.structureTerrainOrder = nil
+	r.biomeSetCache = make(map[chunkCoord]map[string]struct{})
+}
+
+// ClearCaches 释放跨区块共享的大对象。空闲服务器在卸载区块后调用，
+// 避免 featureResult（含整棵树/结构写出的方块 map）长期常驻。
+func (r *Router) ClearCaches() {
+	if r.featureCache != nil {
+		r.featureCache.clear()
+	}
+	r.ClearTransientCaches()
 }
 
 // SetStructuresEnabled 控制是否在区块生成末尾放置结构（诊断/对拍用）。

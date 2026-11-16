@@ -48,6 +48,21 @@ func NewVanillaDimensionGenerator(dimension Dimension, settingName string, seed 
 	return generator, nil
 }
 
+// ReleaseCaches 释放生成器在空闲时可丢弃的跨区块缓存。玩家重新加入后
+// 生成器仍可正常使用；此方法只清缓存，不改变方块数据。
+func (g *VanillaGenerator) ReleaseCaches() {
+	if g == nil {
+		return
+	}
+	g.heights.Range(func(key, _ any) bool {
+		g.heights.Delete(key)
+		return true
+	})
+	if g.base != nil {
+		g.base.ClearCaches()
+	}
+}
+
 // SetStructureCacheDir 配置结构 start 的磁盘缓存目录。目录中的文件是 gmcs
 // 自有 JSON 缓存，不是 Anvil 区块；空字符串关闭持久化。
 func (g *VanillaGenerator) SetStructureCacheDir(dir string) {
@@ -60,7 +75,10 @@ func (g *VanillaGenerator) SetStructureCacheDir(dir string) {
 // GenerateChunk 实现 Generator。
 func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 	session := g.pool.Get().(*vanilla.Router)
-	defer g.pool.Put(session)
+	defer func() {
+		session.ClearTransientCaches()
+		g.pool.Put(session)
+	}()
 	generated, err := session.GenerateChunk(x, z)
 	if err != nil {
 		// 运行期生成失败属于数据/实现错误。这里不伪装成成功区块：

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"gmcs/internal/registry"
 )
 
 // extraFeature 保存尚未被 features.go 主 switch 特化的 configured_feature。
@@ -635,21 +637,51 @@ func (r *Router) placeUnderwaterMagma(chunk *GeneratedChunk, random *legacyRando
 }
 
 func (r *Router) placeFreezeTopLayer(chunk *GeneratedChunk, random *legacyRandom, x, y, z int) {
-	// freeze_top_layer 只影响区块最上层水/冰；遍历当前区块顶面。
+	// 复刻 SnowAndFreezeFeature：只对 MOTION_BLOCKING 高度处的空气/水做
+	// shouldSnow/shouldFreeze 判定，不能无条件把海水冻成冰。
+	biomes, err := r.Biomes()
+	if err != nil {
+		return
+	}
+	system := &SurfaceSystem{seaLevel: r.setting.SeaLevel}
 	for px := chunk.MinX; px < chunk.MinX+16; px++ {
 		for pz := chunk.MinZ; pz < chunk.MinZ+16; pz++ {
-			for py := chunk.MinY + chunk.Height - 1; py >= chunk.MinY; py-- {
-				block := chunk.BlockAt(px, py, pz)
-				if block.IsAir() {
-					continue
+			top := chunkHeightmap(chunk, px, pz, "MOTION_BLOCKING")
+			if top < chunk.MinY || top >= chunk.MinY+chunk.Height {
+				continue
+			}
+			biomeName := biomes.BiomeAtBlock(px, top, pz)
+			climate := biomes.Climate(biomeName)
+			context := &surfaceContext{
+				system: system, biomeName: biomeName, climate: climate,
+				blockX: px, blockY: top - 1, blockZ: pz,
+			}
+			coldEnough := context.heightAdjustedTemperature() < 0.15
+			below := chunk.BlockAt(px, top-1, pz)
+			above := chunk.BlockAt(px, top, pz)
+			if coldEnough && below.Name == "minecraft:water" &&
+				below.Properties["level"] == "0" && above.IsAir() {
+				chunk.SetBlock(px, top-1, pz, SurfaceBlock{Name: "minecraft:ice"})
+			}
+			if coldEnough && climate.hasPrecipitation && above.IsAir() &&
+				below.Name != "minecraft:water" && isSolidBlock(below) {
+				chunk.SetBlock(px, top, pz, SurfaceBlock{Name: "minecraft:snow"})
+				if below.Name == "minecraft:grass_block" || below.Name == "minecraft:podzol" ||
+					below.Name == "minecraft:mycelium" {
+					properties := map[string]string{}
+					for key, value := range below.Properties {
+						properties[key] = value
+					}
+					properties["snowy"] = "true"
+					chunk.SetBlock(px, top-1, pz, SurfaceBlock{Name: below.Name, Properties: properties})
 				}
-				if block.Name == "minecraft:water" && chunk.BlockAt(px, py+1, pz).IsAir() {
-					chunk.SetBlock(px, py, pz, SurfaceBlock{Name: "minecraft:ice"})
-				}
-				break
 			}
 		}
 	}
+	_ = random
+	_ = x
+	_ = y
+	_ = z
 }
 
 func (r *Router) placeForestRock(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
@@ -1172,27 +1204,140 @@ func (r *Router) placeMonsterRoom(chunk *GeneratedChunk, random *legacyRandom, x
 	chunk.SetBlock(x, y, z, SurfaceBlock{Name: "minecraft:spawner"})
 }
 
+func isDripstoneOpen(block SurfaceBlock) bool {
+	return block.IsAir() || block.Name == "minecraft:water" || block.Name == "minecraft:lava"
+}
+
+func isDripstoneBaseBlock(block SurfaceBlock) bool {
+	if block.Name == "minecraft:dripstone_block" {
+		return true
+	}
+	state, err := registry.BlockStateID(block.Name)
+	return err == nil && registry.BlockTagContains("minecraft:base_stone_overworld", state)
+}
+
+// findDripstoneSupport 从 y 沿 direction 搜索柱状结构的支撑面。
+// 返回支撑方块所在 y；碰到非空气/水/岩浆或超出范围时返回 false。
+func findDripstoneSupport(chunk *GeneratedChunk, x, y, z, direction, limit int) (int, bool) {
+	for step := 0; step <= limit; step++ {
+		py := y + direction*step
+		if !chunk.InRange(x, py, z) {
+			return 0, false
+		}
+		block := chunk.BlockAt(x, py, z)
+		if isDripstoneBaseBlock(block) {
+			return py, true
+		}
+		if !isDripstoneOpen(block) {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
 func (r *Router) placeLargeDripstone(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
-	// 大滴水石锥：当前生成一个中心石柱和上下锥体；完整 wind/bluntness 未移植。
-	height := random.nextIntBounded(10) + 4
-	for h := 0; h < height; h++ {
-		if chunk.InRange(x, y+h, z) {
-			chunk.SetBlock(x, y+h, z, SurfaceBlock{Name: "minecraft:dripstone_block"})
+	// 大滴水石锥只生成在洞穴内：起点必须是空气/水，并且上下至少能找到一个
+	// 支撑面。此前直接以随机高度向上堆 dripstone_block，导致地表上方出现
+	// 大量悬空柱，这是实际测试中“高于地面出现方块”的主要来源之一。
+	if !chunk.InRange(x, y, z) || !isDripstoneOpen(chunk.BlockAt(x, y, z)) {
+		return
+	}
+	_, hasFloor := findDripstoneSupport(chunk, x, y, z, -1, 18)
+	_, hasCeiling := findDripstoneSupport(chunk, x, y, z, 1, 18)
+	if !hasFloor && !hasCeiling {
+		return
+	}
+	maxHeight := random.nextIntBounded(10) + 4
+	radius := random.nextIntBounded(4) + 1
+	for dx := -radius; dx <= radius; dx++ {
+		for dz := -radius; dz <= radius; dz++ {
+			if dx*dx+dz*dz > radius*radius {
+				continue
+			}
+			floorY, floorOK := findDripstoneSupport(chunk, x+dx, y, z+dz, -1, 18)
+			ceilingY, ceilingOK := findDripstoneSupport(chunk, x+dx, y, z+dz, 1, 18)
+			if !floorOK && !ceilingOK {
+				continue
+			}
+			height := maxHeight - random.nextIntBounded(3)
+			if floorOK {
+				limit := height
+				if ceilingOK && floorY+limit >= ceilingY {
+					limit = ceilingY - floorY - 1
+				}
+				for step := 1; step <= limit; step++ {
+					py := floorY + step
+					if !chunk.InRange(x+dx, py, z+dz) || !isDripstoneOpen(chunk.BlockAt(x+dx, py, z+dz)) {
+						break
+					}
+					chunk.SetBlock(x+dx, py, z+dz, SurfaceBlock{Name: "minecraft:dripstone_block"})
+				}
+			}
+			if ceilingOK {
+				limit := height
+				if floorOK && ceilingY-limit <= floorY {
+					limit = ceilingY - floorY - 1
+				}
+				for step := 1; step <= limit; step++ {
+					py := ceilingY - step
+					if !chunk.InRange(x+dx, py, z+dz) || !isDripstoneOpen(chunk.BlockAt(x+dx, py, z+dz)) {
+						break
+					}
+					chunk.SetBlock(x+dx, py, z+dz, SurfaceBlock{Name: "minecraft:dripstone_block"})
+				}
+			}
+			// 尖端：地面柱向上、洞顶柱向下；只在目标为空气时放置。
+			if floorOK && chunk.BlockAt(x+dx, floorY+height+1, z+dz).IsAir() &&
+				(!ceilingOK || floorY+height+1 < ceilingY) {
+				chunk.SetBlock(x+dx, floorY+height+1, z+dz, SurfaceBlock{Name: "minecraft:pointed_dripstone",
+					Properties: map[string]string{"thickness": "tip", "vertical_direction": "up", "waterlogged": "false"}})
+			}
+			if ceilingOK && chunk.BlockAt(x+dx, ceilingY-height-1, z+dz).IsAir() &&
+				(!floorOK || ceilingY-height-1 > floorY) {
+				chunk.SetBlock(x+dx, ceilingY-height-1, z+dz, SurfaceBlock{Name: "minecraft:pointed_dripstone",
+					Properties: map[string]string{"thickness": "tip", "vertical_direction": "down", "waterlogged": "false"}})
+			}
 		}
 	}
 }
 
 func (r *Router) placeDripstoneCluster(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
+	if !chunk.InRange(x, y, z) || !isDripstoneOpen(chunk.BlockAt(x, y, z)) {
+		return
+	}
+	_, hasFloor := findDripstoneSupport(chunk, x, y, z, -1, 12)
+	_, hasCeiling := findDripstoneSupport(chunk, x, y, z, 1, 12)
+	if !hasFloor && !hasCeiling {
+		return
+	}
 	radius := random.nextIntBounded(4) + 2
 	for dx := -radius; dx <= radius; dx++ {
 		for dz := -radius; dz <= radius; dz++ {
 			if dx*dx+dz*dz > radius*radius {
 				continue
 			}
-			height := random.nextIntBounded(4) + 1
-			for h := 0; h < height; h++ {
-				if chunk.InRange(x+dx, y+h, z+dz) {
-					chunk.SetBlock(x+dx, y+h, z+dz, SurfaceBlock{Name: "minecraft:dripstone_block"})
+			columnFloor, floorOK := findDripstoneSupport(chunk, x+dx, y, z+dz, -1, 12)
+			columnCeiling, ceilingOK := findDripstoneSupport(chunk, x+dx, y, z+dz, 1, 12)
+			if !floorOK && !ceilingOK {
+				continue
+			}
+			layers := random.nextIntBounded(3) + 1
+			if floorOK {
+				for layer := 1; layer <= layers; layer++ {
+					py := columnFloor + layer
+					if !chunk.InRange(x+dx, py, z+dz) || !isDripstoneOpen(chunk.BlockAt(x+dx, py, z+dz)) {
+						break
+					}
+					chunk.SetBlock(x+dx, py, z+dz, SurfaceBlock{Name: "minecraft:dripstone_block"})
+				}
+			}
+			if ceilingOK {
+				for layer := 1; layer <= layers; layer++ {
+					py := columnCeiling - layer
+					if !chunk.InRange(x+dx, py, z+dz) || !isDripstoneOpen(chunk.BlockAt(x+dx, py, z+dz)) {
+						break
+					}
+					chunk.SetBlock(x+dx, py, z+dz, SurfaceBlock{Name: "minecraft:dripstone_block"})
 				}
 			}
 		}
@@ -1200,10 +1345,18 @@ func (r *Router) placeDripstoneCluster(chunk *GeneratedChunk, random *legacyRand
 }
 
 func (r *Router) placePointedDripstone(chunk *GeneratedChunk, random *legacyRandom, raw json.RawMessage, x, y, z int) {
-	// 单点滴水石：上方为石/滴水石时向下，否则向上。
-	direction := -1
-	if !chunk.BlockAt(x, y+1, z).IsAir() && chunk.BlockAt(x, y+1, z).Name == "minecraft:dripstone_block" {
+	if !chunk.InRange(x, y, z) || !chunk.BlockAt(x, y, z).IsAir() {
+		return
+	}
+	// 必须有贴附面：上方滴水石/石头 -> 向下；下方支撑 -> 向上。
+	direction := 0
+	if isDripstoneBaseBlock(chunk.BlockAt(x, y+1, z)) {
+		direction = -1
+	} else if isDripstoneBaseBlock(chunk.BlockAt(x, y-1, z)) {
 		direction = 1
+	}
+	if direction == 0 {
+		return
 	}
 	height := random.nextIntBounded(3) + 1
 	for h := 0; h < height; h++ {

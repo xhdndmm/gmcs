@@ -862,6 +862,14 @@ func (w *World) Autosave(ctx context.Context, interval time.Duration) {
 	}
 }
 
+// ReleaseCaches 请求生成器释放可按需重建的缓存。空闲服务器卸载区块后调用；
+// 不影响仍可从磁盘读取的区块数据。
+func (w *World) ReleaseCaches() {
+	if releaser, ok := w.generator.(interface{ ReleaseCaches() }); ok {
+		releaser.ReleaseCaches()
+	}
+}
+
 // Close 保存全部待保存区块并停止接受新的区块加载。
 // 与 UnloadFar 互斥，保证卸载不会在最终保存之后残留未保存数据。
 // 进行中的异步预生成请求会被解决为“世界已关闭”错误。
