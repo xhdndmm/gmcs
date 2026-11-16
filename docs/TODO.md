@@ -1260,7 +1260,7 @@
       - canyon 长度使用 `distanceFactor`（不是 horizontalRadiusFactor），
         采样顺序为 verticalRotation → yScale → thickness → distanceFactor；
       - canyon 垂直半径 = `(radius*yScale) * (default + center*f) *
-        nextFloat(0.75,1)`，其中 `f = 1 - floor(0.5 - step/length) * 2`
+        nextFloat(0.75,1)`，其中 `f = 1 - abs(0.5 - step/length) * 2`
         （不是线性插值；default/center 此前写反）；
       - canyon skip 公式为 `(nx² + nz²) * width + ny²/6 >= 1`（此前多加了 1）；
       - `vancmp` 新增 `-carvers=false`、`-only-carver=<name>[,<name>...]`，
@@ -1275,6 +1275,9 @@
       已确认 carver 起始判定与官方 Java 序列逐项一致，因此剩余差异在隧道内部、
       流体替换或多 carver 同源区块交互；**不声称已与原版完全一致**。
       已排除“未生成完的官方区块”造成的假差异（vancmp 现在过滤非 full 区块）。
+      - cave/canyon 隧道扰动变量按反编译修正：pitchChange 乘 0.9/0.8、
+        yawChange 乘 0.75/0.5，随机扰动分别加 pitchChange(*2)/yawChange(*4)；
+        此前两者写反。
     - [x] 新增回归测试：canyon 垂直半径分段函数、雕刻椭球使用 `y-0.5` 中心。
       `BenchmarkGenerateChunk` 冷路径约 112 ms，`BenchmarkGenerateChunkWarm`
       热路径约 54 ms；区域缓存首次邻域构建仍有明显冷启动成本。
