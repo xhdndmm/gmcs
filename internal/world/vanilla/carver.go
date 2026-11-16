@@ -349,10 +349,12 @@ func (c *carvingContext) carveCaveTunnel(definition carverDefinition, seed int64
 		}
 		pitch += pitchChange * 0.1
 		yaw += yawChange * 0.1
-		yawChange *= 0.9
-		pitchChange *= 0.75
-		yawChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 2
-		pitchChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 4
+		// 原版：pitchChange 乘 0.9、yawChange 乘 0.75；随机扰动分别加到
+		// pitchChange（*2）与 yawChange（*4）。两者写反会让隧道渐行渐远。
+		pitchChange *= 0.9
+		yawChange *= 0.75
+		pitchChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 2
+		yawChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 4
 		if step == branchStep && thickness > 1 {
 			branchThickness := thickness * (random.nextFloat()*0.5 + 0.5)
 			c.carveCaveTunnel(definition, random.nextLong(), x, y, z, branchThickness, yaw-float32(math.Pi/2), pitch/3, horizontal, vertical, length, step, shouldSkip)
@@ -410,10 +412,10 @@ func (c *carvingContext) doCarveCanyon(definition carverDefinition, seed int64, 
 		z += float64(float32(math.Sin(float64(yaw))) * cosPitch)
 		verticalRotation = verticalRotation*0.7 + pitchChange*0.05
 		yaw = yaw + yawChange*0.05
-		yawChange *= 0.8
-		pitchChange *= 0.5
-		yawChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 2
-		pitchChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 4
+		pitchChange *= 0.8
+		yawChange *= 0.5
+		pitchChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 2
+		yawChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 4
 		if random.nextIntBounded(4) == 0 {
 			continue
 		}
@@ -435,7 +437,7 @@ func canyonVerticalRadius(definition carverDefinition, random *legacyRandom, bas
 	// 原版 CanyonWorldCarver.updateVerticalRadius 使用 Mth.floor 的分段函数：
 	//   f = 1.0F - floor(0.5F - step / length) * 2.0F
 	// 因此 f 在隧道前半段为 1，后半段为 3，而不是线性插值。
-	progress := 1 - float32(math.Floor(float64(float32(0.5)-step/length)))*2
+	progress := 1 - float32(math.Abs(float64(float32(0.5)-step/length)))*2
 	factor := definition.shape.verticalRadiusDefaultFactor + definition.shape.verticalRadiusCenterFactor*progress
 	jitter := float32(0.75) + random.nextFloat()*0.25
 	return baseRadius * float64(factor*jitter)
