@@ -6,6 +6,7 @@ package world
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,10 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrWorldClosed 表示世界已关闭，不能再加载/生成区块。调用方（例如
+// 服务器关闭时的区块卸载循环）可以据此跳过预期错误日志。
+var ErrWorldClosed = errors.New("世界已关闭")
 
 // ChunkPos 是一个区块坐标。
 type ChunkPos struct {
@@ -441,7 +446,7 @@ func (w *World) Chunk(x, z int) (*Chunk, error) {
 		closed := w.closed
 		w.mu.RUnlock()
 		if closed {
-			return nil, fmt.Errorf("世界已关闭")
+			return nil, ErrWorldClosed
 		}
 		if ok {
 			return chunk, nil
@@ -449,7 +454,7 @@ func (w *World) Chunk(x, z int) (*Chunk, error) {
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()
-			return nil, fmt.Errorf("世界已关闭")
+			return nil, ErrWorldClosed
 		}
 		if chunk, ok := w.chunks[pos]; ok {
 			w.mu.Unlock()
@@ -484,7 +489,7 @@ func (w *World) Chunk(x, z int) (*Chunk, error) {
 		}
 		if !published {
 			// 请求被 Close 取消（世界已关闭）。
-			return nil, fmt.Errorf("世界已关闭")
+			return nil, ErrWorldClosed
 		}
 		return chunk, nil
 	}
@@ -760,7 +765,7 @@ func (w *World) unloadChunks(keep func(pos ChunkPos, chunk *Chunk) bool) ([]Chun
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
-		return nil, fmt.Errorf("世界已关闭")
+		return nil, ErrWorldClosed
 	}
 	candidates := make([]unloadItem, 0, len(w.chunks))
 	for pos, chunk := range w.chunks {
@@ -880,7 +885,7 @@ func (w *World) Close() error {
 	w.mu.Lock()
 	w.closed = true
 	for pos, future := range w.pending {
-		future.err = fmt.Errorf("世界已关闭")
+		future.err = ErrWorldClosed
 		close(future.done)
 		delete(w.pending, pos)
 	}

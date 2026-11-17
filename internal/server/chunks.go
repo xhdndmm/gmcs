@@ -7,6 +7,7 @@ package server
 import (
 	"container/list"
 	"context"
+	"errors"
 	"log/slog"
 	"math"
 	"sync"
@@ -431,12 +432,12 @@ func (s *Server) chunkUnloadLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.unloadFarChunks(); err != nil {
+			if err := s.unloadFarChunks(); err != nil && !errors.Is(err, world.ErrWorldClosed) {
 				slog.Error("区块卸载失败", "error", err)
 			}
 		case <-s.unloadNow:
 			// 最后一名玩家退出：立即释放区块资源，不必等下一个扫描周期。
-			if err := s.unloadFarChunks(); err != nil {
+			if err := s.unloadFarChunks(); err != nil && !errors.Is(err, world.ErrWorldClosed) {
 				slog.Error("区块卸载失败", "error", err)
 			}
 		}

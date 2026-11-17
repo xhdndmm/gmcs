@@ -203,17 +203,38 @@ func joinAt(t *testing.T, cfg config.Config, addr, name string, observers ...fun
 	return conn
 }
 
-// findSession 返回指定名字的在线会话。
+// findSession 返回指定名字、且已完成进入世界初始化的在线会话。
+//
+// joinAt 读完客户端可见的初始数据包后返回，但服务端是在发送这些包之后才
+// 调用 markJoined 的；在慢机器/CI 上，测试线程可能先一步执行到这里。这里
+// 等待 isJoined，避免依赖调度顺序的偶发失败（TestChunkBatchOnMove 曾因此
+// 在 CI 报“没有已进入世界的会话”）。
 func findSession(t *testing.T, instance *Server, name string) *session {
 	t.Helper()
-	instance.mu.Lock()
-	defer instance.mu.Unlock()
-	for _, player := range instance.players {
-		if player.name == name {
-			return player
+	deadline := time.Now().Add(10 * time.Second)
+	var found *session
+	for {
+		instance.mu.Lock()
+		for _, player := range instance.players {
+			if player.name == name {
+				found = player
+				break
+			}
 		}
+		joined := found != nil && found.isJoined()
+		instance.mu.Unlock()
+		if joined {
+			return found
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("session %q not found", name)
+	if found == nil {
+		t.Fatalf("session %q not found", name)
+	}
+	t.Fatalf("session %q 尚未完成进入世界初始化", name)
 	return nil
 }
 
