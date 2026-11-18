@@ -501,6 +501,9 @@ func TestPlaceDoorBothHalves(t *testing.T) {
 	upper := table[1][horizontalFacingIndex(facing)][hinge]
 	waitFor(t, func() bool { return w.BlockAt(x, groundY+1, z) == lower }, "门下半格未放置")
 	waitFor(t, func() bool { return w.BlockAt(x, groundY+2, z) == upper }, "门上半格未放置")
+	// 方块写入与消耗物品在服务端同一条处理路径中顺序执行，但测试客户端
+	// 可能在看到方块后、物品更新前读取背包；轮询等待最终状态。
+	waitFor(t, func() bool { return player.inventory.Get(item.SlotHotbarStart).Count == 0 }, "放置门未消耗物品")
 	if count := player.inventory.Get(item.SlotHotbarStart).Count; count != 0 {
 		t.Fatalf("放置门应消耗 1 个物品：count=%d", count)
 	}
