@@ -23,6 +23,7 @@ type GeneratedChunk struct {
 
 	blocks        []SurfaceBlock
 	heights       [256]int
+	oceanHeights  [256]int
 	blockEntities map[[3]int]GeneratedBlockEntity
 	entities      []GeneratedEntity
 	// capture 非 nil 时记录所有 SetBlock/SetBlockEntity 调用，包括越界写入，
@@ -76,6 +77,7 @@ func NewGeneratedChunk(chunkX, chunkZ, minY, height int) *GeneratedChunk {
 	}
 	for i := range chunk.heights {
 		chunk.heights[i] = minY - 1
+		chunk.oceanHeights[i] = minY - 1
 	}
 	return chunk
 }
@@ -110,16 +112,12 @@ func (c *GeneratedChunk) SetBlock(x, y, z int, block SurfaceBlock) {
 	}
 	c.blocks[c.index(x, y, z)] = block
 	slot := (z-c.MinZ)*16 + (x - c.MinX)
+	// WORLD_SURFACE_WG：任何非空气方块。
 	if !block.IsAir() {
 		if y > c.heights[slot] {
 			c.heights[slot] = y
 		}
-		return
-	}
-	// 清空最高方块时必须同步降低高度图。原版 Heightmap 会在 setBlock
-	// 更新追踪列；如果这里只增不减，后续 heightmap 地物（草、花、树）
-	// 会按已经不存在的高点放置，形成地表上方的悬空植物。
-	if y == c.heights[slot] {
+	} else if y == c.heights[slot] {
 		top := c.MinY - 1
 		for candidate := y - 1; candidate >= c.MinY; candidate-- {
 			if !c.blocks[c.index(x, candidate, z)].IsAir() {
@@ -128,6 +126,23 @@ func (c *GeneratedChunk) SetBlock(x, y, z int, block SurfaceBlock) {
 			}
 		}
 		c.heights[slot] = top
+	}
+	// OCEAN_FLOOR_WG：非空气且非流体。矿石放置的 validColumn 检查原来
+	// 每次都从世界顶向下扫描整列，是区块生成的热点。
+	if !block.IsAir() && !block.HasFluid() {
+		if y > c.oceanHeights[slot] {
+			c.oceanHeights[slot] = y
+		}
+	} else if y == c.oceanHeights[slot] {
+		top := c.MinY - 1
+		for candidate := y - 1; candidate >= c.MinY; candidate-- {
+			upper := c.blocks[c.index(x, candidate, z)]
+			if !upper.IsAir() && !upper.HasFluid() {
+				top = candidate
+				break
+			}
+		}
+		c.oceanHeights[slot] = top
 	}
 }
 
@@ -150,18 +165,42 @@ func (c *GeneratedChunk) ForEachBlock(fn func(x, y, z int, block SurfaceBlock)) 
 	}
 }
 
+// ForEachNonAir 按 y→z→x 顺序遍历非空气方块。接线层用它在写入区块时跳过
+// 大量空气，避免每个空气方块都查一次注册表并写一次存储。
+func (c *GeneratedChunk) ForEachNonAir(fn func(x, y, z int, block SurfaceBlock)) {
+	for y := c.MinY; y < c.MinY+c.Height; y++ {
+		for z := c.MinZ; z < c.MinZ+16; z++ {
+			for x := c.MinX; x < c.MinX+16; x++ {
+				block := c.blocks[c.index(x, y, z)]
+				if block.IsAir() {
+					continue
+				}
+				fn(x, y, z, block)
+			}
+		}
+	}
+}
+
 // RecalculateHeights 按当前方块重新计算高度图。
 func (c *GeneratedChunk) RecalculateHeights() {
 	for x := 0; x < 16; x++ {
 		for z := 0; z < 16; z++ {
 			top := c.MinY - 1
+			oceanTop := c.MinY - 1
 			for y := c.MinY + c.Height - 1; y >= c.MinY; y-- {
-				if !c.blocks[c.index(c.MinX+x, y, c.MinZ+z)].IsAir() {
-					top = y
-					break
+				block := c.blocks[c.index(c.MinX+x, y, c.MinZ+z)]
+				if !block.IsAir() {
+					if top < c.MinY {
+						top = y
+					}
+					if !block.HasFluid() {
+						oceanTop = y
+						break
+					}
 				}
 			}
 			c.heights[z*16+x] = top
+			c.oceanHeights[z*16+x] = oceanTop
 		}
 	}
 }
@@ -212,7 +251,6 @@ func (r *Router) generateBaseChunk(chunkX, chunkZ int) (*GeneratedChunk, *BiomeS
 			}
 		}
 	}
-	chunk.RecalculateHeights()
 
 	biomes, err := r.Biomes()
 	if err != nil {
@@ -226,7 +264,6 @@ func (r *Router) generateBaseChunk(chunkX, chunkZ int) (*GeneratedChunk, *BiomeS
 	}
 	if system != nil {
 		system.BuildSurface(chunk, biomes)
-		chunk.RecalculateHeights()
 	}
 	if err := r.carveChunk(chunk, sampler, biomes); err != nil {
 		return nil, nil, err
@@ -242,24 +279,39 @@ func (r *Router) generateBaseChunk(chunkX, chunkZ int) (*GeneratedChunk, *BiomeS
 			}
 		}
 	}
-	chunk.RecalculateHeights()
 	return chunk, biomes, nil
 }
 
 // generateChunkInternal 生成基础地形/雕刻器后，按 region 缓存应用 3×3
 // 邻域地物写入，再放置当前区块结构。
 func (r *Router) generateChunkInternal(chunkX, chunkZ int, withStructures bool) (*GeneratedChunk, error) {
-	chunk, biomes, err := r.generateBaseChunk(chunkX, chunkZ)
-	if err != nil {
-		return nil, err
+	var chunk *GeneratedChunk
+	var biomes *BiomeSource
+	prepared := false
+	if r.features != nil && r.featureCache != nil {
+		chunk = r.featureCache.takePrepared(chunkCoord{x: chunkX, z: chunkZ})
+		if chunk != nil {
+			prepared = true
+			var err error
+			biomes, err = r.Biomes()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if chunk == nil {
+		var err error
+		chunk, biomes, err = r.generateBaseChunk(chunkX, chunkZ)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if r.features != nil {
-		r.applyRegionFeatures(chunk, biomes)
+		r.applyRegionFeatures(chunk, biomes, prepared)
 	}
 	if withStructures {
 		r.applyStructures(chunk, biomes)
 	}
-	chunk.RecalculateHeights()
 	return chunk, nil
 }
 

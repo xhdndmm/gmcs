@@ -410,3 +410,17 @@ func TestSetBlockAirLowersHeightmap(t *testing.T) {
 		t.Fatalf("清空整列后 HeightAt = %d, want %d", got, chunk.MinY-1)
 	}
 }
+
+func TestOceanFloorHeightmapTracksFluids(t *testing.T) {
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	chunk.SetBlock(1, 60, 2, SurfaceBlock{Name: "minecraft:stone"})
+	chunk.SetBlock(1, 61, 2, SurfaceBlock{Name: "minecraft:water", Properties: map[string]string{"level": "0"}})
+	chunk.SetBlock(1, 62, 2, SurfaceBlock{Name: "minecraft:water", Properties: map[string]string{"level": "0"}})
+	if got := oceanFloorHeight(chunk, 1, 2); got != 60 {
+		t.Fatalf("ocean floor = %d, want 60", got)
+	}
+	chunk.SetBlock(1, 60, 2, SurfaceBlock{Name: "minecraft:air"})
+	if got := oceanFloorHeight(chunk, 1, 2); got != chunk.MinY-1 {
+		t.Fatalf("after removing floor = %d, want %d", got, chunk.MinY-1)
+	}
+}

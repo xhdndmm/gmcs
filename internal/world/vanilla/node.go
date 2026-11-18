@@ -23,6 +23,9 @@ type Node struct {
 	Children []*Node
 	// Noise 是引用的噪声参数名（noise/shifted_noise/weird_scaled_sampler）。
 	Noise string
+	// NoiseRef 是解析阶段绑定的不可变噪声实例。它只依赖世界种子和噪声名，
+	// 可在所有 Router 会话间共享，避免每个采样点做 string map 查询。
+	NoiseRef *NormalNoise
 	// Value 是 constant 的取值。
 	Value float64
 	// Min / Max 是 clamp、range_choice 的边界。

@@ -43,10 +43,14 @@ type World struct {
 
 	// 异步预生成：pending 记录进行中的区块请求（去重）；genQueue 是待生成
 	// 队列；quit 在 Close 时关闭以停止 worker。
-	pending       map[ChunkPos]*chunkFuture
-	genQueue      chan ChunkPos
-	quit          chan struct{}
-	closeQuitOnce sync.Once
+	pending  map[ChunkPos]*chunkFuture
+	genQueue chan ChunkPos
+	// priorityQueue 承载玩家当前可见/即将进入的区块。prefetchWorker 优先
+	// 消费它，避免快速移动时同步区块排在大量远处预取之后。
+	priorityQueue   chan ChunkPos
+	priorityPending map[ChunkPos]struct{}
+	quit            chan struct{}
+	closeQuitOnce   sync.Once
 
 	// saveMu 串行化磁盘写入，防止并发 Flush 互相覆盖区域文件。
 	saveMu sync.Mutex
@@ -125,14 +129,16 @@ func OpenDimension(dir string, generator Generator, dimension Dimension) (*World
 	}
 	workers := min(AsyncPrefetchWorkers, max(1, runtime.GOMAXPROCS(0)))
 	w := &World{
-		dir:       dir,
-		generator: generator,
-		dimension: dimension,
-		chunks:    make(map[ChunkPos]*Chunk),
-		dirty:     make(map[ChunkPos]struct{}),
-		pending:   make(map[ChunkPos]*chunkFuture),
-		genQueue:  make(chan ChunkPos, prefetchQueueLimit),
-		quit:      make(chan struct{}),
+		dir:             dir,
+		generator:       generator,
+		dimension:       dimension,
+		chunks:          make(map[ChunkPos]*Chunk),
+		dirty:           make(map[ChunkPos]struct{}),
+		pending:         make(map[ChunkPos]*chunkFuture),
+		genQueue:        make(chan ChunkPos, prefetchQueueLimit),
+		priorityQueue:   make(chan ChunkPos, 256),
+		priorityPending: make(map[ChunkPos]struct{}),
+		quit:            make(chan struct{}),
 	}
 	for i := 0; i < workers; i++ {
 		go w.prefetchWorker()
@@ -176,15 +182,91 @@ func (w *World) Prefetch(positions []ChunkPos) {
 	}
 }
 
+// PrefetchPriority 请求在后台优先生成给定区块。用于玩家视距内/即将跨入的
+// 区块：这些区块不能排在旧的低优先级预取之后，否则快速移动会同步等待生成。
+// 与 Prefetch 一样只登记去重请求，真正的加载/生成在 worker 中完成。
+func (w *World) PrefetchPriority(positions []ChunkPos) {
+	for _, pos := range positions {
+		w.mu.Lock()
+		if w.closed {
+			w.mu.Unlock()
+			return
+		}
+		_, cached := w.chunks[pos]
+		if cached {
+			w.mu.Unlock()
+			continue
+		}
+		if _, inFlight := w.pending[pos]; !inFlight {
+			w.pending[pos] = &chunkFuture{done: make(chan struct{})}
+		}
+		_, alreadyQueued := w.priorityPending[pos]
+		if !alreadyQueued {
+			w.priorityPending[pos] = struct{}{}
+		}
+		w.mu.Unlock()
+		if alreadyQueued {
+			continue
+		}
+		select {
+		case w.priorityQueue <- pos:
+		default:
+			// 高优先级队列也满：退回普通队列，至少保证请求不会丢失。
+			w.mu.Lock()
+			delete(w.priorityPending, pos)
+			w.mu.Unlock()
+			select {
+			case w.genQueue <- pos:
+			default:
+				w.mu.Lock()
+				if future, ok := w.pending[pos]; ok {
+					future.err = fmt.Errorf("预生成队列已满")
+					close(future.done)
+					delete(w.pending, pos)
+				}
+				w.mu.Unlock()
+			}
+		}
+	}
+}
+
+// nextPrefetch 优先取高优先级队列；没有时再取普通预取队列。
+func (w *World) nextPrefetch() (ChunkPos, bool) {
+	for {
+		select {
+		case <-w.quit:
+			return ChunkPos{}, false
+		default:
+		}
+		select {
+		case pos := <-w.priorityQueue:
+			w.mu.Lock()
+			delete(w.priorityPending, pos)
+			w.mu.Unlock()
+			return pos, true
+		default:
+		}
+		select {
+		case pos := <-w.priorityQueue:
+			w.mu.Lock()
+			delete(w.priorityPending, pos)
+			w.mu.Unlock()
+			return pos, true
+		case pos := <-w.genQueue:
+			return pos, true
+		case <-w.quit:
+			return ChunkPos{}, false
+		}
+	}
+}
+
 // prefetchWorker 消费预生成队列：加载磁盘区块或调用生成器，然后发布结果。
 // quit 关闭后退会出（未处理的请求由 Close 统一解决）。
 func (w *World) prefetchWorker() {
 	for {
-		var pos ChunkPos
-		select {
-		case <-w.quit:
+		pos, ok := w.nextPrefetch()
+		if !ok {
 			return
-		case pos = <-w.genQueue:
 		}
 
 		w.mu.Lock()

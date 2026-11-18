@@ -90,7 +90,7 @@ func (g *VanillaGenerator) GenerateChunk(x, z int) *Chunk {
 	chunk := NewChunkDim(x, z, g.dimension)
 	minX := x * SectionSize
 	minZ := z * SectionSize
-	generated.ForEachBlock(func(blockX, blockY, blockZ int, block vanilla.SurfaceBlock) {
+	generated.ForEachNonAir(func(blockX, blockY, blockZ int, block vanilla.SurfaceBlock) {
 		state, ok := surfaceBlockState(block)
 		if !ok {
 			if _, logged := g.warned.LoadOrStore(block.Name, struct{}{}); !logged {

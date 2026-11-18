@@ -85,8 +85,12 @@ func (s *session) syncChunks(centerX, centerZ int) error {
 	if prefetch > len(prefetchPositions) {
 		prefetch = len(prefetchPositions)
 	}
-	if prefetch > 0 {
-		gameWorld.Prefetch(prefetchPositions[:prefetch])
+	// 先以高优先级生成玩家当前可见的核心区块；远景预取排在其后。
+	if immediate > 0 {
+		gameWorld.PrefetchPriority(prefetchPositions[:immediate])
+	}
+	if prefetch > immediate {
+		gameWorld.Prefetch(prefetchPositions[immediate:prefetch])
 	}
 
 	batch := 0
@@ -161,6 +165,8 @@ func (s *session) streamChunks(gen uint64, dim world.Dimension) {
 		ahead := append([]world.ChunkPos(nil), s.chunkQueue[:aheadEnd]...)
 		s.chunkMu.Unlock()
 
+		// 当前要发送的区块高于后续远景预取，避免它排在旧队列尾部。
+		gameWorld.PrefetchPriority([]world.ChunkPos{pos})
 		if len(ahead) > 0 {
 			gameWorld.Prefetch(ahead)
 		}

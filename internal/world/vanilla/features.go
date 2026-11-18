@@ -33,6 +33,13 @@ type featureRegistry struct {
 	inlineConfigured     sync.Map // string -> placedFeature
 	simpleSelectorCache  sync.Map // string -> []*featureRef
 	booleanSelectorCache sync.Map // string -> [2]*featureRef
+
+	// biomeSetCache 跨 Router 会话共享“区块内全部 section 的群系集合”。
+	// 每个新区块第一次作为邻域时需要采样约 1500 个 quart 点；多个预生成
+	// worker 同时生成同一区域时不应重复做这件事。
+	biomeSetMu    sync.Mutex
+	biomeSetCache map[chunkCoord]map[string]struct{}
+	biomeSetOrder []chunkCoord
 }
 
 type featureOrderStep struct {
@@ -1664,6 +1671,14 @@ func (r *Router) applyFeatures(chunk *GeneratedChunk, biomes *BiomeSource) {
 
 // collectFeatureBiomes 收集中心区块周围 3×3 区块内所有 section 的群系。
 // 与原版 ChunkAccess.getSections → BiomeManager 的 4×4×4 采样一致。
+// clearBiomeSetCache 释放跨会话共享的群系集合；只在空闲释放时调用。
+func (f *featureRegistry) clearBiomeSetCache() {
+	f.biomeSetMu.Lock()
+	f.biomeSetCache = nil
+	f.biomeSetOrder = nil
+	f.biomeSetMu.Unlock()
+}
+
 func (r *Router) collectFeatureBiomes(chunk *GeneratedChunk, biomes *BiomeSource) map[string]struct{} {
 	present := make(map[string]struct{}, 32)
 	for chunkX := chunk.ChunkX - 1; chunkX <= chunk.ChunkX+1; chunkX++ {
@@ -1684,6 +1699,14 @@ func (r *Router) chunkBiomeSet(chunkX, chunkZ, minY, height int, biomes *BiomeSo
 	if cached, ok := r.biomeSetCache[key]; ok {
 		return cached
 	}
+	if r.features != nil {
+		r.features.biomeSetMu.Lock()
+		cached := r.features.biomeSetCache[key]
+		r.features.biomeSetMu.Unlock()
+		if cached != nil {
+			return cached
+		}
+	}
 	if len(r.biomeSetCache) > 1024 {
 		r.biomeSetCache = make(map[chunkCoord]map[string]struct{}, 1024)
 	}
@@ -1698,6 +1721,21 @@ func (r *Router) chunkBiomeSet(chunkX, chunkZ, minY, height int, biomes *BiomeSo
 		}
 	}
 	r.biomeSetCache[key] = set
+	if r.features != nil {
+		r.features.biomeSetMu.Lock()
+		if r.features.biomeSetCache == nil {
+			r.features.biomeSetCache = make(map[chunkCoord]map[string]struct{}, 2048)
+		}
+		r.features.biomeSetCache[key] = set
+		r.features.biomeSetOrder = append(r.features.biomeSetOrder, key)
+		const sharedBiomeSetLimit = 4096
+		if len(r.features.biomeSetOrder) > sharedBiomeSetLimit {
+			oldest := r.features.biomeSetOrder[0]
+			r.features.biomeSetOrder = r.features.biomeSetOrder[1:]
+			delete(r.features.biomeSetCache, oldest)
+		}
+		r.features.biomeSetMu.Unlock()
+	}
 	return set
 }
 
@@ -3586,19 +3624,14 @@ func hasAirExposure(chunk *GeneratedChunk, x, y, z int) bool {
 	return false
 }
 
-// oceanFloorHeight 复刻 Heightmap.Types.OCEAN_FLOOR_WG：从世界顶向下找
-// 最高非空气且非流体方块。
+// oceanFloorHeight 复刻 Heightmap.Types.OCEAN_FLOOR_WG：最高非空气且
+// 非流体方块。高度由 GeneratedChunk.SetBlock 增量维护，矿石放置不再
+// 逐列扫描整个 384 格高度。
 func oceanFloorHeight(chunk *GeneratedChunk, x, z int) int {
 	if x < chunk.MinX || x >= chunk.MinX+16 || z < chunk.MinZ || z >= chunk.MinZ+16 {
 		return chunk.MinY - 1
 	}
-	for y := chunk.MinY + chunk.Height - 1; y >= chunk.MinY; y-- {
-		block := chunk.BlockAt(x, y, z)
-		if !block.IsAir() && !block.HasFluid() {
-			return y
-		}
-	}
-	return chunk.MinY - 1
+	return chunk.oceanHeights[(z-chunk.MinZ)*16+(x-chunk.MinX)]
 }
 
 func lerpFloat64(t, a, b float64) float64 {

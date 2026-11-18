@@ -7,6 +7,7 @@ package vanilla
 import (
 	"fmt"
 	"math"
+	"sort"
 )
 
 // Context 是密度函数求值上下文（原版 DensityFunction.FunctionContext 只需要方块坐标）。
@@ -35,7 +36,11 @@ type Context struct {
 // find_top_surface、old_blended_noise（BlendedNoise）均已实现；
 // 未实现的节点类型会 panic 而不是静默返回 0。
 type Evaluator struct {
-	noises       *NoiseRegistry
+	noises *NoiseRegistry
+	// noiseCache 是当前会话的本地噪声指针缓存。NoiseRegistry 是跨 worker
+	// 共享的，使用全局 mutex 会使每个噪声采样都竞争；每个 Evaluator 只由
+	// 一个 worker 使用，这里做无锁 map 查询即可。
+	noiseCache   map[string]*NormalNoise
 	blended      map[*Node]*BlendedNoise
 	corners      map[cornerKey]float64
 	cells        map[cellKey][2][2][2]float64
@@ -46,7 +51,7 @@ type Evaluator struct {
 	cellHeight   int
 }
 
-// columnKey 是 flat_cache / cache_2d 的按列缓存键：节点 + (x, z)。
+// columnKey 是 flat_cache / cache_2d 的完整按列缓存键。
 type columnKey struct {
 	node *Node
 	x    int
@@ -84,11 +89,12 @@ func NewEvaluatorWithCells(noises *NoiseRegistry, cellWidth, cellHeight int) *Ev
 	}
 	return &Evaluator{
 		noises:     noises,
+		noiseCache: make(map[string]*NormalNoise),
 		blended:    make(map[*Node]*BlendedNoise),
 		corners:    make(map[cornerKey]float64),
 		cells:      make(map[cellKey][2][2][2]float64),
-		columns:    make(map[columnKey]float64),
 		grids:      make(map[*Node]*denseGrid),
+		columns:    make(map[columnKey]float64),
 		cellWidth:  cellWidth,
 		cellHeight: cellHeight,
 	}
@@ -107,6 +113,25 @@ func (e *Evaluator) ResetInterpolationCache() {
 // NoiseRegistry 返回求值器使用的噪声注册表。
 func (e *Evaluator) NoiseRegistry() *NoiseRegistry {
 	return e.noises
+}
+
+// noiseNode 返回节点引用的噪声实例。Router 构造时已经绑定 NoiseRef；
+// 动态构造的节点仍回退到本地/注册表缓存。
+func (e *Evaluator) noiseNode(node *Node) *NormalNoise {
+	if node.NoiseRef != nil {
+		return node.NoiseRef
+	}
+	return e.noise(node.Noise)
+}
+
+// noise 返回节点引用的噪声实例，并在当前 Evaluator 内无锁缓存。
+func (e *Evaluator) noise(name string) *NormalNoise {
+	if noise, ok := e.noiseCache[name]; ok {
+		return noise
+	}
+	noise := e.noises.Noise(name)
+	e.noiseCache[name] = noise
+	return noise
 }
 
 // Evaluate 求值一个密度函数节点。遇到未实现的节点类型会 panic：
@@ -143,17 +168,17 @@ func (e *Evaluator) Evaluate(node *Node, ctx Context) float64 {
 	case "y_clamped_gradient":
 		return clampedMap(float64(ctx.Y), node.FromY, node.ToY, node.FromValue, node.ToValue)
 	case "noise":
-		noise := e.noises.Noise(node.Noise)
+		noise := e.noiseNode(node)
 		x, y, z := float64(ctx.X), float64(ctx.Y), float64(ctx.Z)
 		return noise.Value(x*node.XZScale, y*node.YScale, z*node.XZScale)
 	case "shifted_noise":
-		noise := e.noises.Noise(node.Noise)
+		noise := e.noiseNode(node)
 		x := float64(ctx.X)*node.XZScale + e.child(node, 0, ctx)
 		y := float64(ctx.Y)*node.YScale + e.child(node, 1, ctx)
 		z := float64(ctx.Z)*node.XZScale + e.child(node, 2, ctx)
 		return noise.Value(x, y, z)
 	case "shift", "shift_a", "shift_b":
-		noise := e.noises.Noise(node.Noise)
+		noise := e.noiseNode(node)
 		x, y, z := float64(ctx.X), float64(ctx.Y), float64(ctx.Z)
 		switch node.Type {
 		case "shift_a":
@@ -165,7 +190,7 @@ func (e *Evaluator) Evaluate(node *Node, ctx Context) float64 {
 	case "weird_scaled_sampler":
 		input := e.child(node, 0, ctx)
 		scale := rarityScale(node.RarityMapper, input)
-		noise := e.noises.Noise(node.Noise)
+		noise := e.noiseNode(node)
 		return scale * math.Abs(noise.Value(
 			float64(ctx.X)/scale,
 			float64(ctx.Y)/scale,
@@ -229,13 +254,10 @@ func (e *Evaluator) evaluateSpline(spline *Spline, ctx Context) float32 {
 	}
 	coordinate := float32(e.Evaluate(spline.Coordinate, ctx))
 	last := len(points) - 1
-	index := len(points) - 1
-	for i := range points {
-		if coordinate < float32(points[i].Location) {
-			index = i - 1
-			break
-		}
-	}
+	// 控制点已按 location 升序排列；用二分查找代替逐点扫描。
+	index := sort.Search(len(points), func(i int) bool {
+		return coordinate < float32(points[i].Location)
+	}) - 1
 	switch {
 	case index < 0:
 		return linearExtendSpline(coordinate, points[0], e.splinePointValue(points[0], ctx))

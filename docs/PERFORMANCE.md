@@ -1807,6 +1807,51 @@ BenchmarkGenerateChunk-20       约 86 ms/op   10.8 MB/op  18.3k allocs/op
 跨区块树冠顺序、树叶 `distance` 更新和部分装饰器仍未逐方块对齐，
 carver/结构/矿脉残差也仍然存在。
 
+### 3.51 区块生成吞吐与预取优先级（2026-11-18）
+
+针对“生成器占用高、快速移动时生成跟不上”的一轮优化：
+
+1. **复用邻域地物完整结果**：`featureResult` 现在缓存中心区块的完整写入
+   （包括自身），中心区块再次生成时直接重放，不再重复执行全部 204 个
+   地物；同时保留最多 16 个已应用自身地物的 `prepared` 区块，供邻域结果
+   变为中心时直接复用，省掉一次完整基础地形生成。地物结果缓存从 96 降到
+   32 项，降低常驻 map 内存。
+2. **地物/群系缓存**：跨会话共享区块群系集合，避免 8 个预生成 worker
+   对同一区块重复采样约 1500 个 quart 点；空闲时一并清理。
+3. **噪声热路径**：
+   - 在 Router 构造时把 `NormalNoise` 指针绑定到节点，移除每个采样点的
+     `NoiseRegistry` 全局 mutex；
+   - 每个 Evaluator 增加本地无锁噪声缓存；
+   - `wrap` 对 ±33554432 内的坐标走恒等快路径；梯度表改为 float64；
+   - `ImprovedNoise` 的 blendXYZ 路径展开为直接三次插值，避免闭包/数组；
+   - spline 控制点查找改为二分。
+4. **地形高度图**：`GeneratedChunk` 增量维护 OCEAN_FLOOR_WG 高度图，
+   矿石 `validColumn` 不再逐列扫描 384 格；移除生成过程中冗余的全量
+   `RecalculateHeights`（SetBlock 已同步维护）。
+5. **预取优先级**：`World` 增加高优先级队列，`PrefetchPriority` 用于当前
+   可见/即将进入的区块；预生成 worker 先消费高优先级队列。跨区块移动时
+   新环带不会再排在旧远景预取之后。
+6. **接线层**：`ForEachNonAir` 跳过空气方块，减少区块转换时的注册表查询。
+
+同机单次基准（种子 4321/1234，非稳定基线）：
+
+```text
+BenchmarkGenerateChunkWarm-20       约 24 ms/op   2.6 MB/op   2.8k allocs/op
+BenchmarkGenerateChunk-20           约 43 ms/op   6.4 MB/op   7.4k allocs/op
+BenchmarkVanillaGeneratorChunk-20   约 81–84 ms/op（连续路径）  14 MB/op
+```
+
+优化前同口径约为 warm 39–43 ms、cold 52–86 ms、连续
+`VanillaGeneratorChunk` 200 ms 左右（不同 benchtime 下不可直接比较）。
+真实 20 客户端、`view_distance=10`、20 秒 loopback 登录风暴 RSS 峰值约
+390 MB（优化前约 425 MB），无断线/ERROR。
+
+根据真实 pprof（20 客户端、视距 10）：
+`runtime.procyieldAsm` 曾占约 16.9%（`NoiseRegistry.Noise` 全局锁竞争），
+本地噪声指针缓存后该热点不再出现；剩余主要成本是密度/噪声、群系 KD 树
+与地物执行。这里没有宣称生成器已追平原版或所有移动场景都不会等待；
+真实客户端渲染、不同网络和长时间跑图仍需继续观测。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；

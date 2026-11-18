@@ -70,7 +70,7 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		configuredCache:  make(map[string]placedFeature),
 		structureTerrain: make(map[chunkCoord]map[string]*[256]int),
 		regionsEnabled:   true,
-		featureCache:     newFeatureResultCache(96),
+		featureCache:     newFeatureResultCache(32),
 		surfaceCache:     &surfaceRuleCache{},
 	}
 	carvers, err := parseCarverDefinitions(data)
@@ -111,7 +111,43 @@ func NewRouter(data *Data, settingName string, seed int64) (*Router, error) {
 		return nil, fmt.Errorf("%s 缺少 final_density", settingName)
 	}
 	router.evaluator.finalDensity = finalDensity
+	router.bindNoiseNodes()
 	return router, nil
+}
+
+// bindNoiseNodes 在 Router 构造完成后把节点引用的噪声实例绑定到节点。
+// 所有后续 Evaluator 会话共享这些不可变指针，避免噪声采样热路径上的
+// NoiseRegistry 互斥锁和字符串 map 查找。
+func (r *Router) bindNoiseNodes() {
+	seen := make(map[*Node]bool)
+	var walk func(*Node)
+	walk = func(node *Node) {
+		if node == nil || seen[node] {
+			return
+		}
+		seen[node] = true
+		if node.Noise != "" {
+			node.NoiseRef = r.registry.Noise(node.Noise)
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+		if node.Spline != nil {
+			walk(node.Spline.Coordinate)
+			var walkSpline func(*Spline)
+			walkSpline = func(spline *Spline) {
+				for _, point := range spline.Points {
+					if point.Sub != nil {
+						walkSpline(point.Sub)
+					}
+				}
+			}
+			walkSpline(node.Spline)
+		}
+	}
+	for _, node := range r.nodes {
+		walk(node)
+	}
 }
 
 // NewSession 创建一个独立的求值会话：复用只读的解析结果与噪声注册表，
@@ -157,6 +193,9 @@ func (r *Router) ClearTransientCaches() {
 func (r *Router) ClearCaches() {
 	if r.featureCache != nil {
 		r.featureCache.clear()
+	}
+	if r.features != nil {
+		r.features.clearBiomeSetCache()
 	}
 	r.ClearTransientCaches()
 }

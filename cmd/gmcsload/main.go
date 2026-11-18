@@ -242,6 +242,12 @@ func runClient(ctx context.Context, cfg clientConfig) clientResult {
 		if ctx.Err() != nil {
 			return result
 		}
+		// 持续收到实体/区块包时读循环不会超时；在每个循环开头也检查一次
+		// 移动周期，确保高频广播下仍按 moveInterval 发送位置包。
+		if err := maybeMove(conn, threshold, &posX, &posY, &posZ, &havePos, &lastMove, delta, cfg.moveInterval); err != nil {
+			result.err = err
+			return result
+		}
 		// 短读超时以便定期检查 ctx 并发送移动包。
 		if err := conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
 			result.err = err

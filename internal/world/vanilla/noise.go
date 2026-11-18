@@ -114,6 +114,30 @@ func (n *ImprovedNoise) sampleAndLerp(i, j, k int, d, e, f float64, order blendO
 
 // sampleAndLerpWithDeltas 同 sampleAndLerp，但插值系数由调用方给出（已做 fade）。
 func (n *ImprovedNoise) sampleAndLerpWithDeltas(i, j, k int, d, e, f float64, deltas [3]float64, order blendOrder) float64 {
+	if order == blendXYZ {
+		// 世界生成只使用 blendXYZ；直接展开 8 个角点和三次插值，
+		// 避免为每个噪声采样创建闭包/三维数组（profiling 中占比较高）。
+		p0 := n.perm(n.perm(i) + j)
+		p1 := n.perm(n.perm(i+1) + j)
+		q0 := n.perm(n.perm(i) + j + 1)
+		q1 := n.perm(n.perm(i+1) + j + 1)
+		c000 := gradDot(n.perm(p0+k), d, e, f)
+		c001 := gradDot(n.perm(p0+k+1), d, e, f-1)
+		c010 := gradDot(n.perm(q0+k), d, e-1, f)
+		c011 := gradDot(n.perm(q0+k+1), d, e-1, f-1)
+		c100 := gradDot(n.perm(p1+k), d-1, e, f)
+		c101 := gradDot(n.perm(p1+k+1), d-1, e, f-1)
+		c110 := gradDot(n.perm(q1+k), d-1, e-1, f)
+		c111 := gradDot(n.perm(q1+k+1), d-1, e-1, f-1)
+		dx, dy, dz := deltas[0], deltas[1], deltas[2]
+		return lerp(dz,
+			lerp(dy,
+				lerp(dx, c000, c100),
+				lerp(dx, c010, c110)),
+			lerp(dy,
+				lerp(dx, c001, c101),
+				lerp(dx, c011, c111)))
+	}
 	var cube [2][2][2]float64
 	for ix := 0; ix < 2; ix++ {
 		for iy := 0; iy < 2; iy++ {
@@ -126,8 +150,6 @@ func (n *ImprovedNoise) sampleAndLerpWithDeltas(i, j, k int, d, e, f float64, de
 	}
 	var order3 [3]int
 	switch order {
-	case blendXYZ:
-		order3 = [3]int{0, 1, 2}
 	case blendXZY:
 		order3 = [3]int{0, 2, 1}
 	case blendYXZ:
@@ -171,12 +193,12 @@ func lerp(delta, first, second float64) float64 {
 // gradDot 计算第 index & 15 个梯度与 (x, y, z) 的点积（原版 SimplexNoise.dot，无归一化）。
 func gradDot(index int, x, y, z float64) float64 {
 	gradient := perlinGradients[index&15]
-	return float64(gradient[0])*x + float64(gradient[1])*y + float64(gradient[2])*z
+	return gradient[0]*x + gradient[1]*y + gradient[2]*z
 }
 
 // perlinGradients 是原版 SimplexNoise.GRADIENT 的 16 项表
 // （末 4 项非前 4 项的顺序重复，按 1.21.11 静态初始化读出）。
-var perlinGradients = [16][3]int{
+var perlinGradients = [16][3]float64{
 	{1, 1, 0}, {-1, 1, 0}, {1, -1, 0}, {-1, -1, 0},
 	{1, 0, 1}, {-1, 0, 1}, {1, 0, -1}, {-1, 0, -1},
 	{0, 1, 1}, {0, -1, 1}, {0, 1, -1}, {0, -1, -1},
@@ -192,6 +214,10 @@ const noiseOctaveDraws = 262
 // 避免浮点精度在地图边缘之外退化。原版用 (long)Math.floor(...)，Java 的
 // double→long 转换会饱和，这里显式复刻饱和行为。
 func wrap(value float64) float64 {
+	// 世界生成坐标几乎总在 ±33554432 内，此时 wrap 是恒等变换。
+	if value > -33554432 && value < 33554432 {
+		return value
+	}
 	scaled := value/33554432 + 0.5
 	var floored int64
 	switch {
