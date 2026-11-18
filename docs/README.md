@@ -512,7 +512,8 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   （`go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=20`）。
 - `cmd/gmcsload`：离线模式负载压测客户端（登录 → 配置 → 进入世界 → 持续移动），
   输出进入世界耗时、收包量、流量与包类型分布；单机 loopback 结果见
-  [docs/PERFORMANCE.md](PERFORMANCE.md)。
+  [docs/PERFORMANCE.md](PERFORMANCE.md)。`-random-move` 让玩家在
+  `-move-radius` 内随机换向，用于模拟分散探索；默认仍沿 +X 直线移动。
 
 ### 玩家数据（players.json）
 
@@ -550,6 +551,7 @@ scripts/test.sh --bench  # 附加 benchmark
 go test -race ./...      # 仅数据竞争检测
 
 go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s  # 负载压测
+go run ./cmd/gmcsload -random-move -move-radius 128 -players 20 -duration 30s  # 随机漫游
 ```
 
 关键路径的 benchmark 方法与实测数据见 [docs/PERFORMANCE.md](PERFORMANCE.md)。

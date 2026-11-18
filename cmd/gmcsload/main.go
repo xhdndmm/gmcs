@@ -11,10 +11,13 @@
 //   - 报告的是客户端侧观测值（进入世界耗时、收包量与流量），
 //     服务器侧 CPU/内存请配合 `pprof_address` 与系统工具观测；
 //   - 单机 loopback 压测不代表真实网络环境。
+//   - -random-move 会让每个客户端在限定半径内随机换向，避免所有客户端
+//     一直沿 +X 直线移动，适合观察玩家分散探索时的区块流式发送。
 //
 // 用法：
 //
 //	go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s
+//	go run ./cmd/gmcsload -random-move -move-radius 128 -players 20
 package main
 
 import (
@@ -23,6 +26,7 @@ import (
 	"flag"
 	"fmt"
 	"math"
+	"math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -42,6 +46,10 @@ func main() {
 	prefix := flag.String("prefix", "LoadBot", "客户端用户名前缀")
 	protocolVersion := flag.Int("protocol", 774, "协议版本（握手用）")
 	moveInterval := flag.Duration("move-interval", 50*time.Millisecond, "移动包发送间隔（0 表示静止）")
+	randomMove := flag.Bool("random-move", false, "随机方向移动（默认沿 +X 匀速移动）")
+	moveRadius := flag.Float64("move-radius", 64, "随机移动距出生点的最大半径（0 表示不限）")
+	moveTurn := flag.Duration("random-turn", 2*time.Second, "随机移动平均换向间隔（0 表示每个移动包都换向）")
+	moveSeed := flag.Int64("move-seed", 1, "随机移动种子；每个客户端使用 seed+序号")
 	verbose := flag.Bool("verbose", false, "打印每个客户端的分阶段耗时")
 	flag.Parse()
 
@@ -51,6 +59,14 @@ func main() {
 	}
 	if *duration <= 0 {
 		fmt.Fprintln(os.Stderr, "duration 必须为正数")
+		os.Exit(2)
+	}
+	if *moveRadius < 0 {
+		fmt.Fprintln(os.Stderr, "move-radius 不能为负数")
+		os.Exit(2)
+	}
+	if *moveTurn < 0 {
+		fmt.Fprintln(os.Stderr, "random-turn 不能为负数")
 		os.Exit(2)
 	}
 
@@ -70,6 +86,10 @@ func main() {
 			name:            fmt.Sprintf("%s%d", *prefix, i),
 			protocolVersion: int32(*protocolVersion),
 			moveInterval:    *moveInterval,
+			randomMove:      *randomMove,
+			moveRadius:      *moveRadius,
+			randomTurn:      *moveTurn,
+			moveSeed:        *moveSeed + int64(i)*7919,
 			verbose:         *verbose,
 		}
 		go func(index int, cfg clientConfig) {
@@ -97,6 +117,10 @@ type clientConfig struct {
 	name            string
 	protocolVersion int32
 	moveInterval    time.Duration
+	randomMove      bool
+	moveRadius      float64
+	randomTurn      time.Duration
+	moveSeed        int64
 	verbose         bool
 }
 
@@ -232,19 +256,15 @@ func runClient(ctx context.Context, cfg clientConfig) clientResult {
 
 	// Play 阶段：读包并做最小响应。
 	phase = "Play 阶段"
-	var (
-		posX, posY, posZ float64
-		havePos          bool
-		lastMove         time.Time
-		delta            = 0.2 // 每移动包的水平位移（4 格/秒，触发区块流式发送）
-	)
+	move := newMovementState(cfg.randomMove, cfg.moveRadius, cfg.randomTurn, cfg.moveSeed)
+	delta := 0.2 // 每移动包的水平位移（4 格/秒，触发区块流式发送）
 	for {
 		if ctx.Err() != nil {
 			return result
 		}
 		// 持续收到实体/区块包时读循环不会超时；在每个循环开头也检查一次
 		// 移动周期，确保高频广播下仍按 moveInterval 发送位置包。
-		if err := maybeMove(conn, threshold, &posX, &posY, &posZ, &havePos, &lastMove, delta, cfg.moveInterval); err != nil {
+		if err := move.maybeMove(conn, threshold, cfg.moveInterval, delta); err != nil {
 			result.err = err
 			return result
 		}
@@ -257,7 +277,7 @@ func runClient(ctx context.Context, cfg clientConfig) clientResult {
 		if err != nil {
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				if err := maybeMove(conn, threshold, &posX, &posY, &posZ, &havePos, &lastMove, delta, cfg.moveInterval); err != nil {
+				if err := move.maybeMove(conn, threshold, cfg.moveInterval, delta); err != nil {
 					result.err = err
 					return result
 				}
@@ -294,15 +314,16 @@ func runClient(ctx context.Context, cfg clientConfig) clientResult {
 				continue
 			}
 			offset += size
-			if x, next, err := protocol.DecodeFloat64(packet, offset); err == nil {
-				posX = x
+			var x, y, z float64
+			if value, next, err := protocol.DecodeFloat64(packet, offset); err == nil {
+				x = value
 				offset = next
-				if y, next, err := protocol.DecodeFloat64(packet, offset); err == nil {
-					posY = y
+				if value, next, err := protocol.DecodeFloat64(packet, offset); err == nil {
+					y = value
 					offset = next
-					if z, _, err := protocol.DecodeFloat64(packet, offset); err == nil {
-						posZ = z
-						havePos = true
+					if value, _, err := protocol.DecodeFloat64(packet, offset); err == nil {
+						z = value
+						move.setPosition(x, y, z, true)
 					}
 				}
 			}
@@ -330,25 +351,120 @@ func runClient(ctx context.Context, cfg clientConfig) clientResult {
 				result.joinTime = time.Since(connectStart)
 			}
 		}
-		if err := maybeMove(conn, threshold, &posX, &posY, &posZ, &havePos, &lastMove, delta, cfg.moveInterval); err != nil {
+		if err := move.maybeMove(conn, threshold, cfg.moveInterval, delta); err != nil {
 			result.err = err
 			return result
 		}
 	}
 }
 
-// maybeMove 按 moveInterval 周期发送 Player Position（水平匀速移动，
-// 触发服务端的区块流式发送与玩家同步路径）。
-func maybeMove(conn net.Conn, threshold int32, posX, posY, posZ *float64, havePos *bool, lastMove *time.Time, delta float64, moveInterval time.Duration) error {
-	if moveInterval <= 0 || !*havePos || time.Since(*lastMove) < moveInterval {
+// movementState 维护模拟客户端的本地位置与随机漫游方向。
+// 每个客户端独立持有，不跨 goroutine 共享。
+type movementState struct {
+	x, y, z  float64
+	havePos  bool
+	lastMove time.Time
+
+	random       bool
+	radius       float64
+	turnInterval time.Duration
+	rng          *rand.Rand
+
+	dirX, dirZ float64
+	nextTurn   time.Time
+	originX    float64
+	originZ    float64
+	originSet  bool
+}
+
+func newMovementState(random bool, radius float64, turnInterval time.Duration, seed int64) *movementState {
+	m := &movementState{
+		random:       random,
+		radius:       radius,
+		turnInterval: turnInterval,
+		rng:          rand.New(rand.NewSource(seed)),
+	}
+	m.dirX, m.dirZ = m.randomDirection()
+	return m
+}
+
+// setPosition 更新服务端确认的位置。corrected 表示这是服务器回拉/传送；
+// 此时立即换向，避免客户端继续朝刚被拒绝的方向撞墙。
+func (m *movementState) setPosition(x, y, z float64, corrected bool) {
+	m.x, m.y, m.z = x, y, z
+	m.havePos = true
+	if !m.originSet {
+		m.originX, m.originZ = x, z
+		m.originSet = true
+	}
+	if corrected {
+		m.nextTurn = time.Time{}
+	}
+}
+
+func (m *movementState) randomDirection() (float64, float64) {
+	angle := m.rng.Float64() * 2 * math.Pi
+	return math.Cos(angle), math.Sin(angle)
+}
+
+// turn 选择新的随机方向。接近活动半径时偏向出生点，避免长期卡在边界。
+func (m *movementState) turn(now time.Time) {
+	m.dirX, m.dirZ = m.randomDirection()
+	if m.radius > 0 && m.originSet {
+		dist := math.Hypot(m.x-m.originX, m.z-m.originZ)
+		if dist > m.radius*0.8 {
+			toOrigin := math.Atan2(m.originZ-m.z, m.originX-m.x)
+			angle := toOrigin + (m.rng.Float64()-0.5)*math.Pi/2
+			m.dirX, m.dirZ = math.Cos(angle), math.Sin(angle)
+		}
+	}
+	m.scheduleTurn(now)
+}
+
+func (m *movementState) scheduleTurn(now time.Time) {
+	if m.turnInterval <= 0 {
+		m.nextTurn = now
+		return
+	}
+	delay := m.turnInterval/2 + time.Duration(m.rng.Int63n(int64(m.turnInterval)))
+	m.nextTurn = now.Add(delay)
+}
+
+// step 计算下一个水平位移；不修改位置，便于测试边界行为。
+func (m *movementState) step(now time.Time, delta float64) (float64, float64) {
+	if !m.random {
+		return delta, 0
+	}
+	if m.nextTurn.IsZero() || !now.Before(m.nextTurn) {
+		m.turn(now)
+	}
+	dx, dz := m.dirX*delta, m.dirZ*delta
+	if m.radius > 0 && m.originSet {
+		nx, nz := m.x+dx, m.z+dz
+		if math.Hypot(nx-m.originX, nz-m.originZ) > m.radius {
+			// 越过边界：直接朝出生点走，并重新安排换向。
+			toOrigin := math.Atan2(m.originZ-m.z, m.originX-m.x)
+			m.dirX, m.dirZ = math.Cos(toOrigin), math.Sin(toOrigin)
+			m.scheduleTurn(now)
+			dx, dz = m.dirX*delta, m.dirZ*delta
+		}
+	}
+	return dx, dz
+}
+
+// maybeMove 按 moveInterval 周期发送 Player Position。
+func (m *movementState) maybeMove(conn net.Conn, threshold int32, moveInterval time.Duration, delta float64) error {
+	if moveInterval <= 0 || !m.havePos || time.Since(m.lastMove) < moveInterval {
 		return nil
 	}
-	*lastMove = time.Now()
-	*posX += delta
+	m.lastMove = time.Now()
+	dx, dz := m.step(m.lastMove, delta)
+	m.x += dx
+	m.z += dz
 	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDPlayerPosition)
-	packet = protocol.AppendFloat64(packet, *posX)
-	packet = protocol.AppendFloat64(packet, *posY)
-	packet = protocol.AppendFloat64(packet, *posZ)
+	packet = protocol.AppendFloat64(packet, m.x)
+	packet = protocol.AppendFloat64(packet, m.y)
+	packet = protocol.AppendFloat64(packet, m.z)
 	packet = append(packet, 0x01) // onGround
 	return protocol.WritePacketWithCompression(conn, packet, threshold)
 }

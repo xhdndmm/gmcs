@@ -63,7 +63,8 @@ go test -run=^$ -bench=. -benchmem ./...   # 仅 benchmark
 端到端负载观测（可选）：启用 `pprof_address` 后可用 `/debug/pprof` 采集 CPU/内存
 profile；`go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s`
 可模拟并发客户端并输出进入世界耗时、流量与包类型分布（方法见
-PERFORMANCE.md）。
+PERFORMANCE.md）。加 `-random-move` 可让模拟玩家在指定半径内随机漫游，
+用于观察分散探索/跨区块移动时的区块加载。
 
 ## 3. 更换 / 升级 Minecraft 版本（开发流程）
 
