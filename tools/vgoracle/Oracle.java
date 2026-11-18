@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // vgoracle：从官方 Minecraft jar 导出噪声实现的真值，用于逐值对拍 Go 实现。
 //
 // 官方类是混淆名（见 mappings），因此这里用反射按“参数类型/返回类型”挑选成员，

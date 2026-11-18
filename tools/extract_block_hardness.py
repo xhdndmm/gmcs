@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#
 #[https://github.com/xhdndmm/gmcs]
 #MIT License
 #Copyright (c) 2026 喜欢电脑的猫咪

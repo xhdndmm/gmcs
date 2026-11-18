@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // blendednoise：从官方 jar 导出 BlendedNoise（old_blended_noise）的真值。
 //
 // 参数：<lo> <hi> 为 Xoroshiro 128 位状态的十六进制（无符号），

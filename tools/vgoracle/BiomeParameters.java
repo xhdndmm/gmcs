@@ -1,3 +1,7 @@
+//[https://github.com/xhdndmm/gmcs]
+//MIT License
+//Copyright (c) 2026 喜欢电脑的猫咪
+
 // biomeparams：从官方 Minecraft jar 导出 overworld 多噪声群系源的参数表。
 //
 // 原版 overworld 的参数表（MultiNoiseBiomeSourceParameterList.Preset.OVERWORLD）
