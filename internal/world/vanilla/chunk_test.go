@@ -107,3 +107,25 @@ func BenchmarkChunkSamplerFillChunk(b *testing.B) {
 		_ = solid
 	}
 }
+
+func TestGridVolumeRejectsOverflow(t *testing.T) {
+	if got := gridVolume(5, 49, 5); got != 1225 {
+		t.Fatalf("gridVolume(5,49,5)=%d, want 1225", got)
+	}
+	maxInt := int(^uint(0) >> 1)
+	for name, dims := range map[string][3]int{
+		"zero":            {0, 1, 1},
+		"negative":        {1, -1, 1},
+		"first_overflow":  {maxInt, 2, 1},
+		"second_overflow": {1, maxInt, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("gridVolume 应拒绝溢出/非正维度")
+				}
+			}()
+			gridVolume(dims[0], dims[1], dims[2])
+		})
+	}
+}

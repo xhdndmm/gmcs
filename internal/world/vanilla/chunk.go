@@ -6,7 +6,7 @@ package vanilla
 
 import (
 	"fmt"
-	"math"
+	"math/bits"
 )
 
 // denseGrid 是某个 interpolated 节点在一个区块范围内的密集 lattice。
@@ -122,6 +122,25 @@ func (r *Router) NewChunkSampler(chunkX, chunkZ int) *ChunkSampler {
 	return sampler
 }
 
+// gridVolume 计算 lattice 的格点总数，并在乘法前用 bits.Mul64 检查溢出。
+// 直接用 countX*countY*countZ 作为 make 的长度时，静态分析无法确认三个
+// 运行时维度不会溢出；这里显式检查，既保留 panic 语义，也避免不安全的
+// 大小计算。
+func gridVolume(countX, countY, countZ int) int {
+	if countX <= 0 || countY <= 0 || countZ <= 0 {
+		panic(fmt.Sprintf("invalid grid size: countX=%d countY=%d countZ=%d", countX, countY, countZ))
+	}
+	high, low := bits.Mul64(uint64(countX), uint64(countY))
+	if high != 0 {
+		panic(fmt.Sprintf("grid allocation size overflows int: countX=%d countY=%d countZ=%d", countX, countY, countZ))
+	}
+	high, low = bits.Mul64(low, uint64(countZ))
+	if high != 0 || low > uint64(^uint(0)>>1) {
+		panic(fmt.Sprintf("grid allocation size overflows int: countX=%d countY=%d countZ=%d", countX, countY, countZ))
+	}
+	return int(low)
+}
+
 // buildGrid 计算单个 interpolated 节点的 lattice。
 func (s *ChunkSampler) buildGrid(node *Node) *denseGrid {
 	cellWidth := s.setting.CellWidth
@@ -132,17 +151,7 @@ func (s *ChunkSampler) buildGrid(node *Node) *denseGrid {
 	countX := 16/cellWidth + 1
 	countZ := 16/cellWidth + 1
 	countY := s.setting.Height/cellHeight + 1
-	if countX <= 0 || countY <= 0 || countZ <= 0 {
-		panic(fmt.Sprintf("invalid grid size: countX=%d countY=%d countZ=%d", countX, countY, countZ))
-	}
-	if countX > math.MaxInt/countY {
-		panic(fmt.Sprintf("grid allocation size overflows int: countX=%d countY=%d countZ=%d", countX, countY, countZ))
-	}
-	xy := countX * countY
-	if xy > math.MaxInt/countZ {
-		panic(fmt.Sprintf("grid allocation size overflows int: countX=%d countY=%d countZ=%d", countX, countY, countZ))
-	}
-	size := xy * countZ
+	size := gridVolume(countX, countY, countZ)
 	grid := s.evaluator.grids[node]
 	if grid == nil || len(grid.data) != size {
 		grid = &denseGrid{data: make([]float64, size)}
