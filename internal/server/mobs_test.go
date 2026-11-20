@@ -251,8 +251,8 @@ func TestMobKindsTableValid(t *testing.T) {
 			t.Errorf("hostile mob %v needs a follow range", stats.name)
 		}
 	}
-	if mobKindCount != 13 {
-		t.Fatalf("expected 13 mob kinds, got %d", mobKindCount)
+	if mobKindCount != 15 {
+		t.Fatalf("expected 15 mob kinds, got %d", mobKindCount)
 	}
 }
 

@@ -271,3 +271,42 @@ func TestPropertySetsMatchVanilla(t *testing.T) {
 		t.Fatal("smithing_base 应包含钻石剑与下界合金胸甲")
 	}
 }
+
+func TestMatchCraftingTransmute(t *testing.T) {
+	bundle, err := ItemID("minecraft:bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blue, err := ItemID("minecraft:blue_bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dye, err := ItemID("minecraft:blue_dye")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redDye, err := ItemID("minecraft:red_dye")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 顺序不限。
+	result, count, ok := MatchCrafting([]int32{bundle, dye}, 2, 1)
+	if !ok || result != blue || count != 1 {
+		t.Fatalf("transmute = (%d,%d,%v), want (%d,1,true)", result, count, ok, blue)
+	}
+	result, count, ok = MatchCrafting([]int32{dye, bundle}, 2, 1)
+	if !ok || result != blue || count != 1 {
+		t.Fatalf("transmute 反向 = (%d,%d,%v), want (%d,1,true)", result, count, ok, blue)
+	}
+	// 红色染料应合成红色 bundle。
+	redBundle, err := ItemID("minecraft:red_bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, _, ok := MatchCrafting([]int32{bundle, redDye}, 2, 1); !ok || result != redBundle {
+		t.Fatalf("红色染料 transmute = (%d,%v), want (%d,true)", result, ok, redBundle)
+	}
+	if _, _, ok := MatchCrafting([]int32{bundle, dye, dye}, 3, 1); ok {
+		t.Fatal("多余材料不应匹配 transmute")
+	}
+}

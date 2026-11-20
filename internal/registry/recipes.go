@@ -37,7 +37,33 @@ func MatchCrafting(grid []int32, width, height int32) (result int32, count int32
 	if r, ok := matchShapeless(grid, width, height); ok {
 		return r.Result, r.ResultCount, true
 	}
+	if r, ok := matchTransmute(grid); ok {
+		return r.Result, r.ResultCount, true
+	}
 	return 0, 0, false
+}
+
+// matchTransmute 匹配 crafting_transmute：合成格恰好包含一个 Input 物品与
+// 一个 Material 物品（顺序不限）。当前数据全是“染色 bundle/潜影盒”。
+func matchTransmute(grid []int32) (TransmuteRecipe, bool) {
+	var items []int32
+	for _, id := range grid {
+		if id != 0 {
+			items = append(items, id)
+		}
+	}
+	if len(items) != 2 {
+		return TransmuteRecipe{}, false
+	}
+	for _, recipe := range TransmuteRecipes {
+		if ingredientAccepts(recipe.Input, items[0]) && ingredientAccepts(recipe.Material, items[1]) {
+			return recipe, true
+		}
+		if ingredientAccepts(recipe.Input, items[1]) && ingredientAccepts(recipe.Material, items[0]) {
+			return recipe, true
+		}
+	}
+	return TransmuteRecipe{}, false
 }
 
 // matchShaped 尝试全部有序配方（含镜像与偏移放置）。

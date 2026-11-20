@@ -521,6 +521,11 @@ func (s *session) acceptRise(w *world.World, prevX, prevY, x, y, z float64) bool
 		s.airRise = 0
 		return true
 	}
+	if feetOnClimbable(w, x, y, z) {
+		// 梯子/藤蔓/脚手架：客户端持续上升是合法的，不能按飞行回拉。
+		s.airRise = 0
+		return true
+	}
 	if supportedAt(w, x, y, z) {
 		// 落到支撑面（落地/走上台阶）：本次腾空结束。
 		s.airRise = 0
@@ -531,6 +536,19 @@ func (s *session) acceptRise(w *world.World, prevX, prevY, x, y, z float64) bool
 	}
 	s.airRise += y - prevY
 	return s.airRise <= maxJumpRise
+}
+
+// feetOnClimbable 报告脚部/胸口是否处在可攀爬方块中。原版
+// LivingEntity.onClimbable 检查碰撞盒与 minecraft:climbable 标签相交；
+// 这里取脚部与上方一格，覆盖梯子/藤蔓/脚手架的正常攀爬。
+func feetOnClimbable(w *world.World, x, y, z float64) bool {
+	bx, by, bz := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+	for dy := 0; dy < 2; dy++ {
+		if registry.BlockTagContains("minecraft:climbable", w.BlockAt(bx, by+dy, bz)) {
+			return true
+		}
+	}
+	return false
 }
 
 // sneakClamp 潜行边缘保护：目标位置没有支撑面时沿边缘滑动

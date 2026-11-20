@@ -33,8 +33,36 @@ type processorRule struct {
 	OutputAir   bool
 }
 
+// encodedProcessor 是一个 processor_list 条目的 JSON 结构。Delegate/Limit 供
+// capped 包装器使用（数据包中的 capped 通常委托给 rule）。
+type encodedProcessor struct {
+	Type      string          `json:"processor_type"`
+	Integrity float32         `json:"integrity"`
+	Rottable  json.RawMessage `json:"rottable_blocks"`
+	Value     json.RawMessage `json:"value"`
+	Blocks    json.RawMessage `json:"blocks"`
+	Rules     []encodedRule   `json:"rules"`
+	Delegate  json.RawMessage `json:"delegate"`
+	Limit     int32           `json:"limit"`
+}
+
+type encodedRule struct {
+	InputPredicate struct {
+		PredicateType string            `json:"predicate_type"`
+		Block         string            `json:"block"`
+		Tag           string            `json:"tag"`
+		Properties    map[string]string `json:"properties"`
+		Probability   float32           `json:"probability"`
+	} `json:"input_predicate"`
+	OutputState json.RawMessage `json:"output_state"`
+}
+
+type encodedProcessorList struct {
+	Processors []encodedProcessor `json:"processors"`
+}
+
 // applyProcessorList 对模板做一份副本并应用 processor_list。
-// 当前实现 block_rot 与 rule/random_block_match；其余处理器保留原方块。
+// 支持 block_rot / protected_blocks / block_ignore / rule / capped(rule)。
 func (r *structureRuntime) applyProcessorList(template *structureTemplate, name string, random *legacyRandom) *structureTemplate {
 	if name == "" {
 		return template
@@ -43,25 +71,7 @@ func (r *structureRuntime) applyProcessorList(template *structureTemplate, name 
 	if !ok {
 		return template
 	}
-	var encoded struct {
-		Processors []struct {
-			Type      string          `json:"processor_type"`
-			Integrity float32         `json:"integrity"`
-			Rottable  json.RawMessage `json:"rottable_blocks"`
-			Value     json.RawMessage `json:"value"`
-			Blocks    json.RawMessage `json:"blocks"`
-			Rules     []struct {
-				InputPredicate struct {
-					PredicateType string            `json:"predicate_type"`
-					Block         string            `json:"block"`
-					Tag           string            `json:"tag"`
-					Properties    map[string]string `json:"properties"`
-					Probability   float32           `json:"probability"`
-				} `json:"input_predicate"`
-				OutputState json.RawMessage `json:"output_state"`
-			} `json:"rules"`
-		} `json:"processors"`
-	}
+	var encoded encodedProcessorList
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return template
 	}
@@ -114,50 +124,18 @@ func (r *structureRuntime) applyProcessorList(template *structureTemplate, name 
 				}
 			}
 		case "minecraft:rule":
-			for _, rule := range processor.Rules {
-				if rule.OutputState == nil {
-					continue
-				}
-				output, err := parseFeatureSurfaceBlock(rule.OutputState)
-				if err != nil {
-					continue
-				}
-				inputType := qualify(rule.InputPredicate.PredicateType)
-				if inputType == "" {
-					inputType = "minecraft:block_match"
-				}
-				inputBlock := qualify(rule.InputPredicate.Block)
-				inputTag := strings.TrimPrefix(rule.InputPredicate.Tag, "#")
-				inputProperties := rule.InputPredicate.Properties
-				probability := rule.InputPredicate.Probability
-				stateIndex := -1
-				for i, block := range clone.Palette {
-					if sameSurfaceBlock(block, output) {
-						stateIndex = i
-						break
-					}
-				}
-				if stateIndex < 0 {
-					clone.Palette = append(clone.Palette, output)
-					stateIndex = len(clone.Palette) - 1
-				}
-				for i := range clone.Blocks {
-					if clone.Blocks[i].State < 0 || clone.Blocks[i].State >= len(clone.Palette) {
-						continue
-					}
-					block := clone.Palette[clone.Blocks[i].State]
-					if !processorInputMatches(inputType, inputBlock, inputTag, inputProperties, block) {
-						continue
-					}
-					if probability > 0 && random.nextFloat() >= probability {
-						continue
-					}
-					clone.Blocks[i].State = stateIndex
-				}
+			applyRules(clone, processor.Rules, random, 0)
+		case "minecraft:capped":
+			var delegate encodedProcessor
+			if err := json.Unmarshal(processor.Delegate, &delegate); err != nil {
+				continue
+			}
+			if qualify(delegate.Type) == "minecraft:rule" {
+				applyRules(clone, delegate.Rules, random, int(processor.Limit))
 			}
 		}
 	}
-	// State -1 表示被 block_rot 移除，改写为空气调色板项。
+	// State -1 表示被处理器移除，改写为空气调色板项。
 	airIndex := -1
 	for i, block := range clone.Palette {
 		if block.Name == "minecraft:air" {
@@ -176,6 +154,57 @@ func (r *structureRuntime) applyProcessorList(template *structureTemplate, name 
 		}
 	}
 	return clone
+}
+
+// applyRules 应用 rule 处理器的规则；limit > 0 时最多改写 limit 个方块
+// （capped 的语义）。
+func applyRules(clone *structureTemplate, rules []encodedRule, random *legacyRandom, limit int) {
+	applied := 0
+	for _, rule := range rules {
+		if rule.OutputState == nil {
+			continue
+		}
+		output, err := parseFeatureSurfaceBlock(rule.OutputState)
+		if err != nil {
+			continue
+		}
+		inputType := qualify(rule.InputPredicate.PredicateType)
+		if inputType == "" {
+			inputType = "minecraft:block_match"
+		}
+		inputBlock := qualify(rule.InputPredicate.Block)
+		inputTag := strings.TrimPrefix(rule.InputPredicate.Tag, "#")
+		inputProperties := rule.InputPredicate.Properties
+		probability := rule.InputPredicate.Probability
+		stateIndex := -1
+		for i, block := range clone.Palette {
+			if sameSurfaceBlock(block, output) {
+				stateIndex = i
+				break
+			}
+		}
+		if stateIndex < 0 {
+			clone.Palette = append(clone.Palette, output)
+			stateIndex = len(clone.Palette) - 1
+		}
+		for i := range clone.Blocks {
+			if limit > 0 && applied >= limit {
+				return
+			}
+			if clone.Blocks[i].State < 0 || clone.Blocks[i].State >= len(clone.Palette) {
+				continue
+			}
+			block := clone.Palette[clone.Blocks[i].State]
+			if !processorInputMatches(inputType, inputBlock, inputTag, inputProperties, block) {
+				continue
+			}
+			if probability > 0 && random.nextFloat() >= probability {
+				continue
+			}
+			clone.Blocks[i].State = stateIndex
+			applied++
+		}
+	}
 }
 
 func processorInputMatches(inputType, blockName, tag string, properties map[string]string, block SurfaceBlock) bool {

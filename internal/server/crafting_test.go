@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"gmcs/internal/config"
+	"gmcs/internal/item"
 	"gmcs/internal/protocol"
 	"gmcs/internal/registry"
 )
@@ -207,4 +208,39 @@ func TestCraftingGridReturnedOnClose(t *testing.T) {
 		}
 		return false
 	}, "关闭窗口后合成格内容应归还背包")
+}
+
+func TestRepairCraftingResult(t *testing.T) {
+	pickaxe, err := item.FromName("minecraft:diamond_pickaxe", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxDamage, ok := registry.MaxDamage(pickaxe.ItemID)
+	if !ok || maxDamage <= 0 {
+		t.Fatal("钻石镐应可损坏")
+	}
+	a := pickaxe
+	a.Damage = maxDamage / 2
+	b := pickaxe
+	b.Damage = maxDamage / 2
+	grid := []item.Stack{a, b, {}, {}}
+	result, ok := repairCraftingResult(grid, nil, 2)
+	if !ok {
+		t.Fatal("两件同类损坏钻石镐应匹配 repairitem")
+	}
+	wantDurability := (maxDamage - a.Damage) + (maxDamage - b.Damage) + maxDamage*5/100
+	wantDamage := max(0, maxDamage-wantDurability)
+	if result.ItemID != pickaxe.ItemID || result.Count != 1 || result.Damage != wantDamage {
+		t.Fatalf("修复结果 = %+v, want damage %d", result, wantDamage)
+	}
+	if _, ok := repairCraftingResult([]item.Stack{a, a, a, {}}, nil, 2); ok {
+		t.Fatal("超过两件物品不应匹配 repairitem")
+	}
+	// 附魔合并取较高等级。
+	a = a.WithEnchantment(33, 2)
+	b = b.WithEnchantment(33, 4)
+	result, ok = repairCraftingResult([]item.Stack{a, b, {}, {}}, nil, 2)
+	if !ok || result.EnchantmentLevel(33) != 4 {
+		t.Fatalf("修复后附魔等级 = %d (ok=%v), want 4", result.EnchantmentLevel(33), ok)
+	}
 }

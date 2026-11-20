@@ -6,8 +6,8 @@
 //
 // 数据来源：官方客户端/服务端 jar 内置数据包的配方文件；原料标签在生成期展开为物品 ID。
 // 支持 crafting_shaped / crafting_shapeless / 四类烹饪 / stonecutting /
-// smithing_transform / smithing_trim；crafting_transmute / crafting_special_* 不生成
-// （它们需要额外的匹配逻辑或组件支持，见 docs/TODO.md）。
+// smithing_transform / smithing_trim；crafting_transmute 见
+// recipes_transmute_generated.go；其余 crafting_special_* 仍不生成。
 
 package registry
 

@@ -1,6 +1,7 @@
 package vanilla
 
 import (
+	"encoding/json"
 	"testing"
 
 	"gmcs/internal/registry"
@@ -444,5 +445,28 @@ func TestRotateSurfaceBlockDirections(t *testing.T) {
 	axis := rotateSurfaceBlock(SurfaceBlock{Name: "minecraft:oak_log", Properties: map[string]string{"axis": "x"}}, rotateClockwise90, false)
 	if axis.Properties["axis"] != "z" {
 		t.Fatalf("axis = %v", axis.Properties["axis"])
+	}
+}
+
+func TestCappedRuleProcessorLimitsChanges(t *testing.T) {
+	clone := &structureTemplate{
+		Palette: []SurfaceBlock{{Name: "minecraft:stone"}},
+		Blocks:  make([]templateBlock, 6),
+	}
+	rule := encodedRule{OutputState: json.RawMessage(`{"Name":"minecraft:dirt"}`)}
+	rule.InputPredicate.PredicateType = "minecraft:always_true"
+	rules := []encodedRule{rule}
+	applyRules(clone, rules, newLegacyRandom(1), 2)
+	dirt, stone := 0, 0
+	for _, block := range clone.Blocks {
+		switch clone.Palette[block.State].Name {
+		case "minecraft:dirt":
+			dirt++
+		case "minecraft:stone":
+			stone++
+		}
+	}
+	if dirt != 2 || stone != 4 {
+		t.Fatalf("capped rule 改写 dirt=%d stone=%d, want 2/4", dirt, stone)
 	}
 }

@@ -377,6 +377,8 @@ var spawnEggMobs = map[string]mobKind{
 	"minecraft:cow_spawn_egg":      mobCow,
 	"minecraft:pig_spawn_egg":      mobPig,
 	"minecraft:sheep_spawn_egg":    mobSheep,
+	"minecraft:chicken_spawn_egg":  mobChicken,
+	"minecraft:rabbit_spawn_egg":   mobRabbit,
 }
 
 // dispenserSpawnEgg 在发射位置生成生成蛋对应的生物（原版 SpawnEggItem 的

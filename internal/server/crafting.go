@@ -211,11 +211,61 @@ func (b craftSlotBacking) resultOf(working []item.Stack) item.Stack {
 		}
 		ids[i] = stack.ItemID
 	}
+	if result, ok := repairCraftingResult(grid, working, b.state.width); ok {
+		return result
+	}
 	result, count, ok := registry.MatchCrafting(ids, int32(b.state.width), int32(b.state.width))
 	if !ok {
 		return item.Empty()
 	}
 	return item.Stack{ItemID: result, Count: count}
+}
+
+// repairCraftingResult 实现 crafting_special_repairitem：合成格恰好有两个
+// 同类、数量为 1 的可损坏物品时，按原版 RepairItemRecipe 合并耐久：
+// 剩余耐久 = 两件剩余耐久之和 + 最大耐久 × 5%；附魔取两者较高等级。
+func repairCraftingResult(grid, working []item.Stack, width int) (item.Stack, bool) {
+	stacks := make([]item.Stack, 0, 2)
+	for i := 0; i < width*width; i++ {
+		stack := grid[i]
+		if working != nil {
+			stack = working[1+i]
+		}
+		if !stack.IsEmpty() {
+			stacks = append(stacks, stack)
+		}
+	}
+	if len(stacks) != 2 || stacks[0].ItemID != stacks[1].ItemID ||
+		stacks[0].Count != 1 || stacks[1].Count != 1 {
+		return item.Stack{}, false
+	}
+	maxDamage, damageable := registry.MaxDamage(stacks[0].ItemID)
+	if !damageable || maxDamage <= 0 {
+		return item.Stack{}, false
+	}
+	durabilityA := maxDamage - stacks[0].Damage
+	durabilityB := maxDamage - stacks[1].Damage
+	if durabilityA < 0 {
+		durabilityA = 0
+	}
+	if durabilityB < 0 {
+		durabilityB = 0
+	}
+	durability := durabilityA + durabilityB + maxDamage*5/100
+	if durability > maxDamage {
+		durability = maxDamage
+	}
+	result := item.Stack{ItemID: stacks[0].ItemID, Count: 1, Damage: max(0, maxDamage-durability)}
+	// 原版合并附魔时取两件物品同一附魔的较高等级。
+	for _, entry := range stacks[0].Enchantments {
+		result = result.WithEnchantment(entry.ID, entry.Level)
+	}
+	for _, entry := range stacks[1].Enchantments {
+		if result.EnchantmentLevel(entry.ID) < entry.Level {
+			result = result.WithEnchantment(entry.ID, entry.Level)
+		}
+	}
+	return result, true
 }
 
 // consumeGrid 消耗一轮原料（每个占用格 −1）。

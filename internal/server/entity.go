@@ -143,6 +143,9 @@ const (
 	mobSquid
 	// 末地城的哨兵潜影贝；不参与自然生成，由结构标记生成。
 	mobShulker
+	// 被动家禽/兔；追加在末尾以保持旧存档按名称读取的兼容性。
+	mobChicken
+	mobRabbit
 )
 
 // mobStats 描述一种生物的基础数值与音效名。
@@ -173,7 +176,7 @@ type mobStats struct {
 }
 
 // mobKindCount 是支持的生物种类数量。
-const mobKindCount mobKind = mobShulker + 1
+const mobKindCount mobKind = mobRabbit + 1
 
 // mobKinds 是全部生物的基础数值（生命 20、伤害 2–3，与原版普通难度接近）。
 // 用数组按 mobKind 直接索引：tick 热路径每生物每帧多次访问，避免 map 哈希。
@@ -244,6 +247,16 @@ var mobKinds = [mobKindCount]mobStats{
 		name: "minecraft:shulker", health: 30, walkSpeed: 0, followRange: 0, damage: 4,
 		experience: 5, hurtSound: "minecraft:entity.shulker.hurt", deathSound: "minecraft:entity.shulker.death",
 		spawnWeight: 0, passive: true, stationary: true,
+	},
+	mobChicken: {
+		name: "minecraft:chicken", health: 4, walkSpeed: 0.05, followRange: 0, damage: 0,
+		experience: 1, hurtSound: "minecraft:entity.chicken.hurt", deathSound: "minecraft:entity.chicken.death",
+		spawnWeight: 10, passive: true,
+	},
+	mobRabbit: {
+		name: "minecraft:rabbit", health: 3, walkSpeed: 0.06, followRange: 0, damage: 0,
+		experience: 1, hurtSound: "minecraft:entity.rabbit.hurt", deathSound: "minecraft:entity.rabbit.death",
+		spawnWeight: 4, passive: true,
 	},
 }
 
@@ -1204,7 +1217,7 @@ func (s *Server) spawnLightAllowed(w *world.World, dim world.Dimension, x, y, z 
 // 生物（僵尸/骷髅/苦力怕/蜘蛛/末影人），否则挑选被动生物（牛/猪/羊）。
 // 无可用种类时返回 false。
 func (s *Server) pickSpawnKind(hostile bool) (mobKind, bool) {
-	kinds := []mobKind{mobCow, mobPig, mobSheep}
+	kinds := []mobKind{mobCow, mobPig, mobSheep, mobChicken, mobRabbit}
 	if hostile {
 		kinds = []mobKind{mobZombie, mobSkeleton, mobCreeper, mobSpider, mobEnderman}
 	}
@@ -1581,6 +1594,19 @@ func (s *Server) dropMobLoot(kind mobKind, dim world.Dimension, x, y, z float64,
 	case mobSheep:
 		spawn("minecraft:white_wool", 1)
 		spawn("minecraft:mutton", 1+int32(s.nextRandom()%2)+s.lootingExtra(looting))
+	case mobChicken:
+		spawn("minecraft:feather", int32(s.nextRandom()%3)+s.lootingExtra(looting))
+		spawn("minecraft:chicken", 1)
+	case mobRabbit:
+		if s.nextRandom()%2 == 0 {
+			spawn("minecraft:rabbit_hide", 1+s.lootingExtra(looting))
+		}
+		if s.nextRandom()%2 == 0 {
+			spawn("minecraft:rabbit", 1)
+		}
+		if s.nextRandom()%100 < uint64(10+10*looting) {
+			spawn("minecraft:rabbit_foot", 1)
+		}
 	case mobCod:
 		// 原版鳕鱼掉落 1 个生鳕鱼（着火死亡时掉落熟鳕鱼，未建模）。
 		spawn("minecraft:cod", 1+s.lootingExtra(looting))

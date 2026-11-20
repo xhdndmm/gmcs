@@ -1898,6 +1898,33 @@ RSS 峰值约 464 MB（测试机，含初始视距区块与光照数组）
 光照数组未持久化，重载时重新计算；Light Update 目前同步执行，超大范围红石/
 爆炸更新尚未与 tick 预算解耦；真实客户端视觉与长时间跨维度跑图仍需验证。
 
+### 3.53 配方、生物、移动与结构处理器补全（2026-11-20）
+
+本批在不改变既有协议路径的前提下补齐若干原版行为：
+
+1. **配方**：
+   - 从 1.21.11 数据包新增 32 个 `crafting_transmute`（16 色 bundle / 潜影盒 +
+     对应染料），生成表见 `internal/registry/recipes_transmute_generated.go`；
+   - 合成格新增 `crafting_special_repairitem`：两件同类、数量 1 的可损坏物品
+     按原版公式合并剩余耐久（额外 5% 最大耐久），附魔取较高等级；
+   - 切石/锻造/烹饪/有序/无序路径不变。
+2. **生物**：新增鸡、兔；使用现有被动生物游荡/逃跑/持久化框架，加入自然生成、
+   刷怪蛋、音效、掉落（羽毛/鸡肉、兔皮/兔肉/兔脚）和实体跟踪。
+3. **移动**：服务端上升校验对 `minecraft:climbable`（梯子/藤蔓/脚手架）豁免，
+   不再把沿梯子连续上升误判为飞行。
+4. **结构生成**：processor_list 新增 `capped(rule)`，按 `limit` 限制改写数量，
+   覆盖 trail ruins 等数据包的 capped archaeology processor；仍不处理
+   block_entity_modifier 与完整嵌套 delegate。
+
+测试新增：
+`TestMatchCraftingTransmute`、`TestRepairCraftingResult`、
+`TestClimbableAllowsSustainedRise`、`TestCappedRuleProcessorLimitsChanges`，
+并更新生物种类数量断言。
+
+验证：`go test ./...`、`go test -race ./...`、`./scripts/test.sh --no-race` 通过。
+未验证：真实客户端对新增配方书显示/染色 NBT 的视觉行为，以及鸡/兔的完整
+原版 AI（产蛋、兔子跳跃、幼年变体）尚未实现。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；
