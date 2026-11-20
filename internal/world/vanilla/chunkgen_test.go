@@ -348,7 +348,7 @@ func BenchmarkGenerateChunkWarm(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := router.GenerateChunk(62, 62); err != nil {
 			b.Fatalf("生成失败：%v", err)
 		}
@@ -367,7 +367,7 @@ func BenchmarkGenerateChunk(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := router.GenerateChunk(62, 62); err != nil {
 			b.Fatalf("生成失败：%v", err)
 		}

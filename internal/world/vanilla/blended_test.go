@@ -98,7 +98,9 @@ func BenchmarkBlendedNoiseValue(b *testing.B) {
 	registry := NewNoiseRegistry(data, 0)
 	noise := NewBlendedNoise(registry.FromHashOf("minecraft:terrain"), 0.25, 0.125, 80, 160, 8)
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		_ = noise.Value(i&1023, 64, i>>10)
+		i++
 	}
 }

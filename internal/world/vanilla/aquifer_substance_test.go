@@ -236,7 +236,7 @@ func BenchmarkAquiferFillChunk(b *testing.B) {
 	setting := router.Setting()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		sampler := router.NewChunkSampler(0, 0)
 		for x := 0; x < 16; x++ {
 			for z := 0; z < 16; z++ {

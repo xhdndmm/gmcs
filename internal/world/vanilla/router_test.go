@@ -164,7 +164,7 @@ func BenchmarkRouterFillChunk(b *testing.B) {
 		b.Fatalf("构造路由表失败：%v", err)
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		router.Evaluator().ResetInterpolationCache()
 		solid := 0
 		for x := 0; x < 16; x++ {
@@ -191,7 +191,7 @@ func BenchmarkRouterSolidColumn(b *testing.B) {
 		b.Fatalf("构造路由表失败：%v", err)
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		router.Evaluator().ResetInterpolationCache()
 		solid := 0
 		for y := -64; y < 320; y++ {

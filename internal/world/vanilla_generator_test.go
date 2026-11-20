@@ -109,8 +109,10 @@ func BenchmarkVanillaGeneratorChunk(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		generator.GenerateChunk(i%16, i/16)
+		i++
 	}
 }
 

@@ -88,7 +88,8 @@ func BenchmarkChunkSamplerFillChunk(b *testing.B) {
 		b.Fatalf("构造路由表失败：%v", err)
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		chunkX := i & 1023
 		chunkZ := i >> 10
 		sampler := router.NewChunkSampler(chunkX, chunkZ)
@@ -105,6 +106,7 @@ func BenchmarkChunkSamplerFillChunk(b *testing.B) {
 			}
 		}
 		_ = solid
+		i++
 	}
 }
 

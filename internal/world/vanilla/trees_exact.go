@@ -673,9 +673,12 @@ func (r *Router) placeRandomSpreadFoliage(chunk *GeneratedChunk, random *legacyR
 		attempts = 1
 	}
 	for attempt := 0; attempt < attempts; attempt++ {
-		dx := random.nextIntBounded(radius) - random.nextIntBounded(radius)
-		dy := random.nextIntBounded(foliageHeight) - random.nextIntBounded(foliageHeight)
-		dz := random.nextIntBounded(radius) - random.nextIntBounded(radius)
+		dx1, dx2 := random.nextIntBounded(radius), random.nextIntBounded(radius)
+		dy1, dy2 := random.nextIntBounded(foliageHeight), random.nextIntBounded(foliageHeight)
+		dz1, dz2 := random.nextIntBounded(radius), random.nextIntBounded(radius)
+		dx := dx1 - dx2
+		dy := dy1 - dy2
+		dz := dz1 - dz2
 		x, y, z := attachment.x+dx, attachment.y+dy, attachment.z+dz
 		if treeCanReplace(chunk.BlockAt(x, y, z)) {
 			chunk.SetBlock(x, y, z, configuration.leaves)

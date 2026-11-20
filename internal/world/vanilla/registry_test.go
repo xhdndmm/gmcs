@@ -70,7 +70,7 @@ func BenchmarkNoiseRegistryLookup(b *testing.B) {
 	registry := NewNoiseRegistry(data, 0)
 	registry.Noise("minecraft:continentalness")
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = registry.Noise("minecraft:continentalness")
 	}
 }

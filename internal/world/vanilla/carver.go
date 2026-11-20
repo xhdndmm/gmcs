@@ -353,8 +353,10 @@ func (c *carvingContext) carveCaveTunnel(definition carverDefinition, seed int64
 		// pitchChange（*2）与 yawChange（*4）。两者写反会让隧道渐行渐远。
 		pitchChange *= 0.9
 		yawChange *= 0.75
-		pitchChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 2
-		yawChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 4
+		pitchA, pitchB, pitchScale := random.nextFloat(), random.nextFloat(), random.nextFloat()
+		pitchChange += (pitchA - pitchB) * pitchScale * 2
+		yawA, yawB, yawScale := random.nextFloat(), random.nextFloat(), random.nextFloat()
+		yawChange += (yawA - yawB) * yawScale * 4
 		if step == branchStep && thickness > 1 {
 			branchThickness := thickness * (random.nextFloat()*0.5 + 0.5)
 			c.carveCaveTunnel(definition, random.nextLong(), x, y, z, branchThickness, yaw-float32(math.Pi/2), pitch/3, horizontal, vertical, length, step, shouldSkip)
@@ -414,8 +416,10 @@ func (c *carvingContext) doCarveCanyon(definition carverDefinition, seed int64, 
 		yaw = yaw + yawChange*0.05
 		pitchChange *= 0.8
 		yawChange *= 0.5
-		pitchChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 2
-		yawChange += (random.nextFloat() - random.nextFloat()) * random.nextFloat() * 4
+		pitchA, pitchB, pitchScale := random.nextFloat(), random.nextFloat(), random.nextFloat()
+		pitchChange += (pitchA - pitchB) * pitchScale * 2
+		yawA, yawB, yawScale := random.nextFloat(), random.nextFloat(), random.nextFloat()
+		yawChange += (yawA - yawB) * yawScale * 4
 		if random.nextIntBounded(4) == 0 {
 			continue
 		}

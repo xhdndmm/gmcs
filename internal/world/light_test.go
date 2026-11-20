@@ -143,9 +143,11 @@ func BenchmarkChunkEnsureLightVanilla(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		chunk := generator.GenerateChunk(i%32, (i/32)%32)
 		chunk.EnsureLight()
+		i++
 	}
 }
 

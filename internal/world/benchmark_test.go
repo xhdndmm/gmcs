@@ -126,7 +126,7 @@ func BenchmarkSaveChunkPayload(b *testing.B) {
 	payloads := map[ChunkPos][]byte{{X: 0, Z: 0}: compressedPayload(b, chunk)}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if err := SavePayloads(dir, payloads); err != nil {
 			b.Fatal(err)
 		}
@@ -142,7 +142,7 @@ func BenchmarkLoadChunkPayload(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := LoadChunk(dir, 0, 0); err != nil {
 			b.Fatal(err)
 		}

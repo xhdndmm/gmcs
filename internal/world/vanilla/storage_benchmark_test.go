@@ -19,7 +19,7 @@ func BenchmarkEncodeGeneratedChunkPayload(b *testing.B) {
 	chunk := generator.GenerateChunk(62, 62)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		storageBenchSink = world.EncodeChunkPayload(chunk)
 	}
 }
@@ -35,7 +35,7 @@ func BenchmarkCompressGeneratedChunkPayload(b *testing.B) {
 	b.SetBytes(int64(len(payload)))
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		storageBenchSink, err = world.CompressChunkPayload(payload)
 		if err != nil {
 			b.Fatal(err)

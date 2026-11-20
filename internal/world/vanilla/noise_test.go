@@ -255,8 +255,10 @@ func TestNormalNoiseDetailMatchesVanilla(t *testing.T) {
 func BenchmarkNormalNoiseValue(b *testing.B) {
 	noise := NewNormalNoiseLegacy(NewXoroshiro(0), -9, []float64{1, 1, 2, 2, 2, 1, 1, 1, 1})
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		_ = noise.Value(float64(i&1023), 64, float64(i>>10))
+		i++
 	}
 }
 
@@ -264,7 +266,9 @@ func BenchmarkNormalNoiseValue(b *testing.B) {
 func BenchmarkImprovedNoise(b *testing.B) {
 	noise := NewImprovedNoise(NewXoroshiro(0))
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		_ = noise.Noise(float64(i&1023)*0.01, 0.5, float64(i>>10)*0.01)
+		i++
 	}
 }

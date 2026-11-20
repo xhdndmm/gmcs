@@ -300,9 +300,11 @@ func (s *Server) tickXPOrbs(players []*session) {
 			orb.VelY -= xpOrbGravityPerTick
 		}
 		if isLavaState(fluid) {
-			orb.VelX = (randUnit(s) - randUnit(s)) * 0.2
+			vx1, vx2 := randUnit(s), randUnit(s)
+			orb.VelX = (vx1 - vx2) * 0.2
 			orb.VelY = 0.2
-			orb.VelZ = (randUnit(s) - randUnit(s)) * 0.2
+			vz1, vz2 := randUnit(s), randUnit(s)
+			orb.VelZ = (vz1 - vz2) * 0.2
 		}
 
 		// 追踪最近的玩家，然后按追踪方向加速。
