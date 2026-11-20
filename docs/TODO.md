@@ -72,6 +72,17 @@
 
 - [x] 真实 1.21.11 客户端实机验证（OptiFine，完成登录 → 配置 → 进入世界 → 渲染区块）
 
+- [~] 客户端解码 oracle（`tools/packetoracle` + `internal/protocol/oracle`）：
+  使用 1.21.11 客户端 jar 的真实 `StreamCodec` 与
+  `RegistryFriendlyByteBuf` 解码服务端编码，校验完整消费；已覆盖
+  `Add Entity`、`Set Entity Data`（TNT fuse/block_state）、`Explode`、
+  `Block Update`、`Sound`、`Set Entity Motion`、`Remove Entities`、
+  `Entity Event`、`Set Health`、`Player Combat Kill`，以及 Configuration 的
+  brand 与 finish；清单见 `docs/PACKET_ORACLE.md`（159 个 clientbound 包）。
+  剩余包尚未接入 oracle；oracle 依赖客户端 jar 与 Java，默认 Skip，
+  通过 `GMCS_ORACLE=1` 开启
+
+
 - [x] 生物持久化（世界目录 entities.json：位置/生命/朝向；周期自动保存与关闭保存，重启恢复）
 
 - [x] 生物行为完善（转向时广播头部朝向、被挡住时随机侧移避障、移动仅广播给一定距离内的玩家）

@@ -182,6 +182,8 @@ PERFORMANCE.md）。加 `-random-move` 可让模拟玩家在指定半径内随�
 - 不同版本差异应集中管理（版本特定实现/能力抽象），不要散落
   `if version >= ...`
 - 协议相关修改必须附带测试；无法确认真实行为时，明确说明不确定性并实验验证
+- clientbound 包可用官方客户端 codec oracle 复核（见 [PACKET_ORACLE](PACKET_ORACLE.md)），
+  它需要客户端 jar/Java，默认 Skip，通过 `GMCS_ORACLE=1` 开启
 
 ### 5.6 生成文件
 
