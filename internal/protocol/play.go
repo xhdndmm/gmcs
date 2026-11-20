@@ -17,6 +17,7 @@ const (
 	PlayPacketIDGameEvent            = 0x26 // clientbound
 	PlayPacketIDKeepAlive            = 0x2B // clientbound
 	PlayPacketIDChunkData            = 0x2C // clientbound
+	PlayPacketIDLightUpdate          = 0x2F // clientbound
 	PlayPacketIDLogin                = 0x30 // clientbound
 	PlayPacketIDPlayerChat           = 0x3F // clientbound
 	PlayPacketIDPlayerInfoRemove     = 0x43 // clientbound

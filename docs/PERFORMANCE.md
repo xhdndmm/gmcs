@@ -104,7 +104,7 @@ v13 把 section 从旧的 4096 × u16 改为调色板 + 连续位流。真实主
 
 - `BenchmarkFlatGenerateChunk`：测试用超平坦区块的生成成本，不代表生产主世界。
 - `BenchmarkEncodeChunkDataPacket`：把已生成区块编码为 1.21.11 Chunk Data and Update
-  Light 包（调色板容器 + heightmap + 全亮天空光）。
+  Light 包（调色板容器 + heightmap + 真实天空光/方块光 nibble 与掩码）。
 - `BenchmarkAppendChunkDataPacketReuse`：复用输出缓冲连续编码（进入世界/移动时
   区块流式发送的实际路径，与上者相同，含 heightmap）。
 - `BenchmarkEncodeChunkPayload` / `BenchmarkEncodeCompressedChunkPayload`：区块
@@ -243,8 +243,8 @@ zlib 使用标准库默认级别，复用 writer/buffer 对象池，优先稳定
 2. **内联紧密位流打包**：新增 `packIndirect` 直接把方块写进 long 数组，省掉中间索引
    数组；原 `packBits` 保留为测试参考实现，并由 `TestPackIndirectMatchesPackBits`
    验证两者输出逐字节一致。
-3. **包缓冲一次预分配**：`Chunk Data` 包按 64 KiB 预分配（区块数据 + 约 53 KiB 固定
-   光照数据），消除 append 增长造成的反复拷贝。
+3. **包缓冲一次预分配**：`Chunk Data` 包当前按 128 KiB 预分配（区块数据 + 最多
+   26 个 section 的天空光/方块光数组），消除 append 增长造成的反复拷贝。
 
 正确性验证：`internal/world` 全部单元测试通过（含调色板/位流 round-trip 测试），
 `go test -race ./...` 通过。
@@ -1851,6 +1851,52 @@ BenchmarkVanillaGeneratorChunk-20   约 81–84 ms/op（连续路径）  14 MB/o
 本地噪声指针缓存后该热点不再出现；剩余主要成本是密度/噪声、群系 KD 树
 与地物执行。这里没有宣称生成器已追平原版或所有移动场景都不会等待；
 真实客户端渲染、不同网络和长时间跑图仍需继续观测。
+
+### 3.52 光照引擎（2026-11-20）
+
+本批加入区块天空光/方块光引擎与 Light Update 下发：
+
+1. **存储与属性**：`Chunk` 按 section 保存 nibble 天空光/方块光数组；
+   `light.go` 建立方块状态 `emission/opacity` 表。普通不透明方块按碰撞形状
+   遮挡，水/树叶/细雪等使用显式近似；常见光源（火把、萤石、岩浆、营火、
+   蜡烛、发光地衣、紫水晶簇、铜灯、熔炉族等）按状态 `lit`/浆果属性发光。
+2. **初始化**：天空光按列从世界顶部向下衰减，下界/末地没有天空光；方块光
+   从所有发光方块做 BFS。开阔天空区块跳过水平 BFS，避免无意义的邻域扫描。
+3. **增量更新**：方块修改只在新旧 `opacity/emission` 变化时进入 BFS；
+   移除旧光后从边界/邻居重新播种，跨区块更新已加载邻居；无光照影响的红石/
+   门类状态变更直接返回。
+4. **协议**：区块数据发送真实 sky/block light mask、empty mask 与数组；
+   方块修改广播 Block Update 后，若该区块有 dirty light section，追加发送
+   `Light Update`（0x2F，仅变化的 section）。下界/末地天空光掩码为空。
+5. **玩法联动**：自然刷怪与结构刷怪笼检查局部 sky/block light；敌对生物
+   需要 ≤7、被动生物需要 ≥9，夜晚天空光按 skyDarken=11 折算。
+6. **加载边界**：新区块加载后与已加载四邻域交换边界光照，只对光照不同的
+   格子播种；平坦地形不会产生额外队列。
+
+测试：
+`TestChunkLocalLightSkyAndBlock`、`TestWorldIncrementalLight`、
+`TestWorldLightCrossesChunkBoundary`、`TestWorldLightPropagatesWhenNeighborLoads`、
+`TestNetherHasNoSkyLight`、`TestBlockUpdateSendsLightUpdate`、
+`TestConcurrentPlayersReceiveLightUpdates`，以及原始区块数据包结构测试。
+
+基准（同机、单次采样的非稳定基线）：
+
+```text
+BenchmarkVanillaGeneratorChunk-20        约 96.8 ms/op
+BenchmarkChunkEnsureLightVanilla-20      约 99.5 ms/op   # 含生成，光照约 2.7 ms/区块
+BenchmarkEncodeChunkDataPacket-20        约 0.65 ms/op   # 60+ allocs，含真实光照
+```
+
+真实压测（`cmd/gmcsload`，20 客户端、视距 8、60 秒随机漫游、loopback）：
+
+```text
+成功进入世界 20/20，失败 0，服务器无 ERROR/panic
+RSS 峰值约 464 MB（测试机，含初始视距区块与光照数组）
+```
+
+已知限制：光照属性表不是官方逐状态数据（特殊形状/树叶/水生植物仍需校准）；
+光照数组未持久化，重载时重新计算；Light Update 目前同步执行，超大范围红石/
+爆炸更新尚未与 tick 预算解耦；真实客户端视觉与长时间跨维度跑图仍需验证。
 
 ## 4. 尚未覆盖
 

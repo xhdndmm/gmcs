@@ -71,7 +71,10 @@ func (s *Server) tickSpawners(players []*session) {
 			}
 		}
 		if near {
-			s.addMob(entry.dim, kind, float64(entry.x)+0.5, float64(entry.y), float64(entry.z)+0.5)
+			gameWorld := s.worldFor(entry.dim)
+			if gameWorld != nil && s.spawnLightAllowed(gameWorld, entry.dim, entry.x, entry.y+1, entry.z, false) {
+				s.addMob(entry.dim, kind, float64(entry.x)+0.5, float64(entry.y), float64(entry.z)+0.5)
+			}
 		}
 		// 200–800 tick 的近似原版延迟。
 		entry.entity.SpawnerDelay = 200 + int32(s.nextRandom()%601)

@@ -130,25 +130,48 @@ func TestEncodeChunkDataPacketStructure(t *testing.T) {
 		t.Fatalf("expected no block entities, got %d", blockEntities)
 	}
 
-	// 光照：天空光掩码为全部 SectionCount+2 位。
+	// 光照：全空气新区块的天空光为 15；维度最低边界 section 全 0，
+	// 因此天空光掩码从 bit1 到 bit(SectionCount+1)，bit0 在 empty sky mask。
 	maskLongs, offset := decodeTestVarInt(t, packet, offset)
 	if maskLongs != 1 {
 		t.Fatalf("expected one sky light mask long, got %d", maskLongs)
 	}
-	mask, offset, err := protocol.DecodeInt64(packet, offset)
-	if err != nil || mask != int64(1)<<(SectionCount+2)-1 {
-		t.Fatalf("unexpected sky light mask %#x (err=%v)", mask, err)
+	skyMask, offset, err := protocol.DecodeInt64(packet, offset)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range []string{"block light mask", "empty sky light mask", "empty block light mask"} {
-		count, next := decodeTestVarInt(t, packet, offset)
-		if count != 0 {
-			t.Fatalf("expected empty %s, got %d", name, count)
-		}
-		offset = next
+	allSlots := uint64(1)<<(SectionCount+2) - 1
+	wantSkyMask := allSlots &^ 1
+	if uint64(skyMask) != wantSkyMask {
+		t.Fatalf("sky light mask = %#x, want %#x", uint64(skyMask), wantSkyMask)
+	}
+	blockMaskLongs, offset := decodeTestVarInt(t, packet, offset)
+	if blockMaskLongs != 1 {
+		t.Fatalf("expected one block light mask long, got %d", blockMaskLongs)
+	}
+	blockMask, offset, err := protocol.DecodeInt64(packet, offset)
+	if err != nil || blockMask != 0 {
+		t.Fatalf("block light mask = %#x (err=%v), want 0", uint64(blockMask), err)
+	}
+	emptySkyLongs, offset := decodeTestVarInt(t, packet, offset)
+	if emptySkyLongs != 1 {
+		t.Fatalf("expected one empty sky light mask long, got %d", emptySkyLongs)
+	}
+	emptySky, offset, err := protocol.DecodeInt64(packet, offset)
+	if err != nil || uint64(emptySky) != 1 {
+		t.Fatalf("empty sky light mask = %#x (err=%v), want 1", uint64(emptySky), err)
+	}
+	emptyBlockLongs, offset := decodeTestVarInt(t, packet, offset)
+	if emptyBlockLongs != 1 {
+		t.Fatalf("expected one empty block light mask long, got %d", emptyBlockLongs)
+	}
+	emptyBlock, offset, err := protocol.DecodeInt64(packet, offset)
+	if err != nil || uint64(emptyBlock) != allSlots {
+		t.Fatalf("empty block light mask = %#x (err=%v), want %#x", uint64(emptyBlock), err, allSlots)
 	}
 	skyLightArrays, offset := decodeTestVarInt(t, packet, offset)
-	if skyLightArrays != SectionCount+2 {
-		t.Fatalf("expected %d sky light arrays, got %d", SectionCount+2, skyLightArrays)
+	if skyLightArrays != SectionCount+1 {
+		t.Fatalf("expected %d sky light arrays, got %d", SectionCount+1, skyLightArrays)
 	}
 	for i := 0; i < int(skyLightArrays); i++ {
 		length, next := decodeTestVarInt(t, packet, offset)

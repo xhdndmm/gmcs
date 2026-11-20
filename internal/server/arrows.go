@@ -401,6 +401,9 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 		s.decayLeavesAround(dim, w, cell[0], cell[1], cell[2], destroyedStates[i])
 	}
 
+	// 爆炸直接批量调用 World.SetBlock，没有逐方块 broadcastBlockUpdate；
+	// 在所有 Block Update 之后统一发送受影响区块的 Light Update。
+	lightPackets := w.EncodeLightUpdatesAround(baseX, baseZ)
 	explosionPacket := protocol.EncodeExplosion(x, y, z, radius, int32(destroyed), protocol.ParticleExplosionEmitter)
 	players := s.playerSnapshot()
 	for _, player := range players {
@@ -414,6 +417,9 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 		player.tryWrite(explosionPacket)
 		for _, update := range updates {
 			player.tryWrite(update)
+		}
+		for _, lightPacket := range lightPackets {
+			player.tryWrite(lightPacket)
 		}
 	}
 

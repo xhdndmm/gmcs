@@ -285,8 +285,11 @@ func (w *World) prefetchWorker() {
 		}
 
 		w.mu.Lock()
-		w.publishChunkLoad(pos, chunk, generated, err)
+		published := w.publishChunkLoad(pos, chunk, generated, err)
 		w.mu.Unlock()
+		if published && err == nil {
+			w.seedChunkBoundaryLight(chunk)
+		}
 	}
 }
 
@@ -425,7 +428,10 @@ func (w *World) SetBlock(x, y, z int, state uint16) bool {
 	if err != nil {
 		return false
 	}
-	chunk.SetBlockState(floorMod(x, SectionSize), y, floorMod(z, SectionSize), state)
+	localX, localZ := floorMod(x, SectionSize), floorMod(z, SectionSize)
+	oldState := chunk.GetBlockState(localX, y, localZ)
+	chunk.SetBlockState(localX, y, localZ, state)
+	w.updateLight(x, y, z, oldState, state)
 	w.MarkDirty(chunk)
 	return true
 }
@@ -573,6 +579,7 @@ func (w *World) Chunk(x, z int) (*Chunk, error) {
 			// 请求被 Close 取消（世界已关闭）。
 			return nil, ErrWorldClosed
 		}
+		w.seedChunkBoundaryLight(chunk)
 		return chunk, nil
 	}
 }
@@ -619,6 +626,14 @@ func (w *World) DirtyCount() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.dirty)
+}
+
+// PendingCount 返回正在加载/生成中的区块请求数量（观测与空闲释放用）。
+// 空闲卸载需要同时等待这些请求发布，否则刚卸载完又有在途区块写回缓存。
+func (w *World) PendingCount() int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return len(w.pending)
 }
 
 // ChunkCount 返回内存缓存中的区块数量（观测与测试用）。

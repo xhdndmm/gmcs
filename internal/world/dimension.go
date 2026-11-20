@@ -60,6 +60,12 @@ func (d Dimension) SectionCount() int {
 	return d.Height() / SectionSize
 }
 
+// HasSkyLight 报告维度是否传播天空光。下界/末地没有天空光，天空光数组
+// 全部为 0；主世界有。
+func (d Dimension) HasSkyLight() bool {
+	return d == DimensionOverworld
+}
+
 // SectionRange 返回该维度对应的全局 section 索引区间 [low, high)。
 // 主世界为 [0, 24)；下界/末地为 [4, 20)（y = 0 对应全局 section 4）。
 func (d Dimension) SectionRange() (int, int) {

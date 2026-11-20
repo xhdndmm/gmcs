@@ -539,4 +539,20 @@ func (s *Server) broadcastBlockUpdate(dim world.Dimension, x, y, z int, state in
 		}
 		player.tryWrite(packet)
 	}
+	// 方块写入可能改变天空光/方块光；Light Update 必须跟在 Block Update
+	// 之后发送。目标区块及受影响的相邻区块都要发送。
+	if gameWorld := s.worldFor(dim); gameWorld != nil {
+		for _, lightPacket := range gameWorld.EncodeLightUpdatesAround(x, z) {
+			for _, player := range s.playerSnapshot() {
+				if !player.isJoined() || player.dimensionID() != dim {
+					continue
+				}
+				px, _, pz, _, _ := player.playerPosition()
+				if math.Hypot(px-bx, pz-bz) > mobMoveBroadcastRange {
+					continue
+				}
+				player.tryWrite(lightPacket)
+			}
+		}
+	}
 }

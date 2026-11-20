@@ -140,6 +140,11 @@ type Chunk struct {
 	// revision 在每次内容修改（方块/群系）时递增；服务器用它失效共享的
 	// 区块数据包缓存（见 server.chunkPacket）。
 	revision uint64
+	// lightOnce 保证本地光照只初始化一次；lightMu 保护 light 数组与
+	// 待发送 section 集合。锁顺序始终是 mu -> lightMu（编码/修改路径）。
+	lightOnce sync.Once
+	lightMu   sync.RWMutex
+	light     *chunkLight
 	// farSince 是该区块“连续远离所有玩家”的起始时刻（UnixNano；0 = 近或未知），
 	// 由卸载扫描（World.UnloadFar）维护：首次判远只记录时间，持续超出宽限
 	// 期后才真正卸载；重新变近时清零。避免玩家在卸载边界来回移动时
@@ -508,11 +513,13 @@ func (c *Chunk) SetBiomeGrid(grid [16]uint16) {
 //     或全局调色板（15 位），数据数组按原版 BitStorage 的“每 long 独立”
 //     布局打包（valuesPerLong = 64/bits，条目不跨 long 边界）；
 //   - 不包含方块实体；
-//   - 天空光全亮（15）、方块光为空。
+//   - Light Data 使用区块光照引擎的 nibble 数组，按 section 发送天空光/
+//     方块光掩码与空掩码，边界 section 由维度合成。
 //
 // chunkDataPacketCapacity 是 Chunk Data 包的预分配容量：区块数据数组
-// 加上固定的全亮光照数据（约 53 KiB），避免 append 增长时的反复拷贝。
-const chunkDataPacketCapacity = 64 * 1024
+// 加上最多 26 个天空光/方块光 section（约 106 KiB），避免 append 增长时的
+// 反复拷贝。实际通常只发送少数非空光照 section。
+const chunkDataPacketCapacity = 128 * 1024
 
 // EncodeChunkDataPacket 编码一个独立的 Chunk Data 包。
 // blockEntityTypeID 是方块实体类型 ID（chunk 中的方块实体共用；
@@ -536,6 +543,9 @@ var chunkDataScratchPool = sync.Pool{
 // 网络编码按区块所属维度裁剪 section 范围与 heightmap 基准
 // （下界/末地只发送 y 0–255 的 16 个 section）。
 func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
+	// 光照数组只初始化一次；必须在取得区块读锁之前完成，避免在编码
+	// 期间递归取得同一把读锁。
+	chunk.EnsureLight()
 	// 与运行时方块修改互斥：整个编码期间持有读锁。
 	chunk.mu.RLock()
 	defer chunk.mu.RUnlock()
@@ -571,7 +581,7 @@ func AppendChunkDataPacket(dst []byte, chunk *Chunk) []byte {
 
 	dst = chunk.appendBlockEntityPacketData(dst)
 
-	return appendFullSkyLight(dst, dim.SectionCount())
+	return chunk.appendLightData(dst)
 }
 
 // heightmap 类型（1.21.11 的 mapper：0 world_surface_wg、1 world_surface、
@@ -858,28 +868,3 @@ var fullBrightSkyLight = func() []byte {
 	}
 	return buf
 }()
-
-// appendFullSkyLight 追加 Light Data：为全部 section（含上下边缘共
-// sectionCount+2 位）提供值为 15 的天空光，方块光与空掩码均为空。
-// sectionCount 来自维度（主世界 24；下界/末地 16）。
-func appendFullSkyLight(dst []byte, sectionCount int) []byte {
-	lightSections := sectionCount + 2
-
-	// Sky Light Mask：全部位置位。
-	skyLightMask := int64(1)<<lightSections - 1
-	dst = protocol.AppendVarInt(dst, 1) // BitSet 的 long 数量
-	dst = protocol.AppendInt64(dst, skyLightMask)
-	// Block Light Mask、Empty Sky Light Mask、Empty Block Light Mask：空。
-	dst = protocol.AppendVarInt(dst, 0)
-	dst = protocol.AppendVarInt(dst, 0)
-	dst = protocol.AppendVarInt(dst, 0)
-	// 天空光数组：每个置位一个 2048 字节的数组。
-	dst = protocol.AppendVarInt(dst, int32(lightSections))
-	for i := 0; i < lightSections; i++ {
-		dst = protocol.AppendVarInt(dst, lightValuesPerSection)
-		dst = append(dst, fullBrightSkyLight...)
-	}
-	// 方块光数组：空。
-	dst = protocol.AppendVarInt(dst, 0)
-	return dst
-}

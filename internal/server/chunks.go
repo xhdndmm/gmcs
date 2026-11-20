@@ -312,11 +312,11 @@ type chunkPacketCache struct {
 	inflight map[chunkPacketKey]chan struct{}
 }
 
-// chunkEncodePool 复用区块编码缓冲（64 KiB/次），避免每次缓存未命中
+// chunkEncodePool 复用区块编码缓冲（128 KiB/次，容纳真实光照数组），避免每次缓存未命中
 // 都分配大缓冲（加入风暴时的分配峰值）。
 var chunkEncodePool = sync.Pool{
 	New: func() any {
-		buffer := make([]byte, 0, 64*1024)
+		buffer := make([]byte, 0, 128*1024)
 		return &buffer
 	},
 }
@@ -600,7 +600,9 @@ func (s *Server) unloadAllChunks() error {
 	// 玩家退出时可能仍有在途的视距区块加载。UnloadAll 只清理调用瞬间已存在
 	// 的区块，因此在途加载完成后可能重新出现少量区块；这里做有界重试，
 	// 避免空闲服务器长期残留这些区块（测试把周期卸载设为 1h 时会暴露）。
-	for attempt := 0; attempt < 16; attempt++ {
+	// 加入光照初始化后，视距内区块的加载/光照计算可能比旧实现更久；
+	// 给在途生成 1 秒窗口，避免空闲测试/退出后残留少量区块。
+	for attempt := 0; attempt < 100; attempt++ {
 		remaining := 0
 		for dim, gameWorld := range worlds {
 			unloaded, err := gameWorld.UnloadAll()
@@ -614,7 +616,7 @@ func (s *Server) unloadAllChunks() error {
 			if len(unloaded) > 0 {
 				slog.Info("空闲服务器释放区块", "dimension", dim, "count", len(unloaded))
 			}
-			remaining += gameWorld.ChunkCount()
+			remaining += gameWorld.ChunkCount() + gameWorld.PendingCount()
 			gameWorld.ReleaseCaches()
 		}
 		if remaining == 0 {

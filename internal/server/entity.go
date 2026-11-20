@@ -1163,7 +1163,41 @@ func (s *Server) trySpawnMob(players []*session) {
 	if mobKinds[kind].passive && column.TopState != world.GrassBlock {
 		return
 	}
-	s.addMob(dim, kind, float64(blockX)+0.5, float64(column.SolidY+1), float64(blockZ)+0.5)
+	spawnY := column.SolidY + 1
+	if !s.spawnLightAllowed(w, dim, blockX, spawnY, blockZ, mobKinds[kind].passive) {
+		return
+	}
+	s.addMob(dim, kind, float64(blockX)+0.5, float64(spawnY), float64(blockZ)+0.5)
+}
+
+// spawnLightAllowed 应用原版刷怪的光照门槛：
+//   - 敌对生物需要局部光照 ≤ 7（夜晚天空光按 skyDarken=11 折算）；
+//   - 被动生物需要局部光照 ≥ 9。
+//
+// 天空光数组保存的是 15，不随时钟变化；这里按原版
+// getMaxLocalRawBrightness 的 skyDarken 规则把天空光折算成夜间 4。
+func (s *Server) spawnLightAllowed(w *world.World, dim world.Dimension, x, y, z int, passive bool) bool {
+	blockLight := int(w.LightAt(x, y, z, false))
+	if dim != world.DimensionOverworld {
+		// 下界/末地没有天空光，只检查方块光。
+		if passive {
+			return blockLight >= 9
+		}
+		return blockLight <= 7
+	}
+	skyLight := int(w.LightAt(x, y, z, true))
+	skyDarken := 1
+	if s.isNight() {
+		skyDarken = 11
+	}
+	if skyLight -= skyDarken; skyLight < 0 {
+		skyLight = 0
+	}
+	local := max(blockLight, skyLight)
+	if passive {
+		return local >= 9
+	}
+	return local <= 7
 }
 
 // pickSpawnKind 按权重挑选一种可生成的生物：hostile 为 true 时挑选敌对

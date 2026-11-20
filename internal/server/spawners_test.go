@@ -24,6 +24,9 @@ func TestStructureSpawnerSpawnsNearPlayer(t *testing.T) {
 	if err := instance.testWorld().SetBlockEntity(int(x), int(y), int(z), entity); err != nil {
 		t.Fatal(err)
 	}
+	// 刷怪笼同样受光照限制：默认白天表面光照为 15，先把时间设为夜晚，
+	// 让测试关注玩家半径与延迟路径。
+	instance.worldAge.Store(worldNightStart)
 	instance.entityMu.Lock()
 	before := len(instance.mobs)
 	instance.entityMu.Unlock()
