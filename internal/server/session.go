@@ -204,6 +204,8 @@ type session struct {
 	experience    int32
 	experienceBar float32
 	lastHurt      time.Time
+	// effects 是 0..39 号静态效果槽；由 stateMu 保护。
+	effects [mobEffectCount]mobEffectInstance
 
 	// 下落跟踪（摔落伤害）：以服务器端地面检测驱动，仅由会话读循环访问。
 	fallStartY float64
@@ -764,6 +766,12 @@ func (s *session) healthStatus() (health float32, food int32, saturation float32
 // LivingEntity.hurtServer 的顺序一致）。
 // 返回扣减后的状态与是否生效、是否因此死亡。
 func (s *session) applyDamage(server *Server, amount float32, damageTypeID int32, now time.Time) (health float32, food int32, saturation float32, applied, died bool) {
+	// 火焰抗性完全免疫火焰/岩浆/岩浆块伤害（原版 LivingEntity.hurt 的
+	// isDamageSourceFire 分支）。
+	if s.hasEffect(registry.MobEffectFireResistance) &&
+		(damageTypeID == server.fireDamageTypeID || damageTypeID == server.lavaDamageTypeID || damageTypeID == server.hotFloorDamageTypeID) {
+		return s.health, s.food, s.saturation, false, false
+	}
 	s.stateMu.Lock()
 	if s.dead.Load() || s.gameMode.Load() == uint32(config.GameModeCreative) || s.gameMode.Load() == uint32(config.GameModeSpectator) {
 		s.stateMu.Unlock()
@@ -775,6 +783,7 @@ func (s *session) applyDamage(server *Server, amount float32, damageTypeID int32
 	}
 	s.lastHurt = now
 	final, armorDamage := server.computePlayerDamage(s, amount, damageTypeID)
+	final *= s.resistanceMultiplierLocked()
 	// 受伤会积累疲劳度（与原版一致：0.1）。
 	s.exhaustion += playerExhaustionDamage
 	s.health -= final
@@ -795,7 +804,7 @@ func (s *session) applyDamage(server *Server, amount float32, damageTypeID int32
 // 由会话读循环调用（移动/攻击）或实体 Tick（通过 addExhaustionLocked）。
 func (s *session) addExhaustion(amount float32) {
 	s.stateMu.Lock()
-	s.exhaustion += amount
+	s.exhaustion = min(s.exhaustion+amount, 40)
 	s.drainFoodLocked()
 	s.stateMu.Unlock()
 }
@@ -803,6 +812,13 @@ func (s *session) addExhaustion(amount float32) {
 // drainFoodLocked 把累计到阈值的疲劳度折算为饥饿值（每 4 点疲劳消耗 1 点）。
 // 调用方必须持有 stateMu。
 func (s *session) drainFoodLocked() {
+	// 和平难度不因疲劳消耗饥饿值（原版 FoodData.tick 的 difficulty != PEACEFUL 分支）。
+	if s.server.peaceful() {
+		if s.food <= 0 {
+			s.exhaustion = min(s.exhaustion, playerExhaustionPerFood)
+		}
+		return
+	}
 	for s.exhaustion >= playerExhaustionPerFood && s.food > 0 {
 		s.exhaustion -= playerExhaustionPerFood
 		s.food--
@@ -838,8 +854,18 @@ func (s *session) applyHungerTick() playerHungerStatus {
 		return status
 	}
 	s.foodTimer = 0
+	difficulty := config.Difficulty(s.server.difficultyID())
+	if difficulty == config.DifficultyPeaceful {
+		// 和平难度：不饿死；naturalRegeneration 开启时每 4 秒恢复 1 点生命。
+		if s.server.rules.naturalRegeneration.Load() && s.health < maxPlayerHealth && s.health > 0 {
+			s.health++
+			status.changed = true
+		}
+		status.health, status.food, status.saturation = s.health, s.food, s.saturation
+		return status
+	}
 	switch {
-	case s.food >= playerRegenFoodThreshold && s.health < maxPlayerHealth && s.health > 0:
+	case s.server.rules.naturalRegeneration.Load() && s.food >= playerRegenFoodThreshold && s.health < maxPlayerHealth && s.health > 0:
 		// 自然恢复：有饱食度时消耗饱食度（不消耗饥饿值），否则消耗饥饿值。
 		if s.saturation > 0 {
 			s.saturation = max(0, s.saturation-playerSaturationPerRegen)
@@ -849,8 +875,9 @@ func (s *session) applyHungerTick() playerHungerStatus {
 		}
 		s.health++
 		status.changed = true
-	case s.food <= 0 && s.health > 1:
-		// 饥饿伤害：生命降到 1 为止（与普通难度一致）。
+	case s.food <= 0 && s.health > 1 && (difficulty == config.DifficultyHard || s.health > 10 || difficulty == config.DifficultyNormal):
+		// 饥饿伤害：Easy 不伤害；Normal 在生命 >1 时伤害；Hard 一直伤害。
+		// gmcs 为保持死亡流程一致性，最低降到 1 点（不在这里直接触发死亡）。
 		s.health--
 		status.changed = true
 		if s.health < 1 {
@@ -1399,6 +1426,7 @@ func (s *session) teleportTo(dim world.Dimension, x, y, z float64, yaw, pitch fl
 	if previous != dim {
 		packets = append(packets,
 			protocol.EncodeRespawn(s.server.spawnInfo(dim, s.gameModeID()), 0),
+			s.server.difficultyPacket(),
 			// 1.20.2+ 协议：Respawn 后必须重发“开始等待区块”。
 			protocol.EncodeGameEvent(13, 0),
 			// 客户端在 Respawn 后重置选中槽位，重新同步（与原版登录/重生行为一致）。
@@ -1492,6 +1520,7 @@ func (s *session) runPlay() {
 	// 进入世界的前置包。
 	packets := [][]byte{
 		protocol.EncodeLoginPlay(login),
+		s.server.difficultyPacket(),
 		protocol.EncodeSetDefaultSpawnPosition(dim.Name(),
 			int(math.Floor(spawnX)), int(math.Floor(spawnY)), int(math.Floor(spawnZ)), 0, 0),
 	}
@@ -1559,6 +1588,7 @@ func (s *session) runPlay() {
 	packets = append(packets, protocol.EncodeSetHeldSlot(int32(s.selectedHotbarSlot())))
 	health, food, saturation := s.healthStatus()
 	packets = append(packets, protocol.EncodeUpdateHealth(health, food, saturation))
+	packets = append(packets, s.effectPackets()...)
 	// 世界时间（下界/末地为固定时间，不发送时间更新包）与经验条。
 	if dim == world.DimensionOverworld {
 		packets = append(packets,

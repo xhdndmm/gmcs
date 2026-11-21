@@ -157,7 +157,7 @@ func joinAt(t *testing.T, cfg config.Config, addr, name string, observers ...fun
 	}
 
 	// Play 阶段初始包（启用世界边界时会先收到初始化边界包）
-	initial := []int32{0x30, 0x5F}
+	initial := []int32{0x30, protocol.PlayPacketIDChangeDifficulty, 0x5F}
 	if cfg.WorldBorderSize > 0 {
 		initial = append(initial, 0x2A)
 	}

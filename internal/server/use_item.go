@@ -78,11 +78,16 @@ func (s *Server) handleUseItem(player *session, hand int32) {
 		return
 	}
 
-	if _, isFood := registry.Food(stack.ItemID); !isFood {
+	// 药水、牛奶与金苹果也复用 1.6 秒使用过程；药水即使饥饿/生命已满也可饮用。
+	consumable := name == "minecraft:potion" || name == "minecraft:milk_bucket" ||
+		name == "minecraft:golden_apple" || name == "minecraft:enchanted_golden_apple"
+	if _, isFood := registry.Food(stack.ItemID); !isFood && !consumable {
 		return
 	}
-	if health, food, _ := player.healthStatus(); food >= maxPlayerFood && health >= maxPlayerHealth {
-		return // 饥饿值与生命均满时不开始进食（近似原版）
+	if !consumable {
+		if health, food, _ := player.healthStatus(); food >= maxPlayerFood && health >= maxPlayerHealth {
+			return // 饥饿值与生命均满时不开始进食（近似原版）
+		}
 	}
 	player.eating = true
 	player.eatingSlot = slot
@@ -109,8 +114,50 @@ func (s *session) completeEating() {
 	if stack.IsEmpty() || stack.ItemID != s.eatingItemID {
 		return // 物品已被移动/替换
 	}
-	if !s.eatFood(stack.ItemID) {
-		return // 不再是食物或已吃饱
+	name, _ := registry.ItemName(s.eatingItemID)
+	switch name {
+	case "minecraft:potion":
+		potionID := stack.PotionID
+		if potionID > 0 {
+			for _, packet := range s.server.applyPotionEffects(s, registry.PotionEffectList(potionID-1)) {
+				s.tryWrite(packet)
+			}
+		}
+	case "minecraft:milk_bucket":
+		for _, packet := range s.clearEffects() {
+			s.tryWrite(packet)
+		}
+		if bucket, err := item.FromName("minecraft:bucket", 1); err == nil {
+			stack = bucket
+			s.inventory.Set(slot, stack)
+			s.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
+		} else {
+			stack = item.Empty()
+			s.inventory.Set(slot, stack)
+			s.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
+		}
+		return
+	default:
+		if !s.eatFood(stack.ItemID) {
+			return // 不再是食物或已吃饱
+		}
+		if name == "minecraft:golden_apple" {
+			for _, packet := range s.server.applyPotionEffects(s, []registry.PotionEffect{
+				{ID: registry.MobEffectAbsorption, Duration: 2400, Amplifier: 0},
+				{ID: registry.MobEffectRegeneration, Duration: 100, Amplifier: 1},
+			}) {
+				s.tryWrite(packet)
+			}
+		} else if name == "minecraft:enchanted_golden_apple" {
+			for _, packet := range s.server.applyPotionEffects(s, []registry.PotionEffect{
+				{ID: registry.MobEffectAbsorption, Duration: 2400, Amplifier: 3},
+				{ID: registry.MobEffectRegeneration, Duration: 400, Amplifier: 1},
+				{ID: registry.MobEffectResistance, Duration: 6000, Amplifier: 0},
+				{ID: registry.MobEffectFireResistance, Duration: 6000, Amplifier: 0},
+			}) {
+				s.tryWrite(packet)
+			}
+		}
 	}
 	stack.Count--
 	if stack.Count <= 0 {
@@ -120,8 +167,8 @@ func (s *session) completeEating() {
 	s.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), stack.AppendSlot(nil)))
 	health, food, saturation := s.healthStatus()
 	s.tryWrite(protocol.EncodeUpdateHealth(health, food, saturation))
-	if name, ok := registry.ItemName(s.eatingItemID); ok {
-		slog.Debug("player ate food", "name", s.name, "item", name)
+	if name != "" {
+		slog.Debug("player consumed item", "name", s.name, "item", name)
 	}
 }
 

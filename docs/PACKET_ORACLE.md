@@ -44,7 +44,7 @@
 | 7 | `minecraft:block_event` | `EncodeBlockAction` |
 | 8 | `minecraft:block_update` | `EncodeBlockUpdate` |
 | 9 | `minecraft:boss_event` | — |
-| 10 | `minecraft:change_difficulty` | — |
+| 10 | `minecraft:change_difficulty` | `EncodeChangeDifficulty` |
 | 11 | `minecraft:chunk_batch_finished` | `EncodeChunkBatchFinished` |
 | 12 | `minecraft:chunk_batch_start` | `EncodeChunkBatchStart` |
 | 13 | `minecraft:chunks_biomes` | — |
@@ -110,7 +110,7 @@
 | 73 | `minecraft:recipe_book_remove` | `EncodeRecipeBookRemove` |
 | 74 | `minecraft:recipe_book_settings` | `EncodeRecipeBookSettings` |
 | 75 | `minecraft:remove_entities` | `EncodeRemoveEntities` |
-| 76 | `minecraft:remove_mob_effect` | — |
+| 76 | `minecraft:remove_mob_effect` | `EncodeRemoveMobEffect` |
 | 77 | `minecraft:reset_score` | — |
 | 78 | `minecraft:resource_pack_pop` | — |
 | 79 | `minecraft:resource_pack_push` | — |
@@ -164,7 +164,7 @@
 | 127 | `minecraft:transfer` | — |
 | 128 | `minecraft:update_advancements` | — |
 | 129 | `minecraft:update_attributes` | — |
-| 130 | `minecraft:update_mob_effect` | — |
+| 130 | `minecraft:update_mob_effect` | `EncodeUpdateMobEffect` |
 | 131 | `minecraft:update_recipes` | `EncodeUpdateRecipes` |
 | 132 | `minecraft:update_tags` | `EncodeUpdateTags` |
 | 133 | `minecraft:projectile_power` | — |
@@ -188,6 +188,9 @@
 - `entity_event`
 - `set_health`
 - `player_combat_kill`
+- `change_difficulty`
+- `update_mob_effect`
+- `remove_mob_effect`
 - Configuration：`custom_payload`（brand）与 `finish_configuration`
 
 其余包仍列入本清单，后续按同一 oracle 逐批接入。

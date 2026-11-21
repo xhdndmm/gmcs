@@ -173,6 +173,20 @@ func (s *Server) miningSpeedFor(player *session, held item.Stack, state uint16) 
 		speed = tool.MiningSpeed(state)
 	}
 	speed = miningEnchantSpeed(held, speed)
+	// 原版 Player.getDestroySpeed：急迫每级 +20%，挖掘疲劳按等级取固定倍率。
+	if level := player.effectLevel(registry.MobEffectHaste); level > 0 {
+		speed *= 1 + float32(level)*0.2
+	}
+	switch player.effectLevel(registry.MobEffectMiningFatigue) {
+	case 1:
+		speed *= 0.3
+	case 2:
+		speed *= 0.09
+	case 3:
+		speed *= 0.0027
+	case 4:
+		speed *= 0.00081
+	}
 	if !player.playerOnGround() {
 		speed /= 5
 	}

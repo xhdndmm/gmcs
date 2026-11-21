@@ -376,6 +376,7 @@ func (s *Server) playerSnapshot() []*session {
 func (s *Server) tick() {
 	s.gameTicks.Add(1)
 	players := s.playerSnapshot()
+	s.tickPlayerEffects(players)
 	s.tickHunger(players)
 	s.tickPlayerEnvironment(players)
 	s.tickPlayerEquipment(players)
@@ -458,6 +459,9 @@ func (s *Server) tickWorldTime(players []*session) {
 
 // advanceWorldTime 推进一帧世界时间并返回当前时刻（0–23999）。
 func (s *Server) advanceWorldTime() int64 {
+	if !s.rules.doDaylightCycle.Load() {
+		return s.worldAge.Load() % worldDayLength
+	}
 	age := s.worldAge.Add(1)
 	return age % worldDayLength
 }
@@ -539,6 +543,12 @@ func (s *Server) tickMobs(players []*session) {
 		}
 
 		stats := mobKinds[m.Kind]
+		// 和平难度：已存在的敌对生物立即移除（原版会清除敌对生物）。
+		if s.peaceful() && !stats.passive {
+			delete(s.mobs, id)
+			removals = append(removals, id)
+			continue
+		}
 		mobWorld := s.worldFor(m.Dim)
 		// 环境燃烧：接触火/岩浆的点燃、着火伤害与入水熄灭（原版 Entity.baseTick
 		// 与 BaseFireBlock 的方块内效果）。
@@ -1100,7 +1110,7 @@ func (s *Server) teleportEnderman(m *mob) []byte {
 // 与原版一致：敌对生物只在夜晚生成（下界与末地不区分昼夜），被动生物在
 // 白天生成且需要草方块；末地只生成末影人。无光照引擎，因此不区分亮度。
 func (s *Server) trySpawnMob(players []*session) {
-	if !s.mobsEnabled || !s.config.SpawnMonsters || s.config.MaxMobs <= 0 || len(players) == 0 {
+	if !s.mobsEnabled || !s.config.SpawnMonsters || !s.rules.doMobSpawning.Load() || s.config.MaxMobs <= 0 || len(players) == 0 {
 		return
 	}
 	s.entityMu.Lock()
@@ -1161,12 +1171,15 @@ func (s *Server) trySpawnMob(players []*session) {
 	var kind mobKind
 	ok = false
 	if dim == world.DimensionEnd {
-		// 末地只生成末影人（近似原版）。
+		// 末地只生成末影人（近似原版）；和平难度不生成敌对生物。
+		if s.peaceful() {
+			return
+		}
 		if _, exists := s.mobTypeIDs[mobEnderman]; exists {
 			kind, ok = mobEnderman, true
 		}
 	} else {
-		hostile := s.isNight() || dim == world.DimensionNether
+		hostile := !s.peaceful() && (s.isNight() || dim == world.DimensionNether)
 		kind, ok = s.pickSpawnKind(hostile)
 	}
 	if !ok {
@@ -1657,9 +1670,11 @@ func (s *Server) damagePlayerWithMessage(player *session, amount float32, source
 		player.tryWrite(protocol.EncodePlayerCombatKill(player.entityID, message))
 		s.broadcastPacket(protocol.EncodeSystemChat(message))
 		slog.Info("player died", "name", player.name, "source", sourceName)
-		// 与原版一致：死亡时掉落全部物品与经验球（等级 × 7，上限 100）。
-		s.dropPlayerInventory(player)
-		if _, level, _ := player.experienceStatus(); level > 0 {
+		// 与原版 keepInventory 一致：开启时保留物品栏与经验，不生成死亡掉落。
+		if !s.rules.keepInventory.Load() {
+			s.dropPlayerInventory(player)
+		}
+		if _, level, _ := player.experienceStatus(); level > 0 && !s.rules.keepInventory.Load() {
 			dropped := level * 7
 			if dropped > 100 {
 				dropped = 100
@@ -1685,7 +1700,14 @@ func (s *Server) respawnPlayer(player *session) {
 	// 世界重建窗口：客户端在收到 Respawn 后会清空实体列表，
 	// 期间暂停实体跟踪，重生完成后 resume 并由下一帧统一补发。
 	s.suspendEntityTracking(player)
+	// 原版重生会重建玩家状态；持续效果不跨死亡保留。
+	for _, packet := range player.clearEffects() {
+		player.tryWrite(packet)
+	}
 	if err := player.writePacket(protocol.EncodeRespawn(spawn, 0)); err != nil {
+		return
+	}
+	if err := player.writePacket(s.difficultyPacket()); err != nil {
 		return
 	}
 	// 1.20.2+ 协议要求：每次 Respawn 后都必须重发“开始等待区块”（Game Event 13），
@@ -1836,6 +1858,8 @@ func (s *Server) resolveMobRegistryIDs() {
 		{"minecraft:damage_type", "minecraft:fall", &s.fallDamageTypeID},
 		{"minecraft:damage_type", "minecraft:arrow", &s.arrowDamageTypeID},
 		{"minecraft:damage_type", "minecraft:explosion", &s.explosionDamageTypeID},
+		{"minecraft:damage_type", "minecraft:magic", &s.magicDamageTypeID},
+		{"minecraft:damage_type", "minecraft:wither", &s.witherDamageTypeID},
 		{"minecraft:damage_type", "minecraft:lava", &s.lavaDamageTypeID},
 		{"minecraft:damage_type", "minecraft:on_fire", &s.fireDamageTypeID},
 		{"minecraft:damage_type", "minecraft:drown", &s.drownDamageTypeID},

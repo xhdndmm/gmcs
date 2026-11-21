@@ -229,12 +229,12 @@ func TestOfflineLoginAndPlayFlow(t *testing.T) {
 	}
 
 	// Play 阶段初始包：
-	// Login → Set Default Spawn → Game Event → Set Center Chunk →
+	// Login → Change Difficulty → Set Default Spawn → Game Event → Set Center Chunk →
 	// Chunk Batch Start → [视距内区块 ×N] → Chunk Batch Finished →
 	// Synchronize Player Position → Player Info → System Chat → Declare Commands →
 	// Update Recipes → Recipe Book Add → Recipe Book Settings →
 	// Container Set Content（窗口 0 物品栏）→ Set Held Slot → Update Health
-	for _, want := range []int32{0x30, 0x5F, 0x26, 0x5C, 0x0C} {
+	for _, want := range []int32{0x30, protocol.PlayPacketIDChangeDifficulty, 0x5F, 0x26, 0x5C, 0x0C} {
 		id, _ := readCompressedPacket(t, conn)
 		if id != want {
 			t.Fatalf("expected play packet %#x, got %#x", want, id)

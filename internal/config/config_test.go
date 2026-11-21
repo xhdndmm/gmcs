@@ -250,3 +250,33 @@ func TestSaveIsAtomic(t *testing.T) {
 func equalConfigs(a, b Config) bool {
 	return reflect.DeepEqual(a, b)
 }
+
+// TestDifficultyDefaultsAndParsing 验证难度默认值、合法名称与非法配置。
+func TestDifficultyDefaultsAndParsing(t *testing.T) {
+	if Default().Difficulty != "easy" {
+		t.Fatalf("default difficulty = %q, want easy", Default().Difficulty)
+	}
+	cases := map[string]Difficulty{
+		"peaceful": DifficultyPeaceful,
+		"easy":     DifficultyEasy,
+		"normal":   DifficultyNormal,
+		"hard":     DifficultyHard,
+	}
+	for name, want := range cases {
+		got, ok := DifficultyID(name)
+		if !ok || got != want {
+			t.Fatalf("DifficultyID(%q) = %d, %v; want %d, true", name, got, ok, want)
+		}
+		if back, ok := DifficultyName(got); !ok || back != name {
+			t.Fatalf("DifficultyName(%d) = %q, %v; want %q", got, back, ok, name)
+		}
+	}
+	if _, ok := DifficultyID("hardcore"); ok {
+		t.Fatal("unknown difficulty should not resolve")
+	}
+	cfg := Default()
+	cfg.Difficulty = "hardcore"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unknown difficulty should fail validation")
+	}
+}

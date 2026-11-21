@@ -115,7 +115,8 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 	// （LivingEntity.getMaxAirSupply）；上限缓存在 airCapacity。
 	maxAir := s.airCapacityValue()
 	air := s.air.Load()
-	if headInWater(w, x, y, z) {
+	waterBreathing := s.hasEffect(registry.MobEffectWaterBreathing)
+	if headInWater(w, x, y, z) && !waterBreathing {
 		if air > -20 {
 			air--
 		}
@@ -124,6 +125,8 @@ func (s *session) tickEnvironment(server *Server, players []*session) {
 			server.damagePlayerWithMessage(s, envDrownDamage, "drowning", 0, server.drownDamageTypeID, nil,
 				"%s drowned")
 		}
+	} else if waterBreathing && air < int32(maxAir) {
+		air = int32(maxAir)
 	} else if air < int32(maxAir) {
 		air = int32(maxAir)
 	}

@@ -51,12 +51,6 @@ const (
 	soulFireBlockName = "minecraft:soul_fire"
 	// fireMaxAge 是火的最大 age 属性值（原版 15）。
 	fireMaxAge = 15
-	// fireDifficultyID 是原版 Difficulty.getId() 的取值（Peaceful=0/Easy=1/Normal=2/Hard=3）。
-	// gmcs 暂无难度设置，按原版 server.properties 默认难度 Easy 处理。
-	fireDifficultyID = 1
-	// fireSpreadRadiusAroundPlayer 是原版规则 fire_spread_radius_around_player 的默认值
-	// （128 格；-1 表示不限制；gmcs 无游戏规则，按默认值处理）。
-	fireSpreadRadiusAroundPlayer = 128.0
 	// fireIncreasedBurnoutReduction 是群系属性开启时燃烧判定基数的减少量（原版 -50）。
 	fireIncreasedBurnoutReduction = 50
 )
@@ -225,7 +219,11 @@ func fireInfiniburnTag(dim world.Dimension) string {
 // 默认 128 格；ChunkMap.anyPlayerCloseEnoughTo 用玩家实体位置与方块角点的三维
 // 欧氏距离与半径比较，旁观者不计入）。gmcs 无游戏规则，按默认值处理。
 func (s *Server) fireSpreadAllowed(dim world.Dimension, pos [3]int) bool {
-	radiusSquared := fireSpreadRadiusAroundPlayer * fireSpreadRadiusAroundPlayer
+	radius := float64(s.rules.fireSpreadRadiusAroundPlayer.Load())
+	if radius < 0 {
+		return true
+	}
+	radiusSquared := radius * radius
 	for _, player := range s.playerSnapshot() {
 		if player.dimensionID() != dim || player.gameModeID() == uint8(config.GameModeSpectator) {
 			continue
@@ -415,7 +413,7 @@ func (s *Server) fireTickBody(w *world.World, dim world.Dimension, pos [3]int, p
 					continue
 				}
 				// 原版公式：(可燃度 + 40 + 难度 × 7) / (age + 30)，群系属性开启时再除以 2。
-				odds := (fuel + 40 + fireDifficultyID*7) / (age + 30)
+				odds := (fuel + 40 + int(s.difficultyID())*7) / (age + 30)
 				if increasedBurnout {
 					odds /= 2
 				}

@@ -462,3 +462,30 @@ func TestEncodeCollect(t *testing.T) {
 		t.Fatalf("collect trailing bytes: %d", len(packet)-offset)
 	}
 }
+
+func TestEncodeChangeDifficulty(t *testing.T) {
+	for _, tc := range []struct {
+		difficulty uint8
+		locked     bool
+	}{
+		{0, false},
+		{1, false},
+		{2, true},
+		{3, true},
+	} {
+		packet := EncodeChangeDifficulty(tc.difficulty, tc.locked)
+		id, offset, err := DecodeVarInt(packet)
+		if err != nil || id != PlayPacketIDChangeDifficulty {
+			t.Fatalf("packet id = %d (err=%v), want %d", id, err, PlayPacketIDChangeDifficulty)
+		}
+		if offset >= len(packet) || packet[offset] != tc.difficulty {
+			t.Fatalf("difficulty byte = %v, want %d", packet[offset:], tc.difficulty)
+		}
+		if got := packet[offset+1] != 0; got != tc.locked {
+			t.Fatalf("locked = %v, want %v", got, tc.locked)
+		}
+		if offset+2 != len(packet) {
+			t.Fatalf("unexpected trailing bytes: %d", len(packet)-offset-2)
+		}
+	}
+}

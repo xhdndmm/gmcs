@@ -149,7 +149,7 @@ func (s *Server) setWeatherParameters(clearTicks, weatherTicks int32, raining, t
 // tickWeather 推进一帧天气并广播变化（由主 tick 调用）。
 // weatherEnabled 为 false 时不做任何事（测试用确定性钩子，见 joinServer）。
 func (s *Server) tickWeather(players []*session) {
-	if !s.weatherEnabled {
+	if !s.weatherEnabled || !s.rules.doWeatherCycle.Load() {
 		return
 	}
 	s.weatherMu.Lock()

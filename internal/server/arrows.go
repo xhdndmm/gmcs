@@ -357,6 +357,8 @@ func (s *Server) tickArrows(players []*session) {
 // 方块销毁为简化模型：无掉落、跳过爆炸抗性方块（见 explosionResistantBlocks）。
 func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, power float32, sourceName string) {
 	w := s.worldFor(dim)
+	// mobGriefing=false 时苦力怕仍造成伤害/击退，但不破坏方块（原版 Creeper）。
+	destroyBlocks := sourceName != "Creeper" || s.rules.mobGriefing.Load()
 	baseX, baseY, baseZ := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
 	rangeInt := int(math.Ceil(float64(radius)))
 	radiusSquared := float64(radius) * float64(radius)
@@ -376,6 +378,9 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 				}
 				state := w.BlockAt(bx, by, bz)
 				if state == world.AirBlock || isWaterState(state) || isLavaState(state) {
+					continue
+				}
+				if !destroyBlocks {
 					continue
 				}
 				if name, ok := s.blockNameOf(state); ok && explosionResistantBlocks[name] {

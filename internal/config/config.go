@@ -73,6 +73,12 @@ type Config struct {
 	WorldBorderSize int `json:"world_border_size"`
 	// GameMode 是新玩家的游戏模式（survival、creative、adventure、spectator）。
 	GameMode string `json:"game_mode"`
+	// Difficulty 是世界难度（peaceful、easy、normal、hard）；默认 easy，
+	// 与原版 server.properties 的 difficulty 默认值一致。
+	Difficulty string `json:"difficulty"`
+	// DifficultyLocked 表示客户端不能通过“难度锁定”界面修改难度；
+	// 对应 Change Difficulty 包的 locked 标志。
+	DifficultyLocked bool `json:"difficulty_locked"`
 	// SpawnMonsters 控制是否在玩家附近生成敌对生物。
 	SpawnMonsters bool `json:"spawn_monsters"`
 	// MaxMobs 是同时存在的生物数量上限（0 表示不生成）。
@@ -137,6 +143,7 @@ func Default() Config {
 		WorldSeed:       0,
 		WorldBorderSize: 0,
 		GameMode:        "survival",
+		Difficulty:      "easy",
 		SpawnMonsters:   true,
 		MaxMobs:         8,
 		AutosaveSeconds: 300, OnlineMode: false,
@@ -231,6 +238,9 @@ func (c Config) Validate() error {
 	if _, ok := GameModeID(c.GameMode); !ok {
 		return fmt.Errorf("unknown game mode %q", c.GameMode)
 	}
+	if _, ok := DifficultyID(c.Difficulty); !ok {
+		return fmt.Errorf("unknown difficulty %q", c.Difficulty)
+	}
 	if c.OnlineMode && c.SessionServerURL == "" {
 		return fmt.Errorf("session server URL must not be empty in online mode")
 	}
@@ -256,6 +266,46 @@ const (
 	GameModeAdventure GameMode = 2
 	GameModeSpectator GameMode = 3
 )
+
+// Difficulty 是原版 Difficulty 枚举的序号（Peaceful=0/Easy=1/Normal=2/Hard=3）。
+type Difficulty uint8
+
+const (
+	DifficultyPeaceful Difficulty = iota
+	DifficultyEasy
+	DifficultyNormal
+	DifficultyHard
+)
+
+// DifficultyID 把配置中的难度名转换为原版枚举序号。
+func DifficultyID(name string) (Difficulty, bool) {
+	switch name {
+	case "peaceful":
+		return DifficultyPeaceful, true
+	case "easy":
+		return DifficultyEasy, true
+	case "normal":
+		return DifficultyNormal, true
+	case "hard":
+		return DifficultyHard, true
+	}
+	return 0, false
+}
+
+// DifficultyName 返回难度枚举的配置名。
+func DifficultyName(difficulty Difficulty) (string, bool) {
+	switch difficulty {
+	case DifficultyPeaceful:
+		return "peaceful", true
+	case DifficultyEasy:
+		return "easy", true
+	case DifficultyNormal:
+		return "normal", true
+	case DifficultyHard:
+		return "hard", true
+	}
+	return "", false
+}
 
 // GameModeID 把配置中的游戏模式名解析为 ID。
 func GameModeID(name string) (GameMode, bool) {

@@ -121,7 +121,7 @@ func TestCommandSuggestions(t *testing.T) {
 
 	// 管理员补全命令名：替换整段文本，候选带斜杠。
 	matches, start, length := instance.commandSuggestions(op, "/ga")
-	if len(matches) != 1 || matches[0] != "/gamemode" || start != 0 || length != 3 {
+	if len(matches) != 2 || matches[0] != "/gamemode" || matches[1] != "/gamerule" || start != 0 || length != 3 {
 		t.Fatalf("op /ga = %v [%d,%d)", matches, start, length)
 	}
 	// 非管理员看不到 /gamemode。
@@ -194,7 +194,7 @@ func TestNodePermissions(t *testing.T) {
 	if got := names(&session{name: "Alice"}); got != "help,list,spawn,gamemode" {
 		t.Fatalf("Alice commands = %q", got)
 	}
-	if got := names(&session{name: "Bob"}); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,xp,clear,kick,kill,dimension,save-all" {
+	if got := names(&session{name: "Bob"}); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,gamerule,xp,clear,kick,kill,dimension,save-all" {
 		t.Fatalf("Bob commands = %q", got)
 	}
 	if got := names(&session{name: "Guest"}); got != "help,list,spawn" {
@@ -262,10 +262,10 @@ func TestOpLevels(t *testing.T) {
 	if got := join(commandNames("Frank"), ","); got != "help,list,spawn" {
 		t.Fatalf("level 1 commands = %q", got)
 	}
-	if got := join(commandNames("Bob"), ","); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,xp,clear" {
+	if got := join(commandNames("Bob"), ","); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,gamerule,xp,clear" {
 		t.Fatalf("level 2 commands = %q", got)
 	}
-	if got := join(commandNames("Carol"), ","); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,xp,clear,kick,kill,dimension,save-all" {
+	if got := join(commandNames("Carol"), ","); got != "help,list,spawn,seed,say,gamemode,tp,give,time,weather,gamerule,xp,clear,kick,kill,dimension,save-all" {
 		t.Fatalf("level 3 commands = %q", got)
 	}
 }

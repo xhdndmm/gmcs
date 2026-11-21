@@ -40,6 +40,9 @@ func TestClientboundOracleExplosionPackets(t *testing.T) {
 		packet []byte
 	}{
 		{"add_entity", "play", EncodeAddEntity(42, uuid, tntType, 1.5, 64, 2.5, 0.1, 0.2, 0.3, 45, 10)},
+		{"change_difficulty", "play", EncodeChangeDifficulty(2, false)},
+		{"update_mob_effect", "play", EncodeUpdateMobEffect(42, 9, 0, 600, MobEffectFlagVisible|MobEffectFlagShowIcon)},
+		{"remove_mob_effect", "play", EncodeRemoveMobEffect(42, 9)},
 		{"set_entity_data_fuse", "play", EncodeEntityMetadataVarInt(42, 8, 80)},
 		{"set_entity_data_block_state", "play", EncodeEntityMetadataVarInt(42, 9, int32(tntState))},
 		{"explode", "play", EncodeExplosion(1.5, 64, 2.5, 4, 7, ParticleExplosion)},

@@ -88,6 +88,7 @@ func TestStarvationDamage(t *testing.T) {
 	cfg := config.Default()
 	cfg.WorldDir = t.TempDir()
 	cfg.SpawnMonsters = false
+	cfg.Difficulty = "normal"
 	instance, _ := joinServer(t, cfg, "Starving")
 	player := findSession(t, instance, "Starving")
 

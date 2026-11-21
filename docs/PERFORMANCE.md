@@ -1925,6 +1925,40 @@ RSS 峰值约 464 MB（测试机，含初始视距区块与光照数组）
 未验证：真实客户端对新增配方书显示/染色 NBT 的视觉行为，以及鸡/兔的完整
 原版 AI（产蛋、兔子跳跃、幼年变体）尚未实现。
 
+### 3.54 难度、游戏规则与状态效果（2026-11-21）
+
+本批不改变区块/实体编码热路径，新增协议与状态机；没有性能基准意义上的
+吞吐提升声明。设计要点：
+
+- **难度**：`Server.difficulty`/`difficultyLocked` 使用原子字段；Change Difficulty
+  包在 Join、Respawn 与跨维度 teleport 后发送。和平难度在 `tickMobs` 中直接
+  移除敌对生物（不再进入 AI 热路径），自然刷怪选择改为被动生物。
+- **游戏规则**：7 条规则使用 atomic 字段，不进入热循环锁；`/gamerule` 查询/设置
+  与 `level.json` 持久化（JSON RawMessage，旧存档缺省默认值）。
+- **状态效果**：固定 40 槽数组（`[40]mobEffectInstance`）而非每个玩家 map；
+  效果查找/更新受既有 `stateMu` 保护；tick 只做整数倒计时和少量周期结算，
+  不产生每 tick 堆分配。毒/凋零伤害在解锁后走既有 `damagePlayer` 路径，
+  抗性倍率在 `stateMu` 内直接读取，避免额外锁。
+- 效果 ID 来自官方 `reports/registries.json` 的 `minecraft:mob_effect`
+  protocol_id；持续时间/等级来自 1.21.11 `Potions` 构造；燃烧/饥饿公式见
+  `FireBlock`/`FoodData` 反编译。
+
+新增测试：`TestEncodeChangeDifficulty`、`TestJoinSendsChangeDifficulty`、
+`TestPeacefulRemovesHostileMobs`、`TestHungerDifficultyRules`、
+`TestGameRuleCommandAndPersistence`、`TestDoDaylightCycleStopsWorldAge`、
+`TestKeepInventoryPreventsDeathDrops`、`TestMobGriefingPreventsCreeperBlockDamage`、
+`TestGameRuleCompletion`、`TestPotionEffectApplyTickAndRemove`、
+`TestDrinkPotionAppliesEffects`、`TestFireResistanceBlocksFireDamage`、
+`TestMilkClearsEffects`、`TestEffectPersistenceRoundTrip`。
+
+验证：`go test ./...`、`go test -race ./internal/protocol ./internal/server` 通过；
+oracle 对 Change Difficulty/Update/Remove Mob Effect 通过。
+
+已知限制：效果只覆盖玩家，未覆盖生物；吸收/生命提升/跳跃提升/飘浮等属性修饰
+未接入；喷溅/滞留药水与药箭未实现；Gamerules 只覆盖 7 条，未实现的原版规则
+不会出现在 `/gamerule` 补全中且显式报错；`doDaylightCycle=false` 当前同时冻结
+`worldAge`（未拆分 gameTime/dayTime），这是已知近似。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；

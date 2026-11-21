@@ -83,6 +83,18 @@ type playerRecord struct {
 	SelectedSlot int32 `json:"selected_slot,omitempty"`
 	// EnderItems 是末影箱内容（27 槽，按玩家独立存储）。
 	EnderItems []playerItem `json:"ender_inventory"`
+	// Effects 是持续状态效果；旧记录缺省表示无效果。
+	Effects []effectRecord `json:"effects,omitempty"`
+}
+
+// effectRecord 是持久化的一个状态效果。
+type effectRecord struct {
+	ID        int32 `json:"id"`
+	Duration  int32 `json:"duration"`
+	Amplifier int32 `json:"amplifier,omitempty"`
+	Ambient   bool  `json:"ambient,omitempty"`
+	Visible   bool  `json:"visible,omitempty"`
+	ShowIcon  bool  `json:"show_icon,omitempty"`
 }
 
 // playerItem 是物品栏中的一个堆栈；Item 为命名空间 ID。
@@ -309,7 +321,20 @@ func playerRecordFromSession(player *session) playerRecord {
 		FireTicks:    player.fireTicks.Load(),
 		Exhaustion:   exhaustion,
 		FoodTimer:    int32(foodTimer),
+		Effects:      storedEffects(player.activeEffects()),
 	}
+}
+
+func storedEffects(effects []effectSnapshot) []effectRecord {
+	if len(effects) == 0 {
+		return nil
+	}
+	out := make([]effectRecord, len(effects))
+	for i, effect := range effects {
+		out[i] = effectRecord{ID: effect.ID, Duration: effect.Duration, Amplifier: effect.Amplifier,
+			Ambient: effect.Ambient, Visible: effect.Visible, ShowIcon: effect.ShowIcon}
+	}
+	return out
 }
 
 // applyStoredTrim 把持久化的纹饰字段应用到堆栈（非法组合直接丢弃）。
@@ -427,6 +452,26 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		fireTicks = maxStoredFireTicks
 	}
 	s.fireTicks.Store(fireTicks)
+
+	// 持续状态效果（旧记录缺省为空；非法 ID/持续时间直接跳过）。
+	s.stateMu.Lock()
+	for _, effect := range record.Effects {
+		if effect.ID < 0 || effect.ID >= mobEffectCount || effect.Duration <= 0 {
+			continue
+		}
+		instance := mobEffectInstance{active: true, duration: effect.Duration, amplifier: max(effect.Amplifier, 0),
+			ambient: effect.Ambient, visible: effect.Visible, showIcon: effect.ShowIcon}
+		switch effect.ID {
+		case registry.MobEffectRegeneration:
+			instance.nextTick = effectRegenerationInterval >> max(instance.amplifier, 0)
+		case registry.MobEffectPoison:
+			instance.nextTick = effectPoisonInterval >> max(instance.amplifier, 0)
+		case registry.MobEffectWither:
+			instance.nextTick = effectWitherInterval >> max(instance.amplifier, 0)
+		}
+		s.effects[effect.ID] = instance
+	}
+	s.stateMu.Unlock()
 
 	// 选中的快捷栏槽位（越界值由 setter 忽略，保持默认 0）。
 	s.setSelectedHotbarSlot(int(record.SelectedSlot))

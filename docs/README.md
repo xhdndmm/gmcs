@@ -49,6 +49,8 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `world_seed` | 地形生成种子（首次启动随机生成并固定） | 随机 |
 | `world_border_size` | 世界边界边长（方块，正方形，以 0,0 为中心；0 不限制） | `0` |
 | `game_mode` | 新玩家的游戏模式（survival/creative/adventure/spectator） | `survival` |
+| `difficulty` | 世界难度（peaceful/easy/normal/hard；默认与原版 server.properties 一致为 easy） | `easy` |
+| `difficulty_locked` | 是否锁定难度（Change Difficulty 包的 locked 标志） | `false` |
 | `spawn_monsters` | 是否在玩家附近生成敌对生物 | `true` |
 | `max_mobs` | 同时存在的生物上限（0 表示不生成） | `8` |
 | `autosave_seconds` | 自动保存间隔（秒，0 表示禁用） | `300` |
@@ -80,6 +82,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `/give <物品> [数量]` | 给予物品（带/不带 `minecraft:` 前缀；放不下时掉落，等级 2） |
 | `/time set <day\|noon\|night\|midnight\|tick>` / `/time add <tick>` / `/time query` | 查询/修改世界时间（等级 2） |
 | `/weather <clear\|rain\|thunder> [秒]` | 设置天气（省略秒数时按原版区间随机，等级 2） |
+| `/gamerule [规则] [值]` | 查看/设置已实现的游戏规则（等级 2） |
 | `/xp add <数量>` | 增加经验值（等级 2） |
 | `/clear [玩家]` | 清空物品栏（等级 2） |
 | `/kick <玩家>` | 踢出在线玩家（等级 3） |
@@ -155,6 +158,11 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 
 ### 生物与战斗
 
+- **难度与状态效果**：`difficulty` 配置（peaceful/easy/normal/hard）通过
+  Change Difficulty 包同步；饥饿伤害、和平难度清除敌对生物与回血、
+  火焰蔓延公式按难度分支。已实现药水/金苹果/牛奶来源的状态效果
+  （再生、中毒、凋零、瞬间治疗/伤害、饱和、抗性、火焰抗性、水下呼吸、
+  急迫/挖掘疲劳），效果随 players.json 保存；`/gamerule` 支持 7 条规则。
 - 敌对生物五种：**僵尸**（追踪 32 格、近战 2 点）、**骷髅**（保持 3–16 格距离射箭，
   箭矢 2 点伤害）、**苦力怕**（靠近 3 格点燃 1.5 秒引信后爆炸：半径 3 格摧毁方块，
   6 格内线性衰减最多 24 点伤害与击退）、**蜘蛛**（速度更快、近战 2 点）、
@@ -220,7 +228,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 - 经验球随维度目录的 `entities.json` 保存 Value/Count/Age/速度，重启后恢复
   （未拾取的经验球不再丢失）。
 - 限制：生物寻路为地表模型（不考虑头顶净空与水中游泳；末影人瞬移为随机尝试）、
-  爆炸无方块掉落、光照属性表仍为近似、无状态效果/药水效果；完整列表见 [TODO.md](TODO.md)。
+  爆炸无方块掉落、光照属性表仍为近似；完整列表见 [TODO.md](TODO.md)。
 
 ### 方块交互与玩家物理
 
@@ -478,11 +486,10 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   越往上越难蔓延。
 - **永燃与灵魂火**：下界岩/岩浆块按维度的 `infiniburn_*` 标签永燃（不下雨也不会熄）；
   灵魂火没有 tick（不推进、不蔓延、不自行熄灭），失去灵魂沙/灵魂土即消失。
-- **玩家半径**：与原版 1.21.11 一致，火焰只在 128 格内存有非旁观玩家时推进
-  （规则 `fire_spread_radius_around_player` 的默认值；gmcs 无游戏规则），
-  区块未加载时同样只重新排程。
-- 已知差异：无难度设置（按默认 Easy）、含水方块状态未建模、
-  雷暴不产生闪电。详见 [TODO.md](TODO.md)。
+- **玩家半径**：与原版 1.21.11 一致，火焰只在
+  `fire_spread_radius_around_player` 规则指定的半径内（默认 128 格，-1 不限制）
+  存有非旁观玩家时推进；区块未加载时同样只重新排程。
+- 已知差异：含水方块状态未建模；雷暴不产生闪电。详见 [TODO.md](TODO.md)。
 - **着火（玩家与生物）**：站在火/灵魂火方块上点燃 8 秒（玩家在火中每 tick 额外
   +1…2 tick），接触岩浆点燃 15 秒并受 4 点岩浆伤害；着火每秒 1 点火焰伤害
   （受受伤无敌帧限制），入水立即熄灭；着火状态通过实体共享标志（Set Entity Data

@@ -125,6 +125,11 @@ type Server struct {
 	borderHalfSize float64
 	// defaultGameMode 是新玩家的游戏模式。
 	defaultGameMode uint8
+	// difficulty/difficultyLockFlag 是世界难度与锁定标志（原版 Difficulty 序号）。
+	difficulty         atomic.Uint32
+	difficultyLockFlag atomic.Bool
+	// rules 是已实现的游戏规则（持久化到 level.json）。
+	rules gameRuleState
 	// mobsEnabled 为 false 时禁用全部生物逻辑（注册表数据缺失时）。
 	mobsEnabled bool
 	// 玩家实体同步（注册表缺少玩家实体类型时禁用）。
@@ -140,6 +145,8 @@ type Server struct {
 	fallDamageTypeID         int32
 	arrowDamageTypeID        int32
 	explosionDamageTypeID    int32
+	magicDamageTypeID        int32
+	witherDamageTypeID       int32
 	// 环境伤害（岩浆/着火/溺水/岩浆块/仙人掌）。
 	lavaDamageTypeID     int32
 	fireDamageTypeID     int32
@@ -583,6 +590,10 @@ func newServer(cfg config.Config, overworldGenerator world.Generator) (*Server, 
 		spawns:                 make(map[world.Dimension]spawnPoint),
 		weatherEnabled:         true,
 	}
+	difficulty, _ := config.DifficultyID(cfg.Difficulty)
+	server.difficulty.Store(uint32(difficulty))
+	server.difficultyLockFlag.Store(cfg.DifficultyLocked)
+	server.rules.reset()
 	server.fxRand.Store(fxRandDefaultSeed)
 	// 预计算主世界出生点（进入世界的第一个玩家必须立即得到可用坐标）。
 	server.spawnPositionFor(world.DimensionOverworld)

@@ -33,6 +33,8 @@ type levelState struct {
 	ClearTicks   int32 `json:"clear_ticks,omitempty"`
 	RainTicks    int32 `json:"rain_ticks,omitempty"`
 	ThunderTicks int32 `json:"thunder_ticks,omitempty"`
+	// GameRules 是已实现游戏规则的持久化值；缺省时保持默认值。
+	GameRules map[string]json.RawMessage `json:"gamerules,omitempty"`
 }
 
 // levelSaveMu 串行化 level.json 的写入（自动保存 goroutine 与关闭路径并发）。
@@ -71,6 +73,9 @@ func (s *Server) loadLevelState() error {
 	s.weather.oThunderLevel = s.weather.thunderLevel
 	s.weatherMu.Unlock()
 	s.rainingFlag.Store(state.Raining)
+	if err := s.rules.load(state.GameRules); err != nil {
+		return fmt.Errorf("恢复游戏规则：%w", err)
+	}
 	slog.Info("loaded level state", "worldAge", state.WorldAge,
 		"raining", state.Raining, "thundering", state.Thundering)
 	return nil
@@ -86,7 +91,7 @@ func boolLevel(value bool) float32 {
 
 // saveLevelState 原子写入主世界级别状态（世界时间与天气）。
 func (s *Server) saveLevelState() error {
-	state := levelState{WorldAge: s.worldAge.Load()}
+	state := levelState{WorldAge: s.worldAge.Load(), GameRules: s.rules.raw()}
 	s.weatherMu.Lock()
 	state.Raining = s.weather.raining
 	state.Thundering = s.weather.thundering

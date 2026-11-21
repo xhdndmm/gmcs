@@ -53,6 +53,7 @@ var commands = []commandSpec{
 	{Name: "give", ArgName: "item", Level: 2, Node: "gmcs.command.give"},
 	{Name: "time", ArgName: "value", Level: 2, Node: "gmcs.command.time"},
 	{Name: "weather", ArgName: "type", Level: 2, Node: "gmcs.command.weather"},
+	{Name: "gamerule", ArgName: "rule", Level: 2, Node: "gmcs.command.gamerule"},
 	{Name: "xp", ArgName: "amount", Level: 2, Node: "gmcs.command.xp"},
 	{Name: "clear", ArgName: "target", Level: 2, Node: "gmcs.command.clear"},
 	{Name: "kick", ArgName: "player", Level: 3, Node: "gmcs.command.kick"},
@@ -238,6 +239,8 @@ func (s *Server) handleCommand(player *session, commandLine string) {
 		s.handleTimeCommand(player, commandArgument(commandLine, fields))
 	case "weather":
 		s.handleWeatherCommand(player, commandArgument(commandLine, fields))
+	case "gamerule":
+		s.handleGameRuleCommand(player, commandArgument(commandLine, fields))
 	case "xp":
 		s.handleXPCommand(player, commandArgument(commandLine, fields))
 	case "clear":
@@ -279,6 +282,72 @@ func commandArgument(commandLine string, fields []string) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(commandLine), fields[0]))
+}
+
+// gameRuleSuggestions 为 /gamerule <name> <value> 的第二个参数生成候选：
+// 布尔规则给 true/false，整数规则不猜测具体值。
+func (s *Server) gameRuleSuggestions(argument string, commandSpace int) ([]string, int, int) {
+	space := strings.IndexByte(argument, ' ')
+	if space <= 0 || strings.Contains(argument[space+1:], " ") {
+		return nil, 0, 0
+	}
+	name := argument[:space]
+	spec, ok := gameRuleSpecByName(name)
+	if !ok || spec.kind != gameRuleBool {
+		return nil, 0, 0
+	}
+	prefix := strings.ToLower(argument[space+1:])
+	matches := make([]string, 0, 2)
+	for _, value := range []string{"true", "false"} {
+		if strings.HasPrefix(value, prefix) {
+			matches = append(matches, value)
+		}
+	}
+	start := commandSpace + 2 + space + 1
+	return matches, start, len(argument) - space - 1
+}
+
+// handleGameRuleCommand 实现 /gamerule：
+//
+//	/gamerule                      列出全部已实现规则
+//	/gamerule <rule>               查询规则
+//	/gamerule <rule> <value>       设置规则并立即写入 level.json
+func (s *Server) handleGameRuleCommand(player *session, argument string) {
+	fields := strings.Fields(argument)
+	if len(fields) == 0 {
+		lines := make([]string, 0, len(gameRuleSpecs))
+		for _, spec := range gameRuleSpecs {
+			value, _ := s.rules.get(spec.name)
+			lines = append(lines, spec.name+" = "+value)
+		}
+		player.tryWrite(protocol.EncodeSystemChat(strings.Join(lines, "\n")))
+		return
+	}
+	if len(fields) > 2 {
+		player.tryWrite(protocol.EncodeSystemChat("用法：/gamerule [规则] [值]"))
+		return
+	}
+	name := fields[0]
+	if len(fields) == 1 {
+		value, ok := s.rules.get(name)
+		if !ok {
+			player.tryWrite(protocol.EncodeSystemChat("未知游戏规则：" + name))
+			return
+		}
+		player.tryWrite(protocol.EncodeSystemChat(name + " = " + value))
+		return
+	}
+	if err := s.rules.set(name, fields[1]); err != nil {
+		player.tryWrite(protocol.EncodeSystemChat(err.Error()))
+		return
+	}
+	if err := s.saveLevelState(); err != nil {
+		player.tryWrite(protocol.EncodeSystemChat("规则已应用，但保存失败：" + err.Error()))
+		return
+	}
+	value, _ := s.rules.get(name)
+	player.tryWrite(protocol.EncodeSystemChat("已将 " + name + " 设为 " + value))
+	slog.Info("gamerule changed", "name", player.name, "rule", name, "value", value)
 }
 
 // handleTeleportCommand 实现 /tp：
@@ -610,6 +679,7 @@ func (s *Server) helpText(player *session) string {
 		"give":      "/give <物品> [数量] — 给予物品",
 		"time":      "/time set|add|query — 查看/修改世界时间",
 		"weather":   "/weather <clear|rain|thunder> [秒] — 设置天气",
+		"gamerule":  "/gamerule [规则] [值] — 查看/设置游戏规则",
 		"xp":        "/xp add <数量> — 增加经验值",
 		"clear":     "/clear [玩家] — 清空物品栏",
 		"kick":      "/kick <玩家> — 踢出玩家",
@@ -677,6 +747,9 @@ func (s *Server) commandSuggestions(player *session, text string) (matches []str
 	}
 	argument := body[space+1:]
 	if strings.Contains(argument, " ") {
+		if commandName == "gamerule" {
+			return s.gameRuleSuggestions(argument, space)
+		}
 		return nil, 0, 0
 	}
 	prefix := strings.ToLower(argument)
@@ -713,6 +786,13 @@ func (s *Server) commandSuggestions(player *session, text string) (matches []str
 		for _, word := range []string{"clear", "rain", "thunder"} {
 			if strings.HasPrefix(word, prefix) {
 				matches = append(matches, word)
+			}
+		}
+		return matches, space + 2, len(argument)
+	case "gamerule":
+		for _, spec := range gameRuleSpecs {
+			if strings.HasPrefix(strings.ToLower(spec.name), prefix) {
+				matches = append(matches, spec.name)
 			}
 		}
 		return matches, space + 2, len(argument)

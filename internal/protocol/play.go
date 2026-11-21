@@ -24,6 +24,8 @@ const (
 	PlayPacketIDPlayerInfoUpdate     = 0x44 // clientbound
 	PlayPacketIDSynchronizePlayerPos = 0x46 // clientbound
 	PlayPacketIDBlockUpdate          = 0x08 // clientbound
+	// PlayPacketIDChangeDifficulty 是 Change Difficulty（难度 + 锁定标志）。
+	PlayPacketIDChangeDifficulty = 0x0A // clientbound
 	// PlayPacketIDBlockChangedAck 是 Block Changed Ack（回应玩家动作序号）。
 	PlayPacketIDBlockChangedAck = 0x04 // clientbound
 	// PlayPacketIDBlockDestruction 是 Block Destruction（方块破坏进度动画）。
@@ -442,6 +444,15 @@ func EncodeSetHeldSlot(slot int32) []byte {
 // UnpackPosition 解包协议的 Position 类型（与 PackPosition 互逆）。
 func UnpackPosition(value int64) (x, y, z int) {
 	return int(value >> 38), int(value << 52 >> 52), int(value << 26 >> 38)
+}
+
+// EncodeChangeDifficulty 编码 Change Difficulty 包：
+// difficulty 为原版 Difficulty 枚举序号（Peaceful=0/Easy=1/Normal=2/Hard=3），
+// locked 表示客户端不能通过界面修改难度。
+func EncodeChangeDifficulty(difficulty uint8, locked bool) []byte {
+	packet := AppendVarInt(nil, int32(PlayPacketIDChangeDifficulty))
+	packet = append(packet, difficulty)
+	return AppendBool(packet, locked)
 }
 
 // EncodeBlockUpdate 编码 Block Update 包（单个方块状态变更）。
