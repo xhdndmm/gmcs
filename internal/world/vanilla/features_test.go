@@ -767,3 +767,44 @@ func TestLargeDripstoneDoesNotFloatInAir(t *testing.T) {
 		t.Fatalf("无洞穴支撑时生成了 %d 个滴水石方块", placed)
 	}
 }
+
+func TestLeafLitterRequiresGroundSupport(t *testing.T) {
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	chunk.SetBlock(1, 64, 1, SurfaceBlock{Name: "minecraft:oak_leaves"})
+	litter := SurfaceBlock{Name: "minecraft:leaf_litter"}
+	if simpleBlockCanSurvive(chunk, litter, 1, 65, 1) {
+		t.Fatal("落叶不应能放在树叶上")
+	}
+	chunk.SetBlock(1, 64, 1, SurfaceBlock{Name: "minecraft:grass_block"})
+	if !simpleBlockCanSurvive(chunk, litter, 1, 65, 1) {
+		t.Fatal("落叶应能放在草方块上")
+	}
+}
+
+func TestGeneratedLeafLitterRestsOnGround(t *testing.T) {
+	data, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewRouter(data, "minecraft:overworld", 4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for cx := 0; cx < 2; cx++ {
+		for cz := 0; cz < 2; cz++ {
+			chunk, err := router.GenerateChunk(cx, cz)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunk.ForEachBlock(func(x, y, z int, block SurfaceBlock) {
+				if block.Name != "minecraft:leaf_litter" {
+					return
+				}
+				below := chunk.BlockAt(x, y-1, z)
+				if strings.HasSuffix(below.Name, "_leaves") || strings.HasSuffix(below.Name, "_log") {
+					t.Fatalf("落叶 (%d,%d,%d) 生成在 %s 上", x, y, z, below.Name)
+				}
+			})
+		}
+	}
+}

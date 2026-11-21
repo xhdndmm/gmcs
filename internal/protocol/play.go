@@ -658,43 +658,116 @@ func ParseSetCarriedItem(packet []byte) (int32, error) {
 	return int32(slot), nil
 }
 
-// errUnsupportedComponents 表示物品携带数据组件（附魔等），当前不支持解析。
-var errUnsupportedComponents = errors.New("item with data components is not supported")
+// errUnsupportedComponents 表示物品携带当前无法安全解析的数据组件。
+var errUnsupportedComponents = errors.New("item with unsupported data components")
+
+// CreativeSlot 是 Set Creative Mode Slot 中解析出的物品堆栈。
+// 目前只保留协议层能够安全跳过的 potion_contents 组件；其他组件会返回
+// errUnsupportedComponents，避免把带附魔/耐久等组件的物品降级成默认物品。
+type CreativeSlot struct {
+	Slot     int
+	ItemID   int32
+	Count    int32
+	PotionID int32 // 1-based 药水 ID（0 表示没有 potion_contents 覆盖）
+}
+
+// potionContentsComponentID 是 minecraft:potion_contents 的 data component ID。
+const potionContentsComponentID = 49
 
 // ParseSetCreativeSlot 解析 Set Creative Mode Slot 包。
-// 返回槽位、物品 ID 与数量；数量为 0 表示清空槽位。
-// 带数据组件的物品返回 errUnsupportedComponents。
-func ParseSetCreativeSlot(packet []byte) (slot int, itemID int32, count int32, err error) {
+// 返回槽位、物品 ID、数量与可保留的组件；数量为 0 表示清空槽位。
+func ParseSetCreativeSlot(packet []byte) (CreativeSlot, error) {
+	var result CreativeSlot
 	packetID, offset, err := DecodeVarInt(packet)
 	if err != nil || packetID != PlayServerboundPacketIDSetCreativeSlot {
-		return 0, 0, 0, fmt.Errorf("invalid set creative slot packet")
+		return result, fmt.Errorf("invalid set creative slot packet")
 	}
 	rawSlot, offset, err := DecodeInt16(packet, offset)
 	if err != nil {
-		return 0, 0, 0, err
+		return result, err
 	}
-	if count, offset, err = decodeVarIntAt(packet, offset); err != nil {
-		return 0, 0, 0, err
+	result.Slot = int(rawSlot)
+	if result.Count, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return result, err
 	}
-	slot = int(rawSlot)
-	if count <= 0 {
-		return slot, 0, 0, nil
+	if result.Count <= 0 {
+		return result, nil
 	}
-	if itemID, offset, err = decodeVarIntAt(packet, offset); err != nil {
-		return 0, 0, 0, err
+	if result.ItemID, offset, err = decodeVarIntAt(packet, offset); err != nil {
+		return result, err
 	}
 	added, offset, err := decodeVarIntAt(packet, offset)
 	if err != nil {
-		return 0, 0, 0, err
+		return result, err
+	}
+	for i := int32(0); i < added; i++ {
+		componentID, next, err := decodeVarIntAt(packet, offset)
+		if err != nil {
+			return result, err
+		}
+		offset = next
+		if componentID != potionContentsComponentID {
+			return result, errUnsupportedComponents
+		}
+		potionID, next, err := decodePotionContents(packet, offset)
+		if err != nil {
+			return result, err
+		}
+		offset = next
+		result.PotionID = potionID
 	}
 	removed, _, err := decodeVarIntAt(packet, offset)
 	if err != nil {
-		return 0, 0, 0, err
+		return result, err
 	}
-	if added != 0 || removed != 0 {
-		return 0, 0, 0, errUnsupportedComponents
+	if removed != 0 {
+		return result, errUnsupportedComponents
 	}
-	return slot, itemID, count, nil
+	return result, nil
+}
+
+// decodePotionContents 解析 PotionContents.STREAM_CODEC 的负载。
+// 只支持“无 customColor、无 customEffects、无 customName”的普通药水；
+// 包含这些字段时返回不支持，而不是静默丢弃。
+func decodePotionContents(packet []byte, offset int) (potionID int32, next int, err error) {
+	if offset >= len(packet) {
+		return 0, offset, fmt.Errorf("truncated potion contents")
+	}
+	present := packet[offset]
+	offset++
+	if present > 1 {
+		return 0, offset, fmt.Errorf("invalid potion optional flag")
+	}
+	if present == 1 {
+		rawID, after, err := decodeVarIntAt(packet, offset)
+		if err != nil {
+			return 0, offset, err
+		}
+		offset = after
+		potionID = rawID + 1
+	}
+	if offset >= len(packet) {
+		return 0, offset, fmt.Errorf("truncated potion color flag")
+	}
+	if packet[offset] != 0 {
+		return 0, offset, errUnsupportedComponents // customColor
+	}
+	offset++
+	count, after, err := decodeVarIntAt(packet, offset)
+	if err != nil {
+		return 0, offset, err
+	}
+	offset = after
+	if count != 0 {
+		return 0, offset, errUnsupportedComponents // customEffects
+	}
+	if offset >= len(packet) {
+		return 0, offset, fmt.Errorf("truncated potion name flag")
+	}
+	if packet[offset] != 0 {
+		return 0, offset, errUnsupportedComponents // customName
+	}
+	return potionID, offset + 1, nil
 }
 
 // ParseSwingArm 解析 Swing Arm（挥手）包，校验包 ID 与长度。

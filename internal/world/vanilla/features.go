@@ -3310,10 +3310,21 @@ func (r *Router) applyTreeDecorators(chunk *GeneratedChunk, random *legacyRandom
 				if !chunk.InRange(tx, ty+1, tz) || !treeCanReplace(chunk.BlockAt(tx, ty+1, tz)) {
 					continue
 				}
-				if !isSolidBlock(chunk.BlockAt(tx, ty, tz)) {
+				ground := chunk.BlockAt(tx, ty, tz)
+				if !isSolidBlock(ground) || isLeafBlock(ground.Name) ||
+					strings.HasSuffix(ground.Name, "_log") || strings.HasSuffix(ground.Name, "_wood") {
+					// 树叶/原木不是 ground 支撑面；在采样前排除，避免为了让
+					// leaf_litter 落在树冠/树干上而额外消耗随机数。
 					continue
 				}
-				chunk.SetBlock(tx, ty+1, tz, decorator.provider.sample(random))
+				// 原版 place_on_ground 的 attemptToPlaceBlockAbove 会检查目标
+				// 方块能否存活；不能只检查下方“非空气”。否则 leaf_litter 会
+				// 被放到树叶/原木等非地面方块顶上，表现为悬空落叶。
+				state := decorator.provider.sample(random)
+				if !simpleBlockCanSurvive(chunk, state, tx, ty+1, tz) {
+					continue
+				}
+				chunk.SetBlock(tx, ty+1, tz, state)
 			}
 		case "minecraft:attached_to_leaves":
 			if decorator.provider == nil || len(decorator.directions) == 0 {

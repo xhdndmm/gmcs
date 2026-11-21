@@ -464,13 +464,13 @@ func (s *Server) handleSetCarriedItem(player *session, slot int32) {
 // 否则创造模式把物品放到快捷栏会被存进盔甲/副手槽，客户端物品错乱。
 // 0–4（合成结果与合成格）在本实现中没有持久槽位，忽略。
 // 负数槽位与原版一致：把物品掉落到世界中（创造界面丢弃手势）。
-func (s *Server) handleSetCreativeSlot(player *session, slot int, itemID int32, count int32) {
+func (s *Server) handleSetCreativeSlot(player *session, slot int, itemID int32, count int32, potionID int32) {
 	if player.gameModeID() != uint8(config.GameModeCreative) {
 		slog.Debug("非创造模式忽略了物品栏设置", "name", player.name)
 		return
 	}
 	if slot < 0 {
-		s.dropCreativeTrash(player, itemID, count)
+		s.dropCreativeTrash(player, itemID, count, potionID)
 		return
 	}
 	invSlot, ok := playerInvForMenuSlot(slot)
@@ -494,12 +494,13 @@ func (s *Server) handleSetCreativeSlot(player *session, slot int, itemID int32, 
 	if stack.Count > stack.MaxStack() {
 		return // 与原版一致：超过堆叠上限的设置被忽略
 	}
+	stack.PotionID = potionID
 	player.inventory.Set(invSlot, stack)
 	player.tryWrite(protocol.EncodeSetPlayerInventory(int32(invSlot), stack.AppendSlot(nil)))
 }
 
 // dropCreativeTrash 处理创造模式物品栏的负数槽位设置：把物品沿视线抛出。
-func (s *Server) dropCreativeTrash(player *session, itemID int32, count int32) {
+func (s *Server) dropCreativeTrash(player *session, itemID int32, count int32, potionID int32) {
 	if count <= 0 || itemID <= 0 {
 		return
 	}
@@ -511,6 +512,7 @@ func (s *Server) dropCreativeTrash(player *session, itemID int32, count int32) {
 	if err != nil || stack.Count > stack.MaxStack() {
 		return
 	}
+	stack.PotionID = potionID
 	x, y, z, yaw, pitch := player.playerPosition()
 	yawRad := float64(yaw) * math.Pi / 180
 	pitchRad := float64(pitch) * math.Pi / 180

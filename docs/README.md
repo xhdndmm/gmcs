@@ -79,7 +79,7 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 | `/say <消息>` | 向所有玩家广播消息（需要权限等级 2） |
 | `/gamemode <模式>` | 切换游戏模式（survival/creative/adventure/spectator，等级 2） |
 | `/tp <x> <y> <z>` 或 `/tp <玩家>` | 传送到坐标或在线玩家（含其所在维度，等级 2） |
-| `/give <物品> [数量]` | 给予物品（带/不带 `minecraft:` 前缀；放不下时掉落，等级 2） |
+| `/give <物品> [数量]` | 给予物品（带/不带 `minecraft:` 前缀；放不下时掉落；支持 `potion[potion_contents={potion:"minecraft:regeneration"}]`，等级 2） |
 | `/time set <day\|noon\|night\|midnight\|tick>` / `/time add <tick>` / `/time query` | 查询/修改世界时间（等级 2） |
 | `/weather <clear\|rain\|thunder> [秒]` | 设置天气（省略秒数时按原版区间随机，等级 2） |
 | `/gamerule [规则] [值]` | 查看/设置已实现的游戏规则（等级 2） |
@@ -163,6 +163,8 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
   火焰蔓延公式按难度分支。已实现药水/金苹果/牛奶来源的状态效果
   （再生、中毒、凋零、瞬间治疗/伤害、饱和、抗性、火焰抗性、水下呼吸、
   急迫/挖掘疲劳），效果随 players.json 保存；`/gamerule` 支持 7 条规则。
+  创造模式物品栏中的 `potion_contents` 与 `/give` 的药水组件会保留；
+  金苹果在饥饿值已满时仍可食用并施加吸收/再生。
 - 敌对生物五种：**僵尸**（追踪 32 格、近战 2 点）、**骷髅**（保持 3–16 格距离射箭，
   箭矢 2 点伤害）、**苦力怕**（靠近 3 格点燃 1.5 秒引信后爆炸：半径 3 格摧毁方块，
   6 格内线性衰减最多 24 点伤害与击退）、**蜘蛛**（速度更快、近战 2 点）、

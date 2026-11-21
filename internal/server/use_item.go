@@ -138,7 +138,10 @@ func (s *session) completeEating() {
 		}
 		return
 	default:
-		if !s.eatFood(stack.ItemID) {
+		if name == "minecraft:golden_apple" || name == "minecraft:enchanted_golden_apple" {
+			// 金苹果即使饥饿值已满也可以食用；效果仍应结算。
+			s.eatFoodAllowFull(stack.ItemID, true)
+		} else if !s.eatFood(stack.ItemID) {
 			return // 不再是食物或已吃饱
 		}
 		if name == "minecraft:golden_apple" {

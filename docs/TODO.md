@@ -207,6 +207,10 @@
   水下呼吸/急迫/挖掘疲劳，以及药水、金苹果/附魔金苹果、牛奶来源；
   玩家效果随 players.json 保存。仍未实现吸收/生命提升的属性修饰符、
   跳跃提升/飘浮/缓慢等完整移动属性、喷溅/滞留药水与药箭、效果粒子细节。
+- [x] 药水/金苹果使用修复：创造模式 `Set Creative Mode Slot` 现在解析
+  `potion_contents`（组件 49）并保留药水 ID；`/give` 支持
+  `minecraft:potion[potion_contents={potion:"minecraft:regeneration"}]`；
+  金苹果在饥饿值已满时仍可食用并结算吸收/再生。落叶修复见下条。
 
 
 
@@ -933,6 +937,9 @@
     覆盖箱子/木桶/漏斗等容器、熔炉族、酿造台、铁砧、砂轮机、附魔台、切石机、
     锻造台、工作台合成格（会话 goroutine 串行访问窗口字段，无跨线程竞态）；
     新增 `TestContainerClosesWhenOutOfReach`；
+  - 落叶修复：`place_on_ground` 树装饰器在采样 `leaf_litter` 前排除树叶/
+    原木支撑，并对采样状态执行 `simpleBlockCanSurvive`，避免落叶生成在树冠/
+    树干顶面。
   - 树叶衰减：新增 `internal/server/leaves.go`。玩家放置的树叶用生成器产出的
     `LeafPersistentStates`（`persistent=true、distance=7`）且永不衰减；自然树叶
     在原木/树叶被移除（含爆炸摧毁）时对周围 15³ 做一次“6 格内是否仍有原木”

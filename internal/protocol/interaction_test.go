@@ -163,7 +163,8 @@ func TestParseSetCarriedItem(t *testing.T) {
 	}
 }
 
-// TestParseSetCreativeSlot 验证创造模式物品栏设置解析（含带组件物品的拒绝）。
+// TestParseSetCreativeSlot 验证创造模式物品栏设置解析（含 potion_contents 与
+// 其他组件的拒绝）。
 func TestParseSetCreativeSlot(t *testing.T) {
 	// 清空槽位（数量 0）。
 	empty := AppendVarInt(nil, PlayServerboundPacketIDSetCreativeSlot)
@@ -171,9 +172,9 @@ func TestParseSetCreativeSlot(t *testing.T) {
 	binary.BigEndian.PutUint16(buf, uint16(5))
 	empty = append(empty, buf...)
 	empty = AppendVarInt(empty, 0)
-	slot, itemID, count, err := ParseSetCreativeSlot(empty)
-	if err != nil || slot != 5 || itemID != 0 || count != 0 {
-		t.Fatalf("空槽位解析 = (%d,%d,%d,%v)", slot, itemID, count, err)
+	parsed, err := ParseSetCreativeSlot(empty)
+	if err != nil || parsed.Slot != 5 || parsed.ItemID != 0 || parsed.Count != 0 {
+		t.Fatalf("空槽位解析 = %+v (err=%v)", parsed, err)
 	}
 
 	// 无组件的物品。
@@ -183,9 +184,9 @@ func TestParseSetCreativeSlot(t *testing.T) {
 	withItem = AppendVarInt(withItem, 123) // item ID
 	withItem = AppendVarInt(withItem, 0)   // added components
 	withItem = AppendVarInt(withItem, 0)   // removed components
-	slot, itemID, count, err = ParseSetCreativeSlot(withItem)
-	if err != nil || slot != 5 || itemID != 123 || count != 64 {
-		t.Fatalf("物品解析 = (%d,%d,%d,%v)", slot, itemID, count, err)
+	parsed, err = ParseSetCreativeSlot(withItem)
+	if err != nil || parsed.Slot != 5 || parsed.ItemID != 123 || parsed.Count != 64 || parsed.PotionID != 0 {
+		t.Fatalf("物品解析 = %+v (err=%v)", parsed, err)
 	}
 
 	// 带数据组件：拒绝。
@@ -195,8 +196,24 @@ func TestParseSetCreativeSlot(t *testing.T) {
 	withComponents = AppendVarInt(withComponents, 1) // item ID
 	withComponents = AppendVarInt(withComponents, 1) // added components
 	withComponents = AppendVarInt(withComponents, 0) // removed components
-	if _, _, _, err := ParseSetCreativeSlot(withComponents); !errors.Is(err, errUnsupportedComponents) {
+	if _, err := ParseSetCreativeSlot(withComponents); !errors.Is(err, errUnsupportedComponents) {
 		t.Fatalf("err = %v, want errUnsupportedComponents", err)
+	}
+
+	// 带 potion_contents 的药水：应保留 1-based 药水 ID。
+	withPotion := AppendVarInt(nil, PlayServerboundPacketIDSetCreativeSlot)
+	withPotion = append(withPotion, buf...)
+	withPotion = AppendVarInt(withPotion, 1) // count
+	withPotion = AppendVarInt(withPotion, 1) // item ID（测试值）
+	withPotion = AppendVarInt(withPotion, 1) // added components
+	withPotion = AppendVarInt(withPotion, potionContentsComponentID)
+	withPotion = append(withPotion, 1)        // optional(potion) 存在
+	withPotion = AppendVarInt(withPotion, 31) // regeneration 的裸 ID
+	withPotion = append(withPotion, 0, 0, 0)  // color/effects/name 均为空
+	withPotion = AppendVarInt(withPotion, 0)  // removed components
+	parsed, err = ParseSetCreativeSlot(withPotion)
+	if err != nil || parsed.PotionID != 32 {
+		t.Fatalf("药水解析 = %+v (err=%v), want PotionID=32", parsed, err)
 	}
 }
 

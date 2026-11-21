@@ -132,3 +132,93 @@ func TestEffectPersistenceRoundTrip(t *testing.T) {
 		t.Fatalf("restored regeneration level = %d, want 2", got)
 	}
 }
+
+func TestGivePotionComponentCarriesPotionID(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := newServer(cfg, testGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+	player := newTestSession([16]byte{0xD1, 0x03}, false)
+	player.server = instance
+	player.writer = &bytes.Buffer{}
+
+	instance.handleGiveCommand(player, `minecraft:potion[potion_contents={potion:"minecraft:regeneration"}]`)
+	found := false
+	for slot := 0; slot < 36; slot++ {
+		stack := player.inventory.Get(slot)
+		if stack.ItemID == testItemID(t, "minecraft:potion") {
+			found = true
+			if stack.PotionID != registry.PotionRegeneration+1 {
+				t.Fatalf("potion ID = %d, want %d", stack.PotionID, registry.PotionRegeneration+1)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("/give potion 未放入物品栏")
+	}
+}
+
+func TestGoldenAppleAppliesEffectsAtFullHunger(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := newServer(cfg, testGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+	player := newTestSession([16]byte{0xD1, 0x04}, false)
+	player.server = instance
+	player.writer = &bytes.Buffer{}
+	appleID, err := registry.ItemID("minecraft:golden_apple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	player.inventory.Set(0, item.Stack{ItemID: appleID, Count: 1})
+	player.stateMu.Lock()
+	player.food = maxPlayerFood
+	player.saturation = maxPlayerFood
+	player.stateMu.Unlock()
+	player.eating = true
+	player.eatingSlot = 0
+	player.eatingItemID = appleID
+	player.completeEating()
+	if !player.hasEffect(registry.MobEffectAbsorption) || !player.hasEffect(registry.MobEffectRegeneration) {
+		t.Fatal("满饥饿时金苹果仍应施加吸收与再生效果")
+	}
+	if !player.inventory.Get(0).IsEmpty() {
+		t.Fatal("金苹果应被消耗")
+	}
+}
+
+func TestCreativePotionSlotKeepsPotionID(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.GameMode = "creative"
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "CreativePotion")
+	defer conn.Close()
+	player := findSession(t, instance, "CreativePotion")
+	potionID := testItemID(t, "minecraft:potion")
+	packet := protocol.AppendVarInt(nil, protocol.PlayServerboundPacketIDSetCreativeSlot)
+	packet = append(packet, 0, 36) // 玩家菜单快捷栏 0
+	packet = protocol.AppendVarInt(packet, 1)
+	packet = protocol.AppendVarInt(packet, potionID)
+	packet = protocol.AppendVarInt(packet, 1)
+	packet = protocol.AppendVarInt(packet, 49) // potion_contents
+	packet = append(packet, 1)
+	packet = protocol.AppendVarInt(packet, registry.PotionRegeneration)
+	packet = append(packet, 0, 0, 0)
+	packet = protocol.AppendVarInt(packet, 0)
+	if err := protocol.WritePacketWithCompression(conn, packet, compressionThreshold); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		stack := player.inventory.Get(0)
+		return stack.ItemID == potionID && stack.PotionID == registry.PotionRegeneration+1
+	}, "创造模式药水未保留 potion_contents")
+}

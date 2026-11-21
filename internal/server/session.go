@@ -890,13 +890,19 @@ func (s *session) applyHungerTick() playerHungerStatus {
 
 // eatFood 应用一次进食：恢复饥饿值与饱食度。返回是否实际进食。
 func (s *session) eatFood(itemID int32) bool {
+	return s.eatFoodAllowFull(itemID, false)
+}
+
+// eatFoodAllowFull 与 eatFood 相同，但 allowFull 为 true 时即使饥饿值已满也
+// 返回 true（金苹果等特殊食物即使满饥饿也应当可以食用并施加效果）。
+func (s *session) eatFoodAllowFull(itemID int32, allowFull bool) bool {
 	food, ok := registry.Food(itemID)
 	if !ok {
 		return false
 	}
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if s.dead.Load() || s.food >= maxPlayerFood {
+	if s.dead.Load() || (!allowFull && s.food >= maxPlayerFood) {
 		return false
 	}
 	s.food = min(maxPlayerFood, s.food+food.Nutrition)
@@ -1900,11 +1906,11 @@ func (s *session) playReadLoop() {
 			if !s.actionBudget.allow(time.Now(), actionRate, actionBurst) {
 				continue // 交互洪泛（创造模式物品操作）
 			}
-			slot, itemID, count, err := protocol.ParseSetCreativeSlot(packet)
+			slot, err := protocol.ParseSetCreativeSlot(packet)
 			if err != nil {
 				continue
 			}
-			s.server.handleSetCreativeSlot(s, slot, itemID, count)
+			s.server.handleSetCreativeSlot(s, slot.Slot, slot.ItemID, slot.Count, slot.PotionID)
 		case protocol.PlayServerboundPacketIDSwingArm:
 			if err := protocol.ParseSwingArm(packet); err == nil {
 				s.server.broadcastSwing(s)

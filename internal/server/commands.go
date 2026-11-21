@@ -413,6 +413,35 @@ func resolveItemName(name string) (int32, string, bool) {
 	return 0, "", false
 }
 
+// parsePotionContentsComponent 解析 /give 物品参数中的
+// potion_contents={potion:"minecraft:regeneration"} 覆盖，返回 1-based 药水 ID。
+// 只支持单个 potion 字段；其他组件（附魔/自定义效果等）返回错误而不是静默丢弃。
+func parsePotionContentsComponent(spec string) (int32, error) {
+	spec = strings.TrimSpace(strings.ToLower(spec))
+	const prefix = "potion_contents={potion:"
+	if !strings.HasPrefix(spec, prefix) {
+		return 0, fmt.Errorf("仅支持 potion_contents={potion:\"...\"} 组件")
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(spec, prefix))
+	if len(rest) < 2 || rest[0] != '"' {
+		return 0, fmt.Errorf("potion 值必须是带引号的药水名")
+	}
+	end := strings.IndexByte(rest[1:], '"')
+	if end < 0 {
+		return 0, fmt.Errorf("药水名缺少结束引号")
+	}
+	name := rest[1 : 1+end]
+	after := strings.TrimSpace(rest[1+end+1:])
+	if after != "}" {
+		return 0, fmt.Errorf("暂不支持其他 potion_contents 字段")
+	}
+	id, ok := registry.PotionIDByName(name)
+	if !ok {
+		return 0, fmt.Errorf("未知药水：%s", name)
+	}
+	return id + 1, nil
+}
+
 // handleGiveCommand 实现 /give <物品> [数量]：把物品放入物品栏，
 // 放不下的部分掉落在脚下。
 func (s *Server) handleGiveCommand(player *session, argument string) {
@@ -430,9 +459,24 @@ func (s *Server) handleGiveCommand(player *session, argument string) {
 		}
 		count = int32(parsed)
 	}
-	_, name, ok := resolveItemName(fields[0])
+	itemArg := fields[0]
+	potionID := int32(0)
+	if open := strings.IndexByte(itemArg, '['); open >= 0 {
+		if !strings.HasSuffix(itemArg, "]") {
+			player.tryWrite(protocol.EncodeSystemChat("物品组件语法无效。"))
+			return
+		}
+		parsed, err := parsePotionContentsComponent(itemArg[open+1 : len(itemArg)-1])
+		if err != nil {
+			player.tryWrite(protocol.EncodeSystemChat(err.Error()))
+			return
+		}
+		potionID = parsed
+		itemArg = itemArg[:open]
+	}
+	_, name, ok := resolveItemName(itemArg)
 	if !ok {
-		player.tryWrite(protocol.EncodeSystemChat("未知物品：" + fields[0]))
+		player.tryWrite(protocol.EncodeSystemChat("未知物品：" + itemArg))
 		return
 	}
 	stack, err := item.FromName(name, count)
@@ -440,6 +484,7 @@ func (s *Server) handleGiveCommand(player *session, argument string) {
 		player.tryWrite(protocol.EncodeSystemChat("无法创建物品：" + err.Error()))
 		return
 	}
+	stack.PotionID = potionID
 	remaining, changed := player.inventory.Add(stack)
 	for _, slot := range changed {
 		player.tryWrite(protocol.EncodeSetPlayerInventory(int32(slot), player.inventory.Get(slot).AppendSlot(nil)))
