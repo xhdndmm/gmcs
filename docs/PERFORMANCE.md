@@ -1972,6 +1972,20 @@ oracle 对 Change Difficulty/Update/Remove Mob Effect 通过。
 没有性能提升声明；吸收检查只在伤害路径执行，落叶检查只在方块破坏/放置
 路径执行，不在 Tick 热循环中扫描全图。
 
+### 3.56 gmcsload 行为模拟扩展
+
+`cmd/gmcsload` 在原有登录、移动、Keep Alive 与 Chunk Batch 应答之外，新增：
+
+- 周期发送 Client Tick End（默认 20 Hz）、Player Input（疾跑/潜行）、视角旋转；
+- 近似原版跳跃弧线（初速度 0.42、重力 0.08、阻力 0.98）；
+- 跟踪 Add Entity / Entity Position Sync / Remove Entities，攻击最近的 4.5 格内实体；
+- 周期挥手、离线未签名聊天与重复命令；
+- 跟踪 Update Health / Player Combat Kill，死亡后自动发送重生请求；
+- 报告死亡、重生、攻击、聊天/命令次数。
+
+这些是行为覆盖扩展，不代表吞吐基线变化；原 3.7 的 50 玩家数据仍对应旧行为。
+新增单元测试覆盖聊天编码、Add Entity/Position/Remove 解析、跳跃弧线与最近实体选择。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；

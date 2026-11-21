@@ -525,9 +525,15 @@ go run ./cmd/gmcs           # 运行；首次启动生成 gmcs.json 与 world/
 - `pprof_address`：启用后在 `/debug/pprof/*` 提供 CPU/内存/goroutine 分析
   （`go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=20`）。
 - `cmd/gmcsload`：离线模式负载压测客户端（登录 → 配置 → 进入世界 → 持续移动），
-  输出进入世界耗时、收包量、流量与包类型分布；单机 loopback 结果见
-  [docs/PERFORMANCE.md](PERFORMANCE.md)。`-random-move` 让玩家在
-  `-move-radius` 内随机换向，用于模拟分散探索；默认仍沿 +X 直线移动。
+  输出进入世界耗时、收包量、流量、包类型分布与模拟行为统计；单机 loopback
+  结果见 [docs/PERFORMANCE.md](PERFORMANCE.md)。
+  - `-random-move` 在 `-move-radius` 内随机换向，模拟分散探索；
+  - `-sprint`/`-sneak` 发送 Player Input，`-speed` 控制移动速度；
+  - `-jump-interval` 模拟跳跃弧线，`-rotate-interval` 模拟视角转动；
+  - `-swing-interval` 挥手，`-attack-interval` 攻击最近的已追踪实体；
+  - `-chat-interval` 发送离线未签名聊天，`-command-interval` 重复发送命令；
+  - `-tick-end` 每 tick 发送 Client Tick End，`-auto-respawn` 死亡后自动重生。
+  聊天/命令依赖离线未签名分支；开启 `enforce_secure_profile` 的服务器会拒绝。
 
 ### 玩家数据（players.json）
 
@@ -566,6 +572,9 @@ go test -race ./...      # 仅数据竞争检测
 
 go run ./cmd/gmcsload -addr 127.0.0.1:25565 -players 50 -duration 20s  # 负载压测
 go run ./cmd/gmcsload -random-move -move-radius 128 -players 20 -duration 30s  # 随机漫游
+go run ./cmd/gmcsload -sprint -speed 5.6 -jump-interval 2s -rotate-interval 500ms \
+  -swing-interval 1s -attack-interval 1s -chat-interval 5s -command-interval 10s \
+  -players 20 -duration 1m  # 更接近真实游玩的混合行为
 ```
 
 关键路径的 benchmark 方法与实测数据见 [docs/PERFORMANCE.md](PERFORMANCE.md)。
