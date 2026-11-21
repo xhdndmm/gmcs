@@ -16,6 +16,7 @@
 #   TESTFLAGS   附加到单元测试的参数（如 "-run TestChunk -count=5"）
 #   RACEFLAGS   附加到 race 测试的参数
 #   BENCHFLAGS  附加到 benchmark 的参数
+#   TEST_TIMEOUT 单元测试/race 的单包超时（默认 20m；CI 世界生成测试较慢）
 #
 # 任一步骤失败即以非零状态退出。
 
@@ -89,16 +90,18 @@ go build ./...
 echo "==> go vet ./..."
 go vet ./...
 
+test_timeout=${TEST_TIMEOUT:-20m}
+
 echo "==> go test ./..."
 # TESTFLAGS 按空白拆分后附加到命令，这是有意为之。
-go test -count=1 ${TESTFLAGS:-} ./...
+go test -count=1 -timeout="$test_timeout" ${TESTFLAGS:-} ./...
 
 if [ "$run_race" = 1 ]; then
 	if [ "$(go env CGO_ENABLED)" = 0 ]; then
 		echo "==> 跳过 race 测试：当前环境 CGO_ENABLED=0（race 需要 CGO）"
 	else
 		echo "==> go test -race ./..."
-		if ! go test -race -count=1 ${RACEFLAGS:-} ./...; then
+		if ! go test -race -count=1 -timeout="$test_timeout" ${RACEFLAGS:-} ./...; then
 			echo "错误：race 测试失败。" >&2
 			echo "如果当前平台不支持 race 检测，请使用 --no-race 跳过。" >&2
 			exit 1
