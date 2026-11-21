@@ -111,11 +111,13 @@ func (s *session) applyEffect(id, duration, amplifier int32, ambient bool) []byt
 		effect.ambient = effect.ambient || ambient
 		effect.visible = true
 		effect.showIcon = true
+		s.applyAbsorptionLocked(id, amplifier)
 		packet := effectPacket(s.entityID, id, *effect)
 		s.stateMu.Unlock()
 		return packet
 	}
 	*effect = mobEffectInstance{active: true, duration: duration, amplifier: amplifier, ambient: ambient, visible: true, showIcon: true}
+	s.applyAbsorptionLocked(id, amplifier)
 	switch id {
 	case registry.MobEffectRegeneration:
 		effect.nextTick = effectRegenerationInterval >> max(amplifier, 0)
@@ -127,6 +129,25 @@ func (s *session) applyEffect(id, duration, amplifier int32, ambient bool) []byt
 	packet := effectPacket(s.entityID, id, *effect)
 	s.stateMu.Unlock()
 	return packet
+}
+
+// applyAbsorptionLocked 在吸收效果生效时补充吸收生命值；调用方持有 stateMu。
+// 原版 AbsorptionMobEffect 每级提供 4 点吸收，重复施加会叠加，封顶为
+// 20 点（max_absorption 属性的正常上限）。
+func (s *session) applyAbsorptionLocked(id, amplifier int32) {
+	if id != registry.MobEffectAbsorption {
+		return
+	}
+	amount := float32(4 * (max(amplifier, 0) + 1))
+	s.absorption = min(maxPlayerHealth, s.absorption+amount)
+}
+
+// absorptionStatus 返回当前吸收生命值（测试/持久化用）。
+func (s *session) absorptionStatus() float32 {
+	s.stateMu.Lock()
+	value := s.absorption
+	s.stateMu.Unlock()
+	return value
 }
 
 // removeEffect 移除一个效果并返回 Remove Mob Effect 包。
@@ -141,6 +162,9 @@ func (s *session) removeEffect(id int32) []byte {
 		return nil
 	}
 	effect.active = false
+	if id == registry.MobEffectAbsorption {
+		s.absorption = 0
+	}
 	s.stateMu.Unlock()
 	return protocol.EncodeRemoveMobEffect(s.entityID, id)
 }
@@ -156,6 +180,7 @@ func (s *session) clearEffects() [][]byte {
 		s.effects[id].active = false
 		packets = append(packets, protocol.EncodeRemoveMobEffect(s.entityID, int32(id)))
 	}
+	s.absorption = 0
 	s.stateMu.Unlock()
 	return packets
 }
@@ -243,6 +268,9 @@ func (s *session) tickEffects() effectTickResult {
 		}
 		if effect.duration == 0 {
 			effect.active = false
+			if int32(id) == registry.MobEffectAbsorption {
+				s.absorption = 0
+			}
 			result.packets = append(result.packets, protocol.EncodeRemoveMobEffect(s.entityID, int32(id)))
 			continue
 		}

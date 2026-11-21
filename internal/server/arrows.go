@@ -403,6 +403,7 @@ func (s *Server) explode(dim world.Dimension, x, y, z float64, radius float32, p
 	// 但仅调度计划刻、不在此处扩散），并重新判定被摧毁原木/树叶周围的树叶衰减。
 	for i, cell := range destroyedCells {
 		s.updateFluidsAround(dim, cell[0], cell[1], cell[2])
+		s.updateLeafLitterAbove(dim, w, cell[0], cell[1], cell[2])
 		s.decayLeavesAround(dim, w, cell[0], cell[1], cell[2], destroyedStates[i])
 	}
 

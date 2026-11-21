@@ -194,6 +194,8 @@ type session struct {
 	health     float32
 	food       int32
 	saturation float32
+	// absorption 是吸收效果提供的额外“黄心”生命值；由 stateMu 保护。
+	absorption float32
 	// exhaustion 是饥饿系统的疲劳度：累计到 4 点消耗 1 点饥饿值。
 	exhaustion float32
 	// foodTimer 驱动自然恢复/饥饿伤害的 4 秒（80 tick）计时。
@@ -784,9 +786,18 @@ func (s *session) applyDamage(server *Server, amount float32, damageTypeID int32
 	s.lastHurt = now
 	final, armorDamage := server.computePlayerDamage(s, amount, damageTypeID)
 	final *= s.resistanceMultiplierLocked()
+	// 吸收效果先于生命值承受伤害（原版 LivingEntity.getAbsorptionAmount）。
+	// 吸收值耗尽后剩余伤害才扣生命；吸收伤害不改变生命值。
+	if s.absorption > 0 && final > 0 {
+		absorbed := min(s.absorption, final)
+		s.absorption -= absorbed
+		final -= absorbed
+	}
 	// 受伤会积累疲劳度（与原版一致：0.1）。
 	s.exhaustion += playerExhaustionDamage
-	s.health -= final
+	if final > 0 {
+		s.health -= final
+	}
 	dead := s.health <= 0
 	if dead {
 		s.health = 0

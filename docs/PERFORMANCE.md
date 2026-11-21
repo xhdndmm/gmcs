@@ -1959,6 +1959,19 @@ oracle 对 Change Difficulty/Update/Remove Mob Effect 通过。
 不会出现在 `/gamerule` 补全中且显式报错；`doDaylightCycle=false` 当前同时冻结
 `worldAge`（未拆分 gameTime/dayTime），这是已知近似。
 
+### 3.55 吸收效果与落叶支撑修复
+
+- 吸收值保存在 `session.absorption`（受既有 `stateMu` 保护），伤害路径在
+  同一把锁内先扣除吸收再扣生命，不增加热路径锁次数；吸收值随玩家记录
+  `Absorption` 字段保存，旧记录缺省为 0。
+- `leaf_litter` 生成继续使用 `simpleBlockCanSurvive`；新增支撑移除和玩家
+  放置检查，避免地面被破坏或放置在空中后留下悬空落叶。
+- 新增 `TestAbsorptionShieldsGoldenAppleDamage`、
+  `TestLeafLitterDropsWhenSupportRemoved`。
+
+没有性能提升声明；吸收检查只在伤害路径执行，落叶检查只在方块破坏/放置
+路径执行，不在 Tick 热循环中扫描全图。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；

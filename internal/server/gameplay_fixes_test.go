@@ -210,3 +210,30 @@ func TestPlacedLeavesDoNotDecay(t *testing.T) {
 		t.Fatal("玩家放置的树叶不应衰减")
 	}
 }
+
+func TestLeafLitterDropsWhenSupportRemoved(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, conn := joinServer(t, cfg, "LeafSupport")
+	defer conn.Close()
+	w := instance.testWorld()
+	x, y, z := 0, 70, 0
+	ground, ok := registry.BlockStateIDs["minecraft:grass_block"]
+	if !ok {
+		t.Fatal("缺少草方块状态")
+	}
+	litter, ok := registry.BlockStateIDs["minecraft:leaf_litter"]
+	if !ok {
+		t.Fatal("缺少落叶状态")
+	}
+	if !w.SetBlock(x, y, z, ground) || !w.SetBlock(x, y+1, z, litter) {
+		t.Fatal("无法构造落叶支撑测试场景")
+	}
+	if !instance.removeBlockAndBroadcast(world.DimensionOverworld, w, x, y, z, ground) {
+		t.Fatal("移除支撑方块失败")
+	}
+	if got := w.BlockAt(x, y+1, z); got != world.AirBlock {
+		t.Fatalf("支撑移除后落叶仍存在：%d", got)
+	}
+}

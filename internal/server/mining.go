@@ -285,6 +285,7 @@ func (s *Server) removeBlockAndBroadcast(dim world.Dimension, w *world.World, x,
 	s.updateFluidsAround(dim, x, y, z)
 	// 台阶：邻居变化后重算形状（原版 StairsBlock.updateShape）。
 	s.updateStairsAround(dim, w, x, y, z)
+	s.updateLeafLitterAbove(dim, w, x, y, z)
 	// 树叶衰减：失去原木支撑的自然树叶掉落消失（原版 LeavesBlock 的 distance）。
 	s.decayLeavesAround(dim, w, x, y, z, current)
 	if current == world.ObsidianBlock {

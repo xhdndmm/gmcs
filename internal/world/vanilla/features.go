@@ -2574,7 +2574,7 @@ func simpleBlockCanSurvive(chunk *GeneratedChunk, state SurfaceBlock, x, y, z in
 		"minecraft:orange_tulip", "minecraft:white_tulip", "minecraft:pink_tulip",
 		"minecraft:oxeye_daisy", "minecraft:cornflower", "minecraft:lily_of_the_valley",
 		"minecraft:wither_rose", "minecraft:torchflower", "minecraft:pink_petals",
-		"minecraft:wildflowers", "minecraft:leaf_litter", "minecraft:dead_bush",
+		"minecraft:wildflowers", "minecraft:dead_bush",
 		"minecraft:brown_mushroom", "minecraft:red_mushroom":
 		below := chunk.BlockAt(x, y-1, z)
 		switch below.Name {
@@ -2586,6 +2586,8 @@ func simpleBlockCanSurvive(chunk *GeneratedChunk, state SurfaceBlock, x, y, z in
 		default:
 			return false
 		}
+	case "minecraft:leaf_litter":
+		return leafLitterCanSurviveName(chunk.BlockAt(x, y-1, z).Name)
 	case "minecraft:tall_grass", "minecraft:large_fern", "minecraft:sunflower",
 		"minecraft:lilac", "minecraft:rose_bush", "minecraft:peony":
 		return simpleBlockCanSurvive(chunk, SurfaceBlock{Name: "minecraft:short_grass"}, x, y, z) &&
@@ -2596,6 +2598,26 @@ func simpleBlockCanSurvive(chunk *GeneratedChunk, state SurfaceBlock, x, y, z in
 		// 其余 simple block（海带、甘蔗、普通方块等）由各自运行时处理。
 		return true
 	}
+}
+
+// leafLitterCanSurviveName 近似原版 LeafLitterBlock.canSurvive 的
+// isFaceSturdy(UP, FULL)：落叶需要完整坚固的地面方块，不能被放到树叶、
+// 原木、草、雪层等非完整支撑面上。
+func leafLitterCanSurviveName(name string) bool {
+	switch name {
+	case "minecraft:grass_block", "minecraft:dirt", "minecraft:coarse_dirt",
+		"minecraft:podzol", "minecraft:moss_block", "minecraft:pale_moss_block",
+		"minecraft:rooted_dirt", "minecraft:mud", "minecraft:muddy_mangrove_roots",
+		"minecraft:farmland", "minecraft:mycelium", "minecraft:sand",
+		"minecraft:red_sand", "minecraft:stone", "minecraft:deepslate",
+		"minecraft:granite", "minecraft:diorite", "minecraft:andesite",
+		"minecraft:tuff", "minecraft:calcite", "minecraft:dripstone_block",
+		"minecraft:sandstone", "minecraft:red_sandstone", "minecraft:gravel",
+		"minecraft:clay", "minecraft:snow_block", "minecraft:packed_ice",
+		"minecraft:ice":
+		return true
+	}
+	return false
 }
 
 func (r *Router) placeSelector(chunk *GeneratedChunk, random *legacyRandom, selector selectorConfiguration, x, y, z int) {

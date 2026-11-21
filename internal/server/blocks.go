@@ -330,6 +330,13 @@ func (s *Server) handleUseItemOn(player *session, use protocol.UseItemOn) {
 	if persistent, ok := leafPersistentState(name); ok {
 		state = persistent
 	}
+	// 落叶只能贴在完整地面方块上放置（原版 LeafLitterBlock.canSurvive）。
+	if name == "minecraft:leaf_litter" {
+		belowName, ok := registry.BlockNameByState(w.BlockAt(placeX, placeY-1, placeZ))
+		if !ok || !leafLitterSupportName(belowName) {
+			return
+		}
+	}
 	if !w.SetBlock(placeX, placeY, placeZ, state) {
 		return
 	}

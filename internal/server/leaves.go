@@ -103,6 +103,53 @@ func (s *Server) decayLeavesAround(dim world.Dimension, w *world.World, x, y, z 
 	}
 }
 
+// isLeafLitterState 报告状态是否为 1.21.11 的 leaf_litter 方块。
+func isLeafLitterState(state uint16) bool {
+	name, ok := registry.BlockNameByState(state)
+	return ok && name == "minecraft:leaf_litter"
+}
+
+// leafLitterSupportName 报告方块名能否作为 leaf_litter 的支撑面。
+// 对应原版 LeafLitterBlock.canSurvive 的 isFaceSturdy(UP, FULL)；
+// 这里列出完整地面方块（不含树叶/原木/流体）。
+func leafLitterSupportName(name string) bool {
+	switch name {
+	case "minecraft:grass_block", "minecraft:dirt", "minecraft:coarse_dirt",
+		"minecraft:podzol", "minecraft:moss_block", "minecraft:pale_moss_block",
+		"minecraft:rooted_dirt", "minecraft:mud", "minecraft:muddy_mangrove_roots",
+		"minecraft:farmland", "minecraft:mycelium", "minecraft:sand",
+		"minecraft:red_sand", "minecraft:stone", "minecraft:deepslate",
+		"minecraft:gravel", "minecraft:clay", "minecraft:snow_block",
+		"minecraft:packed_ice", "minecraft:ice":
+		return true
+	}
+	return false
+}
+
+// updateLeafLitterAbove 在方块被移除后处理其上方失去支撑的 leaf_litter。
+// 原版 LeafLitterBlock 通过 updateShape 在支撑消失时立即破坏并掉落；
+// gmcs 没有通用方块 updateShape，因此在破坏/爆炸路径显式检查。
+func (s *Server) updateLeafLitterAbove(dim world.Dimension, w *world.World, x, y, z int) {
+	if w == nil {
+		return
+	}
+	aboveY := y + 1
+	state := w.BlockAt(x, aboveY, z)
+	if !isLeafLitterState(state) {
+		return
+	}
+	below := w.BlockAt(x, y, z)
+	belowName, ok := registry.BlockNameByState(below)
+	if ok && leafLitterSupportName(belowName) {
+		return
+	}
+	if !w.SetBlock(x, aboveY, z, world.AirBlock) {
+		return
+	}
+	s.broadcastBlockUpdate(dim, x, aboveY, z, int32(world.AirBlock))
+	s.dropBlockItem(dim, state, x, aboveY, z, item.Empty())
+}
+
 // decayLeafAt 让单个树叶位置衰减：按方块战利品表掉落并移除。
 // 由 Tick goroutine（爆炸）或读循环（破坏方块）调用。
 func (s *Server) decayLeafAt(dim world.Dimension, w *world.World, x, y, z int) {

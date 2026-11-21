@@ -7,6 +7,7 @@ package server
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"gmcs/internal/config"
 	"gmcs/internal/item"
@@ -121,8 +122,9 @@ func TestEffectPersistenceRoundTrip(t *testing.T) {
 	defer conn.Close()
 	player := findSession(t, instance, "EffectSave")
 	player.applyEffect(registry.MobEffectRegeneration, 200, 1, false)
+	player.applyEffect(registry.MobEffectAbsorption, 200, 0, false)
 	record := playerRecordFromSession(player)
-	if len(record.Effects) != 1 || record.Effects[0].ID != registry.MobEffectRegeneration {
+	if len(record.Effects) != 2 {
 		t.Fatalf("saved effects = %+v", record.Effects)
 	}
 	other := newTestSession(player.uuid, false)
@@ -130,6 +132,9 @@ func TestEffectPersistenceRoundTrip(t *testing.T) {
 	other.applyPlayerRecord(record)
 	if got := other.effectLevel(registry.MobEffectRegeneration); got != 2 {
 		t.Fatalf("restored regeneration level = %d, want 2", got)
+	}
+	if got := other.absorptionStatus(); got != 4 {
+		t.Fatalf("restored absorption = %v, want 4", got)
 	}
 }
 
@@ -190,6 +195,9 @@ func TestGoldenAppleAppliesEffectsAtFullHunger(t *testing.T) {
 	if !player.hasEffect(registry.MobEffectAbsorption) || !player.hasEffect(registry.MobEffectRegeneration) {
 		t.Fatal("满饥饿时金苹果仍应施加吸收与再生效果")
 	}
+	if got := player.absorptionStatus(); got != 4 {
+		t.Fatalf("金苹果吸收值 = %v, want 4", got)
+	}
 	if !player.inventory.Get(0).IsEmpty() {
 		t.Fatal("金苹果应被消耗")
 	}
@@ -221,4 +229,44 @@ func TestCreativePotionSlotKeepsPotionID(t *testing.T) {
 		stack := player.inventory.Get(0)
 		return stack.ItemID == potionID && stack.PotionID == registry.PotionRegeneration+1
 	}, "创造模式药水未保留 potion_contents")
+}
+
+func TestAbsorptionShieldsGoldenAppleDamage(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorldDir = t.TempDir()
+	cfg.SpawnMonsters = false
+	instance, err := newServer(cfg, testGenerator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.testWorld().Close()
+	player := newTestSession([16]byte{0xD1, 0x05}, false)
+	player.server = instance
+	player.writer = &bytes.Buffer{}
+	player.healImmediate(0)
+	player.stateMu.Lock()
+	player.health = maxPlayerHealth
+	player.stateMu.Unlock()
+	for _, packet := range instance.applyPotionEffects(player, []registry.PotionEffect{
+		{ID: registry.MobEffectAbsorption, Duration: 2400, Amplifier: 0},
+	}) {
+		player.tryWrite(packet)
+	}
+	if got := player.absorptionStatus(); got != 4 {
+		t.Fatalf("absorption = %v, want 4", got)
+	}
+	health, _, _, applied, _ := player.applyDamage(instance, 2, instance.magicDamageTypeID, time.Now())
+	if !applied || health != maxPlayerHealth {
+		t.Fatalf("2 点伤害应完全由吸收承受：health=%v applied=%v", health, applied)
+	}
+	if got := player.absorptionStatus(); got != 2 {
+		t.Fatalf("吸收后 absorption = %v, want 2", got)
+	}
+	player.stateMu.Lock()
+	player.lastHurt = time.Time{}
+	player.stateMu.Unlock()
+	health, _, _, applied, _ = player.applyDamage(instance, 5, instance.magicDamageTypeID, time.Now())
+	if !applied || health != maxPlayerHealth-3 {
+		t.Fatalf("吸收耗尽后应扣 3 点生命：health=%v applied=%v", health, applied)
+	}
 }

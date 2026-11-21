@@ -65,6 +65,8 @@ type playerRecord struct {
 	Dead       bool    `json:"dead"`
 	Food       int32   `json:"food"`
 	Saturation float32 `json:"saturation"`
+	// Absorption 是吸收效果剩余的吸收生命值；nil 表示旧记录未保存该字段。
+	Absorption *float32 `json:"absorption,omitempty"`
 	// Experience 是总经验值（0 表示无经验；死亡后清空）。
 	Experience int32        `json:"experience"`
 	GameMode   string       `json:"game_mode"`
@@ -272,6 +274,7 @@ func playerRecordFromSession(player *session) playerRecord {
 	health := player.health
 	food := player.food
 	saturation := player.saturation
+	absorption := player.absorption
 	experience := player.experience
 	exhaustion := player.exhaustion
 	foodTimer := player.foodTimer
@@ -312,6 +315,7 @@ func playerRecordFromSession(player *session) playerRecord {
 		Dead:         dead,
 		Food:         food,
 		Saturation:   saturation,
+		Absorption:   &absorption,
 		Experience:   experience,
 		GameMode:     modeName,
 		Inventory:    items,
@@ -414,6 +418,16 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 		saturation = float32(maxPlayerFood)
 	}
 	s.saturation = saturation
+	absorption := float32(0)
+	if record.Absorption != nil {
+		absorption = *record.Absorption
+		if math.IsNaN(float64(absorption)) || absorption < 0 {
+			absorption = 0
+		} else if absorption > maxPlayerHealth {
+			absorption = maxPlayerHealth
+		}
+	}
+	s.absorption = absorption
 	if record.Experience > 0 {
 		s.experience = record.Experience
 	}
@@ -470,6 +484,10 @@ func (s *session) applyPlayerRecord(record playerRecord) {
 			instance.nextTick = effectWitherInterval >> max(instance.amplifier, 0)
 		}
 		s.effects[effect.ID] = instance
+	}
+	if record.Absorption == nil && s.effects[registry.MobEffectAbsorption].active {
+		// 旧记录没有吸收字段：按效果等级恢复到满吸收值。
+		s.absorption = min(float32(4*(max(s.effects[registry.MobEffectAbsorption].amplifier, 0)+1)), maxPlayerHealth)
 	}
 	s.stateMu.Unlock()
 
