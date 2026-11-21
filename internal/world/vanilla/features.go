@@ -296,13 +296,16 @@ type treeConfiguration struct {
 }
 
 type treeDecorator struct {
-	kind        string
-	probability float32
-	tries       int
-	radius      int
-	height      int
-	provider    *stateProvider
-	directions  []string
+	kind              string
+	probability       float32
+	tries             int
+	radius            int
+	height            int
+	groundProbability float32
+	leavesProbability float32
+	trunkProbability  float32
+	provider          *stateProvider
+	directions        []string
 }
 
 type intProvider struct {
@@ -1364,6 +1367,9 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 			Tries              int             `json:"tries"`
 			Radius             int             `json:"radius"`
 			Height             int             `json:"height"`
+			GroundProbability  float32         `json:"ground_probability"`
+			LeavesProbability  float32         `json:"leaves_probability"`
+			TrunkProbability   float32         `json:"trunk_probability"`
 			BlockStateProvider json.RawMessage `json:"block_state_provider"`
 			Provider           json.RawMessage `json:"provider"`
 			Directions         []string        `json:"directions"`
@@ -1447,12 +1453,15 @@ func parseTreeConfiguration(raw json.RawMessage) (*treeConfiguration, error) {
 	decorators := make([]treeDecorator, 0, len(encoded.Decorators))
 	for _, rawDecorator := range encoded.Decorators {
 		decorator := treeDecorator{
-			kind:        qualify(rawDecorator.Type),
-			probability: rawDecorator.Probability,
-			tries:       rawDecorator.Tries,
-			radius:      rawDecorator.Radius,
-			height:      rawDecorator.Height,
-			directions:  rawDecorator.Directions,
+			kind:              qualify(rawDecorator.Type),
+			probability:       rawDecorator.Probability,
+			tries:             rawDecorator.Tries,
+			radius:            rawDecorator.Radius,
+			height:            rawDecorator.Height,
+			groundProbability: rawDecorator.GroundProbability,
+			leavesProbability: rawDecorator.LeavesProbability,
+			trunkProbability:  rawDecorator.TrunkProbability,
+			directions:        rawDecorator.Directions,
 		}
 		providerRaw := rawDecorator.BlockStateProvider
 		if len(providerRaw) == 0 {
@@ -3382,6 +3391,53 @@ func (r *Router) applyTreeDecorators(chunk *GeneratedChunk, random *legacyRandom
 				chunk.SetBlock(tx, ty, tz, decorator.provider.sample(random))
 				excluded[[3]int{tx, ty, tz}] = struct{}{}
 			}
+		case "minecraft:pale_moss":
+			logs := treeLogPositions(chunk, configuration, x, y, z, height)
+			shuffleFeaturePositions(random, logs)
+			// 原版先以 ground_probability 调用 pale_moss_patch；该地物也由
+			// 群系地物阶段执行，这里保留随机消费顺序，避免后续装饰器偏移。
+			if random.nextFloat() < decorator.groundProbability {
+				// 地面苔藓块由 biome 的 pale_moss_patch 负责；这里不重复铺。
+			}
+			for _, log := range logs {
+				if random.nextFloat() >= decorator.trunkProbability {
+					continue
+				}
+				if !chunk.InRange(log.x, log.y-1, log.z) ||
+					!treeCanReplace(chunk.BlockAt(log.x, log.y-1, log.z)) {
+					continue
+				}
+				addPaleMossHanger(chunk, random, log.x, log.y-1, log.z)
+			}
+			for _, leaf := range leaves {
+				if random.nextFloat() >= decorator.leavesProbability {
+					continue
+				}
+				if !chunk.InRange(leaf.x, leaf.y-1, leaf.z) ||
+					!treeCanReplace(chunk.BlockAt(leaf.x, leaf.y-1, leaf.z)) {
+					continue
+				}
+				addPaleMossHanger(chunk, random, leaf.x, leaf.y-1, leaf.z)
+			}
+		case "minecraft:creaking_heart":
+			if random.nextFloat() >= decorator.probability {
+				continue
+			}
+			logs := treeLogPositions(chunk, configuration, x, y, z, height)
+			shuffleFeaturePositions(random, logs)
+			for _, log := range logs {
+				if !allNeighborsAreLogs(chunk, log.x, log.y, log.z) {
+					continue
+				}
+				chunk.SetBlock(log.x, log.y, log.z, SurfaceBlock{
+					Name: "minecraft:creaking_heart",
+					Properties: map[string]string{
+						"axis":                 "y",
+						"creaking_heart_state": "dormant",
+					},
+				})
+				break
+			}
 		case "minecraft:beehive":
 			if len(leaves) == 0 || random.nextFloat() >= decorator.probability {
 				continue
@@ -3407,6 +3463,76 @@ func (r *Router) applyTreeDecorators(chunk *GeneratedChunk, random *legacyRandom
 			}
 		}
 	}
+}
+
+// treeLogPositions 收集树干/树枝的原木位置，供 pale_moss 与 creaking_heart
+// 装饰器使用。原版 TreeDecorator.Context 直接持有 trunk placer 写入的 logs 列表；
+// gmcs 的树干放置器返回后不再保留该列表，因此在地物写入完成后按树干材料
+// 扫描树冠下方的小范围。只用于这些需要 logs 列表的装饰器。
+func treeLogPositions(chunk *GeneratedChunk, configuration treeConfiguration, x, y, z, height int) []featurePosition {
+	logs := make([]featurePosition, 0, height+4)
+	seen := make(map[[3]int]struct{})
+	radius := 3
+	for py := y; py <= y+height+2; py++ {
+		for px := x - radius; px <= x+radius; px++ {
+			for pz := z - radius; pz <= z+radius; pz++ {
+				if !chunk.InRange(px, py, pz) {
+					continue
+				}
+				block := chunk.BlockAt(px, py, pz)
+				if block.Name != configuration.trunk.Name && !isLogSurfaceName(block.Name) {
+					continue
+				}
+				key := [3]int{px, py, pz}
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				logs = append(logs, featurePosition{x: px, y: py, z: pz})
+			}
+		}
+	}
+	return logs
+}
+
+func isLogSurfaceName(name string) bool {
+	return strings.HasSuffix(name, "_log") || strings.HasSuffix(name, "_wood") ||
+		strings.HasSuffix(name, "_stem") || strings.HasSuffix(name, "_hyphae")
+}
+
+func shuffleFeaturePositions(random *legacyRandom, positions []featurePosition) {
+	for i := len(positions) - 1; i > 0; i-- {
+		j := random.nextIntBounded(i + 1)
+		positions[i], positions[j] = positions[j], positions[i]
+	}
+}
+
+// addPaleMossHanger 从指定空中位置向下挂 pale_moss_carpet；与原版
+// PaleMossDecorator.addMossHanger 的 0.5 终止概率一致。
+func addPaleMossHanger(chunk *GeneratedChunk, random *legacyRandom, x, y, z int) {
+	for chunk.InRange(x, y, z) && treeCanReplace(chunk.BlockAt(x, y, z)) && random.nextFloat() >= 0.5 {
+		chunk.SetBlock(x, y, z, SurfaceBlock{
+			Name:       "minecraft:pale_moss_carpet",
+			Properties: map[string]string{"bottom": "false"},
+		})
+		y--
+	}
+	if chunk.InRange(x, y, z) && treeCanReplace(chunk.BlockAt(x, y, z)) {
+		chunk.SetBlock(x, y, z, SurfaceBlock{
+			Name:       "minecraft:pale_moss_carpet",
+			Properties: map[string]string{"bottom": "true"},
+		})
+	}
+}
+
+func allNeighborsAreLogs(chunk *GeneratedChunk, x, y, z int) bool {
+	for _, dir := range [][3]int{{0, 1, 0}, {0, -1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}} {
+		if !chunk.InRange(x+dir[0], y+dir[1], z+dir[2]) ||
+			!isLogSurfaceName(chunk.BlockAt(x+dir[0], y+dir[1], z+dir[2]).Name) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Router) placeBlobFoliage(chunk *GeneratedChunk, random *legacyRandom, configuration treeConfiguration, x, y, z, height int, leaves *[]featurePosition) {

@@ -1386,9 +1386,10 @@
       - 树木已移植 fancy/forking/dark oak/giant/mega jungle/cherry/
         upwards branching/bending 的树干与树冠放置器，随机数消费顺序按
         `TreeFeature.doPlace` 对齐；并加入 `place_on_ground`、
-        `attached_to_leaves`、`alter_ground`、`beehive` 的基础运行时。
-        仍缺 `beehive` 的蜜蜂 NBT、`pale_moss/creaking_heart` 等装饰器细节，
-        以及跨区块树冠冲突顺序和树叶 `distance` 更新的逐方块对拍。
+        `attached_to_leaves`、`alter_ground`、`beehive`、`pale_moss` 与
+        `creaking_heart` 的基础运行时。pale moss 的悬挂地毯和 creaking heart
+        的树干中心替换已实现；仍缺 `beehive` 的蜜蜂 NBT、pale moss 地面 patch
+        的完整随机布局，以及跨区块树冠冲突顺序和树叶 `distance` 更新的逐方块对拍。
       - geode 已移植分层阈值、裂缝、invalid_blocks、potential placements 与
         LegacyRandomSource NormalNoise；仍需逐方块对拍验证；
       - iceberg 已按 IcebergFeature 主流程重写（上下冰体、椭圆/密度边界、雪层），

@@ -808,3 +808,59 @@ func TestGeneratedLeafLitterRestsOnGround(t *testing.T) {
 		}
 	}
 }
+
+func TestPaleMossDecoratorPlacesHangingCarpet(t *testing.T) {
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	trunk := SurfaceBlock{Name: "minecraft:oak_log"}
+	chunk.SetBlock(2, 64, 2, trunk)
+	config := treeConfiguration{
+		trunk: trunk,
+		decorators: []treeDecorator{{
+			kind:              "minecraft:pale_moss",
+			trunkProbability:  1,
+			leavesProbability: 0,
+			groundProbability: 0,
+		}},
+	}
+	router := &Router{}
+	router.applyTreeDecorators(chunk, newLegacyRandom(7), config, 2, 64, 2, 3, nil)
+	found := false
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		if block.Name == "minecraft:pale_moss_carpet" {
+			found = true
+		}
+	})
+	if !found {
+		t.Fatal("pale_moss 装饰器没有放置 pale_moss_carpet")
+	}
+}
+
+func TestCreakingHeartDecoratorReplacesInteriorLog(t *testing.T) {
+	chunk := NewGeneratedChunk(0, 0, -64, 384)
+	trunk := SurfaceBlock{Name: "minecraft:oak_log"}
+	for x := 1; x <= 3; x++ {
+		for y := 63; y <= 65; y++ {
+			for z := 1; z <= 3; z++ {
+				chunk.SetBlock(x, y, z, trunk)
+			}
+		}
+	}
+	config := treeConfiguration{
+		trunk: trunk,
+		decorators: []treeDecorator{{
+			kind:        "minecraft:creaking_heart",
+			probability: 1,
+		}},
+	}
+	router := &Router{}
+	router.applyTreeDecorators(chunk, newLegacyRandom(9), config, 2, 64, 2, 3, nil)
+	found := false
+	chunk.ForEachBlock(func(_, _, _ int, block SurfaceBlock) {
+		if block.Name == "minecraft:creaking_heart" {
+			found = true
+		}
+	})
+	if !found {
+		t.Fatal("creaking_heart 装饰器没有替换原木")
+	}
+}

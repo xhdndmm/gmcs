@@ -1986,6 +1986,22 @@ oracle 对 Change Difficulty/Update/Remove Mob Effect 通过。
 这些是行为覆盖扩展，不代表吞吐基线变化；原 3.7 的 50 玩家数据仍对应旧行为。
 新增单元测试覆盖聊天编码、Add Entity/Position/Remove 解析、跳跃弧线与最近实体选择。
 
+### 3.57 苍白花园树装饰器
+
+- `parseTreeConfiguration` 补充 `ground_probability` / `leaves_probability` /
+  `trunk_probability`，并实现 `minecraft:pale_moss` 树装饰器：
+  - 原版先按 ground_probability 执行地面 patch；gmcs 保留该随机消费顺序，
+    地面苔藓仍由群系 `pale_moss_patch` 地物负责；
+  - 对树干/树叶下方按概率向下挂 `pale_moss_carpet`（`bottom=false/true`）。
+- 实现 `minecraft:creaking_heart`：打乱树干原木位置，选择六邻域全为原木的
+  中心替换为 `creaking_heart`（dormant、axis=y）。
+- 新增单元测试 `TestPaleMossDecoratorPlacesHangingCarpet`、
+  `TestCreakingHeartDecoratorReplacesInteriorLog`。
+- 临时扫描种子 4321 的 pale garden 区域，生成的区块中出现
+  `pale_moss_carpet`、`creaking_heart` 与 `leaf_litter`，未发现 panic。
+
+未声称 pale moss 地面 patch 的逐方块形状已与官方完全一致。
+
 ## 4. 尚未覆盖
 
 - 真实多玩家并发负载（登录风暴、区块流式加载压测、实体密度压力）；
